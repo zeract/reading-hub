@@ -309,7 +309,8 @@ const CODEX_EFFORT_OPTIONS: Array<{ value: AiReasoningEffort; label: string }> =
   { value: "low", label: "低（更快）" },
   { value: "medium", label: "中（均衡）" },
   { value: "high", label: "高（更深入）" },
-  { value: "xhigh", label: "极高（最慢）" }
+  { value: "xhigh", label: "极高（最慢）" },
+  { value: "max", label: "最大（最难问题）" }
 ];
 
 function ReaderAssistant({ article, sourceTitle, onClose }: { article: ReaderArticle; sourceTitle?: string; onClose: () => void }) {
@@ -422,7 +423,7 @@ function ReaderAssistant({ article, sourceTitle, onClose }: { article: ReaderArt
       {usingCodexCli ? <>
         <label htmlFor="codex-model">模型</label><select id="codex-model" value={model} onChange={(event) => setModel(event.target.value)} disabled={busy}>{CODEX_CLI_MODEL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select>
         <label htmlFor="codex-effort">推理强度</label><select id="codex-effort" value={effort} onChange={(event) => setEffort(event.target.value as AiReasoningEffort)} disabled={busy}>{CODEX_EFFORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-        <p className="ai-settings-note">模型可用性取决于你的 Codex/ChatGPT 账户；高和极高强度会延长回答时间。</p>
+        <p className="ai-settings-note">模型可用性取决于你的 Codex/ChatGPT 账户；高、极高和最大强度会延长回答时间。</p>
       </> : <>
         <label htmlFor="ai-model">模型</label><input id="ai-model" value={model} onChange={(event) => setModel(event.target.value)} placeholder={selected?.model || "模型名称"} required />
         <label htmlFor="ai-key">API Key</label><input id="ai-key" value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" autoComplete="off" placeholder={selected?.configured ? "留空则保留现有密钥" : "仅保存到 macOS Keychain"} required={!selected?.configured} />

@@ -94,12 +94,12 @@ describe("AI learning service", () => {
     const secrets = new MemorySecrets();
     const service = new AiService(secrets, vi.fn(), codexCli);
 
-    await service.configure({ provider: "codex-cli", model: "gpt-5.3-codex", effort: "xhigh" });
+    await service.configure({ provider: "codex-cli", model: "gpt-5.6-terra", effort: "max" });
     const answer = await service.ask({ provider: "codex-cli", question: "请解释公式。", article });
 
-    expect(answer.model).toBe("gpt-5.3-codex · xhigh");
-    expect(codexCli.ask).toHaveBeenCalledWith(expect.any(String), expect.any(String), { model: "gpt-5.3-codex", effort: "xhigh" });
-    expect([...secrets.values.values()][0]).toContain("gpt-5.3-codex");
+    expect(answer.model).toBe("gpt-5.6-terra · max");
+    expect(codexCli.ask).toHaveBeenCalledWith(expect.any(String), expect.any(String), { model: "gpt-5.6-terra", effort: "max" });
+    expect([...secrets.values.values()][0]).toContain("gpt-5.6-terra");
     expect([...secrets.values.values()][0]).not.toContain("apiKey");
   });
 

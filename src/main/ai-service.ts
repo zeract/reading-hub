@@ -248,7 +248,7 @@ function normaliseCodexConfiguration(value: Pick<AiProviderConfiguration, "model
   const model = !requestedModel ? CODEX_DEFAULT_MODEL : normaliseModel(requestedModel);
   if (!isCodexModel(model)) throw new AiServiceError("请选择 Reading Hub 提供的 Codex CLI 模型。可用模型会随 Codex CLI 版本与账户权限变化。");
   const effort = value.effort || CODEX_DEFAULT_EFFORT;
-  if (!isCodexEffort(effort)) throw new AiServiceError("Codex 推理强度必须为 low、medium、high 或 xhigh。");
+  if (!isCodexEffort(effort)) throw new AiServiceError("Codex 推理强度必须为 low、medium、high、xhigh 或 max。");
   return { model, effort };
 }
 
@@ -257,7 +257,7 @@ function isCodexModel(value: string): boolean {
 }
 
 function isCodexEffort(value: string): value is AiReasoningEffort {
-  return value === "low" || value === "medium" || value === "high" || value === "xhigh";
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max";
 }
 
 function describeCodexSelection(configuration: StoredCodexConfiguration): string {

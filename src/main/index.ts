@@ -40,18 +40,12 @@ process.title = APPLICATION_NAME;
 
 function applicationIcon() {
   try {
-    const icon = nativeImage.createFromPath(path.join(app.getAppPath(), "assets", "reading-hub-icon.png"));
-    if (!icon.isEmpty()) return icon;
-  } catch {
-    // The SVG fallback below keeps incomplete development checkouts usable.
-  }
-  try {
     const svg = readFileSync(path.join(app.getAppPath(), "assets", "reading-hub-icon.svg"), "utf8");
     const icon = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
     if (!icon.isEmpty()) return icon;
   } catch {
-    // Packaged macOS builds use the .icns configured in package.json. The
-    // empty fallback only applies if a developer checks out an incomplete tree.
+    // The SVG retains transparent corners. The discarded raster preview made
+    // those corners opaque white in the Dock during development.
   }
   return nativeImage.createEmpty();
 }

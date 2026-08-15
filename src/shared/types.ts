@@ -199,13 +199,16 @@ export type AiProviderId = "openai" | "deepseek" | "codex-cli";
 /** The built-in selector only presents verified Codex model identifiers. */
 export const CODEX_CLI_MODEL_OPTIONS = [
   { id: "default", label: "跟随 Codex CLI 默认模型" },
-  { id: "gpt-5.3-codex", label: "GPT-5.3 Codex" }
+  { id: "gpt-5.6", label: "GPT-5.6 Sol（推荐）" },
+  { id: "gpt-5.6-sol", label: "GPT-5.6 Sol（固定版本）" },
+  { id: "gpt-5.6-terra", label: "GPT-5.6 Terra（均衡）" },
+  { id: "gpt-5.6-luna", label: "GPT-5.6 Luna（更快、更省）" }
 ] as const;
 
 export type CodexCliModelId = (typeof CODEX_CLI_MODEL_OPTIONS)[number]["id"];
 
 /** Codex CLI exposes these bounded reasoning levels for its supported models. */
-export type AiReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type AiReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 /** Non-secret provider state exposed to the renderer. */
 export interface AiProviderSettings {

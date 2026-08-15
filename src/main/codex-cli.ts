@@ -100,7 +100,7 @@ function runCodex(command: string, instruction: string, articleContext: string, 
     const timeout = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
-    }, options.effort === "high" || options.effort === "xhigh" ? CODEX_EXTENDED_TIMEOUT_MS : CODEX_TIMEOUT_MS);
+    }, options.effort === "high" || options.effort === "xhigh" || options.effort === "max" ? CODEX_EXTENDED_TIMEOUT_MS : CODEX_TIMEOUT_MS);
     const append = (current: string, chunk: Buffer, limit: number) => current.length >= limit
       ? current
       : `${current}${chunk.toString("utf8")}`.slice(0, limit);
