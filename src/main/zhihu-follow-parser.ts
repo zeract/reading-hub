@@ -3,9 +3,12 @@ import { compactText, parsePublishedAt } from "../shared/text";
 import { toAbsoluteUrl } from "../shared/url";
 import type { RawEntry } from "../shared/types";
 
-const CONTENT_LINK = /^(?:\/question\/\d+(?:\/answer\/\d+)?|\/p\/\d+|\/zvideo\/\d+|\/pin\/\d+)/;
+// The Follow timeline also contains "想法" (/pin/) and question activity.
+// They are intentionally not subscriptions in Reading Hub: only a followed
+// author's published answer, column article, or video is collected.
+const PUBLISHED_POST_LINK = /^(?:\/question\/\d+\/answer\/\d+|\/p\/\d+|\/zvideo\/\d+)/;
 
-/** Extracts only public content cards from the rendered, user-authorized Follow feed. */
+/** Extracts only published post cards from the rendered, user-authorized Follow feed. */
 export function extractZhihuFollowPage(html: string, pageUrl = "https://www.zhihu.com/follow"): RawEntry[] {
   const $ = load(html);
   const roots = new Set<any>();
@@ -129,14 +132,14 @@ function linkScore(link: { href: string; text?: string }): number {
   const path = new URL(link.href).pathname;
   const answer = /\/answer\/\d+/.test(path) ? 5 : 0;
   const article = /^\/p\/\d+/.test(path) ? 4 : 0;
-  const videoOrPin = /^\/(?:zvideo|pin)\//.test(path) ? 3 : 0;
-  return answer + article + videoOrPin + Math.min(link.text?.length ?? 0, 120) / 120;
+  const video = /^\/zvideo\//.test(path) ? 3 : 0;
+  return answer + article + video + Math.min(link.text?.length ?? 0, 120) / 120;
 }
 
 function isZhihuContentUrl(rawUrl: string): boolean {
   try {
     const url = new URL(rawUrl);
-    return (url.hostname === "www.zhihu.com" || url.hostname === "zhuanlan.zhihu.com") && CONTENT_LINK.test(url.pathname);
+    return (url.hostname === "www.zhihu.com" || url.hostname === "zhuanlan.zhihu.com") && PUBLISHED_POST_LINK.test(url.pathname);
   } catch {
     return false;
   }

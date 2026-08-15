@@ -35,6 +35,28 @@ describe("Zhihu Follow feed parser", () => {
     expect(entries[0]).toMatchObject({ url: "https://zhuanlan.zhihu.com/p/12345", title: "一篇专栏文章" });
   });
 
+  it("excludes ideas and bare question activity, while retaining authored posts", () => {
+    const entries = extractZhihuFollowPage(
+      `<section class="TopstoryItem">
+        <span>示例作者发布了想法</span><a href="/pin/987654">这是一条不应被收集的想法</a>
+      </section>
+      <section class="TopstoryItem">
+        <span>示例作者提出了问题</span><a href="/question/24680">这是一条不应被收集的问题动态</a>
+      </section>
+      <section class="TopstoryItem">
+        <h2><a href="/question/24680/answer/13579">这是一篇应保留的知乎回答</a></h2>
+        <p>这段足够长的摘要用于确认筛选不会误删关注用户发布的回答内容。</p>
+      </section>`,
+      "https://www.zhihu.com/follow"
+    );
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      url: "https://www.zhihu.com/question/24680/answer/13579",
+      title: "这是一篇应保留的知乎回答"
+    });
+  });
+
   it("prefers the content creation timestamp embedded in Zhihu card metadata", () => {
     const entries = extractZhihuFollowPage(
       `<section class="TopstoryItem" data-za-extra-module='{"card":{"created_time":1723689000}}'>
