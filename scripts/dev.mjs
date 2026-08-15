@@ -126,6 +126,8 @@ async function waitUntilReady(port, entryPaths) {
 async function stop(exitCode = 0) {
   if (stopping) return;
   stopping = true;
+  clearTimeout(restartTimer);
+  clearTimeout(restartForceTimer);
   for (const child of children) if (!child.killed) child.kill("SIGTERM");
   await releaseDevLock();
   process.exit(exitCode);
@@ -140,9 +142,7 @@ const requiredOutputs = [path.join(mainOutput, "index.js"), path.join(mainOutput
 let electronChild;
 let restartPending = false;
 let restartTimer;
-
-launchNode("Vite", bin("vite/bin/vite.js"), ["--host", host, "--port", String(port), "--strictPort"]);
-launchNode("TypeScript", bin("typescript/bin/tsc"), ["-p", "tsconfig.main.json", "--watch", "--preserveWatchOutput"]);
+let restartForceTimer;
 
 function launchElectron() {
   // Spawn Electron itself rather than `electron/cli.js`. The CLI is a Node
@@ -150,23 +150,33 @@ function launchElectron() {
   // producing one extra window on every main-process recompilation.
   electronChild = launch("Electron", electronBinary, ["."], { VITE_DEV_SERVER_URL: rendererUrl }, { restartable: true });
   electronChild.on("exit", (code, signal) => {
-    if (!stopping && !restartPending && (code !== 0 || signal)) stop(code ?? 1);
+    // Closing the development window should also release its watchers and
+    // project lock. During an automatic main-process rebuild restartPending
+    // keeps the supervisor alive and launches exactly one replacement window.
+    if (!stopping && !restartPending) stop(code ?? (signal ? 1 : 0));
   });
 }
 
 function restartElectron() {
   if (stopping || restartPending) return;
   restartPending = true;
-  if (!electronChild || electronChild.exitCode !== null) {
+  const previousElectron = electronChild;
+  if (!previousElectron || previousElectron.exitCode !== null) {
     restartPending = false;
     launchElectron();
     return;
   }
-  electronChild.once("exit", () => {
+  previousElectron.once("exit", () => {
+    clearTimeout(restartForceTimer);
     restartPending = false;
     if (!stopping) launchElectron();
   });
-  electronChild.kill("SIGTERM");
+  // New Electron builds explicitly translate SIGTERM to app.quit(). Keep a
+  // bounded fallback for an already-running old build that only hides to tray.
+  restartForceTimer = setTimeout(() => {
+    if (!previousElectron.killed && previousElectron.exitCode === null) previousElectron.kill("SIGKILL");
+  }, 5_000);
+  previousElectron.kill("SIGTERM");
 }
 
 function watchMainProcessOutput() {
@@ -179,6 +189,11 @@ function watchMainProcessOutput() {
 
 try {
   await acquireDevLock();
+  // Acquire the project lock before starting watchers. Otherwise a second
+  // `npm run dev` can leave duplicate Vite/TypeScript children even though it
+  // later refuses to start Electron.
+  launchNode("Vite", bin("vite/bin/vite.js"), ["--host", host, "--port", String(port), "--strictPort"]);
+  launchNode("TypeScript", bin("typescript/bin/tsc"), ["-p", "tsconfig.main.json", "--watch", "--preserveWatchOutput"]);
   await waitUntilReady(port, requiredOutputs);
   console.log(`Reading Hub 开发服务器：${rendererUrl}`);
   launchElectron();

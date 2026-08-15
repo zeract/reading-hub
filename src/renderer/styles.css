@@ -114,6 +114,13 @@ html, body, #root { height: 100%; overflow: hidden; }
 .reader-workspace { position: relative; min-height: 0; overflow: hidden; }
 .reader-workspace > .reader-scroll { height: 100%; }
 .reader-ai-panel { position: absolute; z-index: 4; top: 16px; right: 16px; bottom: 16px; display: flex; width: min(390px, calc(100% - 32px)); min-width: 0; flex-direction: column; border: 1px solid #d6ddd0; border-radius: 14px; background: rgba(255, 255, 251, .98); box-shadow: 0 20px 55px rgba(30, 40, 28, .18); overflow: hidden; }
+/* A docked desktop sidebar keeps the article's scroll area and formulas clear.
+   Narrow windows retain the bounded overlay so the reader never becomes too thin. */
+@media (min-width: 1200px) {
+  .reader-workspace--assistant { display: grid; grid-template-columns: minmax(0, 1fr) minmax(340px, 390px); }
+  .reader-workspace--assistant > .reader-scroll { grid-column: 1; }
+  .reader-workspace--assistant > .reader-ai-panel { position: static; grid-column: 2; width: 100%; min-width: 0; border-width: 0 0 0 1px; border-radius: 0; box-shadow: -10px 0 28px rgba(30, 40, 28, .06); }
+}
 .reader-ai-panel > header { display: flex; justify-content: space-between; gap: 12px; padding: 16px 16px 12px; border-bottom: 1px solid #e3e7df; }.reader-ai-panel > header strong { color: #273126; font-size: 15px; }.reader-ai-panel > header p { margin: 4px 0 0; color: #6c7569; font-size: 11px; line-height: 1.45; }.reader-ai-panel > header button { align-self: start; border: 0; background: transparent; color: #5d695d; font-size: 21px; line-height: 1; }
 .ai-provider-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 11px 16px; border-bottom: 1px solid #edf0ea; }.ai-provider-row label, .ai-settings label, .ai-question label { color: #5f6b5d; font-size: 11px; font-weight: 750; }.ai-provider-row select, .ai-settings input, .ai-question textarea { min-width: 0; border: 1px solid #d4dbcf; border-radius: 7px; background: #fff; color: #283027; }.ai-provider-row select { width: 100%; padding: 6px 8px; font-size: 12px; }.ai-provider-row button { border: 0; background: transparent; color: #496043; font-size: 11px; font-weight: 700; }
 .ai-provider-note { margin: 0; padding: 9px 16px; border-bottom: 1px solid #e8ece5; background: #f7f9f3; color: #64705f; font-size: 11px; line-height: 1.5; }

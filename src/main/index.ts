@@ -25,6 +25,18 @@ import type { AiProviderConfiguration, AiQuestionRequest, ExtractionRule, Source
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let quitting = false;
+const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
+
+function quitApplication(): void {
+  if (quitting) return;
+  quitting = true;
+  app.quit();
+}
+
+// `scripts/dev.mjs` terminates Electron when the compiled main process changes.
+// On macOS, window close normally hides this menu-bar app, so translate terminal
+// signals into an explicit app quit instead of leaving a hidden lock owner.
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, quitApplication);
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -48,6 +60,11 @@ function createWindow(): BrowserWindow {
   else void window.loadFile(path.join(app.getAppPath(), "dist", "renderer", "index.html"));
   window.on("close", (event) => {
     if (!quitting) {
+      if (isDevelopment) {
+        event.preventDefault();
+        quitApplication();
+        return;
+      }
       event.preventDefault();
       window.hide();
     }
@@ -73,8 +90,7 @@ function createTray(): void {
       {
         label: "退出",
         click: () => {
-          quitting = true;
-          app.quit();
+          quitApplication();
         }
       }
     ])

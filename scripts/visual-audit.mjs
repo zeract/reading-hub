@@ -18,7 +18,7 @@ function page() {
   return `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>
     <section class="reader-view reader--scientific" data-reader-preset="reading" style="--reader-font-scale: 1">
       <header class="reader-toolbar"><button>返回列表</button><div class="reader-toolbar-center"><p>科学空间</p><div class="reader-controls"><button>阅读</button></div></div><div class="reader-toolbar-actions"><button class="ai-toggle">AI 学习</button><button class="external-button">在浏览器打开</button></div></header>
-      <div class="reader-workspace"><div class="reader-scroll"><article class="reader-article"><header><p class="eyebrow">视觉回归夹具</p><h1>中文长标题与数学公式布局</h1></header><div class="article-body">
+      <div class="reader-workspace reader-workspace--assistant"><div class="reader-scroll"><article class="reader-article"><header><p class="eyebrow">视觉回归夹具</p><h1>中文长标题与数学公式布局</h1></header><div class="article-body">
         <p>这段内容用于检查文字、图片、表格和公式编号在不同窗口与字号下不会错误重叠或撑破阅读列。</p>
         <span class="katex-display" id="formula-normal"><span class="katex"><span class="katex-html"><span class="tag">(13)</span><span class="base">∇<sub>z</sub>S(q, i)</span><span class="base"> = q</span><span class="base"> − e<sub>i</sub></span></span></span></span>
         <span class="katex-display" id="formula-wide"><span class="katex"><span class="katex-html"><span class="tag">(14)</span><span class="base">W₃(SiTU(W₁x;β₁) ⊙ softcap(W₂x;β₂))</span><span class="base"> + ∑ᵢ αᵢ·underbrace{xᵢ}_{long scientific expression}</span></span></span></span>
@@ -80,9 +80,11 @@ async function auditViewport(window, viewport) {
       assistant: (() => {
         const panel = document.querySelector('#assistant-panel');
         const workspace = document.querySelector('.reader-workspace');
+        const scroll = document.querySelector('.reader-scroll');
         const panelRect = panel?.getBoundingClientRect();
         const workspaceRect = workspace?.getBoundingClientRect();
-        return panelRect && workspaceRect ? { panel: { left: panelRect.left, right: panelRect.right, top: panelRect.top, bottom: panelRect.bottom }, workspace: { left: workspaceRect.left, right: workspaceRect.right, top: workspaceRect.top, bottom: workspaceRect.bottom } } : undefined;
+        const scrollRect = scroll?.getBoundingClientRect();
+        return panelRect && workspaceRect && scrollRect ? { panel: { left: panelRect.left, right: panelRect.right, top: panelRect.top, bottom: panelRect.bottom }, workspace: { left: workspaceRect.left, right: workspaceRect.right, top: workspaceRect.top, bottom: workspaceRect.bottom }, scroll: { left: scrollRect.left, right: scrollRect.right } } : undefined;
       })()
     };
   }})()`);
@@ -102,6 +104,9 @@ async function auditViewport(window, viewport) {
   if (!geometry.image || geometry.image.width > geometry.image.articleWidth + 1 || geometry.image.height > Math.min(360, viewport.height * 0.45) + 2) failures.push("图片尺寸没有受正文列约束");
   if (!geometry.assistant || geometry.assistant.panel.left < geometry.assistant.workspace.left - 1 || geometry.assistant.panel.right > geometry.assistant.workspace.right + 1 || geometry.assistant.panel.top < geometry.assistant.workspace.top - 1 || geometry.assistant.panel.bottom > geometry.assistant.workspace.bottom + 1) {
     failures.push("AI 学习面板超出阅读器工作区");
+  }
+  if (viewport.name === "default" && geometry.assistant && geometry.assistant.panel.left < geometry.assistant.scroll.right - 1) {
+    failures.push("宽窗口中的 AI 学习面板覆盖了正文滚动区，而非停靠在右侧");
   }
   if (outputDirectory) {
     await mkdir(outputDirectory, { recursive: true });

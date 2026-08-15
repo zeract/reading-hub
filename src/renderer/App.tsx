@@ -287,7 +287,7 @@ function ReaderView({ entry, source, onClose }: { entry: Entry; source?: Source;
         <button type="button" className="external-button" onClick={() => void window.reader.openExternal(entry.url)}>在浏览器打开 ↗</button>
       </div>
     </header>
-    <div className="reader-workspace">
+    <div className={`reader-workspace ${showAssistant && article ? "reader-workspace--assistant" : ""}`}>
       <div className="reader-scroll">
         {loading && <div className="reader-loading" role="status"><span className="loading-mark" /><p>正在准备适合阅读的正文…</p></div>}
         {!loading && embedded && <div className="reader-embedded"><h1>{entry.title}</h1><p>该站点不允许自动提取正文，原文已在 Reading Hub 的受限窗口中打开。该窗口不使用外部浏览器，也不会复用登录态。</p><button type="button" className="primary-action" onClick={() => void loadArticle()}>重新打开原文</button></div>}
