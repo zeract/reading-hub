@@ -219,11 +219,6 @@ export function extractReaderArticle(html: string, pageUrl: string, entry: Entry
       publishedAt,
       coverImageUrl,
       renderProfile,
-      // KaTeX includes its own CSS in the application bundle. The scientific
-      // fallback is MathJax SVG, whose glyphs and stretchy delimiters are
-      // self-contained. Do not inject a large, source-specific MathJax sheet
-      // into an article that does not use it.
-      mathStyleCss: undefined,
       contentHtml
     },
     textLength

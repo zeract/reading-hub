@@ -99,7 +99,8 @@ export class PublicHttpClient {
           },
           redirect: "manual",
           referrer,
-          referrerPolicy: "strict-origin-when-cross-origin"
+          referrerPolicy: "strict-origin-when-cross-origin",
+          signal: AbortSignal.timeout(20_000)
         });
       } catch (error) {
         throw new NetworkRequestError(error);

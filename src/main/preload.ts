@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { ExtractionRule, SubscriptionDraft } from "../shared/types";
+import type { AiProviderConfiguration, AiProviderId, AiQuestionRequest, ExtractionRule, SubscriptionDraft } from "../shared/types";
 
 contextBridge.exposeInMainWorld("reader", {
   previewSource: (url: string) => ipcRenderer.invoke("source:preview", url),
@@ -17,6 +17,10 @@ contextBridge.exposeInMainWorld("reader", {
   markRead: (id: string, read: boolean) => ipcRenderer.invoke("entry:read", id, read),
   markFavorite: (id: string, favorite: boolean) => ipcRenderer.invoke("entry:favorite", id, favorite),
   dismissEntry: (id: string) => ipcRenderer.invoke("entry:dismiss", id),
+  listAiProviders: () => ipcRenderer.invoke("ai:list-providers"),
+  configureAiProvider: (configuration: AiProviderConfiguration) => ipcRenderer.invoke("ai:configure", configuration),
+  clearAiProvider: (provider: AiProviderId) => ipcRenderer.invoke("ai:clear-provider", provider),
+  askAi: (request: AiQuestionRequest) => ipcRenderer.invoke("ai:ask", request),
   openExternal: (url: string) => ipcRenderer.invoke("app:open-external", url),
   connectZhihu: (accessSecret: string) => ipcRenderer.invoke("zhihu:connect", accessSecret),
   connectZhihuFollow: () => ipcRenderer.invoke("zhihu:follow-login"),

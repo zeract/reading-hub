@@ -116,6 +116,18 @@ async function sleep(milliseconds: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function withAuditTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    operation,
+    new Promise<T>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label}超时，已跳过。`)), timeoutMs);
+    })
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 /**
  * Opens the newest and one deterministic historical entry for every saved
  * source through the normal reader pipeline. It is intentionally read-only
@@ -130,7 +142,14 @@ export async function auditLocalReader(databasePath: string): Promise<ReaderAudi
   const reader = new ArticleReader(http, renderer, (url) => zhihuFollow.renderArticle(url));
   const results: ReaderAuditResult[] = [];
   try {
-    for (const source of database.listSources()) {
+    const sourceFilter = process.env.READING_HUB_AUDIT_SOURCE?.trim().toLocaleLowerCase();
+    const sources = database.listSources().filter((source) => !sourceFilter
+      || source.id.toLocaleLowerCase() === sourceFilter
+      || source.title.toLocaleLowerCase() === sourceFilter);
+    if (sourceFilter && !sources.length) {
+      return [{ source: process.env.READING_HUB_AUDIT_SOURCE || "未知来源", kind: "generic", issues: ["未找到指定来源"] }];
+    }
+    for (const source of sources) {
       const available = database.listEntries(source.id, 200);
       if (!available.length) {
         results.push({ source: source.title, kind: source.kind, issues: ["没有可审计的文章"] });
@@ -143,10 +162,10 @@ export async function auditLocalReader(databasePath: string): Promise<ReaderAudi
       }
       for (const { entry, sample } of samples) {
         try {
-          const article = await reader.read(entry, source);
+          const article = await withAuditTimeout(reader.read(entry, source), 45_000, "正文读取");
           const result = inspectArticle(source, entry, article);
           result.sample = sample;
-          await inspectFirstImage(http, entry, article, result);
+          await withAuditTimeout(inspectFirstImage(http, entry, article, result), 25_000, "首图检查");
           results.push(result);
         } catch (error) {
           if (error instanceof RobotsDisallowedError) {

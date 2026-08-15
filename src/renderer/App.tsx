@@ -1,5 +1,5 @@
 import { type CSSProperties, type FormEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useState } from "react";
-import type { CalibrationResult, Entry, Followee, ProbeResult, ReaderArticle, Source, SubscriptionDraft } from "../shared/types";
+import type { AiProviderId, AiProviderSettings, CalibrationResult, Entry, Followee, ProbeResult, ReaderArticle, Source, SubscriptionDraft } from "../shared/types";
 
 type PendingPreview = { token: string; probe: ProbeResult };
 type ReaderPreset = "reading" | "compact";
@@ -210,6 +210,7 @@ function ReaderView({ entry, source, onClose }: { entry: Entry; source?: Source;
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [preferences, setPreferences] = useState<ReaderPreferences>(loadReaderPreferences);
+  const [showAssistant, setShowAssistant] = useState(false);
   useEffect(() => {
     window.localStorage.setItem(READER_PREFERENCES_KEY, JSON.stringify(preferences));
   }, [preferences]);
@@ -281,20 +282,137 @@ function ReaderView({ entry, source, onClose }: { entry: Entry; source?: Source;
           <button type="button" aria-label="放大字号" disabled={preferences.fontScale >= 1.25} onClick={() => adjustFont(0.05)}>A+</button>
         </div>
       </div>
-      <button type="button" className="external-button" onClick={() => void window.reader.openExternal(entry.url)}>在浏览器打开 ↗</button>
+      <div className="reader-toolbar-actions">
+        <button type="button" className="ai-toggle" aria-pressed={showAssistant} disabled={!article} onClick={() => setShowAssistant((open) => !open)}>AI 学习</button>
+        <button type="button" className="external-button" onClick={() => void window.reader.openExternal(entry.url)}>在浏览器打开 ↗</button>
+      </div>
     </header>
-    <div className="reader-scroll">
-      {loading && <div className="reader-loading" role="status"><span className="loading-mark" /><p>正在准备适合阅读的正文…</p></div>}
-      {!loading && embedded && <div className="reader-embedded"><h1>{entry.title}</h1><p>该站点不允许自动提取正文，原文已在 Reading Hub 的受限窗口中打开。该窗口不使用外部浏览器，也不会复用登录态。</p><button type="button" className="primary-action" onClick={() => void loadArticle()}>重新打开原文</button></div>}
-      {!loading && error && <div className="reader-failure"><h1>{entry.title}</h1><p>{error}</p><div><button type="button" className="primary-action" onClick={() => void loadArticle()}>重试</button><button type="button" onClick={openEmbedded}>在应用内打开原文</button></div></div>}
-      {!loading && article && <article className="reader-article">
-        {article.mathStyleCss && <style data-reader-mathjax="true">{article.mathStyleCss}</style>}
-        <header><p className="eyebrow">{source?.title || "已保存内容"}</p><h1>{article.title}</h1>{(article.author || date) && <p className="reader-byline">{article.author}{article.author && date ? " · " : ""}{date}</p>}</header>
-        {article.coverImageUrl && <img className="reader-cover" src={article.coverImageUrl} alt="" onError={handleContentError} />}
-        <div className="article-body" onClick={handleContentClick} onError={handleContentError} dangerouslySetInnerHTML={{ __html: article.contentHtml }} />
-      </article>}
+    <div className="reader-workspace">
+      <div className="reader-scroll">
+        {loading && <div className="reader-loading" role="status"><span className="loading-mark" /><p>正在准备适合阅读的正文…</p></div>}
+        {!loading && embedded && <div className="reader-embedded"><h1>{entry.title}</h1><p>该站点不允许自动提取正文，原文已在 Reading Hub 的受限窗口中打开。该窗口不使用外部浏览器，也不会复用登录态。</p><button type="button" className="primary-action" onClick={() => void loadArticle()}>重新打开原文</button></div>}
+        {!loading && error && <div className="reader-failure"><h1>{entry.title}</h1><p>{error}</p><div><button type="button" className="primary-action" onClick={() => void loadArticle()}>重试</button><button type="button" onClick={openEmbedded}>在应用内打开原文</button></div></div>}
+        {!loading && article && <article className="reader-article">
+          <header><p className="eyebrow">{source?.title || "已保存内容"}</p><h1>{article.title}</h1>{(article.author || date) && <p className="reader-byline">{article.author}{article.author && date ? " · " : ""}{date}</p>}</header>
+          {article.coverImageUrl && <img className="reader-cover" src={article.coverImageUrl} alt="" onError={handleContentError} />}
+          <div className="article-body" onClick={handleContentClick} onError={handleContentError} dangerouslySetInnerHTML={{ __html: article.contentHtml }} />
+        </article>}
+      </div>
+      {showAssistant && article && <ReaderAssistant article={article} sourceTitle={source?.title} onClose={() => setShowAssistant(false)} />}
     </div>
   </section>;
+}
+
+type AiMessage = { role: "user" | "assistant"; text: string; error?: boolean };
+
+function ReaderAssistant({ article, sourceTitle, onClose }: { article: ReaderArticle; sourceTitle?: string; onClose: () => void }) {
+  const [providers, setProviders] = useState<AiProviderSettings[]>([]);
+  const [providerId, setProviderId] = useState<AiProviderId>("openai");
+  const [model, setModel] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [showSettings, setShowSettings] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [messages, setMessages] = useState<AiMessage[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const selected = providers.find((provider) => provider.id === providerId);
+  const reloadProviders = useCallback(async () => {
+    const next = await window.reader.listAiProviders();
+    setProviders(next);
+    const active = next.find((provider) => provider.id === providerId) || next[0];
+    if (active) {
+      setProviderId(active.id);
+      setModel(active.model);
+      setShowSettings(!active.configured);
+    }
+  }, [providerId]);
+  useEffect(() => { void reloadProviders().catch((reason) => setError(errorMessage(reason))); }, [reloadProviders]);
+
+  function switchProvider(nextId: AiProviderId) {
+    setProviderId(nextId);
+    const next = providers.find((provider) => provider.id === nextId);
+    if (next) {
+      setModel(next.model);
+      setShowSettings(!next.configured);
+    }
+    setError(undefined);
+  }
+
+  async function saveSettings(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true); setError(undefined);
+    try {
+      await window.reader.configureAiProvider({ provider: providerId, apiKey, model });
+      setApiKey("");
+      await reloadProviders();
+      setShowSettings(false);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearProvider() {
+    if (!window.confirm(`清除 ${selected?.label || "该服务"} 的 API Key？`)) return;
+    setBusy(true); setError(undefined);
+    try {
+      await window.reader.clearAiProvider(providerId);
+      setMessages([]);
+      await reloadProviders();
+      setShowSettings(true);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function ask(event: FormEvent) {
+    event.preventDefault();
+    const text = question.trim();
+    if (!text || busy) return;
+    if (!selected?.configured) {
+      setShowSettings(true);
+      setError("请先配置 API Key。");
+      return;
+    }
+    const prompt = toArticleText(article.contentHtml);
+    setQuestion(""); setBusy(true); setError(undefined);
+    setMessages((current) => [...current, { role: "user", text }, { role: "assistant", text: "正在思考…" }]);
+    try {
+      const answer = await window.reader.askAi({
+        provider: providerId,
+        question: text,
+        article: { title: article.title, url: article.url, sourceTitle, text: prompt }
+      });
+      setMessages((current) => [...current.slice(0, -1), { role: "assistant", text: answer.text }]);
+    } catch (reason) {
+      const message = errorMessage(reason);
+      setMessages((current) => [...current.slice(0, -1), { role: "assistant", text: message, error: true }]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <aside className="reader-ai-panel" aria-label="AI 学习助手">
+    <header><div><strong>AI 学习助手</strong><p>提问时才会发送当前文章的文本摘录。</p></div><button type="button" onClick={onClose} aria-label="关闭 AI 学习助手">×</button></header>
+    <div className="ai-provider-row"><label htmlFor="ai-provider">服务</label><select id="ai-provider" value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={busy}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select><button type="button" onClick={() => setShowSettings((visible) => !visible)} disabled={busy}>设置</button></div>
+    {showSettings && <form className="ai-settings" onSubmit={(event) => void saveSettings(event)}>
+      <label htmlFor="ai-model">模型</label><input id="ai-model" value={model} onChange={(event) => setModel(event.target.value)} placeholder={selected?.model || "模型名称"} required />
+      <label htmlFor="ai-key">API Key</label><input id="ai-key" value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" autoComplete="off" placeholder={selected?.configured ? "留空则保留现有密钥" : "仅保存到 macOS Keychain"} required={!selected?.configured} />
+      <div><button className="primary" disabled={busy}>{busy ? "正在保存…" : "保存设置"}</button>{selected?.configured && <button type="button" className="danger" onClick={() => void clearProvider()} disabled={busy}>清除密钥</button>}</div>
+    </form>}
+    {error && <p className="error ai-error">{error}</p>}
+    <div className="ai-messages" aria-live="polite">{!messages.length && <p className="ai-empty">可以让 AI 解释概念、公式推导、例子或文章中的论证。回答不会保存到数据库。</p>}{messages.map((message, index) => <div key={`${message.role}-${index}`} className={`ai-message ${message.role}${message.error ? " error" : ""}`}><strong>{message.role === "user" ? "你" : selected?.label || "AI"}</strong><p>{message.text}</p></div>)}</div>
+    <form className="ai-question" onSubmit={(event) => void ask(event)}><label htmlFor="ai-question">向文章提问</label><textarea id="ai-question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="例如：请用直觉解释这个公式的含义" disabled={busy} /><button className="primary" disabled={busy || !question.trim()}>{busy ? "回答中…" : "发送问题"}</button></form>
+  </aside>;
+}
+
+function toArticleText(html: string): string {
+  const document = new DOMParser().parseFromString(html, "text/html");
+  return (document.body.textContent || "").replace(/\s+/g, " ").trim();
 }
 
 function PreviewDialog({ pending, onCancel, onConfirm, busy }: { pending: PendingPreview; onCancel: () => void; onConfirm: () => void; busy: boolean }) {

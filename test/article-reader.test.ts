@@ -253,7 +253,6 @@ describe("article reader extraction", () => {
     const visible = load(`<article>${content}</article>`);
     visible(".katex, mjx-container, .reader-math-source").remove();
     expect(result?.article.renderProfile).toBe("scientific");
-    expect(result?.article.mathStyleCss).toBeUndefined();
     expect(content).toContain('class="katex"');
     expect(content).not.toContain("预览副本");
     expect(content).not.toContain("READING_HUB_MATH");

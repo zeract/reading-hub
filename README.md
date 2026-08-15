@@ -26,6 +26,14 @@ npm run rebuild:electron
 - X 使用官方 API 的 OAuth 2.0 PKCE 授权。请先在 X Developer Console 配置回调地址 `http://127.0.0.1:43119/x/callback`，然后在应用中输入 Client ID；访问与刷新令牌只保存在 macOS Keychain。默认收集所关注账号的原创帖与文章型外链，不读取浏览器 Cookie。
 - “学术作者更新”聚合 OpenAlex、Semantic Scholar 及可公开读取的 ORCID works，并在卡片中保留实际数据来源；它不是 Google Scholar 登录态、页面或邮件的同步。
 
+## 内置阅读器 AI 学习
+
+在任一文章阅读页点击“AI 学习”，选择 OpenAI（Codex / GPT）或 DeepSeek，填写对应的 API Key 后即可针对当前文章提问。Key 与模型设置仅保存到 macOS Keychain；问题、回答和正文不会写入 SQLite。
+
+- OpenAI 使用 Responses API 与可配置模型（默认 `gpt-5.6`），请求设置 `store: false`。Codex 或 ChatGPT 的桌面登录会话不会、也不能被应用复用；请使用自己的 OpenAI API Key。
+- DeepSeek 使用 Chat Completions API，默认模型为 `deepseek-v4-flash`，也可按账户可用模型调整。
+- 为控制发送范围，每次提问只会发送当前文章提取后的前 18,000 个字符、标题、来源和链接；AI 面板关闭后，对话仅留在当前界面内存中。
+
 ## 质量检查
 
 ```bash
@@ -36,6 +44,12 @@ npm run audit:reader # 只读审计已保存来源的最新与一篇历史文章
 ```
 
 `audit:reader` 会访问当前本机数据库中的公开来源，遵守 robots，不保存正文或凭证。`audit:visual` 可设置 `READING_HUB_VISUAL_OUTPUT=/tmp/reading-hub-visual` 输出三个视口的诊断截图。
+
+如需针对单个来源排查，可在本机执行：
+
+```bash
+READING_HUB_AUDIT_SOURCE='科学空间|Scientific Spaces' npm run audit:reader
+```
 
 ## 连接器扩展
 

@@ -188,12 +188,48 @@ export interface ReaderArticle {
   coverImageUrl?: string;
   /** Rendering mode is chosen locally from the URL and document structure. */
   renderProfile: ReaderRenderProfile;
-  /** Trusted local MathJax stylesheet; never sourced from a remote page. */
-  mathStyleCss?: string;
   contentHtml: string;
 }
 
 export type ReaderRenderProfile = "standard" | "scientific";
+
+/** AI providers supported by the local reading assistant. */
+export type AiProviderId = "openai" | "deepseek";
+
+/** Non-secret provider state exposed to the renderer. */
+export interface AiProviderSettings {
+  id: AiProviderId;
+  label: string;
+  model: string;
+  configured: boolean;
+}
+
+/** API key input stays in the renderer only long enough to enter Keychain. */
+export interface AiProviderConfiguration {
+  provider: AiProviderId;
+  apiKey?: string;
+  model?: string;
+}
+
+/** Plain, size-bounded article context sent to an explicitly selected AI provider. */
+export interface AiArticleContext {
+  title: string;
+  url: string;
+  sourceTitle?: string;
+  text: string;
+}
+
+export interface AiQuestionRequest {
+  provider: AiProviderId;
+  question: string;
+  article: AiArticleContext;
+}
+
+export interface AiAnswer {
+  provider: AiProviderId;
+  model: string;
+  text: string;
+}
 
 /** Result of opening an entry in the app. Some sites forbid automated extraction. */
 export type ArticleReadResult =

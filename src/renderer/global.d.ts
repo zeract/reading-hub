@@ -1,4 +1,4 @@
-import type { ArticleReadResult, CalibrationResult, Entry, ExtractionRule, Followee, ProbeResult, Source, SubscriptionDraft } from "../shared/types";
+import type { AiAnswer, AiProviderConfiguration, AiProviderId, AiProviderSettings, AiQuestionRequest, ArticleReadResult, CalibrationResult, Entry, ExtractionRule, Followee, ProbeResult, Source, SubscriptionDraft } from "../shared/types";
 
 declare global {
   interface Window {
@@ -18,6 +18,10 @@ declare global {
       markRead(id: string, read: boolean): Promise<void>;
       markFavorite(id: string, favorite: boolean): Promise<void>;
       dismissEntry(id: string): Promise<void>;
+      listAiProviders(): Promise<AiProviderSettings[]>;
+      configureAiProvider(configuration: AiProviderConfiguration): Promise<AiProviderSettings>;
+      clearAiProvider(provider: AiProviderId): Promise<void>;
+      askAi(request: AiQuestionRequest): Promise<AiAnswer>;
       openExternal(url: string): Promise<void>;
       connectZhihu(accessSecret: string): Promise<unknown>;
       connectZhihuFollow(): Promise<void>;

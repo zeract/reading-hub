@@ -14,12 +14,13 @@ import { ZhihuConnector } from "./zhihu";
 import { ZhihuFollowConnector } from "./zhihu-follow";
 import { XConnector } from "./x";
 import { AcademicAuthorConnector } from "./academic";
+import { AiService } from "./ai-service";
 import { ArticleReader } from "./article-reader";
 import { InAppArticleViewer } from "./in-app-article-viewer";
 import { auditLocalReader } from "./reader-audit";
 import { assertPublicUrl } from "../shared/url";
 import { RobotsDisallowedError } from "./robots";
-import type { ExtractionRule, Source, SyncResult } from "../shared/types";
+import type { AiProviderConfiguration, AiQuestionRequest, ExtractionRule, Source, SyncResult } from "../shared/types";
 
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
@@ -87,6 +88,7 @@ async function bootstrap(): Promise<void> {
   const renderer = new IsolatedPageRenderer();
   const probe = new SourceProbe(http, renderer);
   const secrets = new SecretStore();
+  const learningAssistant = new AiService(secrets);
   const rss = new RssConnector(http, probe);
   const generic = new GenericConnector(http, probe, renderer);
   const manual = new ManualConnector(http, probe, renderer);
@@ -177,6 +179,10 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle("entry:read", (_event, id: string, read: boolean) => database.markRead(id, read));
   ipcMain.handle("entry:favorite", (_event, id: string, favorite: boolean) => database.markFavorite(id, favorite));
   ipcMain.handle("entry:dismiss", (_event, id: string) => database.dismissEntry(id));
+  ipcMain.handle("ai:list-providers", () => learningAssistant.listProviders());
+  ipcMain.handle("ai:configure", (_event, configuration: AiProviderConfiguration) => learningAssistant.configure(configuration));
+  ipcMain.handle("ai:clear-provider", (_event, provider: AiProviderConfiguration["provider"]) => learningAssistant.clear(provider));
+  ipcMain.handle("ai:ask", (_event, request: AiQuestionRequest) => learningAssistant.ask(request));
   ipcMain.handle("app:open-external", (_event, url: string) => shell.openExternal(assertPublicUrl(url).toString()));
   ipcMain.handle("zhihu:connect", async (_event, accessSecret: string) => {
     await secrets.setZhihuAccessSecret(accessSecret);
