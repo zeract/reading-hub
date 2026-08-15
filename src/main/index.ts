@@ -27,11 +27,15 @@ let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let quitting = false;
 const APPLICATION_NAME = "Reading Hub";
+const USER_DATA_DIRECTORY = "reading-hub";
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 
 // productName only applies after packaging. Set the runtime identity as well so
 // macOS never presents the development binary as “Electron” in its menus.
+// Keep the legacy data directory so a branding change never hides the user's
+// existing sources, reading state, local sessions, or Keychain references.
 app.setName(APPLICATION_NAME);
+app.setPath("userData", path.join(app.getPath("appData"), USER_DATA_DIRECTORY));
 process.title = APPLICATION_NAME;
 
 function applicationIcon() {
