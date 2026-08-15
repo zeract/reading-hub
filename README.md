@@ -28,10 +28,11 @@ npm run rebuild:electron
 
 ## 内置阅读器 AI 学习
 
-在任一文章阅读页点击“AI 学习”，选择 OpenAI（Codex / GPT）或 DeepSeek，填写对应的 API Key 后即可针对当前文章提问。Key 与模型设置仅保存到 macOS Keychain；问题、回答和正文不会写入 SQLite。
+在任一文章阅读页点击“AI 学习”，选择 OpenAI API、DeepSeek 或“本机 Codex CLI”，即可针对当前文章提问。OpenAI 与 DeepSeek 的 Key 和模型设置仅保存到 macOS Keychain；问题、回答和正文不会写入 SQLite。
 
-- OpenAI 使用 Responses API 与可配置模型（默认 `gpt-5.6`），请求设置 `store: false`。Codex 或 ChatGPT 的桌面登录会话不会、也不能被应用复用；请使用自己的 OpenAI API Key。
+- OpenAI 使用 Responses API 与可配置模型（默认 `gpt-5.6`），请求设置 `store: false`。
 - DeepSeek 使用 Chat Completions API，默认模型为 `deepseek-v4-flash`，也可按账户可用模型调整。
+- 本机 Codex CLI 不读取、复制或存储 Codex 的登录凭证。它会调用已登录 CLI 的 `codex exec --ephemeral --sandbox read-only`，通过标准输入传入同样受限的文章摘录，并仅读取最终回答。首次使用前请在终端执行 `codex`，用 ChatGPT 账户完成登录；CLI 未安装或未登录时会明确提示。
 - 为控制发送范围，每次提问只会发送当前文章提取后的前 18,000 个字符、标题、来源和链接；AI 面板关闭后，对话仅留在当前界面内存中。
 
 ## 质量检查

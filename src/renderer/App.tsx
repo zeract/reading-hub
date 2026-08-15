@@ -317,6 +317,7 @@ function ReaderAssistant({ article, sourceTitle, onClose }: { article: ReaderArt
   const [error, setError] = useState<string>();
 
   const selected = providers.find((provider) => provider.id === providerId);
+  const canConfigure = selected?.requiresApiKey !== false;
   const reloadProviders = useCallback(async () => {
     const next = await window.reader.listAiProviders();
     setProviders(next);
@@ -324,7 +325,7 @@ function ReaderAssistant({ article, sourceTitle, onClose }: { article: ReaderArt
     if (active) {
       setProviderId(active.id);
       setModel(active.model);
-      setShowSettings(!active.configured);
+      setShowSettings(active.requiresApiKey && !active.configured);
     }
   }, [providerId]);
   useEffect(() => { void reloadProviders().catch((reason) => setError(errorMessage(reason))); }, [reloadProviders]);
@@ -334,7 +335,7 @@ function ReaderAssistant({ article, sourceTitle, onClose }: { article: ReaderArt
     const next = providers.find((provider) => provider.id === nextId);
     if (next) {
       setModel(next.model);
-      setShowSettings(!next.configured);
+      setShowSettings(next.requiresApiKey && !next.configured);
     }
     setError(undefined);
   }
@@ -374,8 +375,8 @@ function ReaderAssistant({ article, sourceTitle, onClose }: { article: ReaderArt
     const text = question.trim();
     if (!text || busy) return;
     if (!selected?.configured) {
-      setShowSettings(true);
-      setError("请先配置 API Key。");
+      setShowSettings(Boolean(selected?.requiresApiKey));
+      setError(selected?.requiresApiKey ? "请先配置 API Key。" : "未检测到本机 Codex CLI。请安装并登录后重试。");
       return;
     }
     const prompt = toArticleText(article.contentHtml);
@@ -398,7 +399,8 @@ function ReaderAssistant({ article, sourceTitle, onClose }: { article: ReaderArt
 
   return <aside className="reader-ai-panel" aria-label="AI 学习助手">
     <header><div><strong>AI 学习助手</strong><p>提问时才会发送当前文章的文本摘录。</p></div><button type="button" onClick={onClose} aria-label="关闭 AI 学习助手">×</button></header>
-    <div className="ai-provider-row"><label htmlFor="ai-provider">服务</label><select id="ai-provider" value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={busy}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select><button type="button" onClick={() => setShowSettings((visible) => !visible)} disabled={busy}>设置</button></div>
+    <div className="ai-provider-row"><label htmlFor="ai-provider">服务</label><select id="ai-provider" value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={busy}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select>{canConfigure && <button type="button" onClick={() => setShowSettings((visible) => !visible)} disabled={busy}>设置</button>}</div>
+    {!canConfigure && selected?.availabilityMessage && <p className="ai-provider-note">{selected.availabilityMessage}</p>}
     {showSettings && <form className="ai-settings" onSubmit={(event) => void saveSettings(event)}>
       <label htmlFor="ai-model">模型</label><input id="ai-model" value={model} onChange={(event) => setModel(event.target.value)} placeholder={selected?.model || "模型名称"} required />
       <label htmlFor="ai-key">API Key</label><input id="ai-key" value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" autoComplete="off" placeholder={selected?.configured ? "留空则保留现有密钥" : "仅保存到 macOS Keychain"} required={!selected?.configured} />

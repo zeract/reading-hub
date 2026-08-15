@@ -194,7 +194,7 @@ export interface ReaderArticle {
 export type ReaderRenderProfile = "standard" | "scientific";
 
 /** AI providers supported by the local reading assistant. */
-export type AiProviderId = "openai" | "deepseek";
+export type AiProviderId = "openai" | "deepseek" | "codex-cli";
 
 /** Non-secret provider state exposed to the renderer. */
 export interface AiProviderSettings {
@@ -202,6 +202,10 @@ export interface AiProviderSettings {
   label: string;
   model: string;
   configured: boolean;
+  /** API providers require a Keychain-backed key; local Codex CLI does not. */
+  requiresApiKey: boolean;
+  /** Safe, non-secret availability guidance for the provider selector. */
+  availabilityMessage?: string;
 }
 
 /** API key input stays in the renderer only long enough to enter Keychain. */

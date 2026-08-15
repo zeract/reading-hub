@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AiService } from "../src/main/ai-service";
+import { CodexCliError, type CodexCliRunner } from "../src/main/codex-cli";
 import type { AiProviderId } from "../src/shared/types";
 
 class MemorySecrets {
@@ -62,6 +63,37 @@ describe("AI learning service", () => {
     expect(fetcher).toHaveBeenCalledWith("https://api.deepseek.com/chat/completions", expect.objectContaining({ method: "POST" }));
     const request = JSON.parse(String(fetcher.mock.calls[0][1].body));
     expect(request).toMatchObject({ model: "deepseek-v4-pro", stream: false, max_tokens: 1_400 });
+  });
+
+  it("delegates to the local Codex CLI without reading or storing an API key", async () => {
+    const codexCli: CodexCliRunner = {
+      status: vi.fn().mockResolvedValue({ available: true, command: "/usr/local/bin/codex" }),
+      ask: vi.fn().mockResolvedValue("可以把这个公式理解为一个归一化步骤。")
+    };
+    const fetcher = vi.fn();
+    const secrets = new MemorySecrets();
+    const service = new AiService(secrets, fetcher, codexCli);
+
+    const providers = await service.listProviders();
+    const codex = providers.find((provider) => provider.id === "codex-cli");
+    expect(codex).toMatchObject({ configured: true, requiresApiKey: false, model: "当前 Codex 会话" });
+
+    const answer = await service.ask({ provider: "codex-cli", question: "请解释公式。", article });
+
+    expect(answer).toEqual({ provider: "codex-cli", model: "当前 Codex 会话", text: "可以把这个公式理解为一个归一化步骤。" });
+    expect(codexCli.ask).toHaveBeenCalledWith(expect.stringContaining("不要运行命令"), expect.stringContaining("<article-excerpt>"));
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(secrets.values).toHaveLength(0);
+  });
+
+  it("reports a local Codex login failure without leaking CLI details", async () => {
+    const codexCli: CodexCliRunner = {
+      status: vi.fn().mockResolvedValue({ available: true, command: "/usr/local/bin/codex" }),
+      ask: vi.fn().mockRejectedValue(new CodexCliError("Codex CLI 尚未完成登录。请在终端运行 codex。"))
+    };
+    const service = new AiService(new MemorySecrets(), vi.fn(), codexCli);
+
+    await expect(service.ask({ provider: "codex-cli", question: "请解释。", article })).rejects.toThrow("Codex CLI 尚未完成登录");
   });
 
   it("does not expose provider credentials in request errors and allows credentials to be cleared", async () => {
