@@ -16,8 +16,9 @@ const viewports = [
 function page() {
   const largeImage = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='900'><rect width='100%' height='100%' fill='#bbc9a4'/><text x='70' y='160' font-size='96'>Reading Hub visual fixture</text></svg>");
   return `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>
+    <main class="shell" id="shell"><aside class="sidebar" id="source-sidebar"><div class="brand"><span class="brand-mark">R</span><span>Reading Hub</span></div><div class="section-title">来源 <span>12</span></div><div class="source-list"><button class="source-filter selected"><span class="source-title">全部内容</span><span class="source-meta">按最新时间</span></button></div></aside>
     <section class="reader-view reader--scientific" data-reader-preset="reading" style="--reader-font-scale: 1">
-      <header class="reader-toolbar"><button>返回列表</button><div class="reader-toolbar-center"><p>科学空间</p><div class="reader-controls"><button>阅读</button></div></div><div class="reader-toolbar-actions"><button class="ai-toggle">AI 学习</button><button class="external-button">在浏览器打开</button></div></header>
+      <header class="reader-toolbar"><div class="reader-toolbar-start"><button class="toolbar-icon-button">☰</button><button class="toolbar-icon-button">←</button></div><div class="reader-toolbar-center"><p>科学空间</p><div class="reader-controls"><button>阅读</button></div></div><div class="reader-toolbar-actions"><button class="toolbar-icon-button ai-toggle">✦</button><button class="toolbar-icon-button external-button">↗</button></div></header>
       <div class="reader-workspace reader-workspace--assistant"><div class="reader-scroll"><article class="reader-article"><header><p class="eyebrow">视觉回归夹具</p><h1>中文长标题与数学公式布局</h1></header><div class="article-body">
         <p>这段内容用于检查文字、图片、表格和公式编号在不同窗口与字号下不会错误重叠或撑破阅读列。</p>
         <span class="katex-display" id="formula-normal"><span class="katex"><span class="katex-html"><span class="tag">(13)</span><span class="base">∇<sub>z</sub>S(q, i)</span><span class="base"> = q</span><span class="base"> − e<sub>i</sub></span></span></span></span>
@@ -25,8 +26,8 @@ function page() {
         <mjx-container id="formula-mathjax" display="true"><mjx-math><svg width="1040" height="48" aria-label="Scientific Spaces fallback formula"><text x="0" y="28">qᵢ = [(α − 1) / α · (zᵢ − λ)]₊¹⁄⁽ᵅ⁻¹⁾</text></svg></mjx-math></mjx-container>
         <img id="fixture-image" src="${largeImage}" alt="large fixture" />
         <table><thead><tr><th>来源</th><th>状态</th></tr></thead><tbody><tr><td>OpenAlex</td><td>正常</td></tr></tbody></table>
-      </div></article></div><aside class="reader-ai-panel" id="assistant-panel"><header><div><strong>AI 学习助手</strong><p>提问时才会发送文章摘录。</p></div><button>×</button></header><div class="ai-messages"><p class="ai-empty">请解释这条公式。</p></div><form class="ai-question"><label>向文章提问</label><textarea>这个公式表达什么？</textarea><button class="primary">发送问题</button></form></aside></div>
-    </section></body></html>`;
+      </div></article></div><aside class="reader-ai-panel" id="assistant-panel"><header><div><strong>AI 学习助手</strong><p>提问时才会发送文章摘录。</p></div><div class="assistant-header-actions"><button class="panel-icon-button">−</button><button class="panel-icon-button">×</button></div></header><div class="ai-messages"><p class="ai-empty">请解释这条公式。</p></div><form class="ai-question"><label>向文章提问</label><textarea>这个公式表达什么？</textarea><button class="primary">发送问题</button></form></aside></div>
+    </section></main></body></html>`;
 }
 
 function overlaps(a, b) {
@@ -85,6 +86,28 @@ async function auditViewport(window, viewport) {
         const workspaceRect = workspace?.getBoundingClientRect();
         const scrollRect = scroll?.getBoundingClientRect();
         return panelRect && workspaceRect && scrollRect ? { panel: { left: panelRect.left, right: panelRect.right, top: panelRect.top, bottom: panelRect.bottom }, workspace: { left: workspaceRect.left, right: workspaceRect.right, top: workspaceRect.top, bottom: workspaceRect.bottom }, scroll: { left: scrollRect.left, right: scrollRect.right } } : undefined;
+      })(),
+      toolbar: (() => {
+        const toolbar = document.querySelector('.reader-toolbar')?.getBoundingClientRect();
+        const controls = [...document.querySelectorAll('.reader-toolbar button')].map((button) => button.getBoundingClientRect());
+        return toolbar ? { left: toolbar.left, right: toolbar.right, controls: controls.map((control) => ({ left: control.left, right: control.right, top: control.top, bottom: control.bottom })) } : undefined;
+      })(),
+      sidebars: (() => {
+        const shell = document.querySelector('#shell');
+        const sidebar = document.querySelector('#source-sidebar');
+        const reader = document.querySelector('.reader-view');
+        const initialSidebar = sidebar?.getBoundingClientRect();
+        const initialReader = reader?.getBoundingClientRect();
+        shell?.classList.add('shell--sidebar-collapsed');
+        const collapsedSidebar = sidebar?.getBoundingClientRect();
+        const collapsedReader = reader?.getBoundingClientRect();
+        shell?.classList.remove('shell--sidebar-collapsed');
+        return initialSidebar && initialReader && collapsedSidebar && collapsedReader ? {
+          initialSidebarWidth: initialSidebar.width,
+          initialReaderWidth: initialReader.width,
+          collapsedSidebarWidth: collapsedSidebar.width,
+          collapsedReaderWidth: collapsedReader.width
+        } : undefined;
       })()
     };
   }})()`);
@@ -104,6 +127,12 @@ async function auditViewport(window, viewport) {
   if (!geometry.image || geometry.image.width > geometry.image.articleWidth + 1 || geometry.image.height > Math.min(360, viewport.height * 0.45) + 2) failures.push("图片尺寸没有受正文列约束");
   if (!geometry.assistant || geometry.assistant.panel.left < geometry.assistant.workspace.left - 1 || geometry.assistant.panel.right > geometry.assistant.workspace.right + 1 || geometry.assistant.panel.top < geometry.assistant.workspace.top - 1 || geometry.assistant.panel.bottom > geometry.assistant.workspace.bottom + 1) {
     failures.push("AI 学习面板超出阅读器工作区");
+  }
+  if (!geometry.toolbar || geometry.toolbar.controls.some((control) => control.left < geometry.toolbar.left - 1 || control.right > geometry.toolbar.right + 1)) {
+    failures.push("阅读器工具栏按钮溢出");
+  }
+  if (!geometry.sidebars || Math.abs(geometry.sidebars.initialSidebarWidth - 310) > 1 || geometry.sidebars.collapsedSidebarWidth > 1 || geometry.sidebars.collapsedReaderWidth < geometry.sidebars.initialReaderWidth + 300) {
+    failures.push("来源侧边栏无法在阅读时正确收起或恢复正文宽度");
   }
   if (viewport.name === "default" && geometry.assistant && geometry.assistant.panel.left < geometry.assistant.scroll.right - 1) {
     failures.push("宽窗口中的 AI 学习面板覆盖了正文滚动区，而非停靠在右侧");

@@ -95,6 +95,13 @@ function parseZhihuTimestamp(value?: string): number | undefined {
   if (!value) return undefined;
   const unix = parseUnixTimestamp(value);
   if (unix) return unix;
+  // A card's `time[datetime]` is an ISO instant and may include an explicit
+  // offset. Preserve the time of day instead of passing it through the
+  // generic day-only parser used for RSS-style date labels.
+  if (/^20\d{2}-\d{1,2}-\d{1,2}T/.test(value.trim())) {
+    const iso = Date.parse(value);
+    if (!Number.isNaN(iso)) return iso;
+  }
   const direct = parsePublishedAt(value);
   if (direct) return direct;
 

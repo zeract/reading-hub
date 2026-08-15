@@ -1,11 +1,13 @@
-import { type CSSProperties, type FormEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type CalibrationResult, type Entry, type Followee, type ProbeResult, type ReaderArticle, type Source, type SubscriptionDraft } from "../shared/types";
 import { renderAiTeX, tokenizeAiMath } from "./ai-math";
+import { shouldSubmitAssistantQuestion } from "./assistant-input";
 
 type PendingPreview = { token: string; probe: ProbeResult };
 type ReaderPreset = "reading" | "compact";
 type ReaderPreferences = { preset: ReaderPreset; fontScale: number };
 type AddSourceMethod = "public" | "zhihu" | "x" | "academic";
+type AssistantPanelState = "closed" | "minimized" | "open";
 
 const READER_PREFERENCES_KEY = "reading-hub.reader-preferences.v1";
 const DEFAULT_READER_PREFERENCES: ReaderPreferences = { preset: "reading", fontScale: 1 };
@@ -34,6 +36,7 @@ export function App() {
   const [activeRuleSource, setActiveRuleSource] = useState<Source>();
   const [activeSourceId, setActiveSourceId] = useState<string>();
   const [readingEntry, setReadingEntry] = useState<Entry>();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const reload = useCallback(async () => {
     const [nextSources, nextEntries, nextFollowees] = await Promise.all([
@@ -103,6 +106,7 @@ export function App() {
   }
 
   function openReader(entry: Entry) {
+    setSidebarCollapsed(false);
     setReadingEntry(entry);
     if (!entry.read) void updateEntry(entry, "read", true);
   }
@@ -141,7 +145,7 @@ export function App() {
   const activeSource = activeSourceId ? sourceById.get(activeSourceId) : undefined;
 
   return (
-    <main className="shell">
+    <main className={`shell${readingEntry && sidebarCollapsed ? " shell--sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">R</span><span>Reading Hub</span></div>
         <button type="button" className="add-source-button" onClick={() => setShowAddSource(true)}>＋ 添加来源<span>网页、平台动态或学术作者</span></button>
@@ -169,7 +173,13 @@ export function App() {
         <p className="privacy-note">公开来源不保存登录态；知乎关注动态仅在本机专属会话中保存登录状态，不读取 Chrome Cookie。</p>
       </aside>
 
-      {readingEntry ? <ReaderView entry={readingEntry} source={sourceById.get(readingEntry.sourceId)} onClose={() => setReadingEntry(undefined)} /> : <section className="timeline">
+      {readingEntry ? <ReaderView
+        entry={readingEntry}
+        source={sourceById.get(readingEntry.sourceId)}
+        leftSidebarCollapsed={sidebarCollapsed}
+        onToggleLeftSidebar={() => setSidebarCollapsed((collapsed) => !collapsed)}
+        onClose={() => { setReadingEntry(undefined); setSidebarCollapsed(false); }}
+      /> : <section className="timeline">
         <header><div><p className="eyebrow">{activeSource ? "来源内容" : "本地优先阅读器"}</p><h1>{activeSource?.title || "最新内容"}</h1></div><span className="count">{entries.filter((entry) => !entry.read).length} 未读</span></header>
         {notice && <div className="notice">{notice}<button onClick={() => setNotice(undefined)}>×</button></div>}
         <div className="entry-list">
@@ -205,14 +215,19 @@ function EntryCard({ entry, source, onRead, onOpen, onDismiss, busy }: { entry: 
   </article>;
 }
 
-function ReaderView({ entry, source, onClose }: { entry: Entry; source?: Source; onClose: () => void }) {
+function ReaderView({ entry, source, onClose, leftSidebarCollapsed, onToggleLeftSidebar }: {
+  entry: Entry;
+  source?: Source;
+  onClose: () => void;
+  leftSidebarCollapsed: boolean;
+  onToggleLeftSidebar: () => void;
+}) {
   const [article, setArticle] = useState<ReaderArticle>();
   const [embedded, setEmbedded] = useState(false);
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [preferences, setPreferences] = useState<ReaderPreferences>(loadReaderPreferences);
-  const [showAssistant, setShowAssistant] = useState(false);
-  const [assistantMinimized, setAssistantMinimized] = useState(false);
+  const [assistantState, setAssistantState] = useState<AssistantPanelState>("closed");
   useEffect(() => {
     window.localStorage.setItem(READER_PREFERENCES_KEY, JSON.stringify(preferences));
   }, [preferences]);
@@ -229,6 +244,7 @@ function ReaderView({ entry, source, onClose }: { entry: Entry; source?: Source;
     }
   }, [entry.id]);
   useEffect(() => { void loadArticle(); }, [loadArticle]);
+  useEffect(() => { setAssistantState("closed"); }, [entry.id]);
 
   const displayed = article || entry;
   const date = displayed.publishedAt ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "long" }).format(displayed.publishedAt) : undefined;
@@ -272,18 +288,17 @@ function ReaderView({ entry, source, onClose }: { entry: Entry; source?: Source;
   }));
   const toggleAssistant = () => {
     if (!article) return;
-    if (!showAssistant) {
-      setShowAssistant(true);
-      setAssistantMinimized(false);
-      return;
-    }
-    setAssistantMinimized((minimized) => !minimized);
+    setAssistantState((state) => state === "open" ? "minimized" : "open");
   };
-  const assistantVisible = showAssistant && !assistantMinimized;
+  const assistantVisible = assistantState === "open";
+  const assistantMounted = assistantState !== "closed";
 
   return <section className={`reader-view reader--${article?.renderProfile || "standard"}`} data-reader-preset={preferences.preset} style={readerStyle} aria-label="应用内阅读器">
     <header className="reader-toolbar">
-      <button type="button" className="back-button" onClick={onClose}>← 返回列表</button>
+      <div className="reader-toolbar-start">
+        <button type="button" className="toolbar-icon-button" onClick={onToggleLeftSidebar} aria-label={leftSidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"} title={leftSidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"}>☰</button>
+        <button type="button" className="toolbar-icon-button" onClick={onClose} aria-label="返回列表" title="返回列表">←</button>
+      </div>
       <div className="reader-toolbar-center">
         <p>{source?.title || "已保存内容"}</p>
         <div className="reader-controls" aria-label="阅读排版设置">
@@ -295,8 +310,8 @@ function ReaderView({ entry, source, onClose }: { entry: Entry; source?: Source;
         </div>
       </div>
       <div className="reader-toolbar-actions">
-        <button type="button" className="ai-toggle" aria-pressed={assistantVisible} disabled={!article} onClick={toggleAssistant}>AI 学习</button>
-        <button type="button" className="external-button" onClick={() => void window.reader.openExternal(entry.url)}>在浏览器打开 ↗</button>
+        <button type="button" className="toolbar-icon-button ai-toggle" aria-pressed={assistantVisible} aria-label={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} title={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} disabled={!article} onClick={toggleAssistant}>✦</button>
+        <button type="button" className="toolbar-icon-button external-button" aria-label="在浏览器中打开原文" title="在浏览器中打开原文" onClick={() => void window.reader.openExternal(entry.url)}>↗</button>
       </div>
     </header>
     <div className={`reader-workspace ${assistantVisible && article ? "reader-workspace--assistant" : ""}`}>
@@ -310,8 +325,14 @@ function ReaderView({ entry, source, onClose }: { entry: Entry; source?: Source;
           <div className="article-body" onClick={handleContentClick} onError={handleContentError} dangerouslySetInnerHTML={{ __html: article.contentHtml }} />
         </article>}
       </div>
-      {showAssistant && article && <ReaderAssistant article={article} sourceTitle={source?.title} minimized={assistantMinimized} onMinimize={() => setAssistantMinimized(true)} />}
-      {showAssistant && assistantMinimized && article && <button type="button" className="assistant-launcher" onClick={() => setAssistantMinimized(false)} aria-label="恢复 AI 学习助手">AI 学习 <span>恢复</span></button>}
+      {assistantMounted && article && <ReaderAssistant
+        article={article}
+        sourceTitle={source?.title}
+        minimized={assistantState === "minimized"}
+        onMinimize={() => setAssistantState("minimized")}
+        onClose={() => setAssistantState("closed")}
+      />}
+      {assistantState === "minimized" && article && <button type="button" className="assistant-launcher" onClick={() => setAssistantState("open")} aria-label="恢复 AI 学习助手" title="恢复 AI 学习助手">✦</button>}
     </div>
   </section>;
 }
@@ -335,9 +356,15 @@ const CODEX_EFFORT_OPTIONS: Array<{ value: AiReasoningEffort; label: string }> =
   { value: "max", label: "最大（最难问题）" }
 ];
 
-function ReaderAssistant({ article, sourceTitle, minimized, onMinimize }: { article: ReaderArticle; sourceTitle?: string; minimized: boolean; onMinimize: () => void }) {
+function ReaderAssistant({ article, sourceTitle, minimized, onMinimize, onClose }: {
+  article: ReaderArticle;
+  sourceTitle?: string;
+  minimized: boolean;
+  onMinimize: () => void;
+  onClose: () => void;
+}) {
   const [providers, setProviders] = useState<AiProviderSettings[]>([]);
-  const [providerId, setProviderId] = useState<AiProviderId>("openai");
+  const [providerId, setProviderId] = useState<AiProviderId>("codex-cli");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState<AiReasoningEffort>("medium");
   const [apiKey, setApiKey] = useState("");
@@ -437,8 +464,14 @@ function ReaderAssistant({ article, sourceTitle, minimized, onMinimize }: { arti
     }
   }
 
+  function submitOnEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (!shouldSubmitAssistantQuestion(event.key, event.shiftKey, event.nativeEvent.isComposing)) return;
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
+  }
+
   return <aside className={`reader-ai-panel${minimized ? " is-minimized" : ""}`} aria-label="AI 学习助手" aria-hidden={minimized}>
-    <header><div><strong>AI 学习助手</strong><p>提问时才会发送当前文章的文本摘录。</p></div><button type="button" onClick={onMinimize} aria-label="最小化 AI 学习助手">最小化</button></header>
+    <header><div><strong>AI 学习助手</strong><p>提问时才会发送当前文章的文本摘录。</p></div><div className="assistant-header-actions"><button type="button" className="panel-icon-button" onClick={onMinimize} aria-label="最小化 AI 学习助手" title="最小化">−</button><button type="button" className="panel-icon-button" onClick={onClose} aria-label="关闭 AI 学习助手" title="关闭">×</button></div></header>
     <div className="ai-provider-row"><label htmlFor="ai-provider">服务</label><select id="ai-provider" value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={busy}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select>{canConfigure && <button type="button" onClick={() => setShowSettings((visible) => !visible)} disabled={busy}>设置</button>}</div>
     {!requiresApiKey && selected?.availabilityMessage && <p className="ai-provider-note">{selected.availabilityMessage}</p>}
     {showSettings && <form className="ai-settings" onSubmit={(event) => void saveSettings(event)}>
@@ -454,7 +487,7 @@ function ReaderAssistant({ article, sourceTitle, minimized, onMinimize }: { arti
     </form>}
     {error && <p className="error ai-error">{error}</p>}
     <div className="ai-messages" aria-live="polite">{!messages.length && <p className="ai-empty">可以让 AI 解释概念、公式推导、例子或文章中的论证。回答不会保存到数据库。</p>}{messages.map((message, index) => <div key={`${message.role}-${index}`} className={`ai-message ${message.role}${message.error ? " error" : ""}`}><strong>{message.role === "user" ? "你" : selected?.label || "AI"}</strong><AiMessageContent text={message.text} /></div>)}</div>
-    <form className="ai-question" onSubmit={(event) => void ask(event)}><label htmlFor="ai-question">向文章提问</label><textarea id="ai-question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="例如：请用直觉解释这个公式的含义" disabled={busy} /><button className="primary" disabled={busy || !question.trim()}>{busy ? "回答中…" : "发送问题"}</button></form>
+    <form className="ai-question" onSubmit={(event) => void ask(event)}><label htmlFor="ai-question">向文章提问（Enter 发送，Shift+Enter 换行）</label><textarea id="ai-question" value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={submitOnEnter} placeholder="例如：请用直觉解释这个公式的含义" disabled={busy} /><button className="primary" disabled={busy || !question.trim()}>{busy ? "回答中…" : "发送问题"}</button></form>
   </aside>;
 }
 
