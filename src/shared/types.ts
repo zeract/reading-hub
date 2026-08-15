@@ -196,6 +196,14 @@ export type ReaderRenderProfile = "standard" | "scientific";
 /** AI providers supported by the local reading assistant. */
 export type AiProviderId = "openai" | "deepseek" | "codex-cli";
 
+/** The built-in selector only presents verified Codex model identifiers. */
+export const CODEX_CLI_MODEL_OPTIONS = [
+  { id: "default", label: "跟随 Codex CLI 默认模型" },
+  { id: "gpt-5.3-codex", label: "GPT-5.3 Codex" }
+] as const;
+
+export type CodexCliModelId = (typeof CODEX_CLI_MODEL_OPTIONS)[number]["id"];
+
 /** Codex CLI exposes these bounded reasoning levels for its supported models. */
 export type AiReasoningEffort = "low" | "medium" | "high" | "xhigh";
 

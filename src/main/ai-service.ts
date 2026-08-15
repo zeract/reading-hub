@@ -1,5 +1,6 @@
 import { assertPublicUrl } from "../shared/url";
 import { CodexCliError, LocalCodexCli, type CodexCliRunner } from "./codex-cli";
+import { CODEX_CLI_MODEL_OPTIONS } from "../shared/types";
 import type {
   AiAnswer,
   AiArticleContext,
@@ -244,10 +245,15 @@ function normaliseModel(value: string): string {
 
 function normaliseCodexConfiguration(value: Pick<AiProviderConfiguration, "model" | "effort">): StoredCodexConfiguration {
   const requestedModel = value.model?.trim();
-  const model = !requestedModel || requestedModel === CODEX_DEFAULT_MODEL ? CODEX_DEFAULT_MODEL : normaliseModel(requestedModel);
+  const model = !requestedModel ? CODEX_DEFAULT_MODEL : normaliseModel(requestedModel);
+  if (!isCodexModel(model)) throw new AiServiceError("请选择 Reading Hub 提供的 Codex CLI 模型。可用模型会随 Codex CLI 版本与账户权限变化。");
   const effort = value.effort || CODEX_DEFAULT_EFFORT;
   if (!isCodexEffort(effort)) throw new AiServiceError("Codex 推理强度必须为 low、medium、high 或 xhigh。");
   return { model, effort };
+}
+
+function isCodexModel(value: string): boolean {
+  return CODEX_CLI_MODEL_OPTIONS.some((option) => option.id === value);
 }
 
 function isCodexEffort(value: string): value is AiReasoningEffort {

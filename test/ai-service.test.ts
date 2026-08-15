@@ -103,6 +103,16 @@ describe("AI learning service", () => {
     expect([...secrets.values.values()][0]).not.toContain("apiKey");
   });
 
+  it("accepts only the models presented by the Codex CLI selector", async () => {
+    const codexCli: CodexCliRunner = {
+      status: vi.fn().mockResolvedValue({ available: true, command: "/usr/local/bin/codex" }),
+      ask: vi.fn()
+    };
+    const service = new AiService(new MemorySecrets(), vi.fn(), codexCli);
+
+    await expect(service.configure({ provider: "codex-cli", model: "arbitrary-model", effort: "medium" })).rejects.toThrow("请选择 Reading Hub 提供的 Codex CLI 模型");
+  });
+
   it("reports a local Codex login failure without leaking CLI details", async () => {
     const codexCli: CodexCliRunner = {
       status: vi.fn().mockResolvedValue({ available: true, command: "/usr/local/bin/codex" }),

@@ -32,7 +32,7 @@ npm run rebuild:electron
 
 - OpenAI 使用 Responses API 与可配置模型（默认 `gpt-5.6`），请求设置 `store: false`。
 - DeepSeek 使用 Chat Completions API，默认模型为 `deepseek-v4-flash`，也可按账户可用模型调整。
-- 本机 Codex CLI 不读取、复制或存储 Codex 的登录凭证。它会调用已登录 CLI 的 `codex exec --ephemeral --sandbox read-only`，通过标准输入传入同样受限的文章摘录，并仅读取最终回答。可在“设置”中选择跟随 CLI 默认模型、`gpt-5.3-codex` 或自定义模型名，并选择 `low`、`medium`、`high`、`xhigh` 推理强度；模型与强度偏好保存在 macOS Keychain，不进入 SQLite。首次使用前请在终端执行 `codex`，用 ChatGPT 账户完成登录；CLI 未安装或未登录时会明确提示。
+- 本机 Codex CLI 不读取、复制或存储 Codex 的登录凭证。它会调用已登录 CLI 的 `codex exec --ephemeral --sandbox read-only`，通过标准输入传入同样受限的文章摘录，并仅读取最终回答。可在“设置”中从下拉菜单选择跟随 CLI 默认模型或 `gpt-5.3-codex`，并选择 `low`、`medium`、`high`、`xhigh` 推理强度；模型与强度偏好保存在 macOS Keychain，不进入 SQLite。首次使用前请在终端执行 `codex`，用 ChatGPT 账户完成登录；CLI 未安装或未登录时会明确提示。
 - 为控制发送范围，每次提问只会发送当前文章提取后的前 18,000 个字符、标题、来源和链接；AI 面板关闭后，对话仅留在当前界面内存中。
 
 ## 质量检查

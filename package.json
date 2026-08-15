@@ -26,6 +26,7 @@
     "files": [
       "dist/**/*",
       "assets/reading-hub-icon.svg",
+      "assets/reading-hub-icon.png",
       "package.json"
     ],
     "asarUnpack": [

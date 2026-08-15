@@ -1,5 +1,5 @@
 import { type CSSProperties, type FormEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useState } from "react";
-import type { AiProviderId, AiProviderSettings, AiReasoningEffort, CalibrationResult, Entry, Followee, ProbeResult, ReaderArticle, Source, SubscriptionDraft } from "../shared/types";
+import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type CalibrationResult, type Entry, type Followee, type ProbeResult, type ReaderArticle, type Source, type SubscriptionDraft } from "../shared/types";
 
 type PendingPreview = { token: string; probe: ProbeResult };
 type ReaderPreset = "reading" | "compact";
@@ -305,11 +305,6 @@ function ReaderView({ entry, source, onClose }: { entry: Entry; source?: Source;
 
 type AiMessage = { role: "user" | "assistant"; text: string; error?: boolean };
 
-const CODEX_MODEL_OPTIONS = [
-  { value: "default", label: "跟随 Codex CLI 默认模型" },
-  { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" }
-];
-
 const CODEX_EFFORT_OPTIONS: Array<{ value: AiReasoningEffort; label: string }> = [
   { value: "low", label: "低（更快）" },
   { value: "medium", label: "中（均衡）" },
@@ -333,7 +328,6 @@ function ReaderAssistant({ article, sourceTitle, onClose }: { article: ReaderArt
   const requiresApiKey = selected?.requiresApiKey === true;
   const usingCodexCli = selected?.id === "codex-cli";
   const canConfigure = Boolean(selected && (requiresApiKey || usingCodexCli));
-  const codexModelChoice = CODEX_MODEL_OPTIONS.some((option) => option.value === model) ? model : "custom";
   const reloadProviders = useCallback(async () => {
     const next = await window.reader.listAiProviders();
     setProviders(next);
@@ -360,10 +354,6 @@ function ReaderAssistant({ article, sourceTitle, onClose }: { article: ReaderArt
 
   async function saveSettings(event: FormEvent) {
     event.preventDefault();
-    if (usingCodexCli && codexModelChoice === "custom" && !model.trim()) {
-      setError("请输入要传给 Codex CLI 的模型名称。");
-      return;
-    }
     setBusy(true); setError(undefined);
     try {
       await window.reader.configureAiProvider({ provider: providerId, apiKey, model, effort: usingCodexCli ? effort : undefined });
@@ -430,11 +420,7 @@ function ReaderAssistant({ article, sourceTitle, onClose }: { article: ReaderArt
     {!requiresApiKey && selected?.availabilityMessage && <p className="ai-provider-note">{selected.availabilityMessage}</p>}
     {showSettings && <form className="ai-settings" onSubmit={(event) => void saveSettings(event)}>
       {usingCodexCli ? <>
-        <label htmlFor="codex-model">模型</label><select id="codex-model" value={codexModelChoice} onChange={(event) => {
-          const next = event.target.value;
-          setModel(next === "custom" ? (CODEX_MODEL_OPTIONS.some((option) => option.value === model) ? "" : model) : next);
-        }} disabled={busy}>{CODEX_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}<option value="custom">自定义模型…</option></select>
-        {codexModelChoice === "custom" && <input id="ai-model" value={model} onChange={(event) => setModel(event.target.value)} placeholder="例如：gpt-5.3-codex" required />}
+        <label htmlFor="codex-model">模型</label><select id="codex-model" value={model} onChange={(event) => setModel(event.target.value)} disabled={busy}>{CODEX_CLI_MODEL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select>
         <label htmlFor="codex-effort">推理强度</label><select id="codex-effort" value={effort} onChange={(event) => setEffort(event.target.value as AiReasoningEffort)} disabled={busy}>{CODEX_EFFORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
         <p className="ai-settings-note">模型可用性取决于你的 Codex/ChatGPT 账户；高和极高强度会延长回答时间。</p>
       </> : <>

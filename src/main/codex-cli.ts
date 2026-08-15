@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { AiReasoningEffort } from "../shared/types";
 
@@ -9,6 +9,7 @@ const CODEX_TIMEOUT_MS = 90_000;
 const CODEX_EXTENDED_TIMEOUT_MS = 180_000;
 const MAX_OUTPUT_LENGTH = 40_000;
 const MAX_STDERR_LENGTH = 4_000;
+const DESKTOP_CODEX_COMMAND = "/Applications/ChatGPT.app/Contents/Resources/codex";
 
 export interface CodexCliStatus {
   available: boolean;
@@ -54,8 +55,16 @@ async function findCodexCommand(): Promise<string | undefined> {
   const namedCandidates = process.platform === "win32"
     ? ["codex.exe", "codex.cmd"]
     : ["codex"];
+  // The desktop app ships a signed Codex executable. Prefer it on macOS so a
+  // user's existing Codex session works without invoking an old npm binary
+  // whose certificate may have been revoked by Gatekeeper.
+  const desktopCandidates = process.platform === "darwin" ? [DESKTOP_CODEX_COMMAND] : [];
+  // A user-installed official CLI is preferred over a stale system-global
+  // copy. This avoids requiring sudo merely to replace a Gatekeeper-revoked
+  // global binary and keeps Reading Hub within the user's own permissions.
+  const userCandidates = process.platform === "darwin" ? [join(homedir(), ".local", "bin", "codex")] : [];
   const fixedCandidates = process.platform === "darwin" ? ["/opt/homebrew/bin/codex", "/usr/local/bin/codex"] : [];
-  for (const candidate of fixedCandidates) {
+  for (const candidate of [...desktopCandidates, ...userCandidates, ...fixedCandidates]) {
     if (await executable(candidate)) return candidate;
   }
   for (const directory of (process.env.PATH || "").split(delimiter)) {
@@ -125,6 +134,7 @@ export function codexExecArguments(instruction: string, options: CodexCliOptions
     "--ephemeral",
     "--sandbox",
     "read-only",
+    "--skip-git-repo-check",
     ...(options.model ? ["--model", options.model] : []),
     "--config",
     `model_reasoning_effort=${options.effort}`,
@@ -136,5 +146,8 @@ function codexFailureMessage(stderr: string): string {
   if (/login|sign in|authentication|auth/i.test(stderr)) {
     return "Codex CLI 尚未完成登录。请在终端运行 codex，并使用你的 ChatGPT 账户登录后重试。";
   }
-  return "本机 Codex CLI 未能完成回答。请确认已登录，并在终端运行 codex exec 以查看详细诊断。";
+  if (/malicious software|contains malware|cannot be opened|can't be opened|Gatekeeper/i.test(stderr)) {
+    return "macOS 已阻止本机 Codex CLI。请从官方来源重新安装 Codex CLI，然后在“系统设置 → 隐私与安全性”中检查并由你本人确认是否允许打开；Reading Hub 不会绕过 Gatekeeper。";
+  }
+  return "本机 Codex CLI 未能完成回答。若 macOS 提示它包含恶意软件，请从官方来源重新安装，并在“系统设置 → 隐私与安全性”中由你本人确认是否允许打开；Reading Hub 不会绕过 Gatekeeper。";
 }
