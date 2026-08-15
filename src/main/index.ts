@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell } from "electron";
 import { ReadingDatabase } from "./database";
@@ -25,7 +26,25 @@ import type { AiProviderConfiguration, AiQuestionRequest, ExtractionRule, Source
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let quitting = false;
+const APPLICATION_NAME = "Reading Hub";
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
+
+// productName only applies after packaging. Set the runtime identity as well so
+// macOS never presents the development binary as “Electron” in its menus.
+app.setName(APPLICATION_NAME);
+process.title = APPLICATION_NAME;
+
+function applicationIcon() {
+  try {
+    const svg = readFileSync(path.join(app.getAppPath(), "assets", "reading-hub-icon.svg"), "utf8");
+    const icon = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
+    if (!icon.isEmpty()) return icon;
+  } catch {
+    // Packaged macOS builds use the .icns configured in package.json. The
+    // empty fallback only applies if a developer checks out an incomplete tree.
+  }
+  return nativeImage.createEmpty();
+}
 
 function quitApplication(): void {
   if (quitting) return;
@@ -44,7 +63,8 @@ function createWindow(): BrowserWindow {
     height: 800,
     minWidth: 860,
     minHeight: 600,
-    title: "Reading Hub",
+    title: APPLICATION_NAME,
+    icon: applicationIcon(),
     backgroundColor: "#f6f6f2",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -79,14 +99,12 @@ function showWindow(): void {
 }
 
 function createTray(): void {
-  const icon = nativeImage.createFromDataURL(
-    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOCIgaGVpZ2h0PSIxOCIgdmlld0JveD0iMCAwIDE4IDE4Ij48Y2lyY2xlIGN4PSI5IiBjeT0iOSIgcj0iOCIgZmlsbD0iI2Q0ZWM2OCIvPjxwYXRoIGQ9Ik02IDQuNWg0LjFjMi4yIDAgMy42IDEuMSAzLjYgMy4xIDAgMS4zLS41IDIuMi0xLjUgMi43bDIuMSAzLjJIODEuOUw2IDQuNXptMi4zIDIuMnYzLjdIOC45YzEuMyAwIDIuMS0uNyAyLjEtMS45IDAtMS4yLS44LTEuOC0yLjEtMS44WiIgZmlsbD0iIzIyMjcyMCIvPjwvc3ZnPg=="
-  );
+  const icon = applicationIcon().resize({ width: 18, height: 18 });
   tray = new Tray(icon);
-  tray.setToolTip("Reading Hub");
+  tray.setToolTip(APPLICATION_NAME);
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: "打开 Reading Hub", click: showWindow },
+      { label: `打开 ${APPLICATION_NAME}`, click: showWindow },
       {
         label: "退出",
         click: () => {
@@ -99,6 +117,8 @@ function createTray(): void {
 }
 
 async function bootstrap(): Promise<void> {
+  const icon = applicationIcon();
+  if (process.platform === "darwin" && !icon.isEmpty()) app.dock?.setIcon(icon);
   const database = new ReadingDatabase(path.join(app.getPath("userData"), "reading-hub.sqlite"));
   const http = new PublicHttpClient();
   const renderer = new IsolatedPageRenderer();

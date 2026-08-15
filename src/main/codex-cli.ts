@@ -3,8 +3,10 @@ import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import type { AiReasoningEffort } from "../shared/types";
 
 const CODEX_TIMEOUT_MS = 90_000;
+const CODEX_EXTENDED_TIMEOUT_MS = 180_000;
 const MAX_OUTPUT_LENGTH = 40_000;
 const MAX_STDERR_LENGTH = 4_000;
 
@@ -13,13 +15,19 @@ export interface CodexCliStatus {
   command?: string;
 }
 
+export interface CodexCliOptions {
+  /** Omit the model to let the user's Codex CLI keep its current default. */
+  model?: string;
+  effort: AiReasoningEffort;
+}
+
 /**
  * Boundary used by the reading assistant. The CLI retains responsibility for
  * its own ChatGPT authentication; Reading Hub never reads its config or token.
  */
 export interface CodexCliRunner {
   status(): Promise<CodexCliStatus>;
-  ask(instruction: string, articleContext: string): Promise<string>;
+  ask(instruction: string, articleContext: string, options: CodexCliOptions): Promise<string>;
 }
 
 export class LocalCodexCli implements CodexCliRunner {
@@ -28,10 +36,10 @@ export class LocalCodexCli implements CodexCliRunner {
     return command ? { available: true, command } : { available: false };
   }
 
-  async ask(instruction: string, articleContext: string): Promise<string> {
+  async ask(instruction: string, articleContext: string, options: CodexCliOptions): Promise<string> {
     const { command } = await this.status();
     if (!command) throw new CodexCliError("未检测到本机 Codex CLI。请安装 Codex CLI 并在终端运行 codex 完成登录后重试。");
-    return runCodex(command, instruction, articleContext);
+    return runCodex(command, instruction, articleContext, options);
   }
 }
 
@@ -69,9 +77,9 @@ async function executable(command: string): Promise<boolean> {
   }
 }
 
-function runCodex(command: string, instruction: string, articleContext: string): Promise<string> {
+function runCodex(command: string, instruction: string, articleContext: string, options: CodexCliOptions): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, codexExecArguments(instruction), {
+    const child = spawn(command, codexExecArguments(instruction, options), {
       cwd: tmpdir(),
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
@@ -83,7 +91,7 @@ function runCodex(command: string, instruction: string, articleContext: string):
     const timeout = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
-    }, CODEX_TIMEOUT_MS);
+    }, options.effort === "high" || options.effort === "xhigh" ? CODEX_EXTENDED_TIMEOUT_MS : CODEX_TIMEOUT_MS);
     const append = (current: string, chunk: Buffer, limit: number) => current.length >= limit
       ? current
       : `${current}${chunk.toString("utf8")}`.slice(0, limit);
@@ -111,8 +119,17 @@ function runCodex(command: string, instruction: string, articleContext: string):
 }
 
 /** Keep the invocation auditable and free of broad-write or full-auto flags. */
-export function codexExecArguments(instruction: string): string[] {
-  return ["exec", "--ephemeral", "--sandbox", "read-only", instruction];
+export function codexExecArguments(instruction: string, options: CodexCliOptions = { effort: "medium" }): string[] {
+  return [
+    "exec",
+    "--ephemeral",
+    "--sandbox",
+    "read-only",
+    ...(options.model ? ["--model", options.model] : []),
+    "--config",
+    `model_reasoning_effort=${options.effort}`,
+    instruction
+  ];
 }
 
 function codexFailureMessage(stderr: string): string {

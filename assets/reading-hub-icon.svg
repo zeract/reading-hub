@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Reading Hub">
+  <defs>
+    <linearGradient id="surface" x1="116" y1="92" x2="900" y2="940" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#263329"/>
+      <stop offset="1" stop-color="#121a14"/>
+    </linearGradient>
+    <linearGradient id="lime" x1="280" y1="218" x2="766" y2="742" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e5fb82"/>
+      <stop offset="1" stop-color="#b9df51"/>
+    </linearGradient>
+  </defs>
+  <rect x="56" y="56" width="912" height="912" rx="224" fill="url(#surface)"/>
+  <path d="M220 290c0-45 37-82 82-82h159c47 0 90 22 117 58 27-36 70-58 117-58h27c45 0 82 37 82 82v421c0 44-36 80-80 80H573c-23 0-45 8-63 23l-24 20c-14 12-36 2-36-17V593c0-13-11-24-24-24H302c-45 0-82-37-82-82V290Z" fill="url(#lime)"/>
+  <path d="M298 324h131c39 0 71 32 71 71v301c-23-17-51-26-80-26H298V324Zm428 0h-31c-39 0-71 32-71 71v301c23-17 51-26 80-26h102V324h-80Z" fill="#1b271d"/>
+  <path d="M342 396h106M342 462h106M676 396h86M676 462h86" stroke="#dff879" stroke-width="28" stroke-linecap="round"/>
+  <circle cx="784" cy="242" r="60" fill="#ffcc4d"/>
+</svg>

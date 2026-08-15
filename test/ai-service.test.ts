@@ -76,14 +76,31 @@ describe("AI learning service", () => {
 
     const providers = await service.listProviders();
     const codex = providers.find((provider) => provider.id === "codex-cli");
-    expect(codex).toMatchObject({ configured: true, requiresApiKey: false, model: "当前 Codex 会话" });
+    expect(codex).toMatchObject({ configured: true, requiresApiKey: false, model: "default", effort: "medium" });
 
     const answer = await service.ask({ provider: "codex-cli", question: "请解释公式。", article });
 
-    expect(answer).toEqual({ provider: "codex-cli", model: "当前 Codex 会话", text: "可以把这个公式理解为一个归一化步骤。" });
-    expect(codexCli.ask).toHaveBeenCalledWith(expect.stringContaining("不要运行命令"), expect.stringContaining("<article-excerpt>"));
+    expect(answer).toEqual({ provider: "codex-cli", model: "Codex 默认模型 · medium", text: "可以把这个公式理解为一个归一化步骤。" });
+    expect(codexCli.ask).toHaveBeenCalledWith(expect.stringContaining("不要运行命令"), expect.stringContaining("<article-excerpt>"), { model: undefined, effort: "medium" });
     expect(fetcher).not.toHaveBeenCalled();
     expect(secrets.values).toHaveLength(0);
+  });
+
+  it("stores only Codex model preferences and passes them to the local CLI", async () => {
+    const codexCli: CodexCliRunner = {
+      status: vi.fn().mockResolvedValue({ available: true, command: "/usr/local/bin/codex" }),
+      ask: vi.fn().mockResolvedValue("已按选择的模型回答。")
+    };
+    const secrets = new MemorySecrets();
+    const service = new AiService(secrets, vi.fn(), codexCli);
+
+    await service.configure({ provider: "codex-cli", model: "gpt-5.3-codex", effort: "xhigh" });
+    const answer = await service.ask({ provider: "codex-cli", question: "请解释公式。", article });
+
+    expect(answer.model).toBe("gpt-5.3-codex · xhigh");
+    expect(codexCli.ask).toHaveBeenCalledWith(expect.any(String), expect.any(String), { model: "gpt-5.3-codex", effort: "xhigh" });
+    expect([...secrets.values.values()][0]).toContain("gpt-5.3-codex");
+    expect([...secrets.values.values()][0]).not.toContain("apiKey");
   });
 
   it("reports a local Codex login failure without leaking CLI details", async () => {

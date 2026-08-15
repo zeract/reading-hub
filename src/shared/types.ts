@@ -196,11 +196,16 @@ export type ReaderRenderProfile = "standard" | "scientific";
 /** AI providers supported by the local reading assistant. */
 export type AiProviderId = "openai" | "deepseek" | "codex-cli";
 
+/** Codex CLI exposes these bounded reasoning levels for its supported models. */
+export type AiReasoningEffort = "low" | "medium" | "high" | "xhigh";
+
 /** Non-secret provider state exposed to the renderer. */
 export interface AiProviderSettings {
   id: AiProviderId;
   label: string;
   model: string;
+  /** Present for providers whose local execution supports a reasoning dial. */
+  effort?: AiReasoningEffort;
   configured: boolean;
   /** API providers require a Keychain-backed key; local Codex CLI does not. */
   requiresApiKey: boolean;
@@ -213,6 +218,7 @@ export interface AiProviderConfiguration {
   provider: AiProviderId;
   apiKey?: string;
   model?: string;
+  effort?: AiReasoningEffort;
 }
 
 /** Plain, size-bounded article context sent to an explicitly selected AI provider. */
