@@ -33,6 +33,8 @@ export interface Source {
   status: SourceStatus;
   extractionRule?: ExtractionRule;
   pollingEnabled: boolean;
+  /** Requested cadence in minutes. Undefined retains the conservative 30–60 minute default. */
+  refreshIntervalMinutes?: number;
   etag?: string;
   lastModified?: string;
   lastCheckedAt?: number;
@@ -297,7 +299,16 @@ export interface SourceInput {
   config?: Record<string, unknown>;
   extractionRule?: ExtractionRule;
   pollingEnabled: boolean;
+  refreshIntervalMinutes?: number;
   status?: SourceStatus;
+}
+
+/** User-editable metadata for an existing source. Secrets and connector accounts stay out of this surface. */
+export interface SourceSettings {
+  title: string;
+  kind: SourceKind;
+  pollingEnabled: boolean;
+  refreshIntervalMinutes?: number;
 }
 
 export interface Followee {

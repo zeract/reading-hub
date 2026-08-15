@@ -90,6 +90,24 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("persists editable source metadata and schedules the selected refresh cadence", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Old title", kind: "rss", pollingEnabled: true });
+
+    const updated = db.updateSourceSettings(source.id, {
+      title: "Renamed source",
+      kind: "generic",
+      pollingEnabled: true,
+      refreshIntervalMinutes: 120
+    });
+
+    expect(updated).toMatchObject({ title: "Renamed source", kind: "generic", connectorId: "generic", pollingEnabled: true, refreshIntervalMinutes: 120 });
+    expect(updated.nextCheckAt).toBeGreaterThan(Date.now() + 100 * 60_000);
+    expect(updated.nextCheckAt).toBeLessThan(Date.now() + 135 * 60_000);
+    expect(db.getSubscriptionForSource(source.id)).toMatchObject({ connectorId: "generic", accountId: undefined });
+    db.close();
+  });
+
   it("removes a dismissed card and keeps it hidden when its feed returns it again", () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/dismissed", title: "Example", kind: "rss", pollingEnabled: true });

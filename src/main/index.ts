@@ -21,7 +21,7 @@ import { InAppArticleViewer } from "./in-app-article-viewer";
 import { auditLocalReader } from "./reader-audit";
 import { assertPublicUrl } from "../shared/url";
 import { RobotsDisallowedError } from "./robots";
-import type { AiProviderConfiguration, AiQuestionRequest, ExtractionRule, Source, SyncResult } from "../shared/types";
+import type { AiProviderConfiguration, AiQuestionRequest, ExtractionRule, Source, SourceSettings, SyncResult } from "../shared/types";
 
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
@@ -68,6 +68,7 @@ function createWindow(): BrowserWindow {
     minWidth: 860,
     minHeight: 600,
     title: APPLICATION_NAME,
+    ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" as const } : {}),
     icon: applicationIcon(),
     backgroundColor: "#f6f6f2",
     webPreferences: {
@@ -191,6 +192,7 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle("source:list", () => database.listSources());
   ipcMain.handle("source:delete", (_event, id: string) => sources.delete(id));
   ipcMain.handle("source:refresh", async (_event, id: string) => sync.syncSource(id));
+  ipcMain.handle("source:update-settings", (_event, id: string, settings: SourceSettings) => sources.updateSettings(id, settings));
   ipcMain.handle("source:update-rule", (_event, id: string, rule: ExtractionRule) => database.updateRule(id, rule));
   ipcMain.handle("source:calibration", (_event, id: string) => sources.calibrate(id));
   ipcMain.handle("entry:list", (_event, sourceId?: string) => database.listEntries(sourceId));

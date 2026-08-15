@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Account, CalibrationResult, ProbeResult, Source, SourceInput, SubscriptionDraft } from "../shared/types";
+import type { Account, CalibrationResult, ProbeResult, Source, SourceInput, SourceSettings, SubscriptionDraft } from "../shared/types";
 import { ReadingDatabase } from "./database";
 import { isXiaohongshuUrl, manualProbe, SourceProbe } from "./source-probe";
 import { SyncManager } from "./sync-manager";
@@ -107,6 +107,23 @@ export class SourceService {
     if (!source) throw new Error("来源不存在。");
     if (source.kind !== "generic") throw new Error("只有普通网页来源需要校准。");
     return this.probeService.calibrate(source.url);
+  }
+
+  updateSettings(sourceId: string, settings: SourceSettings): Source {
+    const source = this.db.getSource(sourceId);
+    if (!source) throw new Error("来源不存在。");
+    const title = settings.title.trim();
+    if (!title) throw new Error("请填写来源名称。");
+    const publicKinds = new Set<Source["kind"]>(["rss", "generic", "manual"]);
+    const sourceIsPublic = publicKinds.has(source.kind);
+    if (!sourceIsPublic && settings.kind !== source.kind) throw new Error("授权平台的信源类型由连接器决定，不能在此更改。");
+    if (sourceIsPublic && !publicKinds.has(settings.kind)) throw new Error("只能将公开来源设置为 RSS、公开网页或分享链接。");
+    const interval = settings.refreshIntervalMinutes;
+    if (settings.pollingEnabled && interval !== undefined && ![30, 60, 120, 240, 720, 1440].includes(interval)) {
+      throw new Error("刷新间隔必须是预设的安全时间。");
+    }
+    const pollingEnabled = settings.kind === "manual" ? false : settings.pollingEnabled;
+    return this.db.updateSourceSettings(sourceId, { ...settings, title, pollingEnabled, refreshIntervalMinutes: pollingEnabled ? interval : undefined });
   }
 
   async delete(sourceId: string): Promise<void> {

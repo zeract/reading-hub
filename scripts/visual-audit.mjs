@@ -16,9 +16,9 @@ const viewports = [
 function page() {
   const largeImage = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='900'><rect width='100%' height='100%' fill='#bbc9a4'/><text x='70' y='160' font-size='96'>Reading Hub visual fixture</text></svg>");
   return `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>
-    <main class="shell" id="shell"><aside class="sidebar" id="source-sidebar"><div class="brand"><span class="brand-mark">R</span><span>Reading Hub</span></div><div class="section-title">来源 <span>12</span></div><div class="source-list"><button class="source-filter selected"><span class="source-title">全部内容</span><span class="source-meta">按最新时间</span></button></div></aside>
+    <main class="shell" id="shell"><header class="app-titlebar" id="app-titlebar"><span class="app-titlebar-mark">R</span><div class="app-titlebar-actions"><button class="app-titlebar-button">☰</button><button class="app-titlebar-button">←</button></div></header><aside class="sidebar" id="source-sidebar"><div class="section-title">来源 <span>12</span></div><div class="source-list"><button class="source-filter selected"><span class="source-title">全部内容</span><span class="source-meta">按最新时间</span></button><button class="source-filter"><span class="source-title">测试来源</span><span class="source-meta"><span class="source-meta-line"><span class="status active">正常</span><span>约 1 小时</span></span></span></button></div></aside>
     <section class="reader-view reader--scientific" data-reader-preset="reading" style="--reader-font-scale: 1">
-      <header class="reader-toolbar"><div class="reader-toolbar-start"><button class="toolbar-icon-button">☰</button><button class="toolbar-icon-button">←</button></div><div class="reader-toolbar-center"><p>科学空间</p><div class="reader-controls"><button>阅读</button></div></div><div class="reader-toolbar-actions"><button class="toolbar-icon-button ai-toggle">✦</button><button class="toolbar-icon-button external-button">↗</button></div></header>
+      <header class="reader-toolbar"><div class="reader-toolbar-spacer"></div><div class="reader-toolbar-center"><p>科学空间</p><div class="reader-controls"><button>阅读</button></div></div><div class="reader-toolbar-actions"><button class="toolbar-icon-button ai-toggle">✦</button><button class="toolbar-icon-button external-button">↗</button></div></header>
       <div class="reader-workspace reader-workspace--assistant"><div class="reader-scroll"><article class="reader-article"><header><p class="eyebrow">视觉回归夹具</p><h1>中文长标题与数学公式布局</h1></header><div class="article-body">
         <p>这段内容用于检查文字、图片、表格和公式编号在不同窗口与字号下不会错误重叠或撑破阅读列。</p>
         <span class="katex-display" id="formula-normal"><span class="katex"><span class="katex-html"><span class="tag">(13)</span><span class="base">∇<sub>z</sub>S(q, i)</span><span class="base"> = q</span><span class="base"> − e<sub>i</sub></span></span></span></span>
@@ -108,6 +108,16 @@ async function auditViewport(window, viewport) {
           collapsedSidebarWidth: collapsedSidebar.width,
           collapsedReaderWidth: collapsedReader.width
         } : undefined;
+      })(),
+      titlebar: (() => {
+        const titlebar = document.querySelector('#app-titlebar')?.getBoundingClientRect();
+        const controls = [...document.querySelectorAll('.app-titlebar-button')].map((button) => button.getBoundingClientRect());
+        return titlebar ? { left: titlebar.left, right: titlebar.right, height: titlebar.height, controls: controls.map((control) => ({ left: control.left, right: control.right, top: control.top, bottom: control.bottom })) } : undefined;
+      })(),
+      sourceMeta: (() => {
+        const badge = document.querySelector('.source-meta-line .status')?.getBoundingClientRect();
+        const text = document.querySelector('.source-meta-line span:last-child')?.getBoundingClientRect();
+        return badge && text ? { gap: text.left - badge.right } : undefined;
       })()
     };
   }})()`);
@@ -134,6 +144,10 @@ async function auditViewport(window, viewport) {
   if (!geometry.sidebars || Math.abs(geometry.sidebars.initialSidebarWidth - 310) > 1 || geometry.sidebars.collapsedSidebarWidth > 1 || geometry.sidebars.collapsedReaderWidth < geometry.sidebars.initialReaderWidth + 300) {
     failures.push("来源侧边栏无法在阅读时正确收起或恢复正文宽度");
   }
+  if (!geometry.titlebar || geometry.titlebar.height < 40 || geometry.titlebar.controls.some((control) => control.left < geometry.titlebar.left - 1 || control.right > geometry.titlebar.right + 1 || control.top < 0 || control.bottom > geometry.titlebar.height + 1)) {
+    failures.push("应用顶部导航没有保持在标题栏内");
+  }
+  if (geometry.sourceMeta === undefined || geometry.sourceMeta < 6) failures.push("来源状态和刷新时间之间缺少可读间距");
   if (viewport.name === "default" && geometry.assistant && geometry.assistant.panel.left < geometry.assistant.scroll.right - 1) {
     failures.push("宽窗口中的 AI 学习面板覆盖了正文滚动区，而非停靠在右侧");
   }

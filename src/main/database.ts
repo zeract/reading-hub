@@ -9,6 +9,7 @@ import type {
   Followee,
   Source,
   SourceInput,
+  SourceSettings,
   SourceStatus,
   Subscription,
   SyncCheckpoint
@@ -22,6 +23,7 @@ type SourceRow = {
   status: SourceStatus;
   extraction_rule: string | null;
   polling_enabled: number;
+  refresh_interval_minutes?: number | null;
   etag: string | null;
   last_modified: string | null;
   last_checked_at: number | null;
@@ -95,6 +97,7 @@ function sourceFromRow(row: SourceRow): Source {
     status: row.status,
     extractionRule: row.extraction_rule ? JSON.parse(row.extraction_rule) : undefined,
     pollingEnabled: Boolean(row.polling_enabled),
+    refreshIntervalMinutes: toOptionalNumber(row.refresh_interval_minutes ?? null),
     etag: row.etag ?? undefined,
     lastModified: row.last_modified ?? undefined,
     lastCheckedAt: toOptionalNumber(row.last_checked_at),
@@ -198,6 +201,7 @@ export class ReadingDatabase {
         status TEXT NOT NULL DEFAULT 'active',
         extraction_rule TEXT,
         polling_enabled INTEGER NOT NULL DEFAULT 1,
+        refresh_interval_minutes INTEGER,
         etag TEXT,
         last_modified TEXT,
         last_checked_at INTEGER,
@@ -295,6 +299,7 @@ export class ReadingDatabase {
     this.ensureColumn("sources", "connector_id", "TEXT");
     this.ensureColumn("sources", "account_id", "TEXT");
     this.ensureColumn("sources", "config_json", "TEXT");
+    this.ensureColumn("sources", "refresh_interval_minutes", "INTEGER");
     this.ensureColumn("entries", "observed_at", "INTEGER");
     this.ensureColumn("entries", "provider_id", "TEXT");
     this.ensureColumn("entries", "external_id", "TEXT");
@@ -354,6 +359,7 @@ export class ReadingDatabase {
       status: input.status ?? "active",
       extractionRule: input.extractionRule,
       pollingEnabled: input.pollingEnabled,
+      refreshIntervalMinutes: input.refreshIntervalMinutes,
       nextCheckAt: input.pollingEnabled ? now : undefined,
       consecutiveEmpty: 0,
       failureCount: 0,
@@ -362,9 +368,9 @@ export class ReadingDatabase {
     };
     this.db
       .prepare(`INSERT INTO sources (
-          id, url, title, kind, status, extraction_rule, polling_enabled, next_check_at,
+          id, url, title, kind, status, extraction_rule, polling_enabled, refresh_interval_minutes, next_check_at,
           consecutive_empty, failure_count, connector_id, account_id, config_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)`)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)`)
       .run(
         source.id,
         source.url,
@@ -373,6 +379,7 @@ export class ReadingDatabase {
         source.status,
         source.extractionRule ? JSON.stringify(source.extractionRule) : null,
         Number(source.pollingEnabled),
+        source.refreshIntervalMinutes ?? null,
         source.nextCheckAt ?? null,
         source.connectorId,
         source.accountId ?? null,
@@ -410,6 +417,27 @@ export class ReadingDatabase {
   getSource(id: string): Source | undefined {
     const row = this.db.prepare("SELECT * FROM sources WHERE id = ?").get(id) as SourceRow | undefined;
     return row ? sourceFromRow(row) : undefined;
+  }
+
+  updateSourceSettings(sourceId: string, settings: SourceSettings): Source {
+    const source = this.getSource(sourceId);
+    if (!source) throw new Error("来源不存在。");
+    const now = Date.now();
+    const kindChanged = source.kind !== settings.kind;
+    const nextCheckAt = settings.pollingEnabled ? now + refreshDelay(settings.refreshIntervalMinutes) : null;
+    const extractionRule = kindChanged && settings.kind !== "generic" ? null : source.extractionRule ? JSON.stringify(source.extractionRule) : null;
+    this.db.transaction(() => {
+      this.db.prepare(`UPDATE sources SET title = ?, kind = ?, connector_id = ?, polling_enabled = ?, refresh_interval_minutes = ?,
+        extraction_rule = ?, etag = CASE WHEN ? THEN NULL ELSE etag END, last_modified = CASE WHEN ? THEN NULL ELSE last_modified END,
+        status = CASE WHEN ? THEN 'active' ELSE status END, next_check_at = ?, updated_at = ? WHERE id = ?`)
+        .run(settings.title, settings.kind, settings.kind, Number(settings.pollingEnabled), settings.refreshIntervalMinutes ?? null,
+          extractionRule, Number(kindChanged), Number(kindChanged), Number(kindChanged), nextCheckAt, now, sourceId);
+      if (kindChanged) {
+        this.db.prepare("UPDATE subscriptions SET connector_id = ?, account_id = NULL, updated_at = ? WHERE source_id = ?")
+          .run(settings.kind, now, sourceId);
+      }
+    })();
+    return this.getSource(sourceId)!;
   }
 
   getSourceByUrl(url: string): Source | undefined {
@@ -694,7 +722,7 @@ export class ReadingDatabase {
     const emptyCount = update.empty ? source.consecutiveEmpty + 1 : 0;
     const requiresReview = update.requiresReview || (source.kind === "generic" && emptyCount >= 3);
     const status: SourceStatus = requiresReview ? "needs_review" : "active";
-    const nextCheckAt = status === "active" && source.pollingEnabled ? now + randomRefreshDelay() : null;
+    const nextCheckAt = status === "active" && source.pollingEnabled ? now + refreshDelay(source.refreshIntervalMinutes) : null;
     this.db
       .prepare(`UPDATE sources SET status = ?, etag = COALESCE(?, etag), last_modified = COALESCE(?, last_modified),
         last_checked_at = ?, next_check_at = ?, consecutive_empty = ?, failure_count = 0, last_error = NULL,
@@ -767,6 +795,13 @@ export class ReadingDatabase {
 
 export function randomRefreshDelay(): number {
   return (30 + Math.floor(Math.random() * 31)) * 60_000;
+}
+
+/** Keep a small jitter around user-selected cadence to avoid predictable bursts per domain. */
+export function refreshDelay(intervalMinutes?: number): number {
+  if (!intervalMinutes) return randomRefreshDelay();
+  const jitter = Math.round(intervalMinutes * 0.1 * (Math.random() * 2 - 1));
+  return Math.max(5, intervalMinutes + jitter) * 60_000;
 }
 
 export function retryDelay(failures: number): number {

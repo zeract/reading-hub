@@ -1,4 +1,4 @@
-import type { AiAnswer, AiProviderConfiguration, AiProviderId, AiProviderSettings, AiQuestionRequest, ArticleReadResult, CalibrationResult, Entry, ExtractionRule, Followee, ProbeResult, Source, SubscriptionDraft } from "../shared/types";
+import type { AiAnswer, AiProviderConfiguration, AiProviderId, AiProviderSettings, AiQuestionRequest, ArticleReadResult, CalibrationResult, Entry, ExtractionRule, Followee, ProbeResult, Source, SourceSettings, SubscriptionDraft } from "../shared/types";
 
 declare global {
   interface Window {
@@ -8,6 +8,7 @@ declare global {
       listSources(): Promise<Source[]>;
       deleteSource(id: string): Promise<void>;
       refreshSource(id: string): Promise<unknown>;
+      updateSourceSettings(id: string, settings: SourceSettings): Promise<Source>;
       updateRule(id: string, rule: ExtractionRule): Promise<void>;
       calibrateSource(id: string): Promise<CalibrationResult>;
       listEntries(sourceId?: string): Promise<Entry[]>;

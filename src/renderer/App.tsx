@@ -1,5 +1,5 @@
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type CalibrationResult, type Entry, type Followee, type ProbeResult, type ReaderArticle, type Source, type SubscriptionDraft } from "../shared/types";
+import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type CalibrationResult, type Entry, type Followee, type ProbeResult, type ReaderArticle, type Source, type SourceKind, type SubscriptionDraft } from "../shared/types";
 import { renderAiTeX, tokenizeAiMath } from "./ai-math";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
 
@@ -34,6 +34,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [showAddSource, setShowAddSource] = useState(false);
   const [activeRuleSource, setActiveRuleSource] = useState<Source>();
+  const [editingSource, setEditingSource] = useState<Source>();
   const [activeSourceId, setActiveSourceId] = useState<string>();
   const [readingEntry, setReadingEntry] = useState<Entry>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -106,9 +107,14 @@ export function App() {
   }
 
   function openReader(entry: Entry) {
-    setSidebarCollapsed(false);
     setReadingEntry(entry);
     if (!entry.read) void updateEntry(entry, "read", true);
+  }
+
+  function selectSource(sourceId?: string) {
+    setReadingEntry(undefined);
+    setEntries([]);
+    setActiveSourceId(sourceId);
   }
 
   async function deleteSource(source: Source) {
@@ -117,6 +123,7 @@ export function App() {
     try {
       await window.reader.deleteSource(source.id);
       if (activeSourceId === source.id) setActiveSourceId(undefined);
+      if (readingEntry?.sourceId === source.id) setReadingEntry(undefined);
       setNotice(`已删除「${source.title}」。`);
       await reload();
     } catch (error) {
@@ -145,25 +152,32 @@ export function App() {
   const activeSource = activeSourceId ? sourceById.get(activeSourceId) : undefined;
 
   return (
-    <main className={`shell${readingEntry && sidebarCollapsed ? " shell--sidebar-collapsed" : ""}`}>
+    <main className={`shell${sidebarCollapsed ? " shell--sidebar-collapsed" : ""}`}>
+      <header className="app-titlebar">
+        <span className="app-titlebar-mark" aria-label="Reading Hub">R</span>
+        <div className="app-titlebar-actions">
+          <button type="button" className="app-titlebar-button" onClick={() => setSidebarCollapsed((collapsed) => !collapsed)} aria-label={sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"} title={sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"}>☰</button>
+          {readingEntry && <button type="button" className="app-titlebar-button" onClick={() => setReadingEntry(undefined)} aria-label="返回列表" title="返回列表">←</button>}
+        </div>
+      </header>
       <aside className="sidebar">
-        <div className="brand"><span className="brand-mark">R</span><span>Reading Hub</span></div>
         <button type="button" className="add-source-button" onClick={() => setShowAddSource(true)}>＋ 添加来源<span>网页、平台动态或学术作者</span></button>
         <div className="section-title">来源 <span>{sources.length}</span></div>
         <div className="source-list">
-          <button className={`source-filter ${!activeSourceId ? "selected" : ""}`} onClick={() => setActiveSourceId(undefined)}>
+          <button className={`source-filter ${!activeSourceId ? "selected" : ""}`} onClick={() => selectSource(undefined)}>
             <span className="source-title">全部内容</span><span className="source-meta">按最新时间</span>
           </button>
           {sources.map((source) => (
-            <div className="source-row" key={source.id}>
-              <button className={`source-filter ${activeSourceId === source.id ? "selected" : ""}`} onClick={() => setActiveSourceId(source.id)}>
+            <div className="source-row" key={source.id} onContextMenu={(event) => { event.preventDefault(); setEditingSource(source); }}>
+              <button className={`source-filter ${activeSourceId === source.id ? "selected" : ""}`} onClick={() => selectSource(source.id)}>
                 <span className="source-title">{source.title}</span>
-                <span className="source-meta"><StatusBadge status={source.status} />{source.kind === "zhihu_follow" ? "授权会话 · 30–60 分钟" : source.kind === "zhihu" ? `官方数据 · ${followees.length} 位关注` : source.kind === "x" ? "官方 API · 原创帖" : source.kind === "academic" ? "公开学术索引 · 30–60 分钟" : source.pollingEnabled ? "30–60 分钟" : "一次性保存"}</span>
+                <span className="source-meta"><span className="source-meta-line"><StatusBadge status={source.status} /><span>{sourceMetaLabel(source, followees.length)}</span></span></span>
               </button>
               <div className="source-actions">
                 <button onClick={() => void refresh(source)} disabled={busy}>刷新</button>
                 {source.kind === "generic" && <button onClick={() => setActiveRuleSource(source)}>自动校准</button>}
                 {source.kind === "zhihu_follow" && <button onClick={() => { void window.reader.connectZhihuFollow(); setNotice("已打开知乎登录窗口；登录完成后会自动同步。"); }}>重新登录知乎</button>}
+                <button type="button" className="source-settings-button" onClick={() => setEditingSource(source)} aria-label={`配置 ${source.title}`} title="配置来源">⚙</button>
                 <button className="delete-source" onClick={() => void deleteSource(source)} disabled={busy}>删除</button>
               </div>
             </div>
@@ -176,9 +190,6 @@ export function App() {
       {readingEntry ? <ReaderView
         entry={readingEntry}
         source={sourceById.get(readingEntry.sourceId)}
-        leftSidebarCollapsed={sidebarCollapsed}
-        onToggleLeftSidebar={() => setSidebarCollapsed((collapsed) => !collapsed)}
-        onClose={() => { setReadingEntry(undefined); setSidebarCollapsed(false); }}
       /> : <section className="timeline">
         <header><div><p className="eyebrow">{activeSource ? "来源内容" : "本地优先阅读器"}</p><h1>{activeSource?.title || "最新内容"}</h1></div><span className="count">{entries.filter((entry) => !entry.read).length} 未读</span></header>
         {notice && <div className="notice">{notice}<button onClick={() => setNotice(undefined)}>×</button></div>}
@@ -197,6 +208,7 @@ export function App() {
         onAcademicSaved={async () => { setShowAddSource(false); setNotice("学术作者来源已添加，正在同步公开论文记录。"); await reload(); }}
       />}
       {activeRuleSource && <CalibrationDialog source={activeRuleSource} onClose={() => setActiveRuleSource(undefined)} onSaved={async () => { setActiveRuleSource(undefined); await reload(); }} />}
+      {editingSource && <SourceSettingsDialog source={editingSource} onClose={() => setEditingSource(undefined)} onSaved={async () => { setEditingSource(undefined); await reload(); }} />}
     </main>
   );
 }
@@ -215,12 +227,9 @@ function EntryCard({ entry, source, onRead, onOpen, onDismiss, busy }: { entry: 
   </article>;
 }
 
-function ReaderView({ entry, source, onClose, leftSidebarCollapsed, onToggleLeftSidebar }: {
+function ReaderView({ entry, source }: {
   entry: Entry;
   source?: Source;
-  onClose: () => void;
-  leftSidebarCollapsed: boolean;
-  onToggleLeftSidebar: () => void;
 }) {
   const [article, setArticle] = useState<ReaderArticle>();
   const [embedded, setEmbedded] = useState(false);
@@ -295,10 +304,7 @@ function ReaderView({ entry, source, onClose, leftSidebarCollapsed, onToggleLeft
 
   return <section className={`reader-view reader--${article?.renderProfile || "standard"}`} data-reader-preset={preferences.preset} style={readerStyle} aria-label="应用内阅读器">
     <header className="reader-toolbar">
-      <div className="reader-toolbar-start">
-        <button type="button" className="toolbar-icon-button" onClick={onToggleLeftSidebar} aria-label={leftSidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"} title={leftSidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"}>☰</button>
-        <button type="button" className="toolbar-icon-button" onClick={onClose} aria-label="返回列表" title="返回列表">←</button>
-      </div>
+      <div className="reader-toolbar-spacer" aria-hidden="true" />
       <div className="reader-toolbar-center">
         <p>{source?.title || "已保存内容"}</p>
         <div className="reader-controls" aria-label="阅读排版设置">
@@ -637,6 +643,63 @@ function CalibrationDialog({ source, onClose, onSaved }: { source: Source; onClo
   </Dialog>;
 }
 
+const PUBLIC_SOURCE_KINDS: SourceKind[] = ["rss", "generic", "manual"];
+const REFRESH_OPTIONS: Array<{ value: "default" | "30" | "60" | "120" | "240" | "720" | "1440"; label: string }> = [
+  { value: "default", label: "自动（30–60 分钟）" },
+  { value: "30", label: "约 30 分钟" },
+  { value: "60", label: "约 1 小时" },
+  { value: "120", label: "约 2 小时" },
+  { value: "240", label: "约 4 小时" },
+  { value: "720", label: "约 12 小时" },
+  { value: "1440", label: "约每天一次" }
+];
+
+function SourceSettingsDialog({ source, onClose, onSaved }: { source: Source; onClose: () => void; onSaved: () => Promise<void> }) {
+  const [title, setTitle] = useState(source.title);
+  const [kind, setKind] = useState<SourceKind>(source.kind);
+  const [pollingEnabled, setPollingEnabled] = useState(source.pollingEnabled);
+  const [refresh, setRefresh] = useState<"default" | "30" | "60" | "120" | "240" | "720" | "1440">(source.refreshIntervalMinutes ? String(source.refreshIntervalMinutes) as "30" | "60" | "120" | "240" | "720" | "1440" : "default");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const typeLocked = !PUBLIC_SOURCE_KINDS.includes(source.kind);
+  const manual = kind === "manual";
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true); setError(undefined);
+    try {
+      await window.reader.updateSourceSettings(source.id, {
+        title,
+        kind,
+        pollingEnabled: manual ? false : pollingEnabled,
+        refreshIntervalMinutes: !manual && pollingEnabled && refresh !== "default" ? Number(refresh) : undefined
+      });
+      await onSaved();
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <Dialog title={`配置「${source.title}」`} onClose={onClose}>
+    <form className="source-settings-form" onSubmit={(event) => void save(event)}>
+      <label>来源名称<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} required autoFocus /></label>
+      <label>信源类型<select value={kind} onChange={(event) => setKind(event.target.value as SourceKind)} disabled={typeLocked || busy}>
+        {typeLocked ? <option value={source.kind}>{sourceKindLabel(source.kind)}</option> : PUBLIC_SOURCE_KINDS.map((item) => <option key={item} value={item}>{sourceKindLabel(item)}</option>)}
+      </select></label>
+      {typeLocked && <p className="source-settings-note">授权平台的类型及账号绑定由内置连接器管理；这里仍可调整名称和刷新频率。</p>}
+      <label className="source-settings-toggle"><input type="checkbox" checked={!manual && pollingEnabled} onChange={(event) => setPollingEnabled(event.target.checked)} disabled={manual || busy} />自动刷新</label>
+      <label>刷新时间<select value={refresh} onChange={(event) => setRefresh(event.target.value as typeof refresh)} disabled={manual || !pollingEnabled || busy}>{REFRESH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+      {manual && <p className="source-settings-note">分享链接是一次性阅读卡片，不会自动轮询。</p>}
+      <label>来源地址<input value={source.url} readOnly aria-readonly="true" /></label>
+      <dl className="source-settings-details"><div><dt>当前状态</dt><dd><StatusBadge status={source.status} /></dd></div><div><dt>实际连接器</dt><dd>{sourceKindLabel(source.connectorId || source.kind)}</dd></div></dl>
+      {error && <p className="error">{error}</p>}
+      <div className="dialog-actions"><button type="button" onClick={onClose} disabled={busy}>取消</button><button className="primary" disabled={busy}>{busy ? "正在保存…" : "保存配置"}</button></div>
+    </form>
+  </Dialog>;
+}
+
 function Dialog({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
   return <div className="modal-backdrop" role="presentation"><section className="dialog" role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button onClick={onClose} aria-label="关闭">×</button></header>{children}</section></div>;
 }
@@ -644,6 +707,21 @@ function Dialog({ title, children, onClose }: { title: string; children: ReactNo
 function StatusBadge({ status }: { status: Source["status"] }) {
   const labels = { active: "正常", needs_review: "需校正", paused: "已暂停", error: "重试中" };
   return <span className={`status ${status}`}>{labels[status]}</span>;
+}
+
+function sourceKindLabel(kind: SourceKind): string {
+  return { rss: "RSS / Atom / JSON Feed", generic: "公开网页", manual: "分享链接", zhihu: "知乎官方数据", zhihu_follow: "知乎关注动态", x: "X 关注动态", academic: "学术作者更新" }[kind];
+}
+
+function sourceScheduleLabel(source: Source): string {
+  if (!source.pollingEnabled) return "一次性保存";
+  if (!source.refreshIntervalMinutes) return "30–60 分钟";
+  return REFRESH_OPTIONS.find((option) => Number(option.value) === source.refreshIntervalMinutes)?.label || `约 ${source.refreshIntervalMinutes} 分钟`;
+}
+
+function sourceMetaLabel(source: Source, followeeCount: number): string {
+  const prefix = source.kind === "zhihu_follow" ? "授权会话" : source.kind === "zhihu" ? `官方数据 · ${followeeCount} 位关注` : source.kind === "x" ? "官方 API · 原创帖" : source.kind === "academic" ? "公开学术索引" : undefined;
+  return prefix ? `${prefix} · ${sourceScheduleLabel(source)}` : sourceScheduleLabel(source);
 }
 
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : "操作失败，请稍后重试。"; }
