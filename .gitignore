@@ -1,0 +1,12 @@
+node_modules/
+dist/
+release/
+*.sqlite
+*.sqlite-*
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.DS_Store
+.reading-hub-dev.lock

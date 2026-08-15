@@ -1,0 +1,258 @@
+import path from "node:path";
+import { writeFile } from "node:fs/promises";
+import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell } from "electron";
+import { ReadingDatabase } from "./database";
+import { GenericConnector, ManualConnector, RssConnector } from "./connectors";
+import { builtInManifest, CallbackConnectorAdapter, ConnectorRegistry, LegacyConnectorAdapter } from "./connector-registry";
+import { PublicHttpClient } from "./http";
+import { IsolatedPageRenderer } from "./page-renderer";
+import { SecretStore } from "./secrets";
+import { SourceProbe } from "./source-probe";
+import { SourceService } from "./source-service";
+import { SyncManager } from "./sync-manager";
+import { ZhihuConnector } from "./zhihu";
+import { ZhihuFollowConnector } from "./zhihu-follow";
+import { XConnector } from "./x";
+import { AcademicAuthorConnector } from "./academic";
+import { ArticleReader } from "./article-reader";
+import { InAppArticleViewer } from "./in-app-article-viewer";
+import { auditLocalReader } from "./reader-audit";
+import { assertPublicUrl } from "../shared/url";
+import { RobotsDisallowedError } from "./robots";
+import type { ExtractionRule, Source, SyncResult } from "../shared/types";
+
+let mainWindow: BrowserWindow | undefined;
+let tray: Tray | undefined;
+let quitting = false;
+
+function createWindow(): BrowserWindow {
+  const window = new BrowserWindow({
+    width: 1180,
+    height: 800,
+    minWidth: 860,
+    minHeight: 600,
+    title: "Reading Hub",
+    backgroundColor: "#f6f6f2",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  });
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-navigate", (event) => event.preventDefault());
+  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  if (devUrl) void window.loadURL(devUrl);
+  else void window.loadFile(path.join(app.getAppPath(), "dist", "renderer", "index.html"));
+  window.on("close", (event) => {
+    if (!quitting) {
+      event.preventDefault();
+      window.hide();
+    }
+  });
+  return window;
+}
+
+function showWindow(): void {
+  if (!mainWindow) mainWindow = createWindow();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function createTray(): void {
+  const icon = nativeImage.createFromDataURL(
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOCIgaGVpZ2h0PSIxOCIgdmlld0JveD0iMCAwIDE4IDE4Ij48Y2lyY2xlIGN4PSI5IiBjeT0iOSIgcj0iOCIgZmlsbD0iI2Q0ZWM2OCIvPjxwYXRoIGQ9Ik02IDQuNWg0LjFjMi4yIDAgMy42IDEuMSAzLjYgMy4xIDAgMS4zLS41IDIuMi0xLjUgMi43bDIuMSAzLjJIODEuOUw2IDQuNXptMi4zIDIuMnYzLjdIOC45YzEuMyAwIDIuMS0uNyAyLjEtMS45IDAtMS4yLS44LTEuOC0yLjEtMS44WiIgZmlsbD0iIzIyMjcyMCIvPjwvc3ZnPg=="
+  );
+  tray = new Tray(icon);
+  tray.setToolTip("Reading Hub");
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "打开 Reading Hub", click: showWindow },
+      {
+        label: "退出",
+        click: () => {
+          quitting = true;
+          app.quit();
+        }
+      }
+    ])
+  );
+  tray.on("click", showWindow);
+}
+
+async function bootstrap(): Promise<void> {
+  const database = new ReadingDatabase(path.join(app.getPath("userData"), "reading-hub.sqlite"));
+  const http = new PublicHttpClient();
+  const renderer = new IsolatedPageRenderer();
+  const probe = new SourceProbe(http, renderer);
+  const secrets = new SecretStore();
+  const rss = new RssConnector(http, probe);
+  const generic = new GenericConnector(http, probe, renderer);
+  const manual = new ManualConnector(http, probe, renderer);
+  const zhihu = new ZhihuConnector(() => secrets.getZhihuAccessSecret());
+  const zhihuFollow = new ZhihuFollowConnector();
+  const registry = new ConnectorRegistry();
+  registry.register(new LegacyConnectorAdapter(
+    builtInManifest("rss", "RSS / Atom / JSON Feed", ["public-http"], []),
+    (source) => rss.fetchWithMetadata(source),
+    (entry, source) => rss.normalize(entry, source)
+  ));
+  registry.register(new LegacyConnectorAdapter(
+    builtInManifest("generic", "公开网页", ["public-http"], []),
+    (source) => generic.fetchWithMetadata(source),
+    (entry, source) => generic.normalize(entry, source)
+  ));
+  registry.register(new LegacyConnectorAdapter(
+    builtInManifest("manual", "分享链接", ["public-http"], []),
+    (source) => manual.fetchWithMetadata(source),
+    (entry, source) => manual.normalize(entry, source)
+  ));
+  registry.register(new CallbackConnectorAdapter(
+    builtInManifest("zhihu", "知乎（官方数据）", ["oauth"], ["developer.zhihu.com"]),
+    async () => ({ entries: await zhihu.fetchEntries(), emptyIsHealthy: true }),
+    (entry, source) => generic.normalize(entry, source)
+  ));
+  registry.register(new CallbackConnectorAdapter(
+    builtInManifest("zhihu_follow", "知乎关注动态", ["oauth"], ["www.zhihu.com"]),
+    async () => ({ entries: await zhihuFollow.fetchEntries(), emptyIsHealthy: true }),
+    (entry, source) => generic.normalize(entry, source)
+  ));
+  const x = new XConnector(database, secrets);
+  const academic = new AcademicAuthorConnector();
+  registry.register(x);
+  registry.register(academic);
+  const articles = new ArticleReader(http, renderer, (url) => zhihuFollow.renderArticle(url));
+  const inAppArticleViewer = new InAppArticleViewer();
+  let zhihuSecondarySync: Promise<void> | undefined;
+  const afterSync = async (source: Source, _result: SyncResult): Promise<void> => {
+    if ((source.connectorId ?? source.kind) !== "zhihu" || zhihuSecondarySync) return;
+    zhihuSecondarySync = (async () => {
+      const [collections, followees] = await Promise.allSettled([zhihu.fetchRecentCollections(), zhihu.fetchFollowees()]);
+      if (collections.status === "fulfilled") {
+        const storedSource = database.getSource(source.id);
+        if (storedSource) database.saveEntries(collections.value.map((entry) => generic.normalize(entry, storedSource)));
+      }
+      if (followees.status === "fulfilled") database.upsertFollowees(followees.value);
+    })().finally(() => { zhihuSecondarySync = undefined; });
+    void zhihuSecondarySync;
+  };
+  const sync = new SyncManager(database, registry, afterSync);
+  const sources = new SourceService(database, probe, sync, zhihuFollow);
+  zhihuFollow.setOnAuthenticated(async () => {
+    const source = sources.ensureZhihuFollowSource();
+    await sync.syncSource(source.id);
+  });
+
+  ipcMain.handle("source:preview", (_event, url: string) => sources.preview(url));
+  ipcMain.handle("source:confirm", (_event, token: string) => sources.confirm(token));
+  ipcMain.handle("source:list", () => database.listSources());
+  ipcMain.handle("source:delete", (_event, id: string) => sources.delete(id));
+  ipcMain.handle("source:refresh", async (_event, id: string) => sync.syncSource(id));
+  ipcMain.handle("source:update-rule", (_event, id: string, rule: ExtractionRule) => database.updateRule(id, rule));
+  ipcMain.handle("source:calibration", (_event, id: string) => sources.calibrate(id));
+  ipcMain.handle("entry:list", (_event, sourceId?: string) => database.listEntries(sourceId));
+  ipcMain.handle("entry:read-content", async (_event, entryId: string) => {
+    const entry = database.getEntry(entryId);
+    if (!entry) throw new Error("这篇内容已不存在。请刷新列表后重试。");
+    try {
+      return { kind: "article", article: await articles.read(entry, database.getSource(entry.sourceId)) };
+    } catch (error) {
+      if (!(error instanceof RobotsDisallowedError)) throw error;
+      inAppArticleViewer.open(entry.url, entry.title);
+      return { kind: "embedded" };
+    }
+  });
+  ipcMain.handle("entry:open-embedded", (_event, entryId: string) => {
+    const entry = database.getEntry(entryId);
+    if (!entry) throw new Error("这篇内容已不存在。请刷新列表后重试。");
+    inAppArticleViewer.open(entry.url, entry.title);
+  });
+  ipcMain.handle("entry:load-image", async (_event, entryId: string, imageUrl: string) => {
+    const entry = database.getEntry(entryId);
+    if (!entry) throw new Error("这篇内容已不存在。请刷新列表后重试。");
+    return http.getImageDataUrl(imageUrl, entry.url);
+  });
+  ipcMain.handle("zhihu:followees", () => database.listFollowees());
+  ipcMain.handle("entry:read", (_event, id: string, read: boolean) => database.markRead(id, read));
+  ipcMain.handle("entry:favorite", (_event, id: string, favorite: boolean) => database.markFavorite(id, favorite));
+  ipcMain.handle("entry:dismiss", (_event, id: string) => database.dismissEntry(id));
+  ipcMain.handle("app:open-external", (_event, url: string) => shell.openExternal(assertPublicUrl(url).toString()));
+  ipcMain.handle("zhihu:connect", async (_event, accessSecret: string) => {
+    await secrets.setZhihuAccessSecret(accessSecret);
+    const source = sources.connectZhihu();
+    return sync.syncSource(source.id);
+  });
+  ipcMain.handle("zhihu:follow-login", () => sources.beginZhihuFollowLogin());
+  ipcMain.handle("x:connect", async (_event, clientId: string) => {
+    const account = await x.authorizeWithClientId(clientId);
+    const source = sources.ensureXSource(account);
+    return sync.syncSource(source.id);
+  });
+  ipcMain.handle("academic:search", (_event, query: string) => academic.discover(query));
+  ipcMain.handle("academic:subscribe", async (_event, draft: { title: string; targetId?: string; config?: Record<string, unknown> }) => {
+    const source = sources.createAcademicSource(draft);
+    return sync.syncSource(source.id);
+  });
+
+  createTray();
+  showWindow();
+  sync.start();
+
+  app.on("activate", showWindow);
+  app.on("before-quit", () => {
+    quitting = true;
+    sync.stop();
+    database.close();
+  });
+}
+
+async function runReaderAudit(): Promise<void> {
+  const databasePath = process.env.READING_HUB_DB_PATH || path.join(app.getPath("userData"), "reading-hub.sqlite");
+  const reportPath = process.env.READING_HUB_AUDIT_REPORT;
+  if (reportPath) await writeFile(`${reportPath}.starting`, `${new Date().toISOString()}\n`, "utf8");
+  // Keep Electron's event loop alive between isolated page windows. Without a
+  // persistent host window macOS may terminate this headless audit after the
+  // first renderer window closes, before the report is flushed.
+  const auditHost = new BrowserWindow({ show: false });
+  try {
+    const report = JSON.stringify(await auditLocalReader(databasePath), null, 2);
+    if (reportPath) await writeFile(reportPath, report, "utf8");
+    console.log(report);
+  } catch (error) {
+    const message = error instanceof Error ? error.stack || error.message : "未知错误";
+    if (reportPath) await writeFile(reportPath, JSON.stringify([{ source: "审计执行", kind: "generic", issues: [message] }], null, 2), "utf8");
+    throw error;
+  } finally {
+    if (!auditHost.isDestroyed()) auditHost.destroy();
+  }
+}
+
+const readerAuditMode = process.env.READING_HUB_READER_AUDIT === "1";
+// Development restarts can overlap briefly on macOS. Only the first app may
+// own the UI; a subsequent invocation focuses it and exits instead of opening
+// another Reading Hub window. Audits deliberately bypass this lock so they can
+// run as isolated, read-only release checks.
+const ownsReaderInstance = readerAuditMode || app.requestSingleInstanceLock();
+
+if (!ownsReaderInstance) {
+  app.quit();
+} else {
+  if (!readerAuditMode) app.on("second-instance", showWindow);
+  const startup = readerAuditMode ? runReaderAudit : bootstrap;
+  app.whenReady().then(startup).catch(async (error: unknown) => {
+    const message = error instanceof Error ? error.message : "未知启动错误";
+    console.error("Reading Hub startup failed:", message);
+    if (readerAuditMode && process.env.READING_HUB_AUDIT_REPORT) {
+      await writeFile(process.env.READING_HUB_AUDIT_REPORT, JSON.stringify([{ source: "审计启动", kind: "generic", issues: [message] }], null, 2), "utf8").catch(() => undefined);
+      // `app.exit()` terminates native I/O immediately on macOS. Let the shared
+      // audit-mode finalizer close the process after the diagnostic has flushed.
+      return;
+    } else {
+      dialog.showErrorBox("Reading Hub 无法启动", `${message}\n\n请运行 npm run rebuild:electron 后重试。`);
+    }
+    app.exit(1);
+  }).finally(() => {
+    if (readerAuditMode) app.quit();
+  });
+}

@@ -1,0 +1,144 @@
+import { load } from "cheerio";
+import { extractGenericPage } from "./extractor";
+import { parseFeed, looksLikeFeed } from "./feed";
+import { NetworkRequestError, PublicHttpClient } from "./http";
+import type { PageRenderer } from "./page-renderer";
+import type { CalibrationResult, ProbeResult, RawEntry } from "../shared/types";
+import { assertPublicUrl, toAbsoluteUrl } from "../shared/url";
+import { extractCalibrationCandidates } from "./extractor";
+
+export class SourceProbe {
+  constructor(private readonly http: PublicHttpClient, private readonly renderer?: PageRenderer) {}
+
+  async probe(rawUrl: string): Promise<ProbeResult> {
+    const input = assertPublicUrl(rawUrl).toString();
+    let response;
+    try {
+      response = await this.http.getText(input);
+    } catch (error) {
+      if (!(error instanceof NetworkRequestError) || !this.renderer) throw error;
+      try {
+        const rendered = await this.renderer.render(input);
+        const extraction = extractGenericPage(rendered, input);
+        return {
+          kind: "generic",
+          title: extraction.title,
+          url: input,
+          confidence: extraction.confidence,
+          extractionRule: extraction.rule ? { ...extraction.rule, rendererRequired: true } : undefined,
+          preview: extraction.entries.slice(0, 10),
+          requiresReview: extraction.fallback || extraction.confidence < 0.75,
+          message: "已使用浏览器渲染模式识别该公开网页。"
+        };
+      } catch {
+        throw error;
+      }
+    }
+    if (looksLikeFeed(response.contentType, response.text)) {
+      const feed = await parseFeed(response.text, response.url);
+      return { kind: "rss", title: feed.title, url: response.url, confidence: 1, preview: feed.entries.slice(0, 10), requiresReview: false };
+    }
+
+    const $ = load(response.text);
+    const discovered = $("link[type*='rss'], link[type*='atom'], link[type*='json'], link[rel='alternate']")
+      .toArray()
+      .map((node) => toAbsoluteUrl($(node).attr("href"), response.url))
+      .filter((value): value is string => Boolean(value))
+      .filter((value) => /feed|rss|atom|\.xml|\.json/i.test(value));
+    for (const feedUrl of [...new Set(discovered)].slice(0, 3)) {
+      try {
+        const feedResponse = await this.http.getText(feedUrl);
+        if (!looksLikeFeed(feedResponse.contentType, feedResponse.text)) continue;
+        const feed = await parseFeed(feedResponse.text, feedResponse.url);
+        return { kind: "rss", title: feed.title, url: feedResponse.url, confidence: 0.98, preview: feed.entries.slice(0, 10), requiresReview: false };
+      } catch {
+        // A broken alternate link should not prevent the generic-page fallback.
+      }
+    }
+
+    let extraction = extractGenericPage(response.text, response.url);
+    if (extraction.entries.length < 2 && this.renderer) {
+      try {
+        const rendered = await this.renderer.render(response.url);
+        const renderedExtraction = extractGenericPage(rendered, response.url);
+        if (renderedExtraction.entries.length > extraction.entries.length) {
+          extraction = {
+            ...renderedExtraction,
+            rule: renderedExtraction.rule ? { ...renderedExtraction.rule, rendererRequired: true } : undefined
+          };
+        }
+      } catch {
+        // Rendering is best-effort and never grants access to an authenticated browser session.
+      }
+    }
+    return {
+      kind: "generic",
+      title: extraction.title,
+      url: response.url,
+      confidence: extraction.confidence,
+      extractionRule: extraction.rule,
+      preview: extraction.entries.slice(0, 10),
+      requiresReview: extraction.fallback || extraction.confidence < 0.75,
+      message: extraction.fallback ? "未找到稳定的列表结构，已降级为页面预览。" : undefined
+    };
+  }
+
+  async calibrate(rawUrl: string): Promise<CalibrationResult> {
+    const input = assertPublicUrl(rawUrl).toString();
+    let html: string;
+    let pageUrl: string;
+    try {
+      const response = await this.http.getText(input);
+      html = response.text;
+      pageUrl = response.url;
+    } catch (error) {
+      if (!(error instanceof NetworkRequestError) || !this.renderer) throw error;
+      try {
+        html = await this.renderer.render(input);
+        pageUrl = input;
+      } catch {
+        throw error;
+      }
+    }
+    let candidates = extractCalibrationCandidates(html, pageUrl);
+    if (candidates.length < 2 && this.renderer) {
+      try {
+        const rendered = await this.renderer.render(pageUrl);
+        const renderedCandidates = extractCalibrationCandidates(rendered, pageUrl).map((candidate) => ({
+          ...candidate,
+          rule: { ...candidate.rule, rendererRequired: true }
+        }));
+        if (renderedCandidates.length > candidates.length) candidates = renderedCandidates;
+      } catch {
+        // Static candidates are still useful if a page blocks the isolated renderer.
+      }
+    }
+    const title = extractGenericPage(html, pageUrl).title;
+    return {
+      title,
+      url: pageUrl,
+      candidates,
+      message: candidates.length ? undefined : "还没有找到可稳定重复的内容卡片；请稍后重试，或等待网站加载后再校准。"
+    };
+  }
+}
+
+export function isXiaohongshuUrl(url: string): boolean {
+  try {
+    return /(^|\.)xiaohongshu\.com$/i.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+export function manualProbe(url: string, preview: RawEntry[], title: string): ProbeResult {
+  return {
+    kind: "manual",
+    title: title || "手动分享",
+    url,
+    confidence: 1,
+    preview,
+    requiresReview: false,
+    message: "该链接会保存为一次性阅读卡片，不会自动轮询。"
+  };
+}

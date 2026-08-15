@@ -1,0 +1,921 @@
+import { Readability } from "@mozilla/readability";
+import { load } from "cheerio";
+import { JSDOM, VirtualConsole } from "jsdom";
+import katex from "katex";
+import { compactText, parsePublishedAt } from "../shared/text";
+import { assertPublicUrl, toAbsoluteUrl } from "../shared/url";
+import type { Entry, ReaderArticle, ReaderRenderProfile, Source } from "../shared/types";
+import { PublicHttpClient } from "./http";
+import { ScientificMathRenderer } from "./mathjax-renderer";
+import type { PageRenderer } from "./page-renderer";
+import { RobotsDisallowedError } from "./robots";
+
+const CONTENT_SELECTORS = [
+  { selector: "article", priority: 7 },
+  { selector: "[itemprop='articleBody']", priority: 6 },
+  { selector: ".article-content, .article-body, .entry-content, .post-content, .post-body", priority: 5 },
+  { selector: ".RichContent-inner, .RichText", priority: 5 },
+  { selector: "#content", priority: 4 },
+  // Framer pages commonly expose their semantic section name in this
+  // attribute, while leaving the article without an `article` element.
+  { selector: "#main [data-framer-name]", priority: 2 },
+  { selector: "#main", priority: 0 },
+  // `main` is a last resort: many sites put navigation, lists and comments
+  // alongside an article inside it.
+  { selector: "main", priority: 0 }
+];
+
+const SCIENTIFIC_CONTENT_SELECTORS = [
+  { selector: "#post-body", priority: 10 },
+  { selector: ".post-body, .post-content", priority: 9 },
+  ...CONTENT_SELECTORS
+];
+
+const NOISE_SELECTOR = [
+  "script",
+  "style",
+  "noscript",
+  "template",
+  "iframe",
+  "object",
+  "embed",
+  "canvas",
+  "svg",
+  "nav",
+  "footer",
+  "aside",
+  "form",
+  "button",
+  "select",
+  "textarea",
+  "[role='navigation']",
+  "[role='banner']",
+  "[class*='comment']",
+  "[class*='related']",
+  "[class*='recommend']",
+  "[class*='share']",
+  "[class*='breadcrumb']",
+  "[class*='post-meta']",
+  "[class*='entry-meta']",
+  "[class*='article-meta']",
+  "[class*='advert']",
+  "[class*='ad-']"
+].join(",");
+
+const ALLOWED_TAGS = new Set([
+  "a", "abbr", "b", "blockquote", "br", "caption", "cite", "code", "dd", "del", "details", "div", "dl", "dt", "em", "figcaption", "figure",
+  "h1", "h2", "h3", "h4", "h5", "h6", "hr", "img", "kbd", "li", "mark", "ol", "p", "picture", "pre", "s", "small", "span",
+  "strong", "sub", "summary", "sup", "table", "tbody", "td", "th", "thead", "tr", "ul"
+]);
+
+const ARTICLE_CHROME_SELECTOR = [
+  ".post-header", ".entry-header", ".article-header", ".post-title", ".entry-title", ".breadcrumb", ".breadcrumbs",
+  "[class*='breadcrumb']", "[class*='post-meta']", "[class*='entry-meta']", "[class*='article-meta']",
+  ".post-footer", ".entry-footer", ".article-footer", "[class*='post-footer']", "[class*='entry-footer']", "[class*='article-footer']"
+].join(",");
+
+type MathSnippet = { token: string; tex: string; displayMode: boolean };
+type ContentCandidate = {
+  html: string;
+  quality: number;
+  priority: number;
+  title?: string;
+  author?: string;
+  publishedAt?: number;
+};
+const MATH_TOKEN_PREFIX = "[[READING_HUB_MATH_";
+const MATH_TOKEN_SUFFIX = "]]";
+
+export class ArticleContentUnavailableError extends Error {
+  constructor() {
+    super("这个网页没有提供可在应用内显示的正文。你仍可使用“在浏览器打开”查看原文。");
+    this.name = "ArticleContentUnavailableError";
+  }
+}
+
+type RenderWithSession = (url: string) => Promise<string>;
+type ExtractedArticle = { article: ReaderArticle; textLength: number };
+
+function resolveReaderProfile(pageUrl: string): ReaderRenderProfile {
+  try {
+    const host = new URL(pageUrl).hostname.toLowerCase();
+    return host === "kexue.fm" || host.endsWith(".kexue.fm") ? "scientific" : "standard";
+  } catch {
+    return "standard";
+  }
+}
+
+/**
+ * MathJax configuration is normally placed in the page head, outside the
+ * article wrapper. Read only its TeX declarations before sanitisation; the
+ * script itself never reaches the renderer and is never executed.
+ */
+function collectGlobalMathDeclarations($: ReturnType<typeof load>): string {
+  const declarations: string[] = [];
+  $("script").each((_index: number, node: any) => {
+    const script = $(node);
+    const type = (script.attr("type") || "").toLowerCase();
+    const text = script.html() || script.text() || "";
+    if (!text.trim()) return;
+    if (type.includes("mathjax") || /\\(?:newcommand|renewcommand|providecommand|DeclareMathOperator|(?:g|e|x)?def)\b|(?:TeX|tex)\s*:\s*\{|(?:Macros|macros)\s*:\s*\{/i.test(text)) {
+      declarations.push(text);
+    }
+  });
+  return declarations.join("\n");
+}
+
+/**
+ * Fetches an article only when it is opened. The resulting HTML is sanitised in
+ * the main process and never persisted, so remote documents cannot run code in
+ * the React renderer or become an on-disk full-text archive.
+ */
+export class ArticleReader {
+  constructor(
+    private readonly http: PublicHttpClient,
+    private readonly renderer: PageRenderer,
+    private readonly renderWithZhihuSession?: RenderWithSession,
+    private readonly scientificMath = new ScientificMathRenderer()
+  ) {}
+
+  async read(entry: Entry, source?: Source): Promise<ReaderArticle> {
+    let staticArticle: ExtractedArticle | undefined;
+    let staticFailure: unknown;
+    const usesZhihuSession = source?.kind === "zhihu_follow" && Boolean(this.renderWithZhihuSession);
+    if (resolveReaderProfile(entry.url) === "scientific") await this.scientificMath.ready().catch(() => undefined);
+    if (!usesZhihuSession) {
+      try {
+        const response = await this.http.getText(entry.url, undefined, { maxBytes: 8_000_000 });
+        staticArticle = extractReaderArticle(response.text, response.url, entry, this.scientificMath);
+        if (staticArticle && staticArticle.textLength >= 220) return staticArticle.article;
+      } catch (error) {
+        // robots.txt must remain a hard boundary. The caller opens the original
+        // page in a restricted, user-facing app window instead of extracting it.
+        if (error instanceof RobotsDisallowedError) throw error;
+        staticFailure = error;
+      }
+    }
+
+    let renderedHtml: string | undefined;
+    try {
+      renderedHtml = usesZhihuSession && this.renderWithZhihuSession
+        ? await this.renderWithZhihuSession(entry.url)
+        : await this.renderer.render(entry.url);
+    } catch {
+      // Keep a usable static article when Chromium rendering is unavailable.
+    }
+    const renderedArticle = renderedHtml ? extractReaderArticle(renderedHtml, entry.url, entry, this.scientificMath) : undefined;
+    if (renderedArticle && renderedArticle.textLength > (staticArticle?.textLength ?? 0)) return renderedArticle.article;
+    if (staticArticle) return staticArticle.article;
+    if (staticFailure) throw staticFailure;
+    throw new ArticleContentUnavailableError();
+  }
+}
+
+/** Exported for deterministic extraction tests; it does not perform network requests. */
+export function extractReaderArticle(html: string, pageUrl: string, entry: Entry, scientificMath?: ScientificMathRenderer): ExtractedArticle | undefined {
+  const $ = load(html);
+  const renderProfile = resolveReaderProfile(pageUrl);
+  const content = chooseContentCandidate(pickContentRoot($, renderProfile), extractReadabilityContent(html, pageUrl));
+  if (!content) return undefined;
+  const contentDocument = load(`<article id="reader-selected-content">${content.html}</article>`);
+  const selectedContent = contentDocument("#reader-selected-content");
+  const title = normalText(
+    $("meta[property='og:title']").attr("content") ||
+      $("meta[name='twitter:title']").attr("content") ||
+      content.title ||
+      $("h1").first().text() ||
+      entry.title
+  ) || entry.title;
+  removeNoiseExceptMathScripts(contentDocument, selectedContent);
+  selectedContent.find("header").remove();
+  removeDuplicateArticleChrome(contentDocument, selectedContent, title, renderProfile, entry.summary);
+
+  const contentHtml = sanitizeContent(selectedContent.html() || "", pageUrl, renderProfile, scientificMath, collectGlobalMathDeclarations($));
+  const textLength = normalText(load(contentHtml).text()).length;
+  if (!textLength) return undefined;
+
+  const author = compactText(
+    $("meta[name='author']").attr("content") ||
+      $("[rel='author'], [class*='author']").first().text() ||
+      content.author ||
+      entry.author,
+    160
+  );
+  const publishedAt = parsePublishedAt(
+    $("meta[property='article:published_time'], meta[itemprop='datePublished'], time[datetime]").first().attr("content") ||
+      $("time[datetime]").first().attr("datetime")
+  ) || content.publishedAt || entry.publishedAt;
+  const coverImageUrl = safeUrl(
+    $("meta[property='og:image'], meta[name='twitter:image']").first().attr("content") || entry.imageUrl,
+    pageUrl
+  );
+
+  return {
+    article: {
+      entryId: entry.id,
+      url: entry.url,
+      title,
+      author,
+      publishedAt,
+      coverImageUrl,
+      renderProfile,
+      // KaTeX includes its own CSS in the application bundle. The scientific
+      // fallback is MathJax SVG, whose glyphs and stretchy delimiters are
+      // self-contained. Do not inject a large, source-specific MathJax sheet
+      // into an article that does not use it.
+      mathStyleCss: undefined,
+      contentHtml
+    },
+    textLength
+  };
+}
+
+function removeNoiseExceptMathScripts($: ReturnType<typeof load>, content: any): void {
+  content.find(NOISE_SELECTOR).each((_index: number, node: any) => {
+    const element = $(node);
+    if (isMathScript(element) || isImageNoscript(element)) return;
+    element.remove();
+  });
+}
+
+function isImageNoscript(element: any): boolean {
+  if (element.get(0)?.tagName?.toLowerCase() !== "noscript") return false;
+  const fallback = load(element.text() || element.html() || "", {}, false);
+  return fallback("img").length > 0;
+}
+
+function removeDuplicateArticleChrome(
+  $: ReturnType<typeof load>,
+  content: any,
+  title: string,
+  renderProfile: ReaderRenderProfile,
+  entrySummary?: string
+): void {
+  content.find(ARTICLE_CHROME_SELECTOR).remove();
+  content.find("h1,h2,h3,h4,h5,h6").find("a.headerlink,a[href^='#']").remove();
+  content.find("h1, h2, h3").each((_index: number, node: any) => {
+    if (normalText($(node).text()) === title) $(node).remove();
+  });
+  content.find("p").each((_index: number, node: any) => {
+    const text = normalText($(node).text());
+    if (/^by\s+.+\|\s*\d{4}-\d{2}-\d{2}\s*\|/i.test(text)) $(node).remove();
+  });
+  if (renderProfile === "scientific") removeScientificSpacesChrome($, content, entrySummary);
+}
+
+/**
+ * Scientific Spaces has varied between several page shells. The clean article
+ * paragraph is reflected in the feed summary, while the leading shell carries
+ * section links, title/date and author metadata. Trim every preceding sibling
+ * along the paragraph's ancestor path so it works both for the old flat shell
+ * and newer nested page layouts without depending on a brittle theme class.
+ */
+function removeScientificSpacesChrome($: ReturnType<typeof load>, content: any, entrySummary?: string): void {
+  const lead = normalText(entrySummary || "").slice(0, 28);
+  if (lead.length < 12) return;
+  const firstBodyNode = content.find("p, div, section, article").toArray()
+    .filter((node: any) => normalText($(node).text()).includes(lead))
+    .sort((left: any, right: any) => normalText($(left).text()).length - normalText($(right).text()).length)[0];
+  if (!firstBodyNode) return;
+  let cursor = $(firstBodyNode);
+  while (cursor.length && cursor.get(0) !== content.get(0)) {
+    const parent = cursor.parent();
+    if (!parent.length) break;
+    for (const sibling of parent.children().toArray()) {
+      if (sibling === cursor.get(0)) break;
+      $(sibling).remove();
+    }
+    cursor = parent;
+  }
+}
+
+function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfile): ContentCandidate | undefined {
+  const candidates = new Map<any, number>();
+  for (const { selector, priority } of profile === "scientific" ? SCIENTIFIC_CONTENT_SELECTORS : CONTENT_SELECTORS) {
+    $(selector).each((_index, node) => {
+      candidates.set(node, Math.max(candidates.get(node) || 0, priority));
+    });
+  }
+  if (!candidates.size) candidates.set($("body").get(0), -1);
+
+  let best: { node: any; score: number; priority: number } | undefined;
+  for (const [node, priority] of candidates) {
+    if (!node) continue;
+    const candidate = $(node).clone();
+    candidate.find(NOISE_SELECTOR).remove();
+    const text = normalText(candidate.text());
+    if (text.length < 40) continue;
+    const paragraphCount = candidate.find("p, li, blockquote, pre").length;
+    const imageCount = candidate.find("img").length;
+    const linkCount = candidate.find("a[href]").length;
+    const score = Math.min(text.length, 18_000) + paragraphCount * 140 + imageCount * 90 - linkCount * 18;
+    // A coherent semantic article must beat a page-sized main container even
+    // when the latter contains much more sidebar and comment text.
+    if (!best || priority > best.priority || (priority === best.priority && score > best.score)) {
+      best = { node, score, priority };
+    }
+  }
+  if (!best) return undefined;
+  const root = $(best.node).clone();
+  return { html: root.html() || "", quality: readerContentQuality(root), priority: best.priority };
+}
+
+/**
+ * Firefox Reader View's extraction is a useful second opinion when a site has
+ * no semantic article wrapper or mixes navigation into its main container.
+ * Its result is still passed through the local sanitizer below.
+ */
+function extractReadabilityContent(html: string, pageUrl: string): ContentCandidate | undefined {
+  let document: JSDOM | undefined;
+  try {
+    // Readability does not need a page's stylesheet.  Keep jsdom's parser
+    // diagnostics local as third-party CSS can be intentionally partial or
+    // use unsupported syntax; otherwise ordinary articles create noisy
+    // "Could not parse CSS stylesheet" warnings in Electron's console.
+    document = new JSDOM(html, { url: pageUrl, virtualConsole: new VirtualConsole() });
+    const parsed = new Readability(document.window.document, { charThreshold: 140, keepClasses: true }).parse();
+    const content = parsed?.content || "";
+    const text = normalText(parsed?.textContent || "");
+    if (!content || text.length < 140) return undefined;
+    const $ = load(`<article id="reader-readability-content">${content}</article>`);
+    const root = $("#reader-readability-content");
+    return {
+      html: content,
+      quality: readerContentQuality(root),
+      priority: 3,
+      title: compactText(parsed?.title || undefined, 240),
+      author: compactText(parsed?.byline || undefined, 160),
+      publishedAt: parsePublishedAt(parsed?.publishedTime || undefined)
+    };
+  } catch {
+    return undefined;
+  } finally {
+    document?.window.close();
+  }
+}
+
+function chooseContentCandidate(semantic: ContentCandidate | undefined, readable: ContentCandidate | undefined): ContentCandidate | undefined {
+  if (!semantic) return readable;
+  if (!readable) return semantic;
+  // Explicit article containers tend to preserve the author's Markdown and
+  // code structure. For loose main/content shells, prefer Reader View when
+  // it improves the text/link-density quality materially.
+  if (semantic.priority >= 2 && semantic.quality >= readable.quality * 0.72) return semantic;
+  return readable.quality >= semantic.quality * 0.92 ? readable : semantic;
+}
+
+function readerContentQuality(root: any): number {
+  const text = normalText(root.text());
+  const linkText = normalText(root.find("a[href]").text());
+  const linkDensity = text.length ? linkText.length / text.length : 1;
+  const blocks = root.find("p, li, blockquote, pre, table, figure").length;
+  const headings = root.find("h1,h2,h3,h4").length;
+  const media = root.find("img, pre, table, figure").length;
+  return Math.min(text.length, 18_000) + blocks * 120 + headings * 90 + media * 70 - Math.round(linkDensity * Math.min(text.length, 12_000) * 0.7);
+}
+
+function sanitizeContent(
+  rawHtml: string,
+  pageUrl: string,
+  renderProfile: ReaderRenderProfile,
+  scientificMath: ScientificMathRenderer | undefined,
+  globalMathDeclarations: string
+): string {
+  const $ = load(`<div id="reader-content">${rawHtml}</div>`);
+  const root = $("#reader-content");
+  hydrateLazyImages($, root, pageUrl);
+  const math = preserveMathScripts($, root);
+  preserveRenderedMathJax($, root, math);
+  root.find(NOISE_SELECTOR).remove();
+  for (const node of root.find("*").toArray()) {
+    const element = $(node);
+    const tag = (node as any).tagName?.toLowerCase();
+    if (!tag) continue;
+    if (tag === "input") {
+      if ((element.attr("type") || "").toLowerCase() === "checkbox") {
+        element.replaceWith($("<span>").text(element.is("[checked]") ? "☑ " : "☐ "));
+      } else {
+        element.remove();
+      }
+      continue;
+    }
+    if (!ALLOWED_TAGS.has(tag)) {
+      element.replaceWith(element.contents());
+      continue;
+    }
+    if (tag === "img") {
+      const src = imageSource(element, pageUrl);
+      const alt = normalText(element.attr("alt") || "");
+      removeAllAttributes(element);
+      if (!src) {
+        element.remove();
+        continue;
+      }
+      element.attr("src", src);
+      if (alt) element.attr("alt", alt);
+      element.attr("loading", "lazy");
+      continue;
+    }
+    if (tag === "details") {
+      removeAllAttributes(element);
+      // Reader View is intended to make content available without requiring
+      // JavaScript, so expanded Markdown details are less surprising here.
+      element.attr("open", "");
+      continue;
+    }
+    if (tag === "a") {
+      const href = safeUrl(element.attr("href"), pageUrl);
+      const label = normalText(element.text());
+      removeAllAttributes(element);
+      if (!href) {
+        element.replaceWith(element.contents());
+        continue;
+      }
+      element.attr("href", href);
+      if (!label) element.text(href);
+      continue;
+    }
+    removeAllAttributes(element);
+  }
+  preserveTextMath($, root, math);
+  normaliseTeXCitationLinks($, root, pageUrl);
+  return renderMath(root.html() || "", math, renderProfile, scientificMath, globalMathDeclarations);
+}
+
+/**
+ * Some scientific bibliographies use lightweight TeX link commands directly
+ * in HTML prose. They are not math and should become ordinary safe links,
+ * rather than leaking a `\\url{…}` command into the reader.
+ */
+function normaliseTeXCitationLinks($: ReturnType<typeof load>, root: any, pageUrl: string): void {
+  const citation = /\\(?:url\{([^}\s]+)\}|href\{([^}\s]+)\}\{([^}]*)\})/g;
+  const visit = (node: any, insideLiteral = false): void => {
+    const tag = node.tagName?.toLowerCase();
+    const literal = insideLiteral || tag === "code" || tag === "pre";
+    for (const child of [...(node.children || [])]) {
+      if (child.type === "text" && !literal) {
+        const text = child.data || "";
+        if (!citation.test(text)) continue;
+        citation.lastIndex = 0;
+        let cursor = 0;
+        let result = "";
+        let match: RegExpExecArray | null;
+        while ((match = citation.exec(text))) {
+          result += escapeHtml(text.slice(cursor, match.index));
+          const href = safeUrl(match[1] || match[2], pageUrl);
+          const label = normalText(match[3] || href || "");
+          result += href ? `<a href="${escapeHtml(href)}">${escapeHtml(label || href)}</a>` : escapeHtml(match[0]);
+          cursor = citation.lastIndex;
+        }
+        result += escapeHtml(text.slice(cursor));
+        $(child).replaceWith(result);
+      } else if (child.type === "tag") {
+        visit(child, literal);
+      }
+    }
+  };
+  visit(root.get(0));
+}
+
+/** Hydrates common lazy-image and <picture> patterns before stripping markup. */
+function hydrateLazyImages($: ReturnType<typeof load>, root: any, pageUrl: string): void {
+  root.find("picture").each((_index: number, node: any) => {
+    const picture = $(node);
+    const image = picture.find("img").first();
+    const source = picture.find("source").toArray().map((item: any) => $(item).attr("data-srcset") || $(item).attr("srcset")).find(Boolean);
+    if (image.length && source && !image.attr("data-reader-picture-srcset")) image.attr("data-reader-picture-srcset", source);
+  });
+
+  root.find("noscript").each((_index: number, node: any) => {
+    const fallback = load($(node).text() || $(node).html() || "", {}, false);
+    const fallbackImage = fallback("img").first();
+    if (!fallbackImage.length) return;
+    const previousImage = $(node).prev("img");
+    if (previousImage.length) {
+      const src = imageSource(fallbackImage, pageUrl);
+      if (src && !imageSource(previousImage, pageUrl)) previousImage.attr("data-reader-noscript-src", src);
+      const srcset = fallbackImage.attr("data-srcset") || fallbackImage.attr("srcset");
+      if (srcset && !previousImage.attr("data-reader-noscript-srcset")) previousImage.attr("data-reader-noscript-srcset", srcset);
+      return;
+    }
+    const src = imageSource(fallbackImage, pageUrl);
+    if (!src) return;
+    const image = $("<img>");
+    image.attr("src", src);
+    const alt = normalText(fallbackImage.attr("alt") || "");
+    if (alt) image.attr("alt", alt);
+    $(node).replaceWith(image);
+  });
+}
+
+/**
+ * MathJax 2 stores TeX in script elements, which normally belong to the noise
+ * list. Convert only explicitly-declared math scripts before the generic
+ * sanitizer removes executable markup.
+ */
+function preserveMathScripts($: ReturnType<typeof load>, root: any): MathSnippet[] {
+  const math: MathSnippet[] = [];
+  root.find("script").each((_index: number, node: any) => {
+    const script = $(node);
+    if (!isMathScript(script)) return;
+    const type = (script.attr("type") || "").toLowerCase();
+    // Cheerio treats a script body as raw HTML, so `.text()` can be empty.
+    const tex = (script.html() || script.text()).trim();
+    if (!tex) {
+      script.remove();
+      return;
+    }
+    // MathJax's visual placeholder would otherwise survive as duplicate text.
+    const previous = script.prev();
+    if (previous.hasClass("MathJax_Preview")) previous.remove();
+    script.replaceWith(addMath(math, tex, type.includes("mode=display")));
+  });
+  return math;
+}
+
+/**
+ * A Scientific Spaces page may have already run MathJax before its HTML is
+ * fetched. Prefer the original TeX embedded in MathJax 2/3's annotation or
+ * data attributes; this avoids both the preview/rendered duplicate and losing
+ * formulas when the original script was removed by the site.
+ */
+function preserveRenderedMathJax($: ReturnType<typeof load>, root: any, math: MathSnippet[]): void {
+  root.find(".MathJax_Preview").remove();
+  const rendered = root.find("mjx-container, .MathJax, [id^='MathJax-']").toArray()
+    .sort((left: any, right: any) => nodeDepth(right) - nodeDepth(left));
+  for (const node of rendered) {
+    const element = $(node);
+    if (!element.parent().length) continue;
+    const tex = mathJaxSource(element);
+    if (tex) {
+      const displayMode = element.is("[display='true'], .MathJax_Display") || element.parents("[display='true'], .MathJax_Display").length > 0;
+      element.replaceWith(addMath(math, tex, displayMode));
+      continue;
+    }
+    // A child MathJax node may already have been replaced by its placeholder.
+    // Unwrap that placeholder instead of discarding the entire formula.
+    if (element.text().includes(MATH_TOKEN_PREFIX)) element.replaceWith(element.contents());
+    else element.remove();
+  }
+}
+
+function nodeDepth(node: any): number {
+  let depth = 0;
+  for (let cursor = node?.parent; cursor; cursor = cursor.parent) depth += 1;
+  return depth;
+}
+
+function mathJaxSource(element: any): string | undefined {
+  const direct = ["data-latex", "data-tex", "alttext", "data-mathml"]
+    .map((name) => element.attr(name))
+    .find((value) => typeof value === "string" && value.trim());
+  if (direct) return String(direct).trim();
+  const annotation = element.find("annotation[encoding='application/x-tex'], annotation[encoding='application/x-tex; mode=display']").first();
+  const tex = annotation.text() || annotation.html() || "";
+  if (tex.trim()) return tex.trim();
+  const script = element.find("script[type^='math/tex']").first();
+  const scriptTex = script.html() || script.text() || "";
+  return scriptTex.trim() || undefined;
+}
+
+function isMathScript(element: any): boolean {
+  const tag = element.get(0)?.tagName?.toLowerCase();
+  const type = (element.attr("type") || "").toLowerCase();
+  return tag === "script" && (type.startsWith("math/tex") || type.startsWith("math/asciimath"));
+}
+
+/** Converts common TeX delimiters found as text in static HTML into placeholders. */
+function preserveTextMath($: ReturnType<typeof load>, root: any, math: MathSnippet[]): void {
+  preserveMultilineTextMath($, root, math);
+  const visit = (node: any, insideLiteral = false): void => {
+    const tag = node.tagName?.toLowerCase();
+    const literal = insideLiteral || tag === "code" || tag === "pre";
+    for (const child of [...(node.children || [])]) {
+      if (child.type === "text" && !literal) {
+        const next = tokenizeMath(child.data || "", math);
+        if (next !== child.data) child.data = next;
+      } else if (child.type === "tag") {
+        visit(child, literal);
+      }
+    }
+  };
+  visit(root.get(0));
+}
+
+/**
+ * Some MathJax pages put display TeX in text nodes separated by <br> or inline
+ * elements. A node-by-node pass cannot see the matching \begin and \end in
+ * that form, so first tokenise the smallest enclosing element as one fragment.
+ */
+function preserveMultilineTextMath($: ReturnType<typeof load>, root: any, math: MathSnippet[]): void {
+  const environment = "(?:equation\\*?|align\\*?|gather\\*?|multline\\*?|array|cases|matrix|pmatrix|bmatrix|vmatrix|Vmatrix|smallmatrix|aligned)";
+  const blockStart = new RegExp(`(?:\\\\begin\\{${environment}\\}|\\$\\$|\\\\\\\[)`);
+  const candidates = root.find("*").toArray().filter((node: any) => {
+    const element = $(node);
+    const tag = node.tagName?.toLowerCase();
+    if (tag === "code" || tag === "pre" || !blockStart.test(element.html() || "")) return false;
+    return !element.children().toArray().some((child: any) => blockStart.test($(child).html() || ""));
+  });
+
+  for (const node of candidates) {
+    const element = $(node);
+    const html = element.html() || "";
+    let tokenised = html.replace(/\$\$([\s\S]*?)\$\$/g, (_all, body) => addMath(math, htmlToTeXText(body), true));
+    tokenised = tokenised.replace(/\\\\\[([\s\S]*?)\\\\\]/g, (_all, body) => addMath(math, htmlToTeXText(body), true));
+    tokenised = tokenised.replace(new RegExp(`\\\\begin\\{(${environment})\\}([\\s\\S]*?)\\\\end\\{\\1\\}`, "g"), (_all, name, body) => {
+      const tex = normaliseDisplayEnvironment(name, htmlToTeXText(body));
+      return addMath(math, tex, true);
+    });
+    if (tokenised !== html) element.html(tokenised);
+  }
+}
+
+function htmlToTeXText(value: string): string {
+  const $ = load(`<div id="reader-math-fragment">${value.replace(/<br\s*\/?\s*>/gi, "\n")}</div>`);
+  return $("#reader-math-fragment").text().replace(/\u00a0/g, " ");
+}
+
+function tokenizeMath(value: string, math: MathSnippet[]): string {
+  // Display environments must be parsed before $...$ so line breaks and
+  // alignment markers remain part of one equation.
+  let result = value.replace(/\\begin\{(equation\*?|align\*?|gather\*?|multline\*?)\}([\s\S]*?)\\end\{\1\}/g, (_all, environment, body) => {
+    const tex = normaliseDisplayEnvironment(environment, body);
+    return addMath(math, tex, true);
+  });
+  result = result.replace(/\\\[([\s\S]*?)\\\]/g, (_all, tex) => addMath(math, tex, true));
+  result = result.replace(/\$\$([\s\S]*?)\$\$/g, (_all, tex) => addMath(math, tex, true));
+  result = result.replace(/\\\(([^]*?)\\\)/g, (_all, tex) => addMath(math, tex, false));
+  return result.replace(/(?<!\\)\$([^$\n]+?)(?<!\\)\$/g, (all, tex) => {
+    return looksLikeMath(tex) ? addMath(math, tex, false) : all;
+  });
+}
+
+function normaliseDisplayEnvironment(environment: string, body: string): string {
+  const content = body.trim();
+  if (environment.startsWith("align") || environment.startsWith("gather") || environment.startsWith("multline")) {
+    return `\\begin{aligned}${content}\\end{aligned}`;
+  }
+  return content;
+}
+
+function looksLikeMath(value: string): boolean {
+  const text = value.trim();
+  if (!text || text.length > 1_500 || /https?:\/\//i.test(text)) return false;
+  return /\\[a-zA-Z]+|[_^=<>≈≠≤≥]|\{.*\}|\d\s*[+\-*/]\s*\d|\d\s*[A-Za-zα-ωΑ-Ω]/.test(text);
+}
+
+function addMath(math: MathSnippet[], tex: string, displayMode: boolean): string {
+  const token = `${MATH_TOKEN_PREFIX}${math.length}${MATH_TOKEN_SUFFIX}`;
+  math.push({ token, tex: tex.trim(), displayMode });
+  return token;
+}
+
+function renderMath(
+  html: string,
+  math: MathSnippet[],
+  renderProfile: ReaderRenderProfile,
+  scientificMath: ScientificMathRenderer | undefined,
+  globalMathDeclarations: string
+): string {
+  const labels = collectEquationLabels(math);
+  const prepared = math.map((snippet) => {
+    // MathJax's package loader directives are not mathematical content. The
+    // local scientific renderer loads the supported extensions explicitly,
+    // while KaTeX needs the directive removed before its safe fallback runs.
+    const declaration = extractMacroDeclarations(snippet.tex.replace(/\\require\{(?:cancel)\}/g, ""));
+    return { snippet: { ...snippet, tex: declaration.tex }, macros: declaration.macros };
+  });
+  const globalMacros = new Map<string, string>([
+    ...extractMacroDeclarations(globalMathDeclarations).macros,
+    ...extractMathJaxConfigMacros(globalMathDeclarations)
+  ]);
+  const macros = collectMathMacros([globalMacros, ...prepared.map((item) => item.macros)]);
+  return prepared.reduce((result, item) => {
+    // KaTeX emits self-contained HTML for common TeX, including Scientific
+    // Spaces' `\\left\\{\\begin{aligned}…` formulas. MathJax CHTML instead
+    // draws stretchy delimiters with hidden text spacer nodes; if its sheet is
+    // not applied perfectly in an embedded reader those nodes become visible
+    // braces. Prefer the stable output and reserve the SVG renderer (which
+    // contains actual glyph paths, not CSS-hidden text) for TeX that KaTeX
+    // genuinely cannot parse.
+    const katexHtml = tryRenderTeX(item.snippet, labels, macros);
+    const mathJaxHtml = !katexHtml && renderProfile === "scientific"
+      ? scientificMath?.render(item.snippet.tex, item.snippet.displayMode, macros)
+      : undefined;
+    return result.replace(item.snippet.token, katexHtml || mathJaxHtml || renderMathFallback(item.snippet));
+  }, html);
+}
+
+function collectEquationLabels(math: MathSnippet[]): Map<string, number> {
+  const labels = new Map<string, number>();
+  let count = 0;
+  for (const snippet of math) {
+    if (!snippet.displayMode) continue;
+    const label = snippet.tex.match(/\\label\{([^}]+)\}/)?.[1];
+    if (label) labels.set(label, ++count);
+  }
+  return labels;
+}
+
+function tryRenderTeX(snippet: MathSnippet, labels: Map<string, number>, macros: Record<string, string>): string | undefined {
+  const label = snippet.tex.match(/\\label\{([^}]+)\}/)?.[1];
+  let tex = snippet.tex.replace(/\\label\{[^}]*\}/g, "");
+  tex = tex.replace(/\\eqref\{([^}]+)\}/g, (_all, reference) => `(${labels.get(reference) ?? reference})`);
+  if (snippet.displayMode && label && labels.has(label)) tex += `\\tag{${labels.get(label)}}`;
+  if (!tex.trim()) return "";
+  try {
+    return katex.renderToString(tex, {
+      displayMode: snippet.displayMode,
+      throwOnError: true,
+      strict: "ignore",
+      trust: false,
+      macros,
+      maxSize: 24,
+      maxExpand: 1_000
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function renderMathFallback(snippet: MathSnippet): string {
+  // A malformed equation must not break the article's entire layout.
+  return `<code class="reader-math-source${snippet.displayMode ? " reader-math-source--block" : ""}">${escapeHtml(snippet.tex)}</code>`;
+}
+
+/** Parses the simple string/array macro forms used in MathJax 2 config blocks. */
+function extractMathJaxConfigMacros(input: string): Map<string, string> {
+  const macros = new Map<string, string>();
+  const blocks = input.matchAll(/(?:Macros|macros)\s*:\s*\{([\s\S]*?)\}/g);
+  for (const block of blocks) {
+    const values = block[1];
+    const pair = /["']?([A-Za-z]+)["']?\s*:\s*(?:\[\s*)?["']([^"']+)["']/g;
+    let match: RegExpExecArray | null;
+    while ((match = pair.exec(values))) macros.set(match[1], match[2].replace(/\\\\/g, "\\"));
+  }
+  return macros;
+}
+
+/**
+ * MathJax pages may declare aliases in one equation and use them much later in
+ * the article. Keep the declarations out of the rendered TeX and pass their
+ * definitions to KaTeX for every equation in the article.
+ */
+function extractMacroDeclarations(input: string): { tex: string; macros: Map<string, string> } {
+  const macros = new Map<string, string>();
+  let output = "";
+  let cursor = 0;
+  const declaration = /\\(newcommand\*?|renewcommand\*?|providecommand\*?|DeclareMathOperator\*?|(?:g|e|x)?def)(?![A-Za-z])\s*/g;
+  let match: RegExpExecArray | null;
+  while ((match = declaration.exec(input))) {
+    output += input.slice(cursor, match.index);
+    const parsed = parseMacroDeclaration(input, declaration.lastIndex, match[1]);
+    if (!parsed) {
+      output += match[0];
+      cursor = declaration.lastIndex;
+      continue;
+    }
+    macros.set(parsed.name, parsed.definition);
+    cursor = parsed.next;
+    declaration.lastIndex = cursor;
+  }
+  output += input.slice(cursor);
+  return { tex: output, macros };
+}
+
+function collectMathMacros(groups: Map<string, string>[]): Record<string, string> {
+  // These two aliases are used by sites that configure MathJax globally rather
+  // than declaring them in each article. Treat them as named operators when the
+  // global configuration is not part of the extracted article HTML.
+  const macros = new Map<string, string>([
+    ["softcap", "\\operatorname{softcap}"],
+    ["SiTU", "\\operatorname{SiTU}"]
+  ]);
+  for (const group of groups) {
+    for (const [name, definition] of group) macros.set(name, definition);
+  }
+  return Object.fromEntries([...macros].map(([name, definition]) => [`\\${name}`, definition]));
+}
+
+function parseMacroDeclaration(input: string, start: number, kind: string): { name: string; definition: string; next: number } | undefined {
+  let cursor = skipTeXWhitespace(input, start);
+  if (kind.endsWith("def")) {
+    const nameMatch = input.slice(cursor).match(/^\\([A-Za-z]+)/);
+    if (!nameMatch) return undefined;
+    const name = nameMatch[1];
+    cursor += nameMatch[0].length;
+    // KaTeX supports parameterised macros in its `macros` option, so retain
+    // any #1…#9 markers before the replacement group.
+    while (/\s|#[1-9]/.test(input.slice(cursor, cursor + 2))) {
+      if (/\s/.test(input[cursor] || "")) cursor += 1;
+      else cursor += 2;
+    }
+    const definition = readTeXGroup(input, cursor);
+    return definition ? { name, definition: definition.content, next: definition.next } : undefined;
+  }
+
+  if (kind.startsWith("DeclareMathOperator")) {
+    const nameGroup = readTeXGroup(input, cursor);
+    if (!nameGroup) return undefined;
+    const definitionGroup = readTeXGroup(input, skipTeXWhitespace(input, nameGroup.next));
+    const name = nameGroup.content.replace(/^\\/, "").trim();
+    if (!definitionGroup || !/^[A-Za-z]+$/.test(name)) return undefined;
+    return { name, definition: `\\operatorname{${definitionGroup.content}}`, next: definitionGroup.next };
+  }
+
+  const nameGroup = readTeXGroup(input, cursor);
+  if (!nameGroup) return undefined;
+  cursor = skipTeXWhitespace(input, nameGroup.next);
+  // \newcommand may include a parameter count and a default argument.
+  // KaTeX can apply #1…#9 replacements, so retain the body and discard only
+  // these declaration wrappers.
+  let optional: { content: string; next: number } | undefined;
+  while ((optional = readTeXOptionalGroup(input, cursor))) cursor = skipTeXWhitespace(input, optional.next);
+  const definitionGroup = readTeXGroup(input, cursor);
+  const name = nameGroup.content.replace(/^\\/, "").trim();
+  if (!definitionGroup || !/^[A-Za-z]+$/.test(name)) return undefined;
+  return { name, definition: definitionGroup.content, next: definitionGroup.next };
+}
+
+function skipTeXWhitespace(input: string, start: number): number {
+  let cursor = start;
+  while (/\s/.test(input[cursor] || "")) cursor += 1;
+  return cursor;
+}
+
+function readTeXOptionalGroup(input: string, start: number): { content: string; next: number } | undefined {
+  if (input[start] !== "[") return undefined;
+  const close = input.indexOf("]", start + 1);
+  return close < 0 ? undefined : { content: input.slice(start + 1, close), next: close + 1 };
+}
+
+function readTeXGroup(input: string, start: number): { content: string; next: number } | undefined {
+  if (input[start] !== "{") return undefined;
+  let depth = 0;
+  for (let index = start; index < input.length; index += 1) {
+    if (input[index] === "{" && input[index - 1] !== "\\") depth += 1;
+    if (input[index] === "}" && input[index - 1] !== "\\") {
+      depth -= 1;
+      if (depth === 0) return { content: input.slice(start + 1, index), next: index + 1 };
+    }
+  }
+  return undefined;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
+}
+
+function imageSource(element: any, pageUrl: string): string | undefined {
+  const srcsets = [
+    element.attr("data-srcset"),
+    element.attr("data-lazy-srcset"),
+    element.attr("data-reader-picture-srcset"),
+    element.attr("data-reader-noscript-srcset"),
+    element.attr("srcset")
+  ];
+  const values = [
+    element.attr("data-actualsrc"),
+    element.attr("data-original"),
+    element.attr("data-original-src"),
+    element.attr("data-src"),
+    element.attr("data-lazy-src"),
+    element.attr("data-reader-noscript-src"),
+    ...srcsets.map(bestSrcsetUrl),
+    element.attr("src")
+  ];
+  for (const value of values) {
+    const src = safeUrl(value, pageUrl);
+    if (src) return src;
+  }
+  return undefined;
+}
+
+function bestSrcsetUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const candidates = value.split(",").map((item) => {
+    const [url, descriptor] = item.trim().split(/\s+/, 2);
+    const width = Number.parseInt(descriptor || "0", 10);
+    return { url, width: Number.isFinite(width) ? width : 0 };
+  }).filter((item) => Boolean(item.url));
+  return candidates.sort((a, b) => b.width - a.width)[0]?.url;
+}
+
+function removeAllAttributes(element: any): void {
+  const attributes = element.attr() as Record<string, string> | undefined;
+  for (const name of Object.keys(attributes || {})) element.removeAttr(name);
+}
+
+function safeUrl(value: string | undefined, pageUrl: string): string | undefined {
+  const absolute = toAbsoluteUrl(value, pageUrl);
+  if (!absolute) return undefined;
+  try {
+    return assertPublicUrl(absolute).toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function normalText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
