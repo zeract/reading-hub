@@ -212,6 +212,7 @@ function ReaderView({ entry, source, onClose }: { entry: Entry; source?: Source;
   const [loading, setLoading] = useState(true);
   const [preferences, setPreferences] = useState<ReaderPreferences>(loadReaderPreferences);
   const [showAssistant, setShowAssistant] = useState(false);
+  const [assistantMinimized, setAssistantMinimized] = useState(false);
   useEffect(() => {
     window.localStorage.setItem(READER_PREFERENCES_KEY, JSON.stringify(preferences));
   }, [preferences]);
@@ -269,6 +270,16 @@ function ReaderView({ entry, source, onClose }: { entry: Entry; source?: Source;
     ...current,
     fontScale: Math.min(1.25, Math.max(0.85, Number((current.fontScale + amount).toFixed(2))))
   }));
+  const toggleAssistant = () => {
+    if (!article) return;
+    if (!showAssistant) {
+      setShowAssistant(true);
+      setAssistantMinimized(false);
+      return;
+    }
+    setAssistantMinimized((minimized) => !minimized);
+  };
+  const assistantVisible = showAssistant && !assistantMinimized;
 
   return <section className={`reader-view reader--${article?.renderProfile || "standard"}`} data-reader-preset={preferences.preset} style={readerStyle} aria-label="应用内阅读器">
     <header className="reader-toolbar">
@@ -284,11 +295,11 @@ function ReaderView({ entry, source, onClose }: { entry: Entry; source?: Source;
         </div>
       </div>
       <div className="reader-toolbar-actions">
-        <button type="button" className="ai-toggle" aria-pressed={showAssistant} disabled={!article} onClick={() => setShowAssistant((open) => !open)}>AI 学习</button>
+        <button type="button" className="ai-toggle" aria-pressed={assistantVisible} disabled={!article} onClick={toggleAssistant}>AI 学习</button>
         <button type="button" className="external-button" onClick={() => void window.reader.openExternal(entry.url)}>在浏览器打开 ↗</button>
       </div>
     </header>
-    <div className={`reader-workspace ${showAssistant && article ? "reader-workspace--assistant" : ""}`}>
+    <div className={`reader-workspace ${assistantVisible && article ? "reader-workspace--assistant" : ""}`}>
       <div className="reader-scroll">
         {loading && <div className="reader-loading" role="status"><span className="loading-mark" /><p>正在准备适合阅读的正文…</p></div>}
         {!loading && embedded && <div className="reader-embedded"><h1>{entry.title}</h1><p>该站点不允许自动提取正文，原文已在 Reading Hub 的受限窗口中打开。该窗口不使用外部浏览器，也不会复用登录态。</p><button type="button" className="primary-action" onClick={() => void loadArticle()}>重新打开原文</button></div>}
@@ -299,7 +310,8 @@ function ReaderView({ entry, source, onClose }: { entry: Entry; source?: Source;
           <div className="article-body" onClick={handleContentClick} onError={handleContentError} dangerouslySetInnerHTML={{ __html: article.contentHtml }} />
         </article>}
       </div>
-      {showAssistant && article && <ReaderAssistant article={article} sourceTitle={source?.title} onClose={() => setShowAssistant(false)} />}
+      {showAssistant && article && <ReaderAssistant article={article} sourceTitle={source?.title} minimized={assistantMinimized} onMinimize={() => setAssistantMinimized(true)} />}
+      {showAssistant && assistantMinimized && article && <button type="button" className="assistant-launcher" onClick={() => setAssistantMinimized(false)} aria-label="恢复 AI 学习助手">AI 学习 <span>恢复</span></button>}
     </div>
   </section>;
 }
@@ -323,7 +335,7 @@ const CODEX_EFFORT_OPTIONS: Array<{ value: AiReasoningEffort; label: string }> =
   { value: "max", label: "最大（最难问题）" }
 ];
 
-function ReaderAssistant({ article, sourceTitle, onClose }: { article: ReaderArticle; sourceTitle?: string; onClose: () => void }) {
+function ReaderAssistant({ article, sourceTitle, minimized, onMinimize }: { article: ReaderArticle; sourceTitle?: string; minimized: boolean; onMinimize: () => void }) {
   const [providers, setProviders] = useState<AiProviderSettings[]>([]);
   const [providerId, setProviderId] = useState<AiProviderId>("openai");
   const [model, setModel] = useState("");
@@ -425,8 +437,8 @@ function ReaderAssistant({ article, sourceTitle, onClose }: { article: ReaderArt
     }
   }
 
-  return <aside className="reader-ai-panel" aria-label="AI 学习助手">
-    <header><div><strong>AI 学习助手</strong><p>提问时才会发送当前文章的文本摘录。</p></div><button type="button" onClick={onClose} aria-label="关闭 AI 学习助手">×</button></header>
+  return <aside className={`reader-ai-panel${minimized ? " is-minimized" : ""}`} aria-label="AI 学习助手" aria-hidden={minimized}>
+    <header><div><strong>AI 学习助手</strong><p>提问时才会发送当前文章的文本摘录。</p></div><button type="button" onClick={onMinimize} aria-label="最小化 AI 学习助手">最小化</button></header>
     <div className="ai-provider-row"><label htmlFor="ai-provider">服务</label><select id="ai-provider" value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={busy}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select>{canConfigure && <button type="button" onClick={() => setShowSettings((visible) => !visible)} disabled={busy}>设置</button>}</div>
     {!requiresApiKey && selected?.availabilityMessage && <p className="ai-provider-note">{selected.availabilityMessage}</p>}
     {showSettings && <form className="ai-settings" onSubmit={(event) => void saveSettings(event)}>
