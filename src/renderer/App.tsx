@@ -1,5 +1,6 @@
 import { type CSSProperties, type FormEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type CalibrationResult, type Entry, type Followee, type ProbeResult, type ReaderArticle, type Source, type SubscriptionDraft } from "../shared/types";
+import { renderAiTeX, tokenizeAiMath } from "./ai-math";
 
 type PendingPreview = { token: string; probe: ProbeResult };
 type ReaderPreset = "reading" | "compact";
@@ -305,6 +306,15 @@ function ReaderView({ entry, source, onClose }: { entry: Entry; source?: Source;
 
 type AiMessage = { role: "user" | "assistant"; text: string; error?: boolean };
 
+function AiMessageContent({ text }: { text: string }) {
+  return <div className="ai-message-content">{tokenizeAiMath(text).map((segment, index) => {
+    if (segment.type === "text") return <span key={index} className="ai-message-text">{segment.value}</span>;
+    const rendered = renderAiTeX(segment.tex, segment.displayMode);
+    if (rendered.html) return <span key={index} className={segment.displayMode ? "ai-math-display" : "ai-math-inline"} aria-label="数学公式" dangerouslySetInnerHTML={{ __html: rendered.html }} />;
+    return <code key={index} className={segment.displayMode ? "ai-math-fallback ai-math-fallback--display" : "ai-math-fallback"}>{rendered.fallback || segment.tex}</code>;
+  })}</div>;
+}
+
 const CODEX_EFFORT_OPTIONS: Array<{ value: AiReasoningEffort; label: string }> = [
   { value: "low", label: "低（更快）" },
   { value: "medium", label: "中（均衡）" },
@@ -431,7 +441,7 @@ function ReaderAssistant({ article, sourceTitle, onClose }: { article: ReaderArt
       <div><button className="primary" disabled={busy}>{busy ? "正在保存…" : "保存设置"}</button>{selected?.configured && <button type="button" className="danger" onClick={() => void clearProvider()} disabled={busy}>{usingCodexCli ? "恢复默认" : "清除密钥"}</button>}</div>
     </form>}
     {error && <p className="error ai-error">{error}</p>}
-    <div className="ai-messages" aria-live="polite">{!messages.length && <p className="ai-empty">可以让 AI 解释概念、公式推导、例子或文章中的论证。回答不会保存到数据库。</p>}{messages.map((message, index) => <div key={`${message.role}-${index}`} className={`ai-message ${message.role}${message.error ? " error" : ""}`}><strong>{message.role === "user" ? "你" : selected?.label || "AI"}</strong><p>{message.text}</p></div>)}</div>
+    <div className="ai-messages" aria-live="polite">{!messages.length && <p className="ai-empty">可以让 AI 解释概念、公式推导、例子或文章中的论证。回答不会保存到数据库。</p>}{messages.map((message, index) => <div key={`${message.role}-${index}`} className={`ai-message ${message.role}${message.error ? " error" : ""}`}><strong>{message.role === "user" ? "你" : selected?.label || "AI"}</strong><AiMessageContent text={message.text} /></div>)}</div>
     <form className="ai-question" onSubmit={(event) => void ask(event)}><label htmlFor="ai-question">向文章提问</label><textarea id="ai-question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="例如：请用直觉解释这个公式的含义" disabled={busy} /><button className="primary" disabled={busy || !question.trim()}>{busy ? "回答中…" : "发送问题"}</button></form>
   </aside>;
 }
