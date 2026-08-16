@@ -354,6 +354,24 @@ describe("article reader extraction", () => {
     expect(content).not.toContain("<input");
     expect(content).toContain('src="https://example.com/image-large.webp"');
     expect(content).toContain('src="https://example.com/fallback-image.png"');
+    expect(load(content)("img[src='https://example.com/fallback-image.png']")).toHaveLength(1);
+    expect(content).toContain('data-reader-zoomable="true"');
+    expect(content).toContain('role="button"');
+  });
+
+  it("keeps an in-body Open Graph image only once instead of rendering a duplicate cover", () => {
+    const result = extractReaderArticle(
+      `<html><head><meta property="og:image" content="/images/hero.png"></head><body><article class="post-content">
+        <p>${"正文内容 ".repeat(35)}</p><figure><img src="/images/hero.png" alt="文章首图"><figcaption>首图图注</figcaption></figure>
+      </article></body></html>`,
+      entry.url,
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(result?.article.coverImageUrl).toBeUndefined();
+    expect(load(content)("img[src='https://example.com/images/hero.png']")).toHaveLength(1);
+    expect(content).toContain("首图图注");
   });
 
   it("uses the isolated renderer after a non-robots HTTP failure", async () => {

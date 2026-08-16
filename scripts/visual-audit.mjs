@@ -27,7 +27,7 @@ function page() {
         <img id="fixture-image" src="${largeImage}" alt="large fixture" />
         <table><thead><tr><th>来源</th><th>状态</th></tr></thead><tbody><tr><td>OpenAlex</td><td>正常</td></tr></tbody></table>
       </div></article></div><aside class="reader-ai-panel" id="assistant-panel"><header><div><strong>AI 学习助手</strong><p>提问时才会发送文章摘录。</p></div><div class="assistant-header-actions"><button class="panel-icon-button">−</button><button class="panel-icon-button">×</button></div></header><div class="ai-messages"><p class="ai-empty">请解释这条公式。</p></div><form class="ai-question"><label>向文章提问</label><textarea>这个公式表达什么？</textarea><button class="primary">发送问题</button></form></aside></div>
-    </section></main></body></html>`;
+    </section></main><div class="reader-image-lightbox" id="image-lightbox" hidden><section class="reader-image-lightbox__frame"><button class="reader-image-lightbox__close">×</button><img id="lightbox-image" src="${largeImage}" alt="large fixture preview" /></section></div></body></html>`;
 }
 
 function overlaps(a, b) {
@@ -70,10 +70,24 @@ async function auditViewport(window, viewport) {
     const image = document.querySelector('#fixture-image');
     const article = document.querySelector('.reader-article');
     return {
+      viewport: { width: window.innerWidth, height: window.innerHeight },
       pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
       normal: formula('#formula-normal'),
       wide: formula('#formula-wide'),
       image: image && article ? { width: image.getBoundingClientRect().width, height: image.getBoundingClientRect().height, articleWidth: article.getBoundingClientRect().width } : undefined,
+      lightbox: (() => {
+        const root = document.querySelector('#image-lightbox');
+        const image = document.querySelector('#lightbox-image');
+        if (!(root instanceof HTMLElement) || !(image instanceof HTMLImageElement)) return undefined;
+        root.hidden = false;
+        const rootRect = root.getBoundingClientRect();
+        const imageRect = image.getBoundingClientRect();
+        root.hidden = true;
+        return {
+          root: { left: rootRect.left, right: rootRect.right, top: rootRect.top, bottom: rootRect.bottom },
+          image: { width: imageRect.width, height: imageRect.height }
+        };
+      })(),
       mathJax: (() => {
         const element = document.querySelector('#formula-mathjax');
         return element ? { scrollWidth: element.scrollWidth, clientWidth: element.clientWidth } : undefined;
@@ -156,6 +170,9 @@ async function auditViewport(window, viewport) {
   if (!geometry.wide || geometry.wide.scrollWidth <= geometry.wide.clientWidth) failures.push("超宽公式没有落入自身可滚动容器");
   if (!geometry.mathJax || geometry.mathJax.scrollWidth <= geometry.mathJax.clientWidth) failures.push("科学空间 MathJax/SVG 公式没有落入自身可滚动容器");
   if (!geometry.image || geometry.image.width > geometry.image.articleWidth + 1 || geometry.image.height > Math.min(360, viewport.height * 0.45) + 2) failures.push("图片尺寸没有受正文列约束");
+  if (!geometry.lightbox || !geometry.viewport || geometry.lightbox.root.left > 1 || geometry.lightbox.root.top > 1 || geometry.lightbox.root.right < geometry.viewport.width - 1 || geometry.lightbox.root.bottom < geometry.viewport.height - 1 || geometry.lightbox.image.width > geometry.viewport.width || geometry.lightbox.image.height > geometry.viewport.height) {
+    failures.push("图片放大预览没有受视口约束");
+  }
   if (!geometry.assistant || geometry.assistant.panel.left < geometry.assistant.workspace.left - 1 || geometry.assistant.panel.right > geometry.assistant.workspace.right + 1 || geometry.assistant.panel.top < geometry.assistant.workspace.top - 1 || geometry.assistant.panel.bottom > geometry.assistant.workspace.bottom + 1) {
     failures.push("AI 学习面板超出阅读器工作区");
   }

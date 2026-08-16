@@ -17,6 +17,9 @@ describe("reader display-equation layout", () => {
 
   it("constrains reader images and keeps the main scrolling regions intentional", () => {
     expect(styles).toContain(".article-body img { display: block; width: auto; height: auto; max-width: min(100%, 34em);");
+    expect(styles).toContain(".article-body img[data-reader-zoomable=\"true\"] { cursor: zoom-in; }");
+    expect(styles).toContain(".reader-image-lightbox {\n  position: fixed;\n  z-index: 30;\n  inset: 0;");
+    expect(styles).toContain("max-height: calc(100vh - 32px);");
     expect(styles).toContain(".reader-scroll { min-height: 0; overflow: auto;");
     expect(styles).toContain(".source-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;");
   });

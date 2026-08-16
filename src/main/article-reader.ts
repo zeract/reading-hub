@@ -204,10 +204,14 @@ export function extractReaderArticle(html: string, pageUrl: string, entry: Entry
     160
   );
   const publishedAt = extractPagePublishedAt($) || content.publishedAt || entry.publishedAt;
-  const coverImageUrl = safeUrl(
+  const coverCandidate = safeUrl(
     $("meta[property='og:image'], meta[name='twitter:image']").first().attr("content") || entry.imageUrl,
     pageUrl
   );
+  // An Open Graph image is often also the article's first figure. Rendering it
+  // once as a cover and once in the preserved body creates an artificial
+  // duplicate, so the body remains the single source of truth in that case.
+  const coverImageUrl = coverCandidate && !containsImage(contentHtml, coverCandidate) ? coverCandidate : undefined;
 
   return {
     article: {
@@ -408,6 +412,10 @@ function sanitizeContent(
       element.attr("src", src);
       if (alt) element.attr("alt", alt);
       element.attr("loading", "lazy");
+      element.attr("data-reader-zoomable", "true");
+      element.attr("tabindex", "0");
+      element.attr("role", "button");
+      element.attr("aria-label", alt ? `放大图片：${alt}` : "放大图片");
       continue;
     }
     if (tag === "details") {
@@ -490,6 +498,9 @@ function hydrateLazyImages($: ReturnType<typeof load>, root: any, pageUrl: strin
       if (src && !imageSource(previousImage, pageUrl)) previousImage.attr("data-reader-noscript-src", src);
       const srcset = fallbackImage.attr("data-srcset") || fallbackImage.attr("srcset");
       if (srcset && !previousImage.attr("data-reader-noscript-srcset")) previousImage.attr("data-reader-noscript-srcset", srcset);
+      // The fallback has now been merged into the preceding lazy image. It
+      // must not survive the sanitizer as a second visible <img>.
+      $(node).remove();
       return;
     }
     const src = imageSource(fallbackImage, pageUrl);
@@ -500,6 +511,23 @@ function hydrateLazyImages($: ReturnType<typeof load>, root: any, pageUrl: strin
     if (alt) image.attr("alt", alt);
     $(node).replaceWith(image);
   });
+}
+
+function containsImage(contentHtml: string, imageUrl: string): boolean {
+  const content = load(`<div>${contentHtml}</div>`);
+  const target = imageUrlKey(imageUrl);
+  return content("img").toArray().some((node) => imageUrlKey(content(node).attr("src")) === target);
+}
+
+function imageUrlKey(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return value;
+  }
 }
 
 /**

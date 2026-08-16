@@ -10,6 +10,7 @@ type ReaderPreset = "reading" | "compact";
 type ReaderPreferences = { preset: ReaderPreset; fontScale: number };
 type AddSourceMethod = "public" | "zhihu" | "x" | "academic";
 type AssistantPanelState = "closed" | "minimized" | "open";
+type ReaderImagePreview = { src: string; alt: string };
 
 const READER_PREFERENCES_KEY = "reading-hub.reader-preferences.v1";
 const DEFAULT_READER_PREFERENCES: ReaderPreferences = { preset: "reading", fontScale: 1 };
@@ -286,6 +287,7 @@ function ReaderView({ entry, source }: {
   const [loading, setLoading] = useState(true);
   const [preferences, setPreferences] = useState<ReaderPreferences>(loadReaderPreferences);
   const [assistantState, setAssistantState] = useState<AssistantPanelState>("closed");
+  const [imagePreview, setImagePreview] = useState<ReaderImagePreview>();
   useEffect(() => {
     window.localStorage.setItem(READER_PREFERENCES_KEY, JSON.stringify(preferences));
   }, [preferences]);
@@ -302,15 +304,49 @@ function ReaderView({ entry, source }: {
     }
   }, [entry.id]);
   useEffect(() => { void loadArticle(); }, [loadArticle]);
-  useEffect(() => { setAssistantState("closed"); }, [entry.id]);
+  useEffect(() => {
+    setAssistantState("closed");
+    setImagePreview(undefined);
+  }, [entry.id]);
+  useEffect(() => {
+    if (!imagePreview) return;
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setImagePreview(undefined);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [imagePreview]);
 
   const displayed = article || entry;
   const date = displayed.publishedAt ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "long" }).format(displayed.publishedAt) : undefined;
+  function previewImage(image: HTMLImageElement) {
+    const src = image.currentSrc || image.src;
+    if (src) setImagePreview({ src, alt: image.alt || "文章图片" });
+  }
   function handleContentClick(event: SyntheticEvent<HTMLElement>) {
-    const link = (event.target as HTMLElement).closest("a[href]") as HTMLAnchorElement | null;
+    const target = event.target;
+    const image = target instanceof HTMLImageElement
+      ? target
+      : target instanceof Element ? target.closest("img[data-reader-zoomable='true']") : null;
+    if (image instanceof HTMLImageElement) {
+      event.preventDefault();
+      previewImage(image);
+      return;
+    }
+    const link = target instanceof Element ? target.closest("a[href]") as HTMLAnchorElement | null : null;
     if (!link) return;
     event.preventDefault();
     void window.reader.openExternal(link.href);
+  }
+  function handleContentKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const target = event.target;
+    const image = target instanceof HTMLImageElement
+      ? target
+      : target instanceof Element ? target.closest("img[data-reader-zoomable='true']") : null;
+    if (!(image instanceof HTMLImageElement)) return;
+    event.preventDefault();
+    previewImage(image);
   }
   function handleContentError(event: SyntheticEvent<HTMLElement>) {
     const image = event.target instanceof HTMLImageElement ? event.target : undefined;
@@ -376,8 +412,11 @@ function ReaderView({ entry, source }: {
         {!loading && error && <div className="reader-failure"><h1>{entry.title}</h1><p>{error}</p><div><button type="button" className="primary-action" onClick={() => void loadArticle()}>重试</button><button type="button" onClick={openEmbedded}>在应用内打开原文</button></div></div>}
         {!loading && article && <article className="reader-article">
           <header><p className="eyebrow">{source?.title || "已保存内容"}</p><h1>{article.title}</h1>{(article.author || date) && <p className="reader-byline">{article.author}{article.author && date ? " · " : ""}{date}</p>}</header>
-          {article.coverImageUrl && <img className="reader-cover" src={article.coverImageUrl} alt="" onError={handleContentError} />}
-          <div className="article-body" onClick={handleContentClick} onError={handleContentError} dangerouslySetInnerHTML={{ __html: article.contentHtml }} />
+          {article.coverImageUrl && <button type="button" className="reader-cover-button" onClick={(event) => {
+            const image = event.currentTarget.querySelector("img");
+            if (image) previewImage(image);
+          }} aria-label="放大封面图片"><img className="reader-cover" src={article.coverImageUrl} alt="" onError={handleContentError} /></button>}
+          <div className="article-body" onClick={handleContentClick} onKeyDown={handleContentKeyDown} onError={handleContentError} dangerouslySetInnerHTML={{ __html: article.contentHtml }} />
         </article>}
       </div>
       {assistantMounted && article && <ReaderAssistant
@@ -389,7 +428,17 @@ function ReaderView({ entry, source }: {
       />}
       {assistantState === "minimized" && article && <button type="button" className="assistant-launcher" onClick={() => setAssistantState("open")} aria-label="恢复 AI 学习助手" title="恢复 AI 学习助手">✦</button>}
     </div>
+    {imagePreview && <ImagePreview image={imagePreview} onClose={() => setImagePreview(undefined)} />}
   </section>;
+}
+
+function ImagePreview({ image, onClose }: { image: ReaderImagePreview; onClose: () => void }) {
+  return <div className="reader-image-lightbox" role="presentation" onClick={onClose}>
+    <section className="reader-image-lightbox__frame" role="dialog" aria-modal="true" aria-label={image.alt} onClick={(event) => event.stopPropagation()}>
+      <button type="button" className="reader-image-lightbox__close" onClick={onClose} autoFocus aria-label="关闭图片预览">×</button>
+      <img src={image.src} alt={image.alt} />
+    </section>
+  </div>;
 }
 
 type AiMessage = { role: "user" | "assistant"; text: string; error?: boolean };
