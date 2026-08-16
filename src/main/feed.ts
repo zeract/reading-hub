@@ -9,6 +9,13 @@ const parser = new RSSParser({
   }
 });
 
+/**
+ * Bumped when feed-level metadata parsing changes. Existing RSS sources are
+ * replayed once so cached cards can receive newly supported fields, then
+ * resume normal conditional requests.
+ */
+export const RSS_METADATA_REVISION = 1;
+
 export function looksLikeFeed(contentType: string, text: string): boolean {
   return /(?:rss|atom|feed\+json|xml)/i.test(contentType) || /^\s*<(?:\?xml[^>]*>)?\s*<(rss|feed)\b/i.test(text) || /^\s*\{/.test(text);
 }
@@ -25,7 +32,7 @@ export async function parseFeed(text: string, feedUrl: string): Promise<{ title:
       url,
       title,
       author: compactText(item.creator || (item as any).author, 120),
-      publishedAt: parsePublishedAt(item.isoDate || item.pubDate),
+      publishedAt: parsePublishedAt(item.isoDate) ?? parsePublishedAt(item.pubDate),
       summary: compactText(item.contentSnippet || item.content || item.summary, 500),
       imageUrl: toAbsoluteUrl((item as any).mediaContent?.[0]?.$.url || item.enclosure?.url, feedUrl)
     });
@@ -45,7 +52,7 @@ function parseJsonFeed(text: string, feedUrl: string): { title: string; entries:
       url,
       title,
       author: compactText(item.authors?.[0]?.name || item.author?.name, 120),
-      publishedAt: parsePublishedAt(item.date_published || item.date_modified),
+      publishedAt: parsePublishedAt(item.date_published) ?? parsePublishedAt(item.date_modified),
       summary: compactText(item.summary || item.content_text || stripHtml(item.content_html), 500),
       imageUrl: toAbsoluteUrl(item.image || item.banner_image, feedUrl)
     });

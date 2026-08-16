@@ -117,6 +117,17 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("persists a connector metadata replay revision", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/metadata", title: "Metadata", kind: "rss", pollingEnabled: true });
+
+    const updated = db.updateMetadataRevision(source.id, 1);
+
+    expect(updated.metadataRevision).toBe(1);
+    expect(db.getSource(source.id)?.metadataRevision).toBe(1);
+    db.close();
+  });
+
   it("persists editable source metadata and schedules the selected refresh cadence", () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/feed", title: "Old title", kind: "rss", pollingEnabled: true });

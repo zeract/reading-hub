@@ -37,6 +37,7 @@ type SourceRow = {
   connector_id?: ConnectorId | null;
   account_id?: string | null;
   config_json?: string | null;
+  metadata_revision?: number | null;
 };
 
 type EntryRow = {
@@ -104,6 +105,7 @@ function sourceFromRow(row: SourceRow): Source {
     connectorId: row.connector_id ?? row.kind,
     accountId: row.account_id ?? undefined,
     config: parseJsonRecord(row.config_json),
+    metadataRevision: toOptionalNumber(row.metadata_revision ?? null),
     status: row.status,
     extractionRule: row.extraction_rule ? JSON.parse(row.extraction_rule) : undefined,
     pollingEnabled: Boolean(row.polling_enabled),
@@ -210,6 +212,7 @@ export class ReadingDatabase {
         kind TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
         extraction_rule TEXT,
+        metadata_revision INTEGER,
         polling_enabled INTEGER NOT NULL DEFAULT 1,
         refresh_interval_minutes INTEGER,
         etag TEXT,
@@ -310,6 +313,7 @@ export class ReadingDatabase {
     this.ensureColumn("sources", "account_id", "TEXT");
     this.ensureColumn("sources", "config_json", "TEXT");
     this.ensureColumn("sources", "refresh_interval_minutes", "INTEGER");
+    this.ensureColumn("sources", "metadata_revision", "INTEGER");
     this.ensureColumn("entries", "observed_at", "INTEGER");
     this.ensureColumn("entries", "provider_id", "TEXT");
     this.ensureColumn("entries", "external_id", "TEXT");
@@ -764,6 +768,12 @@ export class ReadingDatabase {
         updated_at = ? WHERE id = ?`)
       .run(status, update.etag ?? null, update.lastModified ?? null, now, nextCheckAt, emptyCount, now, source.id);
     return this.getSource(source.id)!;
+  }
+
+  updateMetadataRevision(sourceId: string, metadataRevision: number): Source {
+    this.db.prepare("UPDATE sources SET metadata_revision = ?, updated_at = ? WHERE id = ?")
+      .run(metadataRevision, Date.now(), sourceId);
+    return this.getSource(sourceId)!;
   }
 
   markFailure(source: Source, message: string): Source {

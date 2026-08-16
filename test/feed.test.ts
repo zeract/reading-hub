@@ -8,7 +8,12 @@ describe("feed parser", () => {
       "https://example.com/feed.xml"
     );
     expect(feed.title).toBe("测试订阅");
-    expect(feed.entries).toEqual([expect.objectContaining({ title: "第一条", url: "https://example.com/first", summary: "第一条摘要" })]);
+    expect(feed.entries).toEqual([expect.objectContaining({
+      title: "第一条",
+      url: "https://example.com/first",
+      summary: "第一条摘要",
+      publishedAt: Date.UTC(2026, 7, 14)
+    })]);
   });
 
   it("accepts JSON Feed", async () => {

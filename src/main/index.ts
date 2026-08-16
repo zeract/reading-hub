@@ -28,6 +28,7 @@ let tray: Tray | undefined;
 let quitting = false;
 const APPLICATION_NAME = "Reading Hub";
 const USER_DATA_DIRECTORY = "reading-hub";
+const readerAuditMode = process.env.READING_HUB_READER_AUDIT === "1";
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 
 // productName only applies after packaging. Set the runtime identity as well so
@@ -35,7 +36,14 @@ const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 // Keep the legacy data directory so a branding change never hides the user's
 // existing sources, reading state, local sessions, or Keychain references.
 app.setName(APPLICATION_NAME);
-app.setPath("userData", path.join(app.getPath("appData"), USER_DATA_DIRECTORY));
+const persistentUserDataPath = path.join(app.getPath("appData"), USER_DATA_DIRECTORY);
+// Reader audits deliberately run alongside a development instance. Chromium
+// otherwise aborts before auditing because both processes contend for the
+// profile's SingletonLock. The audit still reads the normal database below;
+// only its transient Electron profile is isolated in the OS temp directory.
+app.setPath("userData", readerAuditMode
+  ? path.join(app.getPath("temp"), `reading-hub-reader-audit-${process.pid}`)
+  : persistentUserDataPath);
 process.title = APPLICATION_NAME;
 
 function applicationIcon() {
@@ -263,7 +271,7 @@ async function bootstrap(): Promise<void> {
 }
 
 async function runReaderAudit(): Promise<void> {
-  const databasePath = process.env.READING_HUB_DB_PATH || path.join(app.getPath("userData"), "reading-hub.sqlite");
+  const databasePath = process.env.READING_HUB_DB_PATH || path.join(persistentUserDataPath, "reading-hub.sqlite");
   const reportPath = process.env.READING_HUB_AUDIT_REPORT;
   if (reportPath) await writeFile(`${reportPath}.starting`, `${new Date().toISOString()}\n`, "utf8");
   // Keep Electron's event loop alive between isolated page windows. Without a
@@ -283,7 +291,6 @@ async function runReaderAudit(): Promise<void> {
   }
 }
 
-const readerAuditMode = process.env.READING_HUB_READER_AUDIT === "1";
 // Development restarts can overlap briefly on macOS. Only the first app may
 // own the UI; a subsequent invocation focuses it and exits instead of opening
 // another Reading Hub window. Audits deliberately bypass this lock so they can

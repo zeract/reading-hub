@@ -32,6 +32,8 @@ export interface Source {
   connectorId?: ConnectorId;
   accountId?: string;
   config?: Record<string, unknown>;
+  /** Internal connector metadata schema revision; never user-configurable. */
+  metadataRevision?: number;
   status: SourceStatus;
   extractionRule?: ExtractionRule;
   pollingEnabled: boolean;
@@ -178,6 +180,8 @@ export interface SyncResult {
   etag?: string;
   lastModified?: string;
   extractionRule?: ExtractionRule;
+  /** Persisted by the host after a connector has replayed upgraded metadata. */
+  metadataRevision?: number;
 }
 
 export type NormalizedEntry = Entry;

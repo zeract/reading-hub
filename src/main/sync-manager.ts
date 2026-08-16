@@ -64,9 +64,12 @@ export class SyncManager {
         const connector = this.registry.get(subscription.connectorId);
         if (connector.manifest.requiresAccount && !account) throw new Error(`${connector.manifest.displayName} 需要重新授权。`);
         const outcome = await connector.sync({ source, subscription, account, checkpoint: this.db.getCheckpoint(subscription.id) });
-        const effectiveSource = connectorId === "generic" && outcome.extractionRule
+        let effectiveSource = connectorId === "generic" && outcome.extractionRule
           ? this.db.replaceAutomaticRule(source.id, outcome.extractionRule)
           : source;
+        if (outcome.metadataRevision !== undefined) {
+          effectiveSource = this.db.updateMetadataRevision(effectiveSource.id, outcome.metadataRevision);
+        }
         const inserted = outcome.notModified ? 0 : this.saveRawEntries(effectiveSource, outcome.entries);
         if (outcome.checkpoint) this.db.saveCheckpoint(subscription.id, outcome.checkpoint);
         const updated = this.db.markSuccess(effectiveSource, {

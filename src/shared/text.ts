@@ -8,7 +8,11 @@ export function compactText(value?: string, max = 500): string | undefined {
 export function parsePublishedAt(value?: string): number | undefined {
   if (!value) return undefined;
   const text = value.replace(/\s+/g, " ").trim();
-  const isoDate = text.match(/\b(20\d{2})[./-](\d{1,2})[./-](\d{1,2})\b/);
+  // An ISO timestamp continues with `T`, which is also a word character, so a
+  // trailing word boundary would reject values such as `2026-08-16T12:00:00Z`.
+  // Accept only a date on its own or a date followed by the normal timestamp
+  // separator; this keeps unrelated strings from being treated as dates.
+  const isoDate = text.match(/\b(20\d{2})[./-](\d{1,2})[./-](\d{1,2})(?=$|[Tt\s])/);
   if (isoDate) return dateAtUtc(isoDate[1], isoDate[2], isoDate[3]);
 
   const chineseDate = text.match(/(20\d{2})年(\d{1,2})月(\d{1,2})/);

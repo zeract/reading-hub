@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Connector, Entry, ExtractionRule, ProbeResult, RawEntry, Source } from "../shared/types";
 import { canonicalizeUrl, contentHash } from "../shared/url";
 import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage, withPublicationDateRevision } from "./extractor";
-import { parseFeed } from "./feed";
+import { parseFeed, RSS_METADATA_REVISION } from "./feed";
 import { PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
 import { SourceProbe } from "./source-probe";
@@ -13,6 +13,7 @@ export interface FetchOutcome {
   etag?: string;
   lastModified?: string;
   extractionRule?: ExtractionRule;
+  metadataRevision?: number;
 }
 
 abstract class BaseConnector implements Connector {
@@ -53,13 +54,21 @@ export class RssConnector extends BaseConnector {
   }
 
   async fetchWithMetadata(source: Source): Promise<FetchOutcome> {
-    const response = await this.http.getText(source.url, { etag: source.etag, lastModified: source.lastModified });
+    // A 304 response contains no feed body to replay. After a metadata-parser
+    // upgrade, deliberately make one normal public request so existing cards
+    // can be enriched; the revision prevents this from recurring on refresh.
+    const needsMetadataReplay = source.metadataRevision !== RSS_METADATA_REVISION;
+    const response = await this.http.getText(
+      source.url,
+      needsMetadataReplay ? undefined : { etag: source.etag, lastModified: source.lastModified }
+    );
     if (response.status === 304) return { entries: [], notModified: true };
     return {
       entries: (await parseFeed(response.text, response.url)).entries,
       notModified: false,
       etag: response.etag,
-      lastModified: response.lastModified
+      lastModified: response.lastModified,
+      metadataRevision: RSS_METADATA_REVISION
     };
   }
 }
