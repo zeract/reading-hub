@@ -45,9 +45,20 @@ export function extractGenericPage(html: string, pageUrl: string, existingRule?:
  * only simple automatically-generated roots may self-heal.
  */
 export const AUTOMATIC_RULE_REVISION = 2;
+/**
+ * Bump this only when the page-level publish-date parser gains a new safe
+ * capability. Generic sources then make one unconditional request so entries
+ * collected by an older parser can gain their real publication dates.
+ */
+export const PUBLICATION_DATE_REVISION = 1;
 
 function withAutomaticRuleRevision(rule: ExtractionRule): ExtractionRule {
   return rule.autoRepairRevision === AUTOMATIC_RULE_REVISION ? rule : { ...rule, autoRepairRevision: AUTOMATIC_RULE_REVISION };
+}
+
+export function withPublicationDateRevision(rule?: ExtractionRule): ExtractionRule {
+  const base = rule ?? { version: 1 };
+  return base.publicationDateRevision === PUBLICATION_DATE_REVISION ? base : { ...base, publicationDateRevision: PUBLICATION_DATE_REVISION };
 }
 
 function shouldReplaceNarrowAutomaticRule(
@@ -272,6 +283,59 @@ function entryFromElement($: ReturnType<typeof load>, element: any, pageUrl: str
   };
 }
 
+/**
+ * Finds the publication date of one article document without treating dates
+ * from an arbitrary body paragraph, related card, or footer as the article's
+ * own date. The fallback is intentionally limited to the title's header.
+ */
+export function extractPagePublishedAt($: ReturnType<typeof load>): number | undefined {
+  const structuredSelectors = [
+    "meta[property='article:published_time']",
+    "meta[property='og:published_time']",
+    "meta[itemprop='datePublished']",
+    "meta[name='datePublished']",
+    "meta[name='publishdate']",
+    "meta[name='date']",
+    "meta[name='DC.date']",
+    "meta[name='DC.Date']",
+    "[itemprop='datePublished'][content]",
+    "[data-published-at]",
+    "[data-published]"
+  ];
+  for (const selector of structuredSelectors) {
+    const date = parsePublishedAt(nodeDateValue($, $(selector).first()));
+    if (date !== undefined) return date;
+  }
+
+  const title = $("h1").first();
+  const titleHeader = title.closest("header");
+  const articleHeader = title.closest("article").children("header").first();
+  const dateScopes = [titleHeader, articleHeader].filter((scope, index, all) => scope.length && all.findIndex((candidate) => candidate.get(0) === scope.get(0)) === index);
+  for (const scope of dateScopes) {
+    for (const node of scope.find("time[datetime], time[dateTime]").toArray()) {
+      const date = parsePublishedAt(nodeDateValue($, $(node)));
+      if (date !== undefined) return date;
+    }
+    const dateLikeChildren = scope.find("[class], [id]").filter((_index, node) => {
+      const identity = `${$(node).attr("class") || ""} ${$(node).attr("id") || ""}`;
+      return /(date|publish|time|byline|metadata|post-meta|entry-meta|article-meta)/i.test(identity);
+    });
+    for (const node of dateLikeChildren.toArray()) {
+      const date = parsePublishedAt(nodeDateValue($, $(node)));
+      if (date !== undefined) return date;
+    }
+  }
+  return undefined;
+}
+
+function nodeDateValue($: ReturnType<typeof load>, node: any): string | undefined {
+  const childText = node.contents().toArray()
+    .map((child: any) => compactText($(child).text(), 240))
+    .filter((value: string | undefined): value is string => Boolean(value))
+    .join(" ");
+  return node.attr("content") || node.attr("datetime") || node.attr("dateTime") || node.attr("data-published-at") || node.attr("data-published") || compactText(childText || node.text(), 240);
+}
+
 function findSelfOrDescendant(root: any, selector: string) {
   return root.is(selector) ? root : root.find(selector).first();
 }
@@ -301,5 +365,5 @@ function openGraphFallback($: ReturnType<typeof load>, pageUrl: string, title: s
   const url = toAbsoluteUrl($("meta[property='og:url']").attr("content"), pageUrl) || pageUrl;
   const description = compactText($("meta[property='og:description'],meta[name='description']").first().attr("content"), 500);
   const imageUrl = toAbsoluteUrl($("meta[property='og:image']").attr("content"), pageUrl);
-  return title ? { url, title, summary: description, imageUrl } : undefined;
+  return title ? { url, title, summary: description, imageUrl, publishedAt: extractPagePublishedAt($) } : undefined;
 }

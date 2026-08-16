@@ -7,6 +7,7 @@ import { inlineDollarMathAt } from "../shared/tex";
 import { assertPublicUrl, toAbsoluteUrl } from "../shared/url";
 import type { Entry, ReaderArticle, ReaderRenderProfile, Source } from "../shared/types";
 import { PublicHttpClient } from "./http";
+import { extractPagePublishedAt } from "./extractor";
 import { ScientificMathRenderer } from "./mathjax-renderer";
 import type { PageRenderer } from "./page-renderer";
 import { RobotsDisallowedError } from "./robots";
@@ -202,10 +203,7 @@ export function extractReaderArticle(html: string, pageUrl: string, entry: Entry
       entry.author,
     160
   );
-  const publishedAt = parsePublishedAt(
-    $("meta[property='article:published_time'], meta[itemprop='datePublished'], time[datetime]").first().attr("content") ||
-      $("time[datetime]").first().attr("datetime")
-  ) || content.publishedAt || entry.publishedAt;
+  const publishedAt = extractPagePublishedAt($) || content.publishedAt || entry.publishedAt;
   const coverImageUrl = safeUrl(
     $("meta[property='og:image'], meta[name='twitter:image']").first().attr("content") || entry.imageUrl,
     pageUrl

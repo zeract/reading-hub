@@ -21,6 +21,16 @@ const entry: Entry = {
 };
 
 describe("article reader extraction", () => {
+  it("uses the same safe page-date parser as source collection", () => {
+    const result = extractReaderArticle(
+      `<article><header class="post-header"><h1>带发布日期的文章</h1><div class="post-byline"><span>作者</span><span>February 4, 2024</span></div></header><p>${"正文内容 ".repeat(30)}</p></article>`,
+      entry.url,
+      entry
+    );
+
+    expect(result?.article.publishedAt).toBe(Date.UTC(2024, 1, 4));
+  });
+
   it("keeps the complete article body and normalises relative images without allowing executable markup", () => {
     const longTitle = `完整标题 ${"不会被截断 ".repeat(40)}`.trim();
     const result = extractReaderArticle(

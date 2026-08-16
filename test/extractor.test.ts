@@ -27,6 +27,29 @@ describe("generic-page extractor", () => {
     expect(result.confidence).toBeGreaterThan(0.6);
   });
 
+  it("preserves dates from article metadata and a title-header byline in single-page fallbacks", () => {
+    const nathan = extractGenericPage(
+      `<meta property="og:title" content="How to Fix Hugo's iOS Code-Block Text-Size Rendering Issue"><meta property="og:url" content="/posts/fixing-ios-codeblocks/"><article><header class="post-header"><h1>How to Fix Hugo's iOS Code-Block Text-Size Rendering Issue</h1><div class="post-byline"><span>Nathan Barry</span><span>February 4, 2024</span></div></header><p>Article content, whose later table includes unrelated historical dates that must not win.</p></article>`,
+      "https://nathan.rs/posts/fixing-ios-codeblocks/"
+    );
+    const vllm = extractGenericPage(
+      `<meta property="og:title" content="A Preview of Production-Scale Kimi K3 Support on vLLM"><meta property="og:url" content="/blog/2026-07-22-kimi-k3-preview"><meta property="article:published_time" content="2026-07-22"><article><header><h1>A Preview of Production-Scale Kimi K3 Support on vLLM</h1><time dateTime="2026-07-22">July 22, 2026</time></header></article>`,
+      "https://vllm.ai/blog/2026-07-22-kimi-k3-preview"
+    );
+
+    expect(nathan.entries[0]).toMatchObject({ publishedAt: Date.UTC(2024, 1, 4) });
+    expect(vllm.entries[0]).toMatchObject({ publishedAt: Date.UTC(2026, 6, 22) });
+  });
+
+  it("does not assign a related-card date to an otherwise undated article", () => {
+    const result = extractGenericPage(
+      `<meta property="og:title" content="Undated article"><aside><time datetime="2026-08-16">A related post date</time></aside><article><header><h1>Undated article</h1></header><p>The article itself deliberately has no date.</p></article>`,
+      "https://example.com/undated"
+    );
+
+    expect(result.entries[0]?.publishedAt).toBeUndefined();
+  });
+
   it("recognizes repeated same-origin article links such as research.perplexity.ai", () => {
     const result = extractGenericPage(
       `<main>

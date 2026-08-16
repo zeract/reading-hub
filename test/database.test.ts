@@ -106,6 +106,17 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("fills a missing publication time when an existing source is replayed", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/replay", title: "Replay", kind: "generic", pollingEnabled: true });
+    const original = entry(source.id, "已收集文章", { canonicalUrl: "https://example.com/replay/article", url: "https://example.com/replay/article", createdAt: 1_900 });
+    db.saveEntries([original]);
+    db.saveEntries([{ ...original, id: crypto.randomUUID(), publishedAt: 1_700 }]);
+
+    expect(db.listEntries(source.id)[0]).toMatchObject({ publishedAt: 1_700 });
+    db.close();
+  });
+
   it("persists editable source metadata and schedules the selected refresh cadence", () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/feed", title: "Old title", kind: "rss", pollingEnabled: true });

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Connector, Entry, ExtractionRule, ProbeResult, RawEntry, Source } from "../shared/types";
 import { canonicalizeUrl, contentHash } from "../shared/url";
-import { AUTOMATIC_RULE_REVISION, extractGenericPage } from "./extractor";
+import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage, withPublicationDateRevision } from "./extractor";
 import { parseFeed } from "./feed";
 import { PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
@@ -80,10 +80,11 @@ export class GenericConnector extends BaseConnector {
   }
 
   async fetchWithMetadata(source: Source): Promise<FetchOutcome> {
-    const needsLegacyRuleAudit = source.extractionRule && source.extractionRule.autoRepairRevision !== AUTOMATIC_RULE_REVISION;
+    const needsLegacyRuleAudit = Boolean(source.extractionRule?.itemRootSelector && source.extractionRule.autoRepairRevision !== AUTOMATIC_RULE_REVISION);
+    const needsPublicationDateAudit = source.extractionRule?.publicationDateRevision !== PUBLICATION_DATE_REVISION;
     const response = source.extractionRule?.rendererRequired && this.renderer
       ? { url: source.url, text: await this.renderer.render(source.url) }
-      : await this.http.getText(source.url, needsLegacyRuleAudit ? undefined : { etag: source.etag, lastModified: source.lastModified });
+      : await this.http.getText(source.url, needsLegacyRuleAudit || needsPublicationDateAudit ? undefined : { etag: source.etag, lastModified: source.lastModified });
     if ("status" in response && response.status === 304) return { entries: [], notModified: true };
     const extraction = extractGenericPage(response.text, response.url, source.extractionRule);
     return {
@@ -91,7 +92,9 @@ export class GenericConnector extends BaseConnector {
       notModified: false,
       etag: "etag" in response ? response.etag : undefined,
       lastModified: "lastModified" in response ? response.lastModified : undefined,
-      extractionRule: extraction.rule
+      // A metadata-only rule is safe: it does not constrain item detection,
+      // but records that existing entries have been replayed by this parser.
+      extractionRule: withPublicationDateRevision(extraction.rule)
     };
   }
 }

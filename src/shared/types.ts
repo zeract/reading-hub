@@ -12,6 +12,8 @@ export interface ExtractionRule {
   version: 1;
   /** Internal revision used to perform one safe automatic rule audit. */
   autoRepairRevision?: number;
+  /** Internal revision used to re-read published dates after parser upgrades. */
+  publicationDateRevision?: number;
   itemRootSelector?: string;
   titleSelector?: string;
   timeSelector?: string;
