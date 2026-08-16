@@ -90,6 +90,22 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("filters the timeline by publication time and falls back to collection time", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/range", title: "Range", kind: "rss", pollingEnabled: true });
+    db.saveEntries([
+      entry(source.id, "范围前", { canonicalUrl: "https://example.com/range/before", url: "https://example.com/range/before", publishedAt: 999, createdAt: 999 }),
+      entry(source.id, "范围内发布时间", { canonicalUrl: "https://example.com/range/published", url: "https://example.com/range/published", publishedAt: 1_500, createdAt: 10 }),
+      entry(source.id, "范围内收集时间", { canonicalUrl: "https://example.com/range/observed", url: "https://example.com/range/observed", observedAt: 1_600, createdAt: 10 }),
+      entry(source.id, "范围结束边界", { canonicalUrl: "https://example.com/range/end", url: "https://example.com/range/end", publishedAt: 2_000, createdAt: 2_000 })
+    ]);
+
+    expect(db.listEntries({ sourceId: source.id, startAt: 1_000, endAt: 2_000 }).map((item) => item.title))
+      .toEqual(["范围内发布时间", "范围内收集时间"]);
+    expect(db.listEntries({ startAt: 2_000, endAt: 1_000 })).toEqual([]);
+    db.close();
+  });
+
   it("persists editable source metadata and schedules the selected refresh cadence", () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/feed", title: "Old title", kind: "rss", pollingEnabled: true });

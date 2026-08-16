@@ -101,6 +101,37 @@ html, body, #root { height: 100%; overflow: hidden; }
 .reader--scientific .article-body mjx-container { color: #242923; }
 .article-body .reader-math-source { display: inline-block; max-width: 100%; overflow-x: auto; padding: .35em .5em; border: 1px solid #e0dfd4; border-radius: 7px; background: #f3f2eb; color: #5a6257; white-space: pre-wrap; font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: .76em; }
 .article-body .reader-math-source--block { display: block; width: max-content; margin: 1.15em 0; }
+.timeline-filterbar {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  margin: -12px 0 24px;
+  padding: 12px 13px;
+  border: 1px solid #dce2d8;
+  border-radius: 11px;
+  background: #f7f9f3;
+}
+.timeline-filterbar label { display: grid; min-width: 0; gap: 4px; color: #566058; font-size: 12px; font-weight: 700; }
+.timeline-filterbar label > span { color: #69736a; font-size: 11px; }
+.timeline-filterbar select, .timeline-filterbar input {
+  min-width: 0;
+  min-height: 34px;
+  box-sizing: border-box;
+  padding: 6px 9px;
+  border: 1px solid #ccd4c8;
+  border-radius: 7px;
+  background: #fffefa;
+  color: #2c362c;
+  font: inherit;
+}
+.timeline-filterbar select { min-width: 126px; }
+.timeline-filter-custom { display: flex; flex-wrap: wrap; gap: 8px; }
+.timeline-filter-custom label { min-width: 130px; }
+.timeline-filter-note { flex: 1 1 210px; margin: 0; padding-bottom: 7px; color: #647063; font-size: 11px; line-height: 1.45; }
+.timeline-filter-note.is-error { color: #a23e39; font-weight: 700; }
+.timeline-filter-clear { min-height: 34px; padding: 6px 9px; border: 1px solid #bdcbbb; border-radius: 7px; background: transparent; color: #466044; font-size: 12px; font-weight: 700; }
+.timeline-filter-clear:hover { background: #ebf2e7; }
 .reader-loading, .reader-failure, .reader-embedded { width: min(100%, 600px); margin: 13vh auto 0; color: #657064; text-align: center; }.reader-loading p, .reader-failure p, .reader-embedded p { line-height: 1.7; }.loading-mark { display: block; width: 30px; height: 30px; margin: 0 auto 16px; border: 3px solid #d4dec8; border-top-color: #405b43; border-radius: 50%; animation: reader-spin .85s linear infinite; }.reader-failure h1, .reader-embedded h1 { color: #2c302a; font: 30px/1.2 Georgia, "Songti SC", serif; }.reader-failure div { display: flex; justify-content: center; gap: 10px; margin-top: 22px; }.reader-failure button, .reader-embedded button, .primary-action { padding: 9px 13px; border: 1px solid #ccd2c8; border-radius: 7px; background: #fffefa; color: #334037; }.reader-failure .primary-action, .reader-embedded .primary-action { border-color: #273228; background: #273228; color: #fff; }
 
 /* Connector dialogs share the same constrained controls as source setup. */
@@ -129,4 +160,4 @@ html, body, #root { height: 100%; overflow: hidden; }
 .ai-question { display: grid; gap: 6px; padding: 12px 16px 16px; border-top: 1px solid #e3e8df; background: #fbfcf8; }.ai-question textarea { min-height: 72px; resize: vertical; padding: 8px 9px; font: 12px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }.ai-question button { justify-self: end; }
 @keyframes reader-spin { to { transform: rotate(360deg); } }
 
-@media (max-width: 860px) { .reader-toolbar { grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; padding: 0 14px; }.reader-toolbar p { display: none; }.reader-scroll { padding: 30px 24px 56px; }.reader-view { --reader-base-size: 17px; }.reader-view[data-reader-preset="compact"] { --reader-base-size: 15px; }.reader-cover, .article-body img { max-height: min(300px, 42vh); } }
+@media (max-width: 860px) { .reader-toolbar { grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; padding: 0 14px; }.reader-toolbar p { display: none; }.reader-scroll { padding: 30px 24px 56px; }.reader-view { --reader-base-size: 17px; }.reader-view[data-reader-preset="compact"] { --reader-base-size: 15px; }.reader-cover, .article-body img { max-height: min(300px, 42vh); }.timeline-filterbar { align-items: stretch; }.timeline-filter-note { flex-basis: 100%; padding-bottom: 0; }.timeline-filter-clear { margin-left: auto; } }

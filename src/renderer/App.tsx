@@ -1,8 +1,9 @@
-import { type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type CalibrationResult, type Entry, type Followee, type ProbeResult, type ReaderArticle, type Source, type SourceKind, type SubscriptionDraft } from "../shared/types";
 import { renderAiTeX, tokenizeAiMath } from "./ai-math";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { requiresSourceReload } from "./source-selection";
+import { DEFAULT_TIMELINE_FILTER, defaultCustomTimelineDates, resolveTimelineRange, timelineQuery, type TimelineRangeFilter, type TimelineRangePreset } from "./timeline-filter";
 
 type PendingPreview = { token: string; probe: ProbeResult };
 type ReaderPreset = "reading" | "compact";
@@ -37,9 +38,14 @@ export function App() {
   const [activeRuleSource, setActiveRuleSource] = useState<Source>();
   const [editingSource, setEditingSource] = useState<Source>();
   const [activeSourceId, setActiveSourceId] = useState<string>();
+  const [timelineFilter, setTimelineFilter] = useState<TimelineRangeFilter>(DEFAULT_TIMELINE_FILTER);
   const [readingEntry, setReadingEntry] = useState<Entry>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [windowFullscreen, setWindowFullscreen] = useState(false);
+  const reloadSequence = useRef(0);
+
+  const timelineRange = useMemo(() => resolveTimelineRange(timelineFilter), [timelineFilter]);
+  const entriesQuery = useMemo(() => timelineQuery(activeSourceId, timelineRange), [activeSourceId, timelineRange]);
 
   useEffect(() => {
     let mounted = true;
@@ -54,15 +60,19 @@ export function App() {
   }, []);
 
   const reload = useCallback(async () => {
+    const sequence = ++reloadSequence.current;
     const [nextSources, nextEntries, nextFollowees] = await Promise.all([
       window.reader.listSources(),
-      window.reader.listEntries(activeSourceId),
+      timelineRange.invalid ? Promise.resolve([]) : window.reader.listEntries(entriesQuery),
       window.reader.listFollowees()
     ]);
+    // A source or time-range change may have started a newer request while an
+    // older IPC call was still in flight. Never replace the newest result.
+    if (sequence !== reloadSequence.current) return;
     setSources(nextSources);
     setEntries(nextEntries);
     setFollowees(nextFollowees);
-  }, [activeSourceId]);
+  }, [entriesQuery, timelineRange.invalid]);
 
   useEffect(() => {
     void reload();
@@ -136,6 +146,13 @@ export function App() {
     }
     setEntries([]);
     setActiveSourceId(sourceId);
+  }
+
+  function chooseTimelinePreset(preset: TimelineRangePreset) {
+    setTimelineFilter((current) => {
+      if (preset !== "custom" || current.startDate || current.endDate) return { ...current, preset };
+      return { preset, ...defaultCustomTimelineDates() };
+    });
   }
 
   async function deleteSource(source: Source) {
@@ -214,9 +231,20 @@ export function App() {
       /> : <section className="timeline">
         <header><div><p className="eyebrow">{activeSource ? "来源内容" : "本地优先阅读器"}</p><h1>{activeSource?.title || "最新内容"}</h1></div><span className="count">{entries.filter((entry) => !entry.read).length} 未读</span></header>
         {notice && <div className="notice">{notice}<button onClick={() => setNotice(undefined)}>×</button></div>}
+        <section className="timeline-filterbar" aria-label="时间筛选">
+          <label><span>时间范围</span><select value={timelineFilter.preset} onChange={(event) => chooseTimelinePreset(event.target.value as TimelineRangePreset)}>
+            <option value="all">全部时间</option><option value="today">今天</option><option value="sevenDays">最近 7 天</option><option value="thirtyDays">最近 30 天</option><option value="ninetyDays">最近 90 天</option><option value="thisYear">今年</option><option value="custom">自定义日期</option>
+          </select></label>
+          {timelineFilter.preset === "custom" && <div className="timeline-filter-custom">
+            <label><span>开始日期</span><input type="date" value={timelineFilter.startDate} onChange={(event) => setTimelineFilter((current) => ({ ...current, startDate: event.target.value }))} /></label>
+            <label><span>结束日期</span><input type="date" value={timelineFilter.endDate} onChange={(event) => setTimelineFilter((current) => ({ ...current, endDate: event.target.value }))} /></label>
+          </div>}
+          <p className={`timeline-filter-note${timelineRange.invalid ? " is-error" : ""}`}>{timelineRange.invalid ? "结束日期不能早于开始日期。" : `显示：${timelineRange.label}；按发布时间筛选，缺失时按收集时间。`}</p>
+          {timelineFilter.preset !== "all" && <button type="button" className="timeline-filter-clear" onClick={() => setTimelineFilter(DEFAULT_TIMELINE_FILTER)}>清除筛选</button>}
+        </section>
         <div className="entry-list">
           {entries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} onRead={updateEntry} onOpen={openReader} onDismiss={dismissEntry} busy={busy} />)}
-          {!entries.length && <div className="empty-state"><h2>{activeSource ? "该来源还没有内容" : "还没有内容"}</h2><p>{activeSource ? "可以刷新来源，或使用“自动校准”重新识别内容列表。" : "添加 RSS、公开文章列表页，或粘贴小红书分享链接开始。"}</p></div>}
+          {!entries.length && <div className="empty-state"><h2>{timelineRange.hasRange ? "该时间范围没有内容" : activeSource ? "该来源还没有内容" : "还没有内容"}</h2><p>{timelineRange.hasRange ? "可以调整日期范围，或清除时间筛选以查看全部内容。" : activeSource ? "可以刷新来源，或使用“自动校准”重新识别内容列表。" : "添加 RSS、公开文章列表页，或粘贴小红书分享链接开始。"}</p></div>}
         </div>
       </section>}
 

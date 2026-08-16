@@ -81,6 +81,18 @@ export interface Entry extends RawEntry {
   origins?: ContentOrigin[];
 }
 
+/**
+ * Timeline query options. `endAt` is exclusive so a selected end date can
+ * safely include the entire local calendar day without relying on 23:59:59.
+ */
+export interface EntryListQuery {
+  sourceId?: string;
+  startAt?: number;
+  endAt?: number;
+  /** Omit the limit for an explicitly bounded time-range query. */
+  limit?: number;
+}
+
 export interface ContentOrigin {
   sourceId: string;
   providerId: ConnectorId;

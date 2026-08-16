@@ -21,7 +21,7 @@ import { InAppArticleViewer } from "./in-app-article-viewer";
 import { auditLocalReader } from "./reader-audit";
 import { assertPublicUrl } from "../shared/url";
 import { RobotsDisallowedError } from "./robots";
-import type { AiProviderConfiguration, AiQuestionRequest, ExtractionRule, Source, SourceSettings, SyncResult } from "../shared/types";
+import type { AiProviderConfiguration, AiQuestionRequest, EntryListQuery, ExtractionRule, Source, SourceSettings, SyncResult } from "../shared/types";
 
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
@@ -201,7 +201,7 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle("source:update-settings", (_event, id: string, settings: SourceSettings) => sources.updateSettings(id, settings));
   ipcMain.handle("source:update-rule", (_event, id: string, rule: ExtractionRule) => database.updateRule(id, rule));
   ipcMain.handle("source:calibration", (_event, id: string) => sources.calibrate(id));
-  ipcMain.handle("entry:list", (_event, sourceId?: string) => database.listEntries(sourceId));
+  ipcMain.handle("entry:list", (_event, query?: EntryListQuery) => database.listEntries(query));
   ipcMain.handle("entry:read-content", async (_event, entryId: string) => {
     const entry = database.getEntry(entryId);
     if (!entry) throw new Error("这篇内容已不存在。请刷新列表后重试。");

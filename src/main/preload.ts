@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { AiProviderConfiguration, AiProviderId, AiQuestionRequest, ExtractionRule, SourceSettings, SubscriptionDraft } from "../shared/types";
+import type { AiProviderConfiguration, AiProviderId, AiQuestionRequest, EntryListQuery, ExtractionRule, SourceSettings, SubscriptionDraft } from "../shared/types";
 
 contextBridge.exposeInMainWorld("reader", {
   previewSource: (url: string) => ipcRenderer.invoke("source:preview", url),
@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld("reader", {
   updateSourceSettings: (id: string, settings: SourceSettings) => ipcRenderer.invoke("source:update-settings", id, settings),
   updateRule: (id: string, rule: ExtractionRule) => ipcRenderer.invoke("source:update-rule", id, rule),
   calibrateSource: (id: string) => ipcRenderer.invoke("source:calibration", id),
-  listEntries: (sourceId?: string) => ipcRenderer.invoke("entry:list", sourceId),
+  listEntries: (query?: EntryListQuery) => ipcRenderer.invoke("entry:list", query),
   readEntry: (id: string) => ipcRenderer.invoke("entry:read-content", id),
   openEmbeddedEntry: (id: string) => ipcRenderer.invoke("entry:open-embedded", id),
   loadArticleImage: (id: string, imageUrl: string) => ipcRenderer.invoke("entry:load-image", id, imageUrl),

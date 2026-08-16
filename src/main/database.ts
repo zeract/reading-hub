@@ -6,6 +6,7 @@ import type {
   ConnectorId,
   ContentOrigin,
   Entry,
+  EntryListQuery,
   Followee,
   Source,
   SourceInput,
@@ -84,6 +85,15 @@ type SubscriptionRow = {
 };
 
 const toOptionalNumber = (value: number | null): number | undefined => (value === null ? undefined : value);
+
+function finiteTimestamp(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function boundedLimit(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return Math.max(1, Math.min(10_000, Math.floor(value)));
+}
 
 function sourceFromRow(row: SourceRow): Source {
   return {
@@ -542,17 +552,42 @@ export class ReadingDatabase {
     ).map(sourceFromRow);
   }
 
-  listEntries(sourceId?: string, limit = 200): Entry[] {
-    const statement = sourceId
-      ? this.db.prepare(`SELECT id, source_id, canonical_url, original_url, title, author, published_at, summary,
-          image_url, content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity
-          FROM entries WHERE source_id = ? OR EXISTS (SELECT 1 FROM entry_origins WHERE entry_origins.entry_id = entries.id AND entry_origins.source_id = ?)
-          ORDER BY CASE WHEN published_at IS NULL THEN 1 ELSE 0 END ASC, published_at DESC, observed_at DESC, created_at DESC LIMIT ?`)
-      : this.db.prepare(`SELECT id, source_id, canonical_url, original_url, title, author, published_at, summary,
-          image_url, content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity
-          FROM entries
-          ORDER BY CASE WHEN published_at IS NULL THEN 1 ELSE 0 END ASC, published_at DESC, observed_at DESC, created_at DESC LIMIT ?`);
-    const rows = (sourceId ? statement.all(sourceId, sourceId, limit) : statement.all(limit)) as EntryRow[];
+  listEntries(sourceId?: string, limit?: number): Entry[];
+  listEntries(query?: EntryListQuery): Entry[];
+  listEntries(sourceOrQuery?: string | EntryListQuery, legacyLimit = 200): Entry[] {
+    const query: EntryListQuery = typeof sourceOrQuery === "string"
+      ? { sourceId: sourceOrQuery, limit: legacyLimit }
+      : sourceOrQuery ?? { limit: legacyLimit };
+    const startAt = finiteTimestamp(query.startAt);
+    const endAt = finiteTimestamp(query.endAt);
+    if (startAt !== undefined && endAt !== undefined && endAt <= startAt) return [];
+
+    const conditions: string[] = [];
+    const parameters: Array<string | number> = [];
+    if (query.sourceId) {
+      conditions.push(`(entries.source_id = ? OR EXISTS (
+        SELECT 1 FROM entry_origins WHERE entry_origins.entry_id = entries.id AND entry_origins.source_id = ?
+      ))`);
+      parameters.push(query.sourceId, query.sourceId);
+    }
+    // A missing publication time is deliberately represented by the first
+    // observed time (then creation time) throughout the timeline.
+    const timelineTimestamp = "COALESCE(entries.published_at, entries.observed_at, entries.created_at)";
+    if (startAt !== undefined) {
+      conditions.push(`${timelineTimestamp} >= ?`);
+      parameters.push(startAt);
+    }
+    if (endAt !== undefined) {
+      conditions.push(`${timelineTimestamp} < ?`);
+      parameters.push(endAt);
+    }
+    const limit = boundedLimit(query.limit);
+    const statement = this.db.prepare(`SELECT id, source_id, canonical_url, original_url, title, author, published_at, summary,
+      image_url, content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity
+      FROM entries${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""}
+      ORDER BY CASE WHEN published_at IS NULL THEN 1 ELSE 0 END ASC, published_at DESC, observed_at DESC, created_at DESC${limit ? " LIMIT ?" : ""}`);
+    if (limit) parameters.push(limit);
+    const rows = statement.all(...parameters) as EntryRow[];
     return this.withOrigins(rows.map(entryFromRow));
   }
 
