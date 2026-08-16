@@ -978,10 +978,14 @@ function imageSource(element: any, pageUrl: string): string | undefined {
     element.attr("data-actualsrc"),
     element.attr("data-original"),
     element.attr("data-original-src"),
+    // A srcset describes resolution variants of the same image. The reader
+    // has no viewport-specific source selection to preserve, so retain its
+    // largest safe candidate instead of a lazy loader's lower-resolution
+    // data-src placeholder.
+    ...srcsets.map(bestSrcsetUrl),
     element.attr("data-src"),
     element.attr("data-lazy-src"),
     element.attr("data-reader-noscript-src"),
-    ...srcsets.map(bestSrcsetUrl),
     element.attr("src")
   ];
   for (const value of values) {

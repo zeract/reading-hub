@@ -374,7 +374,7 @@ describe("article reader extraction", () => {
     expect(content).toContain("首图图注");
   });
 
-  it("keeps one WordPress noscript/lazy image when both variants are present in a figure", () => {
+  it("keeps the highest-resolution WordPress image when noscript and lazy variants coexist", () => {
     const image = "https://developer-blogs.nvidia.com/wp-content/uploads/2020/11/Figure1-625x125.png";
     const originalImage = "https://developer-blogs.nvidia.com/wp-content/uploads/2020/11/Figure1.png";
     const result = extractReaderArticle(
@@ -392,7 +392,8 @@ describe("article reader extraction", () => {
     );
 
     const content = result?.article.contentHtml || "";
-    expect(load(content)(`img[src='${image}']`)).toHaveLength(1);
+    expect(load(content)(`img[src='${originalImage}']`)).toHaveLength(1);
+    expect(load(content)(`img[src='${image}']`)).toHaveLength(0);
     expect(content).toContain("Figure 1. Roofline 图。");
     expect(content).not.toContain("data:image/svg");
   });
