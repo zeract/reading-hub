@@ -10,6 +10,7 @@ const CODEX_EXTENDED_TIMEOUT_MS = 180_000;
 const MAX_OUTPUT_LENGTH = 40_000;
 const MAX_STDERR_LENGTH = 4_000;
 const DESKTOP_CODEX_COMMAND = "/Applications/ChatGPT.app/Contents/Resources/codex";
+const APP_SERVER_CLIENT_INFO = { name: "reading-hub", title: "Reading Hub", version: "0.1.0" };
 
 export interface CodexCliStatus {
   available: boolean;
@@ -31,7 +32,7 @@ export type CodexCliDeltaListener = (text: string) => void;
 export interface CodexCliRunner {
   status(): Promise<CodexCliStatus>;
   ask(instruction: string, articleContext: string, options: CodexCliOptions): Promise<string>;
-  /** Newer Codex CLIs expose structured JSONL events while a turn is running. */
+  /** Newer Codex CLIs expose incremental agent-message events while a turn is running. */
   askStream?(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener): Promise<string>;
 }
 
@@ -50,7 +51,14 @@ export class LocalCodexCli implements CodexCliRunner {
   async askStream(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener): Promise<string> {
     const { command } = await this.status();
     if (!command) throw new CodexCliError("未检测到本机 Codex CLI。请安装 Codex CLI 并在终端运行 codex 完成登录后重试。");
-    return runCodexStream(command, instruction, articleContext, options, onDelta);
+    try {
+      return await runCodexAppServerStream(command, instruction, articleContext, options, onDelta);
+    } catch (error) {
+      // `exec --json` is not token-streaming, but it remains a compatibility
+      // fallback for an older CLI that has not shipped app-server yet.
+      if (error instanceof CodexAppServerUnavailableError) return runCodexStream(command, instruction, articleContext, options, onDelta);
+      throw error;
+    }
   }
 }
 
@@ -58,6 +66,13 @@ export class CodexCliError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "CodexCliError";
+  }
+}
+
+class CodexAppServerUnavailableError extends Error {
+  constructor() {
+    super("本机 Codex CLI 不支持实时 app-server 协议。");
+    this.name = "CodexAppServerUnavailableError";
   }
 }
 
@@ -110,7 +125,7 @@ function runCodex(command: string, instruction: string, articleContext: string, 
     const timeout = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
-    }, options.effort === "high" || options.effort === "xhigh" || options.effort === "max" ? CODEX_EXTENDED_TIMEOUT_MS : CODEX_TIMEOUT_MS);
+    }, codexTimeout(options));
     const append = (current: string, chunk: Buffer, limit: number) => current.length >= limit
       ? current
       : `${current}${chunk.toString("utf8")}`.slice(0, limit);
@@ -138,9 +153,170 @@ function runCodex(command: string, instruction: string, articleContext: string, 
 }
 
 /**
- * `codex exec --json` emits newline-delimited, structured progress events.
- * Only agent-message events are ever forwarded to the renderer: tool output,
- * paths and diagnostic events remain local to this process.
+ * The app-server protocol emits `item/agentMessage/delta` notifications as
+ * Codex produces text. Unlike `codex exec --json`, whose current JSONL output
+ * can contain only the final `item.completed`, this path provides real-time
+ * reader updates without giving the assistant workspace write access.
+ */
+function runCodexAppServerStream(command: string, instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, codexAppServerArguments(), {
+      cwd: tmpdir(),
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true
+    });
+    let answer = "";
+    let stdoutBuffer = "";
+    let stderr = "";
+    let threadId: string | undefined;
+    let phase: "initialize" | "thread" | "turn" | "receiving" = "initialize";
+    let settled = false;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, codexTimeout(options));
+    const append = (current: string, chunk: Buffer, limit: number) => current.length >= limit
+      ? current
+      : `${current}${chunk.toString("utf8")}`.slice(0, limit);
+    const settle = (result: { answer?: string; error?: Error }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.stdin.end();
+      if (!child.killed) child.kill("SIGTERM");
+      if (result.error) reject(result.error);
+      else resolve(result.answer || "");
+    };
+    const send = (id: number, method: string, params: Record<string, unknown>) => {
+      if (!child.stdin.writable || settled) return;
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    };
+    const appendDelta = (delta: string) => {
+      const remaining = MAX_OUTPUT_LENGTH - answer.length;
+      if (remaining <= 0) return;
+      const accepted = delta.slice(0, remaining);
+      if (!accepted) return;
+      answer += accepted;
+      onDelta(accepted);
+    };
+    const acceptSnapshot = (snapshot: string) => {
+      if (!snapshot) return;
+      if (!answer) {
+        appendDelta(snapshot);
+        return;
+      }
+      if (snapshot.startsWith(answer)) {
+        appendDelta(snapshot.slice(answer.length));
+        return;
+      }
+      // Do not briefly duplicate a revised final message in the UI. The
+      // renderer receives the authoritative version in its completion event.
+      answer = snapshot.slice(0, MAX_OUTPUT_LENGTH);
+    };
+    const startThread = () => {
+      phase = "thread";
+      send(2, "thread/start", {
+        cwd: tmpdir(),
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        ephemeral: true,
+        baseInstructions: appServerInstruction(instruction)
+      });
+    };
+    const startTurn = (id: string) => {
+      threadId = id;
+      phase = "turn";
+      send(3, "turn/start", {
+        threadId: id,
+        input: [{ type: "text", text: articleContext, text_elements: [] }],
+        ...(options.model ? { model: options.model } : {}),
+        effort: options.effort
+      });
+    };
+    const acceptMessage = (message: unknown) => {
+      if (!isRecord(message) || settled) return;
+      if ("error" in message && message.error) {
+        const error = phase === "initialize" || phase === "thread"
+          ? new CodexAppServerUnavailableError()
+          : new CodexCliError(codexFailureMessage(stderr));
+        settle({ error });
+        return;
+      }
+      const responseId = message.id;
+      if (responseId === 1 && isRecord(message.result)) {
+        startThread();
+        return;
+      }
+      if (responseId === 2 && isRecord(message.result)) {
+        const thread = isRecord(message.result.thread) ? message.result.thread : undefined;
+        if (typeof thread?.id !== "string") {
+          settle({ error: new CodexAppServerUnavailableError() });
+          return;
+        }
+        startTurn(thread.id);
+        return;
+      }
+      if (responseId === 3 && isRecord(message.result)) {
+        phase = "receiving";
+        return;
+      }
+      if (message.method === "item/agentMessage/delta") {
+        const delta = codexAppServerAgentDelta(message, threadId);
+        if (delta) appendDelta(delta);
+        return;
+      }
+      if (message.method === "item/completed" && isRecord(message.params)) {
+        const item = isRecord(message.params.item) ? message.params.item : undefined;
+        if (item?.type === "agentMessage" && typeof item.text === "string") acceptSnapshot(item.text);
+        return;
+      }
+      if (message.method === "turn/completed" && isRecord(message.params) && message.params.threadId === threadId) {
+        const finalAnswer = answer.trim();
+        settle(finalAnswer ? { answer: finalAnswer } : { error: new CodexCliError("本机 Codex CLI 没有返回可显示的回答，请调整问题后重试。") });
+      }
+    };
+    const consumeLines = (flush = false) => {
+      const lines = stdoutBuffer.split(/\r?\n/);
+      if (flush) stdoutBuffer = "";
+      else stdoutBuffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          acceptMessage(JSON.parse(line));
+        } catch {
+          // App-server diagnostics cannot become model output.
+        }
+      }
+    };
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (stdoutBuffer.length >= MAX_OUTPUT_LENGTH * 2) return;
+      stdoutBuffer = `${stdoutBuffer}${chunk.toString("utf8")}`.slice(0, MAX_OUTPUT_LENGTH * 2);
+      consumeLines();
+    });
+    child.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk, MAX_STDERR_LENGTH); });
+    child.stdin.once("error", () => undefined);
+    child.once("error", () => settle({ error: new CodexAppServerUnavailableError() }));
+    child.once("close", () => {
+      consumeLines(true);
+      if (settled) return;
+      if (timedOut) settle({ error: new CodexCliError("本机 Codex CLI 回答超时，请稍后重试。") });
+      else if (phase === "initialize" || phase === "thread") settle({ error: new CodexAppServerUnavailableError() });
+      else settle({ error: new CodexCliError(codexFailureMessage(stderr)) });
+    });
+    send(1, "initialize", {
+      clientInfo: APP_SERVER_CLIENT_INFO,
+      capabilities: { experimentalApi: false, requestAttestation: false }
+    });
+  });
+}
+
+/**
+ * Compatibility path for older Codex CLIs which do not expose `app-server`.
+ * `exec --json` is structured, but may emit only a completed agent message;
+ * only agent-message output is ever forwarded to the renderer.
  */
 function runCodexStream(command: string, instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -157,7 +333,7 @@ function runCodexStream(command: string, instruction: string, articleContext: st
     const timeout = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
-    }, options.effort === "high" || options.effort === "xhigh" || options.effort === "max" ? CODEX_EXTENDED_TIMEOUT_MS : CODEX_TIMEOUT_MS);
+    }, codexTimeout(options));
     const append = (current: string, chunk: Buffer, limit: number) => current.length >= limit
       ? current
       : `${current}${chunk.toString("utf8")}`.slice(0, limit);
@@ -217,6 +393,33 @@ export function codexExecArguments(instruction: string, options: CodexCliOptions
     ...(jsonEvents ? ["--json"] : []),
     instruction
   ];
+}
+
+/** The local JSON-RPC endpoint delivers `item/agentMessage/delta` events. */
+export function codexAppServerArguments(): string[] {
+  return ["app-server", "--listen", "stdio://"];
+}
+
+/** Keep long reasoning modes useful without allowing a stalled CLI to hang forever. */
+function codexTimeout(options: CodexCliOptions): number {
+  return options.effort === "high" || options.effort === "xhigh" || options.effort === "max"
+    ? CODEX_EXTENDED_TIMEOUT_MS
+    : CODEX_TIMEOUT_MS;
+}
+
+/** App-server receives the article as a turn rather than stdin. */
+function appServerInstruction(instruction: string): string {
+  return `${instruction}\n你只能根据用户这一次发送的文章摘录和问题回答；不得调用工具、读取或写入文件、运行命令或访问网络。`;
+}
+
+/**
+ * Extract one safe visible delta from an app-server notification. The renderer
+ * never receives tool calls, paths, or any other protocol events.
+ */
+export function codexAppServerAgentDelta(message: unknown, expectedThreadId?: string): string | undefined {
+  if (!isRecord(message) || message.method !== "item/agentMessage/delta" || !isRecord(message.params)) return undefined;
+  if (expectedThreadId && message.params.threadId !== expectedThreadId) return undefined;
+  return typeof message.params.delta === "string" ? message.params.delta : undefined;
 }
 
 type CodexMessageEvent = { text: string; snapshot: boolean };

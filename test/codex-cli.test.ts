@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { codexExecArguments } from "../src/main/codex-cli";
+import { codexAppServerAgentDelta, codexAppServerArguments, codexExecArguments } from "../src/main/codex-cli";
 
 describe("local Codex CLI invocation", () => {
   it("uses an explicit model and bounded effort in ephemeral, read-only mode", () => {
@@ -22,10 +22,21 @@ describe("local Codex CLI invocation", () => {
     expect(args).toContain("model_reasoning_effort=max");
   });
 
-  it("uses Codex's structured JSONL mode for streamable assistant messages", () => {
+  it("keeps JSONL exec mode as a bounded compatibility fallback", () => {
     const args = codexExecArguments("解释文章", { effort: "medium" }, true);
     expect(args).toContain("--json");
     expect(args).toContain("--sandbox");
     expect(args).toContain("read-only");
+  });
+
+  it("uses the app-server delta protocol without forwarding non-message events", () => {
+    expect(codexAppServerArguments()).toEqual(["app-server", "--listen", "stdio://"]);
+    expect(codexAppServerAgentDelta({
+      jsonrpc: "2.0",
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", delta: "正在" }
+    }, "thread-1")).toBe("正在");
+    expect(codexAppServerAgentDelta({ method: "item/agentMessage/delta", params: { threadId: "other", delta: "忽略" } }, "thread-1")).toBeUndefined();
+    expect(codexAppServerAgentDelta({ method: "item/started", params: { threadId: "thread-1" } }, "thread-1")).toBeUndefined();
   });
 });

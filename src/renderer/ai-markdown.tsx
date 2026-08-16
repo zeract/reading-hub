@@ -26,6 +26,13 @@ export function AiMarkdownContent({ text }: { text: string }) {
       continue;
     }
 
+    const displayMath = displayMathBlockAt(lines, index);
+    if (displayMath) {
+      blocks.push(<div className="ai-math-block" key={`math-${blocks.length}`}>{renderMathSegment(displayMath.tex, true, `math-${blocks.length}`)}</div>);
+      index = displayMath.nextIndex;
+      continue;
+    }
+
     const heading = line.match(/^\s*(#{1,6})\s+(.+?)\s*#*\s*$/);
     if (heading) {
       const level = heading[1].length;
@@ -92,7 +99,39 @@ function startsBlock(lines: string[], index: number): boolean {
     || /^\s*>\s?/.test(line)
     || Boolean(listKind(line))
     || /^\s{0,3}(?:---+|\*\*\*+|___+)\s*$/.test(line)
-    || isTableDivider(lines[index + 1]);
+    || isTableDivider(lines[index + 1])
+    || Boolean(displayMathBlockAt(lines, index));
+}
+
+type DisplayMathBlock = { tex: string; nextIndex: number };
+
+/**
+ * A model commonly writes a display delimiter on its own line. Parsing the
+ * answer line-by-line used to split that one formula into ordinary text before
+ * the TeX tokenizer could see its closing delimiter. Recognise only explicit,
+ * paired display delimiters at a block boundary—never "formula-looking" text.
+ */
+function displayMathBlockAt(lines: string[], index: number): DisplayMathBlock | undefined {
+  const source = lines.slice(index).join("\n");
+  const opening = source.match(/^\s*(\\\[|\$\$|\\begin\{(align\*?|aligned|equation\*?|gather\*?|gathered|multline\*?|cases|matrix|pmatrix|bmatrix|vmatrix|Vmatrix)\})/);
+  if (!opening) return undefined;
+  const marker = opening[1];
+  const start = opening[0].length - marker.length;
+  const close = marker === "\\["
+    ? "\\]"
+    : marker === "$$"
+      ? "$$"
+      : `\\end{${opening[2]}}`;
+  const closeAt = source.indexOf(close, start + marker.length);
+  if (closeAt < 0) return undefined;
+  const end = closeAt + close.length;
+  // A delimiter followed by prose on the same line is inline content and is
+  // intentionally left to the inline parser.
+  if (source.slice(end).split("\n", 1)[0].trim()) return undefined;
+  const candidate = source.slice(start, end);
+  const segments = tokenizeAiMath(candidate);
+  if (segments.length !== 1 || segments[0].type !== "math" || !segments[0].displayMode) return undefined;
+  return { tex: segments[0].tex, nextIndex: index + source.slice(0, end).split("\n").length };
 }
 
 function renderParagraphLines(lines: string[], key: string): ReactNode[] {
@@ -110,17 +149,20 @@ function renderInline(value: string, key: string): ReactNode[] {
   tokenizeAiMath(value).forEach((segment, segmentIndex) => {
     const segmentKey = `${key}-math-${segmentIndex}`;
     if (segment.type === "math") {
-      const rendered = renderAiTeX(segment.tex, segment.displayMode);
-      if (rendered.html) {
-        nodes.push(<span key={segmentKey} className={segment.displayMode ? "ai-math-display" : "ai-math-inline"} aria-label="数学公式" dangerouslySetInnerHTML={{ __html: rendered.html }} />);
-      } else {
-        nodes.push(<code key={segmentKey} className={segment.displayMode ? "ai-math-fallback ai-math-fallback--display" : "ai-math-fallback"}>{rendered.fallback || segment.tex}</code>);
-      }
+      nodes.push(renderMathSegment(segment.tex, segment.displayMode, segmentKey));
       return;
     }
     nodes.push(...renderMarkdownText(segment.value, segmentKey));
   });
   return nodes;
+}
+
+function renderMathSegment(tex: string, displayMode: boolean, key: string): ReactNode {
+  const rendered = renderAiTeX(tex, displayMode);
+  if (rendered.html) {
+    return <span key={key} className={displayMode ? "ai-math-display" : "ai-math-inline"} aria-label="数学公式" dangerouslySetInnerHTML={{ __html: rendered.html }} />;
+  }
+  return <code key={key} className={displayMode ? "ai-math-fallback ai-math-fallback--display" : "ai-math-fallback"}>{rendered.fallback || tex}</code>;
 }
 
 function renderMarkdownText(value: string, key: string): ReactNode[] {

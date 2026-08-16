@@ -40,8 +40,24 @@ describe("AI Markdown renderer", () => {
   });
 
   it("does not turn code-fence math syntax into a formula", () => {
-    const markup = renderToStaticMarkup(<AiMarkdownContent text={"```tex\n$t$\n```"} />);
+    const markup = renderToStaticMarkup(<AiMarkdownContent text={"```tex\n$t$\n\\[ P_{max} \\]\n```"} />);
     expect(markup).toContain("$t$");
+    expect(markup).toContain("\\[ P_{max} \\]");
     expect(markup).not.toContain("class=\"katex");
+  });
+
+  it("renders multiline bracketed TeX as a single independent display block", () => {
+    const markup = renderToStaticMarkup(<AiMarkdownContent text={[
+      "峰值性能为：",
+      "\\[",
+      "P{\\max}=\\min\\left(P{\\text{peak}},\\; I\\times B_{\\text{mem}}\\right)",
+      "\\]",
+      "因此受计算与带宽的共同约束。"
+    ].join("\n")} />);
+
+    expect(markup).toContain('class="ai-math-block"');
+    expect(markup).toContain('class="katex-display"');
+    expect(markup).not.toContain("\\[");
+    expect(markup).not.toContain("\\]");
   });
 });

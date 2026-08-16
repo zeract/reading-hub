@@ -494,27 +494,29 @@ function ReaderAssistant({ article, sourceTitle, minimized, onMinimize, onClose 
     }
   }, [providerId]);
   useEffect(() => { void reloadProviders().catch((reason) => setError(errorMessage(reason))); }, [reloadProviders]);
-  useEffect(() => window.reader.onAiStream((event) => {
-    const active = activeStream.current;
-    if (!active || active.requestId !== event.requestId) return;
-    if (event.type === "delta") {
+  useEffect(() => {
+    return window.reader.onAiStream((event) => {
+      const active = activeStream.current;
+      if (!active || active.requestId !== event.requestId) return;
+      if (event.type === "delta") {
+        setMessages((current) => current.map((message) => message.id === active.assistantMessageId
+          ? { ...message, text: `${message.text}${event.text}` }
+          : message));
+        return;
+      }
+      activeStream.current = undefined;
+      setBusy(false);
+      if (event.type === "complete") {
+        setMessages((current) => current.map((message) => message.id === active.assistantMessageId
+          ? { ...message, text: event.answer.text, streaming: false }
+          : message));
+        return;
+      }
       setMessages((current) => current.map((message) => message.id === active.assistantMessageId
-        ? { ...message, text: `${message.text}${event.text}` }
+        ? { ...message, text: message.text ? `${message.text}\n\n生成中断：${event.message}` : event.message, error: true, streaming: false }
         : message));
-      return;
-    }
-    activeStream.current = undefined;
-    setBusy(false);
-    if (event.type === "complete") {
-      setMessages((current) => current.map((message) => message.id === active.assistantMessageId
-        ? { ...message, text: event.answer.text, streaming: false }
-        : message));
-      return;
-    }
-    setMessages((current) => current.map((message) => message.id === active.assistantMessageId
-      ? { ...message, text: message.text ? `${message.text}\n\n生成中断：${event.message}` : event.message, error: true, streaming: false }
-      : message));
-  }), []);
+    });
+  }, []);
   useEffect(() => {
     const element = messagesElement.current;
     if (element) element.scrollTop = element.scrollHeight;

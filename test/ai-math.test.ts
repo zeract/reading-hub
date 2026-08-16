@@ -41,6 +41,15 @@ describe("AI answer math rendering", () => {
     ]);
   });
 
+  it("renders bracketed display TeX produced by Codex without requiring Markdown fences", () => {
+    const [formula] = tokenizeAiMath("\\[ P{\\max}=\\min\\left(P{\\text{peak}},\\; I\\times B_{\\text{mem}}\\right) \\]");
+
+    expect(formula).toMatchObject({ type: "math", displayMode: true });
+    const rendered = renderAiTeX(formula.type === "math" ? formula.tex : "", true);
+    expect(rendered.html).toContain('class="katex-display"');
+    expect(rendered.html).not.toContain("katex-error");
+  });
+
   it("keeps inline Markdown code literal before Markdown renders it", () => {
     expect(tokenizeAiMath("使用 `$t$` 作为代码，再看 $q_i$。")).toEqual([
       { type: "text", value: "使用 `$t$` 作为代码，再看 " },
