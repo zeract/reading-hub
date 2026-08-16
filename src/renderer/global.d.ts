@@ -1,4 +1,4 @@
-import type { AiAnswer, AiProviderConfiguration, AiProviderId, AiProviderSettings, AiQuestionRequest, ArticleReadResult, CalibrationResult, Entry, EntryListQuery, ExtractionRule, Followee, ProbeResult, Source, SourceSettings, SubscriptionDraft } from "../shared/types";
+import type { AiProviderConfiguration, AiProviderId, AiProviderSettings, AiStreamEvent, AiStreamRequest, ArticleReadResult, CalibrationResult, Entry, EntryListQuery, ExtractionRule, Followee, ProbeResult, Source, SourceSettings, SubscriptionDraft } from "../shared/types";
 
 declare global {
   interface Window {
@@ -22,7 +22,8 @@ declare global {
       listAiProviders(): Promise<AiProviderSettings[]>;
       configureAiProvider(configuration: AiProviderConfiguration): Promise<AiProviderSettings>;
       clearAiProvider(provider: AiProviderId): Promise<void>;
-      askAi(request: AiQuestionRequest): Promise<AiAnswer>;
+      startAiStream(request: AiStreamRequest): Promise<{ requestId: string }>;
+      onAiStream(listener: (event: AiStreamEvent) => void): () => void;
       isWindowFullscreen(): Promise<boolean>;
       onWindowFullscreenChange(listener: (fullscreen: boolean) => void): () => void;
       openExternal(url: string): Promise<void>;

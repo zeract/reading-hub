@@ -40,4 +40,12 @@ describe("AI answer math rendering", () => {
       { type: "text", value: "。" }
     ]);
   });
+
+  it("keeps inline Markdown code literal before Markdown renders it", () => {
+    expect(tokenizeAiMath("使用 `$t$` 作为代码，再看 $q_i$。")).toEqual([
+      { type: "text", value: "使用 `$t$` 作为代码，再看 " },
+      { type: "math", tex: "q_i", displayMode: false },
+      { type: "text", value: "。" }
+    ]);
+  });
 });

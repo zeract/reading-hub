@@ -1,6 +1,6 @@
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type CalibrationResult, type Entry, type Followee, type ProbeResult, type ReaderArticle, type Source, type SourceKind, type SubscriptionDraft } from "../shared/types";
-import { renderAiTeX, tokenizeAiMath } from "./ai-math";
+import { AiMarkdownContent } from "./ai-markdown";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { requiresSourceReload } from "./source-selection";
 import { DEFAULT_TIMELINE_FILTER, defaultCustomTimelineDates, resolveTimelineRange, timelineQuery, type TimelineRangeFilter, type TimelineRangePreset } from "./timeline-filter";
@@ -14,6 +14,12 @@ type ReaderImagePreview = { src: string; alt: string };
 
 const READER_PREFERENCES_KEY = "reading-hub.reader-preferences.v1";
 const DEFAULT_READER_PREFERENCES: ReaderPreferences = { preset: "reading", fontScale: 1 };
+
+function newAiRequestId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  // This id only pairs same-renderer IPC events; it is never an auth token.
+  return `ai-${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
+}
 
 function loadReaderPreferences(): ReaderPreferences {
   try {
@@ -441,16 +447,8 @@ function ImagePreview({ image, onClose }: { image: ReaderImagePreview; onClose: 
   </div>;
 }
 
-type AiMessage = { role: "user" | "assistant"; text: string; error?: boolean };
-
-function AiMessageContent({ text }: { text: string }) {
-  return <div className="ai-message-content">{tokenizeAiMath(text).map((segment, index) => {
-    if (segment.type === "text") return <span key={index} className="ai-message-text">{segment.value}</span>;
-    const rendered = renderAiTeX(segment.tex, segment.displayMode);
-    if (rendered.html) return <span key={index} className={segment.displayMode ? "ai-math-display" : "ai-math-inline"} aria-label="数学公式" dangerouslySetInnerHTML={{ __html: rendered.html }} />;
-    return <code key={index} className={segment.displayMode ? "ai-math-fallback ai-math-fallback--display" : "ai-math-fallback"}>{rendered.fallback || segment.tex}</code>;
-  })}</div>;
-}
+type AiMessage = { id: string; role: "user" | "assistant"; text: string; error?: boolean; streaming?: boolean };
+type ActiveAiStream = { requestId: string; assistantMessageId: string };
 
 const CODEX_EFFORT_OPTIONS: Array<{ value: AiReasoningEffort; label: string }> = [
   { value: "low", label: "低（更快）" },
@@ -477,6 +475,8 @@ function ReaderAssistant({ article, sourceTitle, minimized, onMinimize, onClose 
   const [messages, setMessages] = useState<AiMessage[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const activeStream = useRef<ActiveAiStream>();
+  const messagesElement = useRef<HTMLDivElement>(null);
 
   const selected = providers.find((provider) => provider.id === providerId);
   const requiresApiKey = selected?.requiresApiKey === true;
@@ -494,6 +494,31 @@ function ReaderAssistant({ article, sourceTitle, minimized, onMinimize, onClose 
     }
   }, [providerId]);
   useEffect(() => { void reloadProviders().catch((reason) => setError(errorMessage(reason))); }, [reloadProviders]);
+  useEffect(() => window.reader.onAiStream((event) => {
+    const active = activeStream.current;
+    if (!active || active.requestId !== event.requestId) return;
+    if (event.type === "delta") {
+      setMessages((current) => current.map((message) => message.id === active.assistantMessageId
+        ? { ...message, text: `${message.text}${event.text}` }
+        : message));
+      return;
+    }
+    activeStream.current = undefined;
+    setBusy(false);
+    if (event.type === "complete") {
+      setMessages((current) => current.map((message) => message.id === active.assistantMessageId
+        ? { ...message, text: event.answer.text, streaming: false }
+        : message));
+      return;
+    }
+    setMessages((current) => current.map((message) => message.id === active.assistantMessageId
+      ? { ...message, text: message.text ? `${message.text}\n\n生成中断：${event.message}` : event.message, error: true, streaming: false }
+      : message));
+  }), []);
+  useEffect(() => {
+    const element = messagesElement.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [messages]);
 
   function switchProvider(nextId: AiProviderId) {
     setProviderId(nextId);
@@ -552,19 +577,25 @@ function ReaderAssistant({ article, sourceTitle, minimized, onMinimize, onClose 
     }
     const prompt = toArticleText(article.contentHtml);
     setQuestion(""); setBusy(true); setError(undefined);
-    setMessages((current) => [...current, { role: "user", text }, { role: "assistant", text: "正在思考…" }]);
+    const requestId = newAiRequestId();
+    const assistantMessageId = newAiRequestId();
+    activeStream.current = { requestId, assistantMessageId };
+    setMessages((current) => [...current, { id: newAiRequestId(), role: "user", text }, { id: assistantMessageId, role: "assistant", text: "", streaming: true }]);
     try {
-      const answer = await window.reader.askAi({
-        provider: providerId,
-        question: text,
-        article: { title: article.title, url: article.url, sourceTitle, text: prompt }
+      await window.reader.startAiStream({
+        requestId,
+        request: {
+          provider: providerId,
+          question: text,
+          article: { title: article.title, url: article.url, sourceTitle, text: prompt }
+        }
       });
-      setMessages((current) => [...current.slice(0, -1), { role: "assistant", text: answer.text }]);
     } catch (reason) {
       const message = errorMessage(reason);
-      setMessages((current) => [...current.slice(0, -1), { role: "assistant", text: message, error: true }]);
-    } finally {
+      if (activeStream.current?.requestId !== requestId) return;
+      activeStream.current = undefined;
       setBusy(false);
+      setMessages((current) => current.map((item) => item.id === assistantMessageId ? { ...item, text: message, error: true, streaming: false } : item));
     }
   }
 
@@ -590,7 +621,7 @@ function ReaderAssistant({ article, sourceTitle, minimized, onMinimize, onClose 
       <div><button className="primary" disabled={busy}>{busy ? "正在保存…" : "保存设置"}</button>{selected?.configured && <button type="button" className="danger" onClick={() => void clearProvider()} disabled={busy}>{usingCodexCli ? "恢复默认" : "清除密钥"}</button>}</div>
     </form>}
     {error && <p className="error ai-error">{error}</p>}
-    <div className="ai-messages" aria-live="polite">{!messages.length && <p className="ai-empty">可以让 AI 解释概念、公式推导、例子或文章中的论证。回答不会保存到数据库。</p>}{messages.map((message, index) => <div key={`${message.role}-${index}`} className={`ai-message ${message.role}${message.error ? " error" : ""}`}><strong>{message.role === "user" ? "你" : selected?.label || "AI"}</strong><AiMessageContent text={message.text} /></div>)}</div>
+    <div className="ai-messages" aria-live="polite" aria-busy={busy} ref={messagesElement}>{!messages.length && <p className="ai-empty">可以让 AI 解释概念、公式推导、例子或文章中的论证。回答不会保存到数据库。</p>}{messages.map((message) => <div key={message.id} className={`ai-message ${message.role}${message.error ? " error" : ""}${message.streaming ? " is-streaming" : ""}`}><strong>{message.role === "user" ? "你" : selected?.label || "AI"}</strong>{message.streaming && !message.text ? <p className="ai-streaming-status">正在生成…</p> : <AiMarkdownContent text={message.text} />}</div>)}</div>
     <form className="ai-question" onSubmit={(event) => void ask(event)}><label htmlFor="ai-question">向文章提问（Enter 发送，Shift+Enter 换行）</label><textarea id="ai-question" value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={submitOnEnter} placeholder="例如：请用直觉解释这个公式的含义" disabled={busy} /><button className="primary" disabled={busy || !question.trim()}>{busy ? "回答中…" : "发送问题"}</button></form>
   </aside>;
 }

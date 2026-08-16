@@ -26,7 +26,7 @@ function page() {
         <mjx-container id="formula-mathjax" display="true"><mjx-math><svg width="1040" height="48" aria-label="Scientific Spaces fallback formula"><text x="0" y="28">qᵢ = [(α − 1) / α · (zᵢ − λ)]₊¹⁄⁽ᵅ⁻¹⁾</text></svg></mjx-math></mjx-container>
         <img id="fixture-image" src="${largeImage}" alt="large fixture" />
         <table><thead><tr><th>来源</th><th>状态</th></tr></thead><tbody><tr><td>OpenAlex</td><td>正常</td></tr></tbody></table>
-      </div></article></div><aside class="reader-ai-panel" id="assistant-panel"><header><div><strong>AI 学习助手</strong><p>提问时才会发送文章摘录。</p></div><div class="assistant-header-actions"><button class="panel-icon-button">−</button><button class="panel-icon-button">×</button></div></header><div class="ai-messages"><p class="ai-empty">请解释这条公式。</p></div><form class="ai-question"><label>向文章提问</label><textarea>这个公式表达什么？</textarea><button class="primary">发送问题</button></form></aside></div>
+      </div></article></div><aside class="reader-ai-panel" id="assistant-panel"><header><div><strong>AI 学习助手</strong><p>提问时才会发送文章摘录。</p></div><div class="assistant-header-actions"><button class="panel-icon-button">−</button><button class="panel-icon-button">×</button></div></header><div class="ai-messages"><div class="ai-message" id="assistant-markdown"><strong>AI</strong><div class="ai-message-content ai-markdown"><h2 class="ai-markdown-heading">推导摘要</h2><p class="ai-markdown-paragraph">这是一段 <strong>Markdown</strong> 回答。</p><ul class="ai-markdown-list"><li>列表项</li><li><code class="ai-inline-code">inline_code</code></li></ul><pre class="ai-code-block" id="assistant-code"><code>very_long_identifier_that_must_scroll_instead_of_overflowing_the_assistant_sidebar_0123456789</code></pre><div class="ai-table-wrap"><table><thead><tr><th>方法</th><th>复杂度</th></tr></thead><tbody><tr><td>线性</td><td>O(n)</td></tr></tbody></table></div></div></div></div><form class="ai-question"><label>向文章提问</label><textarea>这个公式表达什么？</textarea><button class="primary">发送问题</button></form></aside></div>
     </section></main><div class="reader-image-lightbox" id="image-lightbox" hidden><section class="reader-image-lightbox__frame"><button class="reader-image-lightbox__close">×</button><img id="lightbox-image" src="${largeImage}" alt="large fixture preview" /></section></div></body></html>`;
 }
 
@@ -99,7 +99,9 @@ async function auditViewport(window, viewport) {
         const panelRect = panel?.getBoundingClientRect();
         const workspaceRect = workspace?.getBoundingClientRect();
         const scrollRect = scroll?.getBoundingClientRect();
-        return panelRect && workspaceRect && scrollRect ? { panel: { left: panelRect.left, right: panelRect.right, top: panelRect.top, bottom: panelRect.bottom }, workspace: { left: workspaceRect.left, right: workspaceRect.right, top: workspaceRect.top, bottom: workspaceRect.bottom }, scroll: { left: scrollRect.left, right: scrollRect.right } } : undefined;
+        const markdown = document.querySelector('#assistant-markdown')?.getBoundingClientRect();
+        const code = document.querySelector('#assistant-code');
+        return panelRect && workspaceRect && scrollRect && markdown ? { panel: { left: panelRect.left, right: panelRect.right, top: panelRect.top, bottom: panelRect.bottom }, workspace: { left: workspaceRect.left, right: workspaceRect.right, top: workspaceRect.top, bottom: workspaceRect.bottom }, scroll: { left: scrollRect.left, right: scrollRect.right }, markdown: { left: markdown.left, right: markdown.right }, code: code ? { scrollWidth: code.scrollWidth, clientWidth: code.clientWidth } : undefined } : undefined;
       })(),
       toolbar: (() => {
         const toolbar = document.querySelector('.reader-toolbar')?.getBoundingClientRect();
@@ -175,6 +177,9 @@ async function auditViewport(window, viewport) {
   }
   if (!geometry.assistant || geometry.assistant.panel.left < geometry.assistant.workspace.left - 1 || geometry.assistant.panel.right > geometry.assistant.workspace.right + 1 || geometry.assistant.panel.top < geometry.assistant.workspace.top - 1 || geometry.assistant.panel.bottom > geometry.assistant.workspace.bottom + 1) {
     failures.push("AI 学习面板超出阅读器工作区");
+  }
+  if (!geometry.assistant?.markdown || geometry.assistant.markdown.left < geometry.assistant.panel.left - 1 || geometry.assistant.markdown.right > geometry.assistant.panel.right + 1 || !geometry.assistant.code || geometry.assistant.code.scrollWidth <= geometry.assistant.code.clientWidth) {
+    failures.push("AI Markdown 回答在侧栏中没有受宽度约束或长代码没有独立滚动");
   }
   if (!geometry.toolbar || geometry.toolbar.controls.some((control) => control.left < geometry.toolbar.left - 1 || control.right > geometry.toolbar.right + 1)) {
     failures.push("阅读器工具栏按钮溢出");

@@ -21,4 +21,11 @@ describe("local Codex CLI invocation", () => {
     expect(args).toContain("gpt-5.6-terra");
     expect(args).toContain("model_reasoning_effort=max");
   });
+
+  it("uses Codex's structured JSONL mode for streamable assistant messages", () => {
+    const args = codexExecArguments("解释文章", { effort: "medium" }, true);
+    expect(args).toContain("--json");
+    expect(args).toContain("--sandbox");
+    expect(args).toContain("read-only");
+  });
 });

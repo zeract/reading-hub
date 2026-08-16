@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AiService } from "../src/main/ai-service";
 import { CodexCliError, type CodexCliRunner } from "../src/main/codex-cli";
-import type { AiProviderId } from "../src/shared/types";
+import type { AiAnswer, AiProviderId, AiQuestionRequest } from "../src/shared/types";
 
 class MemorySecrets {
   readonly values = new Map<string, string>();
@@ -32,8 +32,23 @@ function response(body: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
 }
 
+function eventStream(events: string[]): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const event of events) controller.enqueue(encoder.encode(event));
+      controller.close();
+    }
+  });
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
 async function configure(service: AiService, provider: AiProviderId, model?: string): Promise<void> {
   await service.configure({ provider, apiKey: "test-key", model });
+}
+
+function ask(service: AiService, request: AiQuestionRequest): Promise<AiAnswer> {
+  return service.askStream(request, () => undefined);
 }
 
 describe("AI learning service", () => {
@@ -42,12 +57,12 @@ describe("AI learning service", () => {
     const service = new AiService(new MemorySecrets(), fetcher);
     await configure(service, "openai");
 
-    const answer = await service.ask({ provider: "openai", question: "这个公式是什么意思？", article });
+    const answer = await ask(service, { provider: "openai", question: "这个公式是什么意思？", article });
 
     expect(answer).toEqual({ provider: "openai", model: "gpt-5.6", text: "这是对公式的解释。" });
     expect(fetcher).toHaveBeenCalledWith("https://api.openai.com/v1/responses", expect.objectContaining({ method: "POST" }));
     const request = JSON.parse(String(fetcher.mock.calls[0][1].body));
-    expect(request).toMatchObject({ model: "gpt-5.6", store: false, reasoning: { effort: "low" } });
+    expect(request).toMatchObject({ model: "gpt-5.6", store: false, stream: true, reasoning: { effort: "low" } });
     expect(JSON.stringify(request)).toContain("<article-excerpt>");
     expect(JSON.stringify(request)).not.toContain("<script>");
   });
@@ -57,12 +72,44 @@ describe("AI learning service", () => {
     const service = new AiService(new MemorySecrets(), fetcher);
     await configure(service, "deepseek", "deepseek-v4-pro");
 
-    const answer = await service.ask({ provider: "deepseek", question: "请用直觉解释。", article });
+    const answer = await ask(service, { provider: "deepseek", question: "请用直觉解释。", article });
 
     expect(answer).toEqual({ provider: "deepseek", model: "deepseek-v4-pro", text: "可以从这个定义开始理解。" });
     expect(fetcher).toHaveBeenCalledWith("https://api.deepseek.com/chat/completions", expect.objectContaining({ method: "POST" }));
     const request = JSON.parse(String(fetcher.mock.calls[0][1].body));
-    expect(request).toMatchObject({ model: "deepseek-v4-pro", stream: false, max_tokens: 1_400 });
+    expect(request).toMatchObject({ model: "deepseek-v4-pro", stream: true, max_tokens: 1_400 });
+  });
+
+  it("forwards only incremental OpenAI text deltas and returns the completed answer", async () => {
+    const fetcher = vi.fn().mockResolvedValue(eventStream([
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"先看\"}\n\n",
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"定义。\"}\n\n",
+      "data: [DONE]\n\n"
+    ]));
+    const service = new AiService(new MemorySecrets(), fetcher);
+    await configure(service, "openai");
+    const chunks: string[] = [];
+
+    const answer = await service.askStream({ provider: "openai", question: "怎么理解？", article }, (chunk) => chunks.push(chunk));
+
+    expect(chunks).toEqual(["先看", "定义。"]);
+    expect(answer.text).toBe("先看定义。");
+    const request = JSON.parse(String(fetcher.mock.calls[0][1].body));
+    expect(request).toMatchObject({ store: false, stream: true });
+  });
+
+  it("does not forward raw provider diagnostics from a streaming error", async () => {
+    const fetcher = vi.fn().mockResolvedValue(eventStream([
+      "data: {\"type\":\"error\",\"error\":{\"message\":\"token test-key should not leak\"}}\n\n"
+    ]));
+    const service = new AiService(new MemorySecrets(), fetcher);
+    await configure(service, "openai");
+
+    const failure = await service.askStream({ provider: "openai", question: "怎么理解？", article }, () => undefined).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("服务在生成回答时返回错误");
+    expect((failure as Error).message).not.toContain("test-key");
   });
 
   it("delegates to the local Codex CLI without reading or storing an API key", async () => {
@@ -78,12 +125,31 @@ describe("AI learning service", () => {
     const codex = providers.find((provider) => provider.id === "codex-cli");
     expect(codex).toMatchObject({ configured: true, requiresApiKey: false, model: "default", effort: "medium" });
 
-    const answer = await service.ask({ provider: "codex-cli", question: "请解释公式。", article });
+    const answer = await ask(service, { provider: "codex-cli", question: "请解释公式。", article });
 
     expect(answer).toEqual({ provider: "codex-cli", model: "Codex 默认模型 · medium", text: "可以把这个公式理解为一个归一化步骤。" });
     expect(codexCli.ask).toHaveBeenCalledWith(expect.stringContaining("不要运行命令"), expect.stringContaining("<article-excerpt>"), { model: undefined, effort: "medium" });
     expect(fetcher).not.toHaveBeenCalled();
     expect(secrets.values).toHaveLength(0);
+  });
+
+  it("uses structured Codex CLI updates when its local runner supports them", async () => {
+    const codexCli: CodexCliRunner = {
+      status: vi.fn().mockResolvedValue({ available: true, command: "/usr/local/bin/codex" }),
+      ask: vi.fn(),
+      askStream: vi.fn().mockImplementation(async (_instruction, _prompt, _options, onDelta) => {
+        onDelta("流式"); onDelta("回答");
+        return "流式回答";
+      })
+    };
+    const service = new AiService(new MemorySecrets(), vi.fn(), codexCli);
+    const chunks: string[] = [];
+
+    const answer = await service.askStream({ provider: "codex-cli", question: "请解释。", article }, (chunk) => chunks.push(chunk));
+
+    expect(chunks).toEqual(["流式", "回答"]);
+    expect(answer.text).toBe("流式回答");
+    expect(codexCli.ask).not.toHaveBeenCalled();
   });
 
   it("stores only Codex model preferences and passes them to the local CLI", async () => {
@@ -95,7 +161,7 @@ describe("AI learning service", () => {
     const service = new AiService(secrets, vi.fn(), codexCli);
 
     await service.configure({ provider: "codex-cli", model: "gpt-5.6-terra", effort: "max" });
-    const answer = await service.ask({ provider: "codex-cli", question: "请解释公式。", article });
+    const answer = await ask(service, { provider: "codex-cli", question: "请解释公式。", article });
 
     expect(answer.model).toBe("gpt-5.6-terra · max");
     expect(codexCli.ask).toHaveBeenCalledWith(expect.any(String), expect.any(String), { model: "gpt-5.6-terra", effort: "max" });
@@ -120,7 +186,7 @@ describe("AI learning service", () => {
     };
     const service = new AiService(new MemorySecrets(), vi.fn(), codexCli);
 
-    await expect(service.ask({ provider: "codex-cli", question: "请解释。", article })).rejects.toThrow("Codex CLI 尚未完成登录");
+    await expect(ask(service, { provider: "codex-cli", question: "请解释。", article })).rejects.toThrow("Codex CLI 尚未完成登录");
   });
 
   it("does not expose provider credentials in request errors and allows credentials to be cleared", async () => {
@@ -128,12 +194,12 @@ describe("AI learning service", () => {
     const service = new AiService(secrets, vi.fn().mockResolvedValue(response({}, 401)));
     await configure(service, "openai");
 
-    const failure = await service.ask({ provider: "openai", question: "为什么？", article }).catch((error: unknown) => error);
+    const failure = await ask(service, { provider: "openai", question: "为什么？", article }).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toContain("OpenAI 拒绝了 API Key");
     expect((failure as Error).message).not.toContain("test-key");
     await service.clear("openai");
-    await expect(service.ask({ provider: "openai", question: "为什么？", article })).rejects.toThrow("请先配置");
+    await expect(ask(service, { provider: "openai", question: "为什么？", article })).rejects.toThrow("请先配置");
     expect(secrets.values).toHaveLength(0);
   });
 });

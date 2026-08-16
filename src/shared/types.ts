@@ -272,6 +272,18 @@ export interface AiAnswer {
   text: string;
 }
 
+/** A renderer-generated id makes streamed IPC events race-free. */
+export interface AiStreamRequest {
+  requestId: string;
+  request: AiQuestionRequest;
+}
+
+/** Safe, one-way updates emitted by the main process for an AI answer. */
+export type AiStreamEvent =
+  | { type: "delta"; requestId: string; text: string }
+  | { type: "complete"; requestId: string; answer: AiAnswer }
+  | { type: "error"; requestId: string; message: string };
+
 /** Result of opening an entry in the app. Some sites forbid automated extraction. */
 export type ArticleReadResult =
   | { kind: "article"; article: ReaderArticle }

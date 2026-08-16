@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { AiProviderConfiguration, AiProviderId, AiQuestionRequest, EntryListQuery, ExtractionRule, SourceSettings, SubscriptionDraft } from "../shared/types";
+import type { AiProviderConfiguration, AiProviderId, AiStreamEvent, AiStreamRequest, EntryListQuery, ExtractionRule, SourceSettings, SubscriptionDraft } from "../shared/types";
 
 contextBridge.exposeInMainWorld("reader", {
   previewSource: (url: string) => ipcRenderer.invoke("source:preview", url),
@@ -21,7 +21,14 @@ contextBridge.exposeInMainWorld("reader", {
   listAiProviders: () => ipcRenderer.invoke("ai:list-providers"),
   configureAiProvider: (configuration: AiProviderConfiguration) => ipcRenderer.invoke("ai:configure", configuration),
   clearAiProvider: (provider: AiProviderId) => ipcRenderer.invoke("ai:clear-provider", provider),
-  askAi: (request: AiQuestionRequest) => ipcRenderer.invoke("ai:ask", request),
+  startAiStream: (request: AiStreamRequest) => ipcRenderer.invoke("ai:ask-stream", request),
+  onAiStream: (listener: (event: AiStreamEvent) => void) => {
+    const receive = (_event: Electron.IpcRendererEvent, value: unknown) => {
+      if (isAiStreamEvent(value)) listener(value);
+    };
+    ipcRenderer.on("ai:stream", receive);
+    return () => ipcRenderer.removeListener("ai:stream", receive);
+  },
   isWindowFullscreen: () => ipcRenderer.invoke("window:is-fullscreen"),
   onWindowFullscreenChange: (listener: (fullscreen: boolean) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, fullscreen: unknown) => listener(Boolean(fullscreen));
@@ -35,3 +42,12 @@ contextBridge.exposeInMainWorld("reader", {
   searchAcademicAuthors: (query: string) => ipcRenderer.invoke("academic:search", query),
   subscribeAcademicAuthor: (draft: SubscriptionDraft) => ipcRenderer.invoke("academic:subscribe", draft)
 });
+
+function isAiStreamEvent(value: unknown): value is AiStreamEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<AiStreamEvent>;
+  if (typeof event.requestId !== "string" || !/^[A-Za-z0-9_-]{8,80}$/.test(event.requestId)) return false;
+  if (event.type === "delta") return typeof event.text === "string";
+  if (event.type === "complete") return Boolean(event.answer && typeof event.answer.text === "string");
+  return event.type === "error" && typeof event.message === "string";
+}

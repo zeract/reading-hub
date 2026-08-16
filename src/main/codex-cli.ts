@@ -22,6 +22,8 @@ export interface CodexCliOptions {
   effort: AiReasoningEffort;
 }
 
+export type CodexCliDeltaListener = (text: string) => void;
+
 /**
  * Boundary used by the reading assistant. The CLI retains responsibility for
  * its own ChatGPT authentication; Reading Hub never reads its config or token.
@@ -29,6 +31,8 @@ export interface CodexCliOptions {
 export interface CodexCliRunner {
   status(): Promise<CodexCliStatus>;
   ask(instruction: string, articleContext: string, options: CodexCliOptions): Promise<string>;
+  /** Newer Codex CLIs expose structured JSONL events while a turn is running. */
+  askStream?(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener): Promise<string>;
 }
 
 export class LocalCodexCli implements CodexCliRunner {
@@ -41,6 +45,12 @@ export class LocalCodexCli implements CodexCliRunner {
     const { command } = await this.status();
     if (!command) throw new CodexCliError("未检测到本机 Codex CLI。请安装 Codex CLI 并在终端运行 codex 完成登录后重试。");
     return runCodex(command, instruction, articleContext, options);
+  }
+
+  async askStream(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener): Promise<string> {
+    const { command } = await this.status();
+    if (!command) throw new CodexCliError("未检测到本机 Codex CLI。请安装 Codex CLI 并在终端运行 codex 完成登录后重试。");
+    return runCodexStream(command, instruction, articleContext, options, onDelta);
   }
 }
 
@@ -127,8 +137,74 @@ function runCodex(command: string, instruction: string, articleContext: string, 
   });
 }
 
+/**
+ * `codex exec --json` emits newline-delimited, structured progress events.
+ * Only agent-message events are ever forwarded to the renderer: tool output,
+ * paths and diagnostic events remain local to this process.
+ */
+function runCodexStream(command: string, instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, codexExecArguments(instruction, options, true), {
+      cwd: tmpdir(),
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true
+    });
+    let answer = "";
+    let eventBuffer = "";
+    let stderr = "";
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, options.effort === "high" || options.effort === "xhigh" || options.effort === "max" ? CODEX_EXTENDED_TIMEOUT_MS : CODEX_TIMEOUT_MS);
+    const append = (current: string, chunk: Buffer, limit: number) => current.length >= limit
+      ? current
+      : `${current}${chunk.toString("utf8")}`.slice(0, limit);
+    const acceptEvent = (line: string) => {
+      const event = parseCodexEvent(line);
+      if (!event) return;
+      const next = mergeCodexAnswer(answer, event);
+      if (!next.delta) return;
+      answer = next.answer;
+      onDelta(next.delta);
+    };
+    const consumeLines = (flush = false) => {
+      const lines = eventBuffer.split(/\r?\n/);
+      if (flush) eventBuffer = "";
+      else eventBuffer = lines.pop() || "";
+      for (const line of lines) acceptEvent(line);
+    };
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (eventBuffer.length >= MAX_OUTPUT_LENGTH) return;
+      eventBuffer = `${eventBuffer}${chunk.toString("utf8")}`.slice(0, MAX_OUTPUT_LENGTH);
+      consumeLines();
+    });
+    child.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk, MAX_STDERR_LENGTH); });
+    child.stdin.once("error", () => undefined);
+    child.once("error", () => {
+      clearTimeout(timeout);
+      reject(new CodexCliError("无法启动本机 Codex CLI。请重新安装后在终端执行 codex 登录。"));
+    });
+    child.once("close", (code) => {
+      clearTimeout(timeout);
+      consumeLines(true);
+      const finalAnswer = answer.trim();
+      if (timedOut) {
+        reject(new CodexCliError("本机 Codex CLI 回答超时，请稍后重试。"));
+      } else if (code === 0 && finalAnswer) {
+        resolve(finalAnswer);
+      } else {
+        reject(new CodexCliError(codexFailureMessage(stderr)));
+      }
+    });
+    child.stdin.end(articleContext);
+  });
+}
+
 /** Keep the invocation auditable and free of broad-write or full-auto flags. */
-export function codexExecArguments(instruction: string, options: CodexCliOptions = { effort: "medium" }): string[] {
+export function codexExecArguments(instruction: string, options: CodexCliOptions = { effort: "medium" }, jsonEvents = false): string[] {
   return [
     "exec",
     "--ephemeral",
@@ -138,8 +214,57 @@ export function codexExecArguments(instruction: string, options: CodexCliOptions
     ...(options.model ? ["--model", options.model] : []),
     "--config",
     `model_reasoning_effort=${options.effort}`,
+    ...(jsonEvents ? ["--json"] : []),
     instruction
   ];
+}
+
+type CodexMessageEvent = { text: string; snapshot: boolean };
+
+function parseCodexEvent(line: string): CodexMessageEvent | undefined {
+  if (!line.trim()) return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(value)) return undefined;
+  const eventType = typeof value.type === "string" ? value.type : "";
+  const item = isRecord(value.item) ? value.item : undefined;
+  // Codex's documented JSONL mode labels final assistant output as an
+  // `agent_message` item. Deliberately reject every other item kind.
+  if (item?.type === "agent_message") {
+    const text = stringField(item, ["text", "content"]);
+    if (text) return { text, snapshot: !eventType.endsWith(".delta") };
+  }
+  if (/agent_message.*\.delta/i.test(eventType)) {
+    const text = stringField(value, ["delta", "text"]);
+    if (text) return { text, snapshot: false };
+  }
+  return undefined;
+}
+
+function mergeCodexAnswer(answer: string, event: CodexMessageEvent): { answer: string; delta: string } {
+  if (!event.snapshot) return { answer: `${answer}${event.text}`.slice(0, MAX_OUTPUT_LENGTH), delta: event.text };
+  if (event.text === answer || answer.endsWith(event.text)) return { answer, delta: "" };
+  if (event.text.startsWith(answer)) return { answer: event.text.slice(0, MAX_OUTPUT_LENGTH), delta: event.text.slice(answer.length) };
+  // A completed agent-message item is normally the full answer. If the CLI
+  // changed an earlier partial event, prefer its authoritative final text.
+  if (!answer) return { answer: event.text.slice(0, MAX_OUTPUT_LENGTH), delta: event.text };
+  return { answer: event.text.slice(0, MAX_OUTPUT_LENGTH), delta: event.text };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function stringField(value: Record<string, unknown>, fields: string[]): string | undefined {
+  for (const field of fields) {
+    const candidate = value[field];
+    if (typeof candidate === "string" && candidate) return candidate;
+  }
+  return undefined;
 }
 
 function codexFailureMessage(stderr: string): string {

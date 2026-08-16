@@ -35,6 +35,7 @@ export interface AiSecretStore {
 }
 
 export type AiFetch = (input: string, init: RequestInit) => Promise<Response>;
+export type AiDeltaListener = (text: string) => void;
 
 /**
  * A narrow, main-process-only client for asking questions about the currently
@@ -107,17 +108,21 @@ export class AiService {
     await this.secrets.clearConnectorSecret(this.keychainAccount(providerId));
   }
 
-  async ask(request: AiQuestionRequest): Promise<AiAnswer> {
+  /** The sole answer path emits text only, never provider events or diagnostics. */
+  async askStream(request: AiQuestionRequest, onDelta: AiDeltaListener): Promise<AiAnswer> {
     const provider = getProvider(request.provider);
     const question = normaliseQuestion(request.question);
     const article = normaliseArticle(request.article);
     if (request.provider === "codex-cli") {
       try {
         const configuration = await this.getCodexConfiguration();
-        const text = await this.codexCli.ask(codexInstruction(), buildLearningPrompt(article, question), {
+        const options = {
           model: configuration.model === CODEX_DEFAULT_MODEL ? undefined : configuration.model,
           effort: configuration.effort
-        });
+        };
+        const text = this.codexCli.askStream
+          ? await this.codexCli.askStream(codexInstruction(), buildLearningPrompt(article, question), options, onDelta)
+          : await this.streamLegacyCodex(codexInstruction(), buildLearningPrompt(article, question), options, onDelta);
         if (!text.trim()) throw new AiServiceError("Codex CLI 没有返回可显示的回答，请调整问题后重试。");
         return { provider: request.provider, model: describeCodexSelection(configuration), text: text.trim() };
       } catch (error) {
@@ -129,15 +134,22 @@ export class AiService {
     const configuration = await this.getStoredConfiguration(request.provider);
     if (!configuration?.apiKey) throw new AiServiceError(`请先配置 ${provider.label} 的 API Key。`);
     const answer = request.provider === "openai"
-      ? await this.askOpenAi(requiredEndpoint(provider), configuration, question, article)
-      : await this.askDeepSeek(requiredEndpoint(provider), configuration, question, article);
+      ? await this.askOpenAiStream(requiredEndpoint(provider), configuration, question, article, onDelta)
+      : await this.askDeepSeekStream(requiredEndpoint(provider), configuration, question, article, onDelta);
     return { provider: request.provider, model: configuration.model, text: answer };
   }
 
-  private async askOpenAi(endpoint: string, configuration: StoredAiConfiguration, question: string, article: AiArticleContext): Promise<string> {
+  private async streamLegacyCodex(instruction: string, prompt: string, options: { model?: string; effort: AiReasoningEffort }, onDelta: AiDeltaListener): Promise<string> {
+    const text = await this.codexCli.ask(instruction, prompt, options);
+    if (text) onDelta(text);
+    return text;
+  }
+
+  private async askOpenAiStream(endpoint: string, configuration: StoredAiConfiguration, question: string, article: AiArticleContext, onDelta: AiDeltaListener): Promise<string> {
     const payload = {
       model: configuration.model,
       store: false,
+      stream: true,
       reasoning: { effort: "low" },
       text: { verbosity: "medium" },
       input: [
@@ -145,31 +157,34 @@ export class AiService {
         { role: "user", content: [{ type: "input_text", text: buildLearningPrompt(article, question) }] }
       ]
     };
-    const response = await this.post(endpoint, configuration.apiKey, payload, "OpenAI");
-    const body = await response.json() as OpenAiResponse;
-    const output = readOpenAiOutput(body);
-    if (!output) throw new AiServiceError("OpenAI 没有返回可显示的回答，请调整问题后重试。");
-    return output;
+    return this.postStreaming(endpoint, configuration.apiKey, payload, "OpenAI", async (response) => {
+      const output = await readServerSentEvents(response, onDelta, readOpenAiStreamDelta, (body) => readOpenAiOutput(body as OpenAiResponse));
+      if (!output) throw new AiServiceError("OpenAI 没有返回可显示的回答，请调整问题后重试。");
+      return output;
+    });
   }
 
-  private async askDeepSeek(endpoint: string, configuration: StoredAiConfiguration, question: string, article: AiArticleContext): Promise<string> {
+  private async askDeepSeekStream(endpoint: string, configuration: StoredAiConfiguration, question: string, article: AiArticleContext, onDelta: AiDeltaListener): Promise<string> {
     const payload = {
       model: configuration.model,
-      stream: false,
+      stream: true,
       max_tokens: 1_400,
       messages: [
         { role: "system", content: learningInstructions() },
         { role: "user", content: buildLearningPrompt(article, question) }
       ]
     };
-    const response = await this.post(endpoint, configuration.apiKey, payload, "DeepSeek");
-    const body = await response.json() as DeepSeekResponse;
-    const output = typeof body.choices?.[0]?.message?.content === "string" ? body.choices[0].message.content.trim() : "";
-    if (!output) throw new AiServiceError("DeepSeek 没有返回可显示的回答，请调整问题后重试。");
-    return output;
+    return this.postStreaming(endpoint, configuration.apiKey, payload, "DeepSeek", async (response) => {
+      const output = await readServerSentEvents(response, onDelta, readDeepSeekStreamDelta, (body) => {
+        const parsed = body as DeepSeekResponse;
+        return typeof parsed.choices?.[0]?.message?.content === "string" ? parsed.choices[0].message.content.trim() : "";
+      });
+      if (!output) throw new AiServiceError("DeepSeek 没有返回可显示的回答，请调整问题后重试。");
+      return output;
+    });
   }
 
-  private async post(endpoint: string, apiKey: string, body: unknown, providerLabel: string): Promise<Response> {
+  private async postStreaming<T>(endpoint: string, apiKey: string, body: unknown, providerLabel: string, consume: (response: Response) => Promise<T>): Promise<T> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
@@ -181,12 +196,17 @@ export class AiService {
           body: JSON.stringify(body),
           signal: controller.signal
         });
-      } catch (error) {
+      } catch {
         if (controller.signal.aborted) throw new AiServiceError(`${providerLabel} 请求超时，请稍后重试。`);
         throw new AiServiceError(`无法连接 ${providerLabel}，请检查网络后重试。`);
       }
       if (!response.ok) throw new AiServiceError(providerFailureMessage(providerLabel, response.status));
-      return response;
+      try {
+        return await consume(response);
+      } catch (error) {
+        if (controller.signal.aborted) throw new AiServiceError(`${providerLabel} 请求超时，请稍后重试。`);
+        throw error;
+      }
     } finally {
       clearTimeout(timeout);
     }
@@ -327,4 +347,84 @@ function readOpenAiOutput(response: OpenAiResponse): string {
     .map((item) => item.text as string)
     .join("\n")
     .trim();
+}
+
+type StreamDeltaReader = (event: Record<string, unknown>) => string | undefined;
+
+/**
+ * Read provider SSE without passing raw provider events across IPC. Responses
+ * that do not negotiate SSE (for example a test double or a proxy fallback)
+ * still complete safely as one text update.
+ */
+async function readServerSentEvents(response: Response, onDelta: AiDeltaListener, readDelta: StreamDeltaReader, readFallback: (body: unknown) => string): Promise<string> {
+  const contentType = response.headers?.get("content-type") || "";
+  if (!response.body || !/text\/event-stream/i.test(contentType)) {
+    const output = readFallback(await response.json());
+    if (output) onDelta(output);
+    return output;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let answer = "";
+  const acceptEvent = (block: string) => {
+    const data = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+    if (!data || data === "[DONE]") return;
+    let event: unknown;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (!isRecord(event)) return;
+    const providerError = streamErrorMessage(event);
+    if (providerError) throw new AiServiceError(providerError);
+    const delta = readDelta(event);
+    if (!delta) return;
+    const remaining = Math.max(0, 40_000 - answer.length);
+    if (!remaining) return;
+    const accepted = delta.slice(0, remaining);
+    answer += accepted;
+    onDelta(accepted);
+  };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() || "";
+      for (const block of blocks) acceptEvent(block);
+      if (done) break;
+    }
+    if (buffer.trim()) acceptEvent(buffer);
+  } finally {
+    reader.releaseLock();
+  }
+  return answer.trim();
+}
+
+function readOpenAiStreamDelta(event: Record<string, unknown>): string | undefined {
+  return event.type === "response.output_text.delta" && typeof event.delta === "string" ? event.delta : undefined;
+}
+
+function readDeepSeekStreamDelta(event: Record<string, unknown>): string | undefined {
+  const choices = event.choices;
+  if (!Array.isArray(choices) || !isRecord(choices[0]) || !isRecord(choices[0].delta)) return undefined;
+  const content = choices[0].delta.content;
+  return typeof content === "string" ? content : undefined;
+}
+
+function streamErrorMessage(event: Record<string, unknown>): string | undefined {
+  if (event.type !== "error" && !isRecord(event.error)) return undefined;
+  // Provider errors can echo request metadata. Keep this boundary deliberately
+  // generic so remote diagnostics and credentials never reach the renderer.
+  return "服务在生成回答时返回错误，请稍后重试。";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

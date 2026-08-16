@@ -21,7 +21,7 @@ import { InAppArticleViewer } from "./in-app-article-viewer";
 import { auditLocalReader } from "./reader-audit";
 import { assertPublicUrl } from "../shared/url";
 import { RobotsDisallowedError } from "./robots";
-import type { AiProviderConfiguration, AiQuestionRequest, EntryListQuery, ExtractionRule, Source, SourceSettings, SyncResult } from "../shared/types";
+import type { AiProviderConfiguration, AiStreamEvent, AiStreamRequest, EntryListQuery, ExtractionRule, Source, SourceSettings, SyncResult } from "../shared/types";
 
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
@@ -56,6 +56,22 @@ function applicationIcon() {
     // those corners opaque white in the Dock during development.
   }
   return nativeImage.createEmpty();
+}
+
+function isAiStreamRequest(value: unknown): value is AiStreamRequest {
+  if (!value || typeof value !== "object") return false;
+  const requestId = (value as { requestId?: unknown }).requestId;
+  const request = (value as { request?: unknown }).request;
+  const article = request && typeof request === "object" ? (request as { article?: unknown }).article : undefined;
+  return typeof requestId === "string"
+    && /^[A-Za-z0-9_-]{8,80}$/.test(requestId)
+    && Boolean(request && typeof request === "object")
+    && ["openai", "deepseek", "codex-cli"].includes((request as { provider?: unknown }).provider as string)
+    && typeof (request as { question?: unknown }).question === "string"
+    && Boolean(article && typeof article === "object")
+    && typeof (article as { title?: unknown }).title === "string"
+    && typeof (article as { url?: unknown }).url === "string"
+    && typeof (article as { text?: unknown }).text === "string";
 }
 
 function quitApplication(): void {
@@ -238,7 +254,24 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle("ai:list-providers", () => learningAssistant.listProviders());
   ipcMain.handle("ai:configure", (_event, configuration: AiProviderConfiguration) => learningAssistant.configure(configuration));
   ipcMain.handle("ai:clear-provider", (_event, provider: AiProviderConfiguration["provider"]) => learningAssistant.clear(provider));
-  ipcMain.handle("ai:ask", (_event, request: AiQuestionRequest) => learningAssistant.ask(request));
+  ipcMain.handle("ai:ask-stream", (event, payload: AiStreamRequest) => {
+    if (!isAiStreamRequest(payload)) throw new Error("AI 流式请求无效，请重新发送问题。");
+    const emit = (update: AiStreamEvent) => {
+      if (!event.sender.isDestroyed()) event.sender.send("ai:stream", update);
+    };
+    // Start only after the invoke handler returns. The renderer has already
+    // registered its supplied id, so its first token can never be lost.
+    queueMicrotask(() => {
+      void learningAssistant.askStream(payload.request, (text) => emit({ type: "delta", requestId: payload.requestId, text }))
+        .then((answer) => emit({ type: "complete", requestId: payload.requestId, answer }))
+        .catch((error: unknown) => emit({
+          type: "error",
+          requestId: payload.requestId,
+          message: error instanceof Error && error.message ? error.message : "AI 学习助手暂时无法完成回答，请稍后重试。"
+        }));
+    });
+    return { requestId: payload.requestId };
+  });
   ipcMain.handle("window:is-fullscreen", (event) => BrowserWindow.fromWebContents(event.sender)?.isFullScreen() ?? false);
   ipcMain.handle("app:open-external", (_event, url: string) => shell.openExternal(assertPublicUrl(url).toString()));
   ipcMain.handle("zhihu:connect", async (_event, accessSecret: string) => {

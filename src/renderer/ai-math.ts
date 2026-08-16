@@ -30,6 +30,16 @@ export function tokenizeAiMath(input: string): AiMathSegment[] {
       index += 3;
       continue;
     }
+    // Inline Markdown code is equally literal: a `$` or `\begin` within it
+    // must not be promoted into TeX before the Markdown renderer sees it.
+    if (!fencedCode && input[index] === "`") {
+      const close = input.indexOf("`", index + 1);
+      if (close > index + 1 && !input.slice(index + 1, close).includes("\n")) {
+        text += input.slice(index, close + 1);
+        index = close + 1;
+        continue;
+      }
+    }
     const match = fencedCode ? undefined : mathAt(input, index);
     if (!match) {
       text += input[index];
