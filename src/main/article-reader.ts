@@ -496,11 +496,11 @@ function hydrateLazyImages($: ReturnType<typeof load>, root: any, pageUrl: strin
     const fallbackSrc = imageSource(fallbackImage, pageUrl);
     const equivalentSibling = $(node).siblings("img").toArray().map((sibling: any) => $(sibling)).find((image: any) => {
       const siblingSrc = imageSource(image, pageUrl);
-      return Boolean(fallbackSrc && siblingSrc && imageUrlKey(fallbackSrc) === imageUrlKey(siblingSrc));
+      return sameImageAsset(fallbackSrc, siblingSrc);
     });
     // WordPress's lightbox block places a static <noscript> image immediately
-    // before its lazy image sibling. Both resolve to the same URL once we
-    // hydrate data-src, so retaining the fallback creates two visible figures.
+    // before its lazy image sibling. They can resolve to different generated
+    // sizes of one asset, so retaining both creates two visible figures.
     if (equivalentSibling) {
       const alt = normalText(fallbackImage.attr("alt") || "");
       if (alt && !normalText(equivalentSibling.attr("alt") || "")) equivalentSibling.attr("alt", alt);
@@ -548,7 +548,7 @@ function removeDuplicateImagesIn($: ReturnType<typeof load>, container: any, pag
   for (const node of images) {
     const image = $(node);
     const src = imageSource(image, pageUrl);
-    const key = imageUrlKey(src);
+    const key = imageAssetKey(src);
     if (!key) continue;
     if (!seen.has(key)) {
       seen.add(key);
@@ -562,8 +562,8 @@ function removeDuplicateImagesIn($: ReturnType<typeof load>, container: any, pag
 
 function containsImage(contentHtml: string, imageUrl: string): boolean {
   const content = load(`<div>${contentHtml}</div>`);
-  const target = imageUrlKey(imageUrl);
-  return content("img").toArray().some((node) => imageUrlKey(content(node).attr("src")) === target);
+  const target = imageAssetKey(imageUrl);
+  return content("img").toArray().some((node) => imageAssetKey(content(node).attr("src")) === target);
 }
 
 function imageUrlKey(value: string | undefined): string | undefined {
@@ -575,6 +575,30 @@ function imageUrlKey(value: string | undefined): string | undefined {
   } catch {
     return value;
   }
+}
+
+/**
+ * A CMS commonly emits the same original image in several generated sizes,
+ * for example `Figure1.png` and `Figure1-625x125.png`. These are one visual
+ * asset when they coexist in a single article image block. Keep the exact URL
+ * for rendering, but compare their stable asset identity for deduplication.
+ */
+function imageAssetKey(value: string | undefined): string | undefined {
+  const key = imageUrlKey(value);
+  if (!key) return undefined;
+  try {
+    const url = new URL(key);
+    url.pathname = url.pathname.replace(/-\d{1,5}x\d{1,5}(?=\.[a-z0-9]{2,5}$)/i, "");
+    return url.toString();
+  } catch {
+    return key.replace(/-\d{1,5}x\d{1,5}(?=\.[a-z0-9]{2,5}(?:[?#]|$))/i, "");
+  }
+}
+
+function sameImageAsset(left: string | undefined, right: string | undefined): boolean {
+  const leftKey = imageAssetKey(left);
+  const rightKey = imageAssetKey(right);
+  return Boolean(leftKey && rightKey && leftKey === rightKey);
 }
 
 /**

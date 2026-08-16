@@ -375,13 +375,14 @@ describe("article reader extraction", () => {
   });
 
   it("keeps one WordPress noscript/lazy image when both variants are present in a figure", () => {
-    const image = "https://developer-blogs.nvidia.com/wp-content/uploads/2024/06/the-roofline-analysis-graph-in-Nsight-Compute.png";
+    const image = "https://developer-blogs.nvidia.com/wp-content/uploads/2020/11/Figure1-625x125.png";
+    const originalImage = "https://developer-blogs.nvidia.com/wp-content/uploads/2020/11/Figure1.png";
     const result = extractReaderArticle(
       `<article class="entry-content">
         <p>${"正文内容 ".repeat(35)}</p>
         <figure class="wp-lightbox-container">
-          <noscript><img src="${image}" alt="Roofline 图"></noscript>
-          <img src="data:image/svg+xml,%3Csvg%3E%3C/svg%3E" data-src="${image}" alt="Roofline 图" class="lazyload">
+          <noscript><img src="${image}" srcset="${image} 625w, ${originalImage} 1206w" alt="Roofline 图"></noscript>
+          <img src="data:image/svg+xml,%3Csvg%3E%3C/svg%3E" data-src="${image}" data-srcset="${image} 625w, ${originalImage} 1206w" alt="Roofline 图" class="lazyload">
           <button type="button">放大</button>
           <figcaption>Figure 1. Roofline 图。</figcaption>
         </figure>
