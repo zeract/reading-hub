@@ -656,7 +656,13 @@ function normaliseDisplayEnvironment(environment: string, body: string): string 
 function looksLikeMath(value: string): boolean {
   const text = value.trim();
   if (!text || text.length > 1_500 || /https?:\/\//i.test(text)) return false;
-  return /\\[a-zA-Z]+|[_^=<>≈≠≤≥]|\{.*\}|\d\s*[+\-*/]\s*\d|\d\s*[A-Za-zα-ωΑ-Ω]/.test(text);
+  // Technical posts commonly use a single letter as mathematical notation
+  // (for example `$t$` for a time step or `$L$` for sequence length).  The
+  // former heuristic intentionally rejected plain prose inside dollar signs,
+  // but it also let these meaningful variables leak into reader text. Keep
+  // the conservative multi-character path and explicitly accept one variable
+  // name, including a Greek symbol.
+  return /^[A-Za-zα-ωΑ-Ω]$/.test(text) || /\\[a-zA-Z]+|[_^=<>≈≠≤≥]|\{.*\}|\d\s*[+\-*/]\s*\d|\d\s*[A-Za-zα-ωΑ-Ω]/.test(text);
 }
 
 function addMath(math: MathSnippet[], tex: string, displayMode: boolean): string {

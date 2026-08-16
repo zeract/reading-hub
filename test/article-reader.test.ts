@@ -76,6 +76,24 @@ describe("article reader extraction", () => {
     expect(result?.article.contentHtml).not.toContain("旧公式渲染副本");
   });
 
+  it("renders single-symbol inline variables used by technical blogs", () => {
+    const result = extractReaderArticle(
+      `<article><p>对第 $t$ 个 query，序列长度记为 $L$，head 维度为 $d$，每个 block 的大小为 $B$。${"这段正文用于保证内容提取稳定。 ".repeat(32)}</p></article>`,
+      "https://www.haoyizhu.site/blog/sparse-linear-attention/",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    const visible = load(`<article>${content}</article>`);
+    visible(".katex, .reader-math-source").remove();
+    expect(content).toContain('class="katex"');
+    expect(content).not.toContain("$t$");
+    expect(content).not.toContain("$L$");
+    expect(content).not.toContain("$d$");
+    expect(content).not.toContain("$B$");
+    expect(visible.text()).not.toContain("$");
+  });
+
   it("shares MathJax macro declarations across article equations", () => {
     const result = extractReaderArticle(
       `<article>

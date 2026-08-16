@@ -2,6 +2,7 @@ import { type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode,
 import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type CalibrationResult, type Entry, type Followee, type ProbeResult, type ReaderArticle, type Source, type SourceKind, type SubscriptionDraft } from "../shared/types";
 import { renderAiTeX, tokenizeAiMath } from "./ai-math";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
+import { requiresSourceReload } from "./source-selection";
 
 type PendingPreview = { token: string; probe: ProbeResult };
 type ReaderPreset = "reading" | "compact";
@@ -113,6 +114,13 @@ export function App() {
 
   function selectSource(sourceId?: string) {
     setReadingEntry(undefined);
+    if (requiresSourceReload(activeSourceId, sourceId)) {
+      // A repeated click does not change `activeSourceId`, so the effect that
+      // normally reloads entries would not run. Do not leave the cleared list
+      // on screen; fetch the current source explicitly instead.
+      void reload();
+      return;
+    }
     setEntries([]);
     setActiveSourceId(sourceId);
   }
