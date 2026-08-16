@@ -493,9 +493,22 @@ function hydrateLazyImages($: ReturnType<typeof load>, root: any, pageUrl: strin
     const fallbackImage = fallback("img").first();
     if (!fallbackImage.length) return;
     const previousImage = $(node).prev("img");
+    const fallbackSrc = imageSource(fallbackImage, pageUrl);
+    const equivalentSibling = $(node).siblings("img").toArray().map((sibling: any) => $(sibling)).find((image: any) => {
+      const siblingSrc = imageSource(image, pageUrl);
+      return Boolean(fallbackSrc && siblingSrc && imageUrlKey(fallbackSrc) === imageUrlKey(siblingSrc));
+    });
+    // WordPress's lightbox block places a static <noscript> image immediately
+    // before its lazy image sibling. Both resolve to the same URL once we
+    // hydrate data-src, so retaining the fallback creates two visible figures.
+    if (equivalentSibling) {
+      const alt = normalText(fallbackImage.attr("alt") || "");
+      if (alt && !normalText(equivalentSibling.attr("alt") || "")) equivalentSibling.attr("alt", alt);
+      $(node).remove();
+      return;
+    }
     if (previousImage.length) {
-      const src = imageSource(fallbackImage, pageUrl);
-      if (src && !imageSource(previousImage, pageUrl)) previousImage.attr("data-reader-noscript-src", src);
+      if (fallbackSrc && !imageSource(previousImage, pageUrl)) previousImage.attr("data-reader-noscript-src", fallbackSrc);
       const srcset = fallbackImage.attr("data-srcset") || fallbackImage.attr("srcset");
       if (srcset && !previousImage.attr("data-reader-noscript-srcset")) previousImage.attr("data-reader-noscript-srcset", srcset);
       // The fallback has now been merged into the preceding lazy image. It
@@ -503,14 +516,48 @@ function hydrateLazyImages($: ReturnType<typeof load>, root: any, pageUrl: strin
       $(node).remove();
       return;
     }
-    const src = imageSource(fallbackImage, pageUrl);
-    if (!src) return;
+    if (!fallbackSrc) return;
     const image = $("<img>");
-    image.attr("src", src);
+    image.attr("src", fallbackSrc);
     const alt = normalText(fallbackImage.attr("alt") || "");
     if (alt) image.attr("alt", alt);
     $(node).replaceWith(image);
   });
+  removeLocalDuplicateImages($, root, pageUrl);
+}
+
+/**
+ * A source can contain both an accessible fallback and a client-side image in
+ * one figure. Dedupe only inside one media container (or direct siblings), so
+ * an author can still intentionally use the same illustration in two separate
+ * figures elsewhere in the article.
+ */
+function removeLocalDuplicateImages($: ReturnType<typeof load>, root: any, pageUrl: string): void {
+  root.find("figure, picture").each((_index: number, node: any) => removeDuplicateImagesIn($, $(node), pageUrl));
+  root.children().each((_index: number, node: any) => {
+    const container = $(node);
+    if (container.is("figure, picture")) return;
+    const images = container.children("img");
+    if (images.length > 1) removeDuplicateImagesIn($, container, pageUrl, true);
+  });
+}
+
+function removeDuplicateImagesIn($: ReturnType<typeof load>, container: any, pageUrl: string, directOnly = false): void {
+  const seen = new Set<string>();
+  const images = directOnly ? container.children("img").toArray() : container.find("img").toArray();
+  for (const node of images) {
+    const image = $(node);
+    const src = imageSource(image, pageUrl);
+    const key = imageUrlKey(src);
+    if (!key) continue;
+    if (!seen.has(key)) {
+      seen.add(key);
+      continue;
+    }
+    const parentLink = image.parent("a");
+    image.remove();
+    if (parentLink.length && !parentLink.find("img").length && !normalText(parentLink.text())) parentLink.remove();
+  }
 }
 
 function containsImage(contentHtml: string, imageUrl: string): boolean {

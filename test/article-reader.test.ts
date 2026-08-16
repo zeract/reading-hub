@@ -374,6 +374,43 @@ describe("article reader extraction", () => {
     expect(content).toContain("首图图注");
   });
 
+  it("keeps one WordPress noscript/lazy image when both variants are present in a figure", () => {
+    const image = "https://developer-blogs.nvidia.com/wp-content/uploads/2024/06/the-roofline-analysis-graph-in-Nsight-Compute.png";
+    const result = extractReaderArticle(
+      `<article class="entry-content">
+        <p>${"正文内容 ".repeat(35)}</p>
+        <figure class="wp-lightbox-container">
+          <noscript><img src="${image}" alt="Roofline 图"></noscript>
+          <img src="data:image/svg+xml,%3Csvg%3E%3C/svg%3E" data-src="${image}" alt="Roofline 图" class="lazyload">
+          <button type="button">放大</button>
+          <figcaption>Figure 1. Roofline 图。</figcaption>
+        </figure>
+      </article>`,
+      entry.url,
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(load(content)(`img[src='${image}']`)).toHaveLength(1);
+    expect(content).toContain("Figure 1. Roofline 图。");
+    expect(content).not.toContain("data:image/svg");
+  });
+
+  it("does not remove the same image when it is intentionally used in separate figures", () => {
+    const image = "https://example.com/images/reused-diagram.png";
+    const result = extractReaderArticle(
+      `<article><p>${"正文内容 ".repeat(35)}</p>
+        <figure><img src="${image}" alt="第一次出现"><figcaption>图一</figcaption></figure>
+        <p>中间说明。</p>
+        <figure><img src="${image}" alt="第二次出现"><figcaption>图二</figcaption></figure>
+      </article>`,
+      entry.url,
+      entry
+    );
+
+    expect(load(result?.article.contentHtml || "")(`img[src='${image}']`)).toHaveLength(2);
+  });
+
   it("uses the isolated renderer after a non-robots HTTP failure", async () => {
     const http = {
       getText: async () => { throw new Error("请求失败（HTTP 403）"); }
