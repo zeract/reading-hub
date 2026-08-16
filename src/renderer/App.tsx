@@ -39,6 +39,19 @@ export function App() {
   const [activeSourceId, setActiveSourceId] = useState<string>();
   const [readingEntry, setReadingEntry] = useState<Entry>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [windowFullscreen, setWindowFullscreen] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    const unsubscribe = window.reader.onWindowFullscreenChange(setWindowFullscreen);
+    void window.reader.isWindowFullscreen().then((fullscreen) => {
+      if (mounted) setWindowFullscreen(fullscreen);
+    }).catch(() => undefined);
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, []);
 
   const reload = useCallback(async () => {
     const [nextSources, nextEntries, nextFollowees] = await Promise.all([
@@ -160,7 +173,7 @@ export function App() {
   const activeSource = activeSourceId ? sourceById.get(activeSourceId) : undefined;
 
   return (
-    <main className={`shell${sidebarCollapsed ? " shell--sidebar-collapsed" : ""}`}>
+    <main className={`shell${sidebarCollapsed ? " shell--sidebar-collapsed" : ""}${windowFullscreen ? " shell--fullscreen" : ""}`}>
       <header className="app-titlebar">
         <span className="app-titlebar-mark" aria-label="Reading Hub">R</span>
         <div className="app-titlebar-actions">

@@ -80,6 +80,12 @@ function createWindow(): BrowserWindow {
   });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
+  const publishFullscreenState = () => {
+    if (!window.isDestroyed()) window.webContents.send("window:fullscreen-changed", window.isFullScreen());
+  };
+  window.on("enter-full-screen", publishFullscreenState);
+  window.on("leave-full-screen", publishFullscreenState);
+  window.webContents.on("did-finish-load", publishFullscreenState);
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) void window.loadURL(devUrl);
   else void window.loadFile(path.join(app.getAppPath(), "dist", "renderer", "index.html"));
@@ -225,6 +231,7 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle("ai:configure", (_event, configuration: AiProviderConfiguration) => learningAssistant.configure(configuration));
   ipcMain.handle("ai:clear-provider", (_event, provider: AiProviderConfiguration["provider"]) => learningAssistant.clear(provider));
   ipcMain.handle("ai:ask", (_event, request: AiQuestionRequest) => learningAssistant.ask(request));
+  ipcMain.handle("window:is-fullscreen", (event) => BrowserWindow.fromWebContents(event.sender)?.isFullScreen() ?? false);
   ipcMain.handle("app:open-external", (_event, url: string) => shell.openExternal(assertPublicUrl(url).toString()));
   ipcMain.handle("zhihu:connect", async (_event, accessSecret: string) => {
     await secrets.setZhihuAccessSecret(accessSecret);

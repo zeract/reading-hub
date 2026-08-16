@@ -76,9 +76,9 @@ describe("article reader extraction", () => {
     expect(result?.article.contentHtml).not.toContain("旧公式渲染副本");
   });
 
-  it("renders single-symbol inline variables used by technical blogs", () => {
+  it("renders every explicitly delimited inline formula used by technical blogs", () => {
     const result = extractReaderArticle(
-      `<article><p>对第 $t$ 个 query，序列长度记为 $L$，head 维度为 $d$，每个 block 的大小为 $B$。${"这段正文用于保证内容提取稳定。 ".repeat(32)}</p></article>`,
+      `<article><p>对第 $t$ 个 query，序列长度记为 $L$，head 维度为 $d$，每个 block 的大小为 $B$；VAE 的压缩率是 $(4,16,16)$，复杂度为 $\mathcal{O}(L^2)$。${"这段正文用于保证内容提取稳定。 ".repeat(32)}</p></article>`,
       "https://www.haoyizhu.site/blog/sparse-linear-attention/",
       entry
     );
@@ -91,6 +91,8 @@ describe("article reader extraction", () => {
     expect(content).not.toContain("$L$");
     expect(content).not.toContain("$d$");
     expect(content).not.toContain("$B$");
+    expect(content).not.toContain("$(4,16,16)$");
+    expect(content).not.toContain("$\\mathcal{O}(L^2)$");
     expect(visible.text()).not.toContain("$");
   });
 

@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld("reader", {
   configureAiProvider: (configuration: AiProviderConfiguration) => ipcRenderer.invoke("ai:configure", configuration),
   clearAiProvider: (provider: AiProviderId) => ipcRenderer.invoke("ai:clear-provider", provider),
   askAi: (request: AiQuestionRequest) => ipcRenderer.invoke("ai:ask", request),
+  isWindowFullscreen: () => ipcRenderer.invoke("window:is-fullscreen"),
+  onWindowFullscreenChange: (listener: (fullscreen: boolean) => void) => {
+    const receive = (_event: Electron.IpcRendererEvent, fullscreen: unknown) => listener(Boolean(fullscreen));
+    ipcRenderer.on("window:fullscreen-changed", receive);
+    return () => ipcRenderer.removeListener("window:fullscreen-changed", receive);
+  },
   openExternal: (url: string) => ipcRenderer.invoke("app:open-external", url),
   connectZhihu: (accessSecret: string) => ipcRenderer.invoke("zhihu:connect", accessSecret),
   connectZhihuFollow: () => ipcRenderer.invoke("zhihu:follow-login"),

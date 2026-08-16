@@ -111,8 +111,17 @@ async function auditViewport(window, viewport) {
       })(),
       titlebar: (() => {
         const titlebar = document.querySelector('#app-titlebar')?.getBoundingClientRect();
+        const mark = document.querySelector('.app-titlebar-mark')?.getBoundingClientRect();
         const controls = [...document.querySelectorAll('.app-titlebar-button')].map((button) => button.getBoundingClientRect());
-        return titlebar ? { left: titlebar.left, right: titlebar.right, height: titlebar.height, controls: controls.map((control) => ({ left: control.left, right: control.right, top: control.top, bottom: control.bottom })) } : undefined;
+        return titlebar && mark ? { left: titlebar.left, right: titlebar.right, height: titlebar.height, mark: { left: mark.left, right: mark.right }, controls: controls.map((control) => ({ left: control.left, right: control.right, top: control.top, bottom: control.bottom })) } : undefined;
+      })(),
+      fullscreenTitlebar: (() => {
+        const shell = document.querySelector('#shell');
+        shell?.classList.add('shell--fullscreen');
+        const mark = document.querySelector('.app-titlebar-mark')?.getBoundingClientRect();
+        const controls = [...document.querySelectorAll('.app-titlebar-button')].map((button) => button.getBoundingClientRect());
+        shell?.classList.remove('shell--fullscreen');
+        return mark ? { mark: { left: mark.left, right: mark.right }, controls: controls.map((control) => ({ left: control.left, right: control.right, top: control.top, bottom: control.bottom })) } : undefined;
       })(),
       sourceMeta: (() => {
         const badge = document.querySelector('.source-meta-line .status')?.getBoundingClientRect();
@@ -146,6 +155,9 @@ async function auditViewport(window, viewport) {
   }
   if (!geometry.titlebar || geometry.titlebar.height < 40 || geometry.titlebar.controls.some((control) => control.left < geometry.titlebar.left - 1 || control.right > geometry.titlebar.right + 1 || control.top < 0 || control.bottom > geometry.titlebar.height + 1)) {
     failures.push("应用顶部导航没有保持在标题栏内");
+  }
+  if (!geometry.titlebar || !geometry.fullscreenTitlebar || geometry.titlebar.mark.left < 90 || Math.abs(geometry.fullscreenTitlebar.mark.left - 16) > 1 || geometry.fullscreenTitlebar.controls.some((control) => control.left < geometry.fullscreenTitlebar.mark.right + 6)) {
+    failures.push("全屏时顶部图标和按钮没有随 macOS 交通灯隐藏而左移");
   }
   if (geometry.sourceMeta === undefined || geometry.sourceMeta < 6) failures.push("来源状态和刷新时间之间缺少可读间距");
   if (viewport.name === "default" && geometry.assistant && geometry.assistant.panel.left < geometry.assistant.scroll.right - 1) {

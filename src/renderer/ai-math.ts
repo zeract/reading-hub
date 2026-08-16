@@ -1,4 +1,5 @@
 import katex from "katex";
+import { inlineDollarMathAt } from "../shared/tex";
 
 export type AiMathSegment =
   | { type: "text"; value: string }
@@ -68,7 +69,7 @@ function mathAt(input: string, index: number): MathMatch | undefined {
   if (input.startsWith("\\[", index)) return delimitedMath(input, index, "\\[", "\\]", true);
   if (input.startsWith("\\(", index)) return delimitedMath(input, index, "\\(", "\\)", false);
   if (input.startsWith("\\begin{", index)) return environmentMath(input, index);
-  if (input[index] === "$" && !isEscaped(input, index)) return inlineDollarMath(input, index);
+  if (input[index] === "$") return inlineDollarMath(input, index);
   return undefined;
 }
 
@@ -90,23 +91,8 @@ function environmentMath(input: string, index: number): MathMatch | undefined {
 }
 
 function inlineDollarMath(input: string, index: number): MathMatch | undefined {
-  for (let cursor = index + 1; cursor < input.length; cursor += 1) {
-    if (input[cursor] !== "$" || isEscaped(input, cursor)) continue;
-    const tex = input.slice(index + 1, cursor).trim();
-    if (!tex || /\n/.test(tex) || !looksLikeInlineMath(tex)) return undefined;
-    return { tex, displayMode: false, end: cursor + 1 };
-  }
-  return undefined;
-}
-
-function isEscaped(input: string, index: number): boolean {
-  let slashes = 0;
-  for (let cursor = index - 1; cursor >= 0 && input[cursor] === "\\"; cursor -= 1) slashes += 1;
-  return slashes % 2 === 1;
-}
-
-function looksLikeInlineMath(value: string): boolean {
-  return /\\[A-Za-z]+|[=^_{}<>≈≠≤≥]|\d\s*[+\-*/=]\s*\d|\d+[A-Za-zα-ωΑ-Ω]|[α-ωΑ-Ω]/.test(value);
+  const match = inlineDollarMathAt(input, index);
+  return match ? { ...match, displayMode: false } : undefined;
 }
 
 function normalizeTeX(value: string, displayMode: boolean): string {

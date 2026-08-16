@@ -56,6 +56,8 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
   unrendered("#audit-content .katex, #audit-content mjx-container, #audit-content .reader-math-source, #audit-content pre, #audit-content code").remove();
   const unrenderedHtml = unrendered("#audit-content").html() || "";
   const rawTeXCommands = plainText(unrenderedHtml).match(/\\(?:[A-Za-z]+|[{}\[\]\\])[^\s<]{0,180}/g) || [];
+  const rawInlineTeX = plainText(unrenderedHtml).match(/(?<!\\)\$[^$\r\n]+\$/g) || [];
+  const rawFormulaDiagnostics = [...rawTeXCommands, ...rawInlineTeX].slice(0, 2);
   const issues: string[] = [];
   // Follow-feed cards can legitimately be a short public status update rather
   // than a long-form article. Their in-app display is still valid.
@@ -72,6 +74,7 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
   if (renderedMathTeX.length) issues.push("MathJax 公式中残留原始 TeX 命令");
   if (mathJaxSpacerNodes) issues.push(`MathJax CHTML 伸缩符号残留（${mathJaxSpacerNodes} 个 spacer 节点）`);
   if (rawTeXCommands.length) issues.push("正文中残留未渲染的 TeX 命令");
+  if (rawInlineTeX.length) issues.push("正文中残留未渲染的 $…$ 行内公式");
   if (article.renderProfile === "scientific" && /\\begin\{|\$\$|\\\(/.test(unrenderedHtml)) issues.push("科学空间残留原始 TeX");
   const scientificChrome = /首页|数学研究|信息时代/.test(firstText)
     || /\bBy\s+.+?\|\s*\d{4}-\d{2}-\d{2}\b/i.test(firstText)
@@ -94,7 +97,7 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
     mathJaxBlocks: countMatches(html, /<mjx-container\b[^>]*display="true"/gi),
     mathJaxSpacerNodes: mathJaxSpacerNodes || undefined,
     formulaDiagnostics: fallbackFormulae.length ? fallbackFormulae : undefined,
-    rawTeXDiagnostics: rawTeXCommands.length ? rawTeXCommands.slice(0, 2) : undefined,
+    rawTeXDiagnostics: rawFormulaDiagnostics.length ? rawFormulaDiagnostics : undefined,
     renderedMathDiagnostics: renderedMathTeX.length ? renderedMathTeX : undefined,
     issues
   };

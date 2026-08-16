@@ -3,6 +3,7 @@ import { load } from "cheerio";
 import { JSDOM, VirtualConsole } from "jsdom";
 import katex from "katex";
 import { compactText, parsePublishedAt } from "../shared/text";
+import { inlineDollarMathAt } from "../shared/tex";
 import { assertPublicUrl, toAbsoluteUrl } from "../shared/url";
 import type { Entry, ReaderArticle, ReaderRenderProfile, Source } from "../shared/types";
 import { PublicHttpClient } from "./http";
@@ -579,7 +580,7 @@ function isMathScript(element: any): boolean {
   return tag === "script" && (type.startsWith("math/tex") || type.startsWith("math/asciimath"));
 }
 
-/** Converts common TeX delimiters found as text in static HTML into placeholders. */
+/** Converts author-delimited TeX in static HTML into placeholders. */
 function preserveTextMath($: ReturnType<typeof load>, root: any, math: MathSnippet[]): void {
   preserveMultilineTextMath($, root, math);
   const visit = (node: any, insideLiteral = false): void => {
@@ -640,9 +641,7 @@ function tokenizeMath(value: string, math: MathSnippet[]): string {
   result = result.replace(/\\\[([\s\S]*?)\\\]/g, (_all, tex) => addMath(math, tex, true));
   result = result.replace(/\$\$([\s\S]*?)\$\$/g, (_all, tex) => addMath(math, tex, true));
   result = result.replace(/\\\(([^]*?)\\\)/g, (_all, tex) => addMath(math, tex, false));
-  return result.replace(/(?<!\\)\$([^$\n]+?)(?<!\\)\$/g, (all, tex) => {
-    return looksLikeMath(tex) ? addMath(math, tex, false) : all;
-  });
+  return tokenizeInlineDollarMath(result, math);
 }
 
 function normaliseDisplayEnvironment(environment: string, body: string): string {
@@ -653,16 +652,19 @@ function normaliseDisplayEnvironment(environment: string, body: string): string 
   return content;
 }
 
-function looksLikeMath(value: string): boolean {
-  const text = value.trim();
-  if (!text || text.length > 1_500 || /https?:\/\//i.test(text)) return false;
-  // Technical posts commonly use a single letter as mathematical notation
-  // (for example `$t$` for a time step or `$L$` for sequence length).  The
-  // former heuristic intentionally rejected plain prose inside dollar signs,
-  // but it also let these meaningful variables leak into reader text. Keep
-  // the conservative multi-character path and explicitly accept one variable
-  // name, including a Greek symbol.
-  return /^[A-Za-zα-ωΑ-Ω]$/.test(text) || /\\[a-zA-Z]+|[_^=<>≈≠≤≥]|\{.*\}|\d\s*[+\-*/]\s*\d|\d\s*[A-Za-zα-ωΑ-Ω]/.test(text);
+function tokenizeInlineDollarMath(value: string, math: MathSnippet[]): string {
+  let output = "";
+  for (let index = 0; index < value.length;) {
+    const match = inlineDollarMathAt(value, index);
+    if (!match) {
+      output += value[index];
+      index += 1;
+      continue;
+    }
+    output += addMath(math, match.tex, false);
+    index = match.end;
+  }
+  return output;
 }
 
 function addMath(math: MathSnippet[], tex: string, displayMode: boolean): string {

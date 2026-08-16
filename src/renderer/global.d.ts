@@ -23,6 +23,8 @@ declare global {
       configureAiProvider(configuration: AiProviderConfiguration): Promise<AiProviderSettings>;
       clearAiProvider(provider: AiProviderId): Promise<void>;
       askAi(request: AiQuestionRequest): Promise<AiAnswer>;
+      isWindowFullscreen(): Promise<boolean>;
+      onWindowFullscreenChange(listener: (fullscreen: boolean) => void): () => void;
       openExternal(url: string): Promise<void>;
       connectZhihu(accessSecret: string): Promise<unknown>;
       connectZhihuFollow(): Promise<void>;

@@ -28,4 +28,16 @@ describe("AI answer math rendering", () => {
   it("does not mistake an unmatched price as a formula", () => {
     expect(tokenizeAiMath("价格是 $5，暂不计算。 ")).toEqual([{ type: "text", value: "价格是 $5，暂不计算。 " }]);
   });
+
+  it("uses the same paired-dollar parser for single variables and tuples", () => {
+    const tokens = tokenizeAiMath("第 $t$ 个 query 的 VAE 压缩率为 $(4,16,16)$。");
+
+    expect(tokens).toEqual([
+      { type: "text", value: "第 " },
+      { type: "math", tex: "t", displayMode: false },
+      { type: "text", value: " 个 query 的 VAE 压缩率为 " },
+      { type: "math", tex: "(4,16,16)", displayMode: false },
+      { type: "text", value: "。" }
+    ]);
+  });
 });

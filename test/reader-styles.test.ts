@@ -20,4 +20,10 @@ describe("reader display-equation layout", () => {
     expect(styles).toContain(".reader-scroll { min-height: 0; overflow: auto;");
     expect(styles).toContain(".source-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;");
   });
+
+  it("reclaims the macOS traffic-light inset while the native window is fullscreen", () => {
+    expect(styles).toContain(".shell { --titlebar-leading-inset: 96px;");
+    expect(styles).toContain(".shell--fullscreen { --titlebar-leading-inset: 16px; }");
+    expect(styles).toContain("padding: 0 16px 0 var(--titlebar-leading-inset);");
+  });
 });
