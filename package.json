@@ -14,14 +14,26 @@
     "audit:visual": "npm run build && electron scripts/visual-audit-app",
     "rebuild:electron": "electron-rebuild -f -w better-sqlite3 -w keytar",
     "postinstall": "npm run rebuild:electron",
-    "dist": "npm run build && electron-builder --mac"
+    "dist": "node scripts/release.mjs",
+    "verify:macos-release": "node scripts/release.mjs --verify-only"
   },
   "build": {
     "appId": "com.local.readinghub",
     "productName": "Reading Hub",
+    "directories": {
+      "output": "release"
+    },
+    "forceCodeSigning": true,
     "mac": {
+      "target": [
+        "dmg"
+      ],
       "category": "public.app-category.news",
-      "icon": "assets/reading-hub-icon.svg"
+      "icon": "assets/reading-hub-icon.svg",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "notarize": true
     },
     "files": [
       "dist/**/*",
