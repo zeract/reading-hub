@@ -428,13 +428,18 @@ function sanitizeContent(
     if (tag === "a") {
       const href = safeUrl(element.attr("href"), pageUrl);
       const label = normalText(element.text());
+      // An image-only link is a common figure pattern (notably in Substack
+      // posts). Calling `text(href)` on it would replace the nested picture
+      // and image nodes with the URL itself, silently removing the figure.
+      // Only synthesize a visible label for a genuinely empty anchor.
+      const hasContents = element.contents().length > 0;
       removeAllAttributes(element);
       if (!href) {
         element.replaceWith(element.contents());
         continue;
       }
       element.attr("href", href);
-      if (!label) element.text(href);
+      if (!label && !hasContents) element.text(href);
       continue;
     }
     removeAllAttributes(element);
@@ -997,7 +1002,12 @@ function imageSource(element: any, pageUrl: string): string | undefined {
 
 function bestSrcsetUrl(value: string | undefined): string | undefined {
   if (!value) return undefined;
-  const candidates = value.split(",").map((item) => {
+  // CDN transformation paths (for example Substack's `image/fetch/$…,w_…`)
+  // use commas in the URL itself. A naive `split(",")` turns such a URL into
+  // a truncated image endpoint. A srcset candidate boundary is the comma
+  // before the next absolute or root-relative URL, not every URL character
+  // comma.
+  const candidates = value.split(/,\s*(?=(?:(?:https?:)?\/\/|\/))/i).map((item) => {
     const [url, descriptor] = item.trim().split(/\s+/, 2);
     const width = Number.parseInt(descriptor || "0", 10);
     return { url, width: Number.isFinite(width) ? width : 0 };

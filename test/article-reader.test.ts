@@ -398,6 +398,24 @@ describe("article reader extraction", () => {
     expect(content).not.toContain("data:image/svg");
   });
 
+  it("preserves a linked Substack picture instead of replacing it with its image URL", () => {
+    const image = "https://substackcdn.com/image/fetch/$s_!example!,w_1456,c_limit,f_auto/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2Fdiagram.png";
+    const result = extractReaderArticle(
+      `<article><p>${"正文内容 ".repeat(35)}</p>
+        <figure><a href="${image}"><picture><source type="image/webp" srcset="${image} 1456w"><img src="${image}" alt="Substack 图"></picture></a><figcaption>图片说明。</figcaption></figure>
+      </article>`,
+      "https://magazine.sebastianraschka.com/p/example",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    const document = load(content);
+    expect(document(`img[src='${image}']`)).toHaveLength(1);
+    expect(document("a img")).toHaveLength(1);
+    expect(document("a").text()).not.toBe(image);
+    expect(content).toContain("图片说明。");
+  });
+
   it("does not remove the same image when it is intentionally used in separate figures", () => {
     const image = "https://example.com/images/reused-diagram.png";
     const result = extractReaderArticle(
