@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ConnectorAdapter, RawEntry, Source, SubscriptionDraft, SyncContext, SyncResult } from "../shared/types";
 import { compactText } from "../shared/text";
 import { builtInManifest } from "./connector-registry";
+import { chromiumFetch } from "./network";
 
 const OPENALEX_ROOT = "https://api.openalex.org";
 const SEMANTIC_ROOT = "https://api.semanticscholar.org/graph/v1";
@@ -14,6 +15,8 @@ type AuthorConfig = {
   orcid?: string;
 };
 
+type AcademicFetch = (input: string, init?: RequestInit) => Promise<Response>;
+
 /** Public-record scholarly aggregation, explicitly not a Google Scholar scraper. */
 export class AcademicAuthorConnector implements ConnectorAdapter {
   readonly manifest = builtInManifest(
@@ -22,6 +25,8 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
     ["public-http", "author-search"],
     ["api.openalex.org", "api.semanticscholar.org", "pub.orcid.org"]
   );
+
+  constructor(private readonly fetchJson: AcademicFetch = chromiumFetch) {}
 
   async discover(input: string): Promise<SubscriptionDraft[]> {
     const query = input.trim();
@@ -195,7 +200,12 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
     if (url.protocol !== "https:" || !["api.openalex.org", "api.semanticscholar.org", "pub.orcid.org"].includes(url.hostname)) {
       throw new Error("学术连接器拒绝访问未授权域名。");
     }
-    const response = await fetch(url, { headers: { accept: "application/json", ...headers } });
+    let response: Response;
+    try {
+      response = await this.fetchJson(url.toString(), { headers: { accept: "application/json", ...headers }, signal: AbortSignal.timeout(20_000) });
+    } catch {
+      throw new Error("无法连接到学术数据源。请检查网络、代理或 DNS 设置后重试。");
+    }
     const payload = await response.json().catch(() => ({})) as T;
     if (!response.ok) throw new Error(`学术数据源请求失败（${response.status}）。`);
     return payload;

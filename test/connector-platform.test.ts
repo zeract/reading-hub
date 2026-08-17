@@ -105,8 +105,7 @@ describe("connector platform", () => {
       if (url.includes("semanticscholar")) return new Response(JSON.stringify({ data: [{ paperId: "S1", title: "Semantic paper", publicationDate: "2026-08-14", externalIds: { DOI: "10.1000/example" } }] }), { status: 200 });
       return new Response(JSON.stringify({ group: [] }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
-    const connector = new AcademicAuthorConnector();
+    const connector = new AcademicAuthorConnector(fetchMock);
     const result = await connector.sync({
       source: academicSource,
       subscription: {

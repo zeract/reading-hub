@@ -6,6 +6,7 @@ import { ReadingDatabase } from "./database";
 import { GenericConnector, ManualConnector, RssConnector } from "./connectors";
 import { builtInManifest, CallbackConnectorAdapter, ConnectorRegistry, LegacyConnectorAdapter } from "./connector-registry";
 import { PublicHttpClient } from "./http";
+import { configureChromiumNetwork } from "./network";
 import { IsolatedPageRenderer } from "./page-renderer";
 import { SecretStore } from "./secrets";
 import { SourceProbe } from "./source-probe";
@@ -154,6 +155,7 @@ function createTray(): void {
 async function bootstrap(): Promise<void> {
   const icon = applicationIcon();
   if (process.platform === "darwin" && !icon.isEmpty()) app.dock?.setIcon(icon);
+  await configureChromiumNetwork();
   const database = new ReadingDatabase(path.join(app.getPath("userData"), "reading-hub.sqlite"));
   const http = new PublicHttpClient();
   const renderer = new IsolatedPageRenderer();
@@ -304,6 +306,7 @@ async function bootstrap(): Promise<void> {
 }
 
 async function runReaderAudit(): Promise<void> {
+  await configureChromiumNetwork();
   const databasePath = process.env.READING_HUB_DB_PATH || path.join(persistentUserDataPath, "reading-hub.sqlite");
   const reportPath = process.env.READING_HUB_AUDIT_REPORT;
   if (reportPath) await writeFile(`${reportPath}.starting`, `${new Date().toISOString()}\n`, "utf8");

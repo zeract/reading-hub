@@ -14,10 +14,18 @@ export interface TextResponse {
 /** A transport failure after robots policy has already allowed the request. */
 export class NetworkRequestError extends Error {
   constructor(cause?: unknown) {
-    super("无法连接到该站点。请检查网络或系统代理设置后重试。");
+    super(networkFailureMessage(cause));
     this.name = "NetworkRequestError";
     if (cause !== undefined) (this as Error & { cause?: unknown }).cause = cause;
   }
+}
+
+function networkFailureMessage(cause: unknown): string {
+  const details = cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause || "");
+  if (/ERR_(?:PROXY|TUNNEL|SOCKS)_|proxy/i.test(details)) return "无法连接到配置的代理服务器。请确认代理正在运行，或检查系统/环境代理设置后重试。";
+  if (/ERR_NAME_NOT_RESOLVED|ENOTFOUND|dns/i.test(details)) return "无法解析该站点的域名。请检查 DNS、VPN 或网络设置后重试。";
+  if (/ERR_TIMED_OUT|timeout|timed out|aborted/i.test(details)) return "该站点响应超时。请稍后重试，或检查网络与代理设置。";
+  return "无法连接到该站点。请检查网络或系统代理设置后重试。";
 }
 
 export class PublicHttpClient {
