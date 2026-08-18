@@ -32,6 +32,16 @@ const USER_DATA_DIRECTORY = "reading-hub";
 const readerAuditMode = process.env.READING_HUB_READER_AUDIT === "1";
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 
+// A failed public-source request is represented in the source health UI and
+// scheduled for retry. Chromium also writes one low-level TLS line for every
+// failed connection, which can turn an ordinary offline/proxy outage into an
+// unreadable development terminal. Keep application errors intact while
+// suppressing only Chromium's verbose network diagnostics by default. Set
+// READING_HUB_VERBOSE_CHROMIUM_LOGS=1 when debugging Chromium itself.
+if (isDevelopment && process.env.READING_HUB_VERBOSE_CHROMIUM_LOGS !== "1") {
+  app.commandLine.appendSwitch("log-level", "3");
+}
+
 // productName only applies after packaging. Set the runtime identity as well so
 // macOS never presents the development binary as “Electron” in its menus.
 // Keep the legacy data directory so a branding change never hides the user's
