@@ -1,9 +1,11 @@
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type CalibrationResult, type Entry, type Followee, type ProbeResult, type ReaderArticle, type Source, type SourceKind, type SubscriptionDraft } from "../shared/types";
+import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type AiSelectionContext, type AiSelectionIntent, type CalibrationResult, type Entry, type Followee, type ProbeResult, type ReaderArticle, type Source, type SourceKind, type SubscriptionDraft } from "../shared/types";
 import { AiMarkdownContent } from "./ai-markdown";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
+import { entryQueryForLibrary, type LibraryView } from "./library-view";
 import { requiresSourceReload } from "./source-selection";
-import { DEFAULT_TIMELINE_FILTER, defaultCustomTimelineDates, resolveTimelineRange, timelineQuery, type TimelineRangeFilter, type TimelineRangePreset } from "./timeline-filter";
+import { groupSources } from "./source-groups";
+import { normaliseSelectedArticleText, selectedTextLabel, selectionActionQuestion, selectionContext } from "./selection-actions";
 
 type PendingPreview = { token: string; probe: ProbeResult };
 type ReaderPreset = "reading" | "compact";
@@ -11,7 +13,8 @@ type ReaderPreferences = { preset: ReaderPreset; fontScale: number };
 type AddSourceMethod = "public" | "zhihu" | "x" | "academic";
 type AssistantPanelState = "closed" | "minimized" | "open";
 type ReaderImagePreview = { src: string; alt: string };
-type LibraryView = "all" | "today" | "unread" | "favorite";
+type ReaderTextSelection = { text: string; left: number; top: number; asking: boolean };
+type AssistantSelectionRequest = { id: string; question: string; selection: AiSelectionContext };
 
 const READER_PREFERENCES_KEY = "reading-hub.reader-preferences.v1";
 const DEFAULT_READER_PREFERENCES: ReaderPreferences = { preset: "reading", fontScale: 1 };
@@ -47,14 +50,13 @@ export function App() {
   const [editingSource, setEditingSource] = useState<Source>();
   const [activeSourceId, setActiveSourceId] = useState<string>();
   const [libraryView, setLibraryView] = useState<LibraryView>("all");
-  const [timelineFilter, setTimelineFilter] = useState<TimelineRangeFilter>(DEFAULT_TIMELINE_FILTER);
+  const [collapsedSourceGroups, setCollapsedSourceGroups] = useState<Record<string, boolean>>({});
   const [readingEntry, setReadingEntry] = useState<Entry>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [windowFullscreen, setWindowFullscreen] = useState(false);
   const reloadSequence = useRef(0);
 
-  const timelineRange = useMemo(() => resolveTimelineRange(timelineFilter), [timelineFilter]);
-  const entriesQuery = useMemo(() => timelineQuery(activeSourceId, timelineRange), [activeSourceId, timelineRange]);
+  const entriesQuery = useMemo(() => entryQueryForLibrary(libraryView, activeSourceId), [activeSourceId, libraryView]);
 
   useEffect(() => {
     let mounted = true;
@@ -72,7 +74,7 @@ export function App() {
     const sequence = ++reloadSequence.current;
     const [nextSources, nextEntries, nextFollowees] = await Promise.all([
       window.reader.listSources(),
-      timelineRange.invalid ? Promise.resolve([]) : window.reader.listEntries(entriesQuery),
+      window.reader.listEntries(entriesQuery),
       window.reader.listFollowees()
     ]);
     // A source or time-range change may have started a newer request while an
@@ -81,7 +83,7 @@ export function App() {
     setSources(nextSources);
     setEntries(nextEntries);
     setFollowees(nextFollowees);
-  }, [entriesQuery, timelineRange.invalid]);
+  }, [entriesQuery]);
 
   useEffect(() => {
     void reload();
@@ -147,7 +149,6 @@ export function App() {
   function selectSource(sourceId?: string) {
     setReadingEntry(undefined);
     setLibraryView("all");
-    if (timelineFilter.preset === "today") setTimelineFilter(DEFAULT_TIMELINE_FILTER);
     if (requiresSourceReload(activeSourceId, sourceId)) {
       // A repeated click does not change `activeSourceId`, so the effect that
       // normally reloads entries would not run. Do not leave the cleared list
@@ -163,17 +164,7 @@ export function App() {
     setReadingEntry(undefined);
     setActiveSourceId(undefined);
     setLibraryView(view);
-    setTimelineFilter((current) => {
-      if (view === "today") return { ...DEFAULT_TIMELINE_FILTER, preset: "today" };
-      return current.preset === "today" ? DEFAULT_TIMELINE_FILTER : current;
-    });
-  }
-
-  function chooseTimelinePreset(preset: TimelineRangePreset) {
-    setTimelineFilter((current) => {
-      if (preset !== "custom" || current.startDate || current.endDate) return { ...current, preset };
-      return { preset, ...defaultCustomTimelineDates() };
-    });
+    setEntries([]);
   }
 
   async function deleteSource(source: Source) {
@@ -209,6 +200,7 @@ export function App() {
 
   const sourceById = useMemo(() => new Map(sources.map((source) => [source.id, source])), [sources]);
   const activeSource = activeSourceId ? sourceById.get(activeSourceId) : undefined;
+  const sourceGroups = useMemo(() => groupSources(sources), [sources]);
   const visibleEntries = useMemo(() => entries.filter((entry) => {
     if (libraryView === "unread") return !entry.read;
     if (libraryView === "favorite") return entry.favorite;
@@ -220,12 +212,10 @@ export function App() {
   return (
     <main className={`shell${sidebarCollapsed ? " shell--sidebar-collapsed" : ""}${windowFullscreen ? " shell--fullscreen" : ""}`}>
       <header className="app-titlebar">
-        <span className="app-titlebar-mark" aria-label="Reading Hub">R</span>
         <div className="app-titlebar-actions">
           <button type="button" className="app-titlebar-button" onClick={() => setSidebarCollapsed((collapsed) => !collapsed)} aria-label={sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"} title={sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"}>☰</button>
           {readingEntry && <button type="button" className="app-titlebar-button" onClick={() => setReadingEntry(undefined)} aria-label="返回列表" title="返回列表">←</button>}
         </div>
-        <p className="app-titlebar-name">READING HUB <span>本地阅读桌</span></p>
       </header>
       <aside className="sidebar">
         <button type="button" className="add-source-button" onClick={() => setShowAddSource(true)}>＋ 添加来源<span>网页、平台动态或学术作者</span></button>
@@ -240,43 +230,36 @@ export function App() {
           <button className={`source-filter ${!activeSourceId && libraryView === "all" ? "selected" : ""}`} onClick={() => selectLibrary("all")}>
             <span className="source-title">全部内容</span><span className="source-meta">按最新时间</span>
           </button>
-          {sources.map((source) => (
-            <div className="source-row" key={source.id} onContextMenu={(event) => { event.preventDefault(); setEditingSource(source); }}>
-              <button className={`source-filter ${activeSourceId === source.id ? "selected" : ""}`} onClick={() => selectSource(source.id)}>
-                <span className="source-title">{source.title}</span>
-                <span className="source-meta"><span className="source-meta-line"><StatusBadge status={source.status} /><span>{sourceMetaLabel(source, followees.length)}</span></span></span>
-              </button>
-              <div className="source-actions">
-                <button onClick={() => void refresh(source)} disabled={busy}>刷新</button>
-                {source.kind === "generic" && <button onClick={() => setActiveRuleSource(source)}>自动校准</button>}
-                {source.kind === "zhihu_follow" && <button onClick={() => { void window.reader.connectZhihuFollow(); setNotice("已打开知乎登录窗口；登录完成后会自动同步。"); }}>重新登录知乎</button>}
-                <button type="button" className="source-settings-button" onClick={() => setEditingSource(source)} aria-label={`配置 ${source.title}`} title="配置来源">⚙</button>
-                <button className="delete-source" onClick={() => void deleteSource(source)} disabled={busy}>删除</button>
+          {sourceGroups.map((group) => <section className="source-group" key={group.id}>
+            <button type="button" className="source-group-heading" onClick={() => setCollapsedSourceGroups((current) => ({ ...current, [group.id]: !current[group.id] }))} aria-expanded={!collapsedSourceGroups[group.id]}>
+              <span>{collapsedSourceGroups[group.id] ? "›" : "⌄"} {group.title}</span><em>{group.sources.length}</em>
+            </button>
+            {!collapsedSourceGroups[group.id] && group.sources.map((source) => (
+              <div className="source-row" key={source.id} onContextMenu={(event) => { event.preventDefault(); setEditingSource(source); }}>
+                <button className={`source-filter ${activeSourceId === source.id ? "selected" : ""}`} onClick={() => selectSource(source.id)}>
+                  <span className="source-title">{source.title}</span>
+                  <span className="source-meta"><span className="source-meta-line"><StatusBadge status={source.status} /><span>{sourceMetaLabel(source, followees.length)}</span></span></span>
+                </button>
+                <div className="source-actions">
+                  <button onClick={() => void refresh(source)} disabled={busy}>刷新</button>
+                  {source.kind === "generic" && <button onClick={() => setActiveRuleSource(source)}>自动校准</button>}
+                  {source.kind === "zhihu_follow" && <button onClick={() => { void window.reader.connectZhihuFollow(); setNotice("已打开知乎登录窗口；登录完成后会自动同步。"); }}>重新登录知乎</button>}
+                  <button type="button" className="source-settings-button" onClick={() => setEditingSource(source)} aria-label={`配置 ${source.title}`} title="配置来源">⚙</button>
+                  <button className="delete-source" onClick={() => void deleteSource(source)} disabled={busy}>删除</button>
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </section>)}
           {!sources.length && <p className="empty-side">先添加一个公开 Feed 或网页。</p>}
         </div>
-        <p className="privacy-note">公开来源不保存登录态；知乎关注动态仅在本机专属会话中保存登录状态，不读取 Chrome Cookie。</p>
       </aside>
 
       <section className="timeline" aria-label="文章列表">
         <header><div><p className="eyebrow">{activeSource ? "来源内容" : "阅读收件箱"}</p><h1>{libraryTitle}</h1></div><span className="count">{unreadCount} 未读</span></header>
         {notice && <div className="notice">{notice}<button onClick={() => setNotice(undefined)}>×</button></div>}
-        <section className="timeline-filterbar" aria-label="时间筛选">
-          <label><span>时间范围</span><select value={timelineFilter.preset} onChange={(event) => chooseTimelinePreset(event.target.value as TimelineRangePreset)}>
-            <option value="all">全部时间</option><option value="today">今天</option><option value="sevenDays">最近 7 天</option><option value="thirtyDays">最近 30 天</option><option value="ninetyDays">最近 90 天</option><option value="thisYear">今年</option><option value="custom">自定义日期</option>
-          </select></label>
-          {timelineFilter.preset === "custom" && <div className="timeline-filter-custom">
-            <label><span>开始日期</span><input type="date" value={timelineFilter.startDate} onChange={(event) => setTimelineFilter((current) => ({ ...current, startDate: event.target.value }))} /></label>
-            <label><span>结束日期</span><input type="date" value={timelineFilter.endDate} onChange={(event) => setTimelineFilter((current) => ({ ...current, endDate: event.target.value }))} /></label>
-          </div>}
-          <p className={`timeline-filter-note${timelineRange.invalid ? " is-error" : ""}`}>{timelineRange.invalid ? "结束日期不能早于开始日期。" : `显示：${timelineRange.label}；按发布时间筛选，缺失时按收集时间。`}</p>
-          {timelineFilter.preset !== "all" && <button type="button" className="timeline-filter-clear" onClick={() => setTimelineFilter(DEFAULT_TIMELINE_FILTER)}>清除筛选</button>}
-        </section>
         <div className="entry-list">
           {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntry?.id === entry.id} onRead={updateEntry} onOpen={openReader} onDismiss={dismissEntry} busy={busy} />)}
-          {!visibleEntries.length && <div className="empty-state"><p className="eyebrow">READING DESK / 00</p><h2>{timelineRange.hasRange ? "该时间范围没有内容" : activeSource ? "该来源还没有内容" : libraryView === "unread" ? "没有未读文章" : libraryView === "favorite" ? "还没有收藏文章" : "还没有内容"}</h2><p>{timelineRange.hasRange ? "可以调整日期范围，或清除时间筛选以查看全部内容。" : activeSource ? "可以刷新来源，或使用“自动校准”重新识别内容列表。" : "添加 RSS、公开文章列表页，或粘贴小红书分享链接开始。"}</p></div>}
+          {!visibleEntries.length && <div className="empty-state"><p className="eyebrow">READING DESK / 00</p><h2>{activeSource ? "该来源还没有内容" : libraryView === "today" ? "今天还没有更新" : libraryView === "unread" ? "没有未读文章" : libraryView === "favorite" ? "还没有收藏文章" : "还没有内容"}</h2><p>{activeSource ? "可以刷新来源，或使用“自动校准”重新识别内容列表。" : "添加 RSS、公开文章列表页，或粘贴小红书分享链接开始。"}</p></div>}
         </div>
       </section>
       {readingEntry ? <ReaderView
@@ -330,6 +313,10 @@ function ReaderView({ entry, source }: {
   const [preferences, setPreferences] = useState<ReaderPreferences>(loadReaderPreferences);
   const [assistantState, setAssistantState] = useState<AssistantPanelState>("closed");
   const [imagePreview, setImagePreview] = useState<ReaderImagePreview>();
+  const [textSelection, setTextSelection] = useState<ReaderTextSelection>();
+  const [selectionQuestion, setSelectionQuestion] = useState("");
+  const [assistantSelectionRequest, setAssistantSelectionRequest] = useState<AssistantSelectionRequest>();
+  const articleBodyElement = useRef<HTMLDivElement>(null);
   useEffect(() => {
     window.localStorage.setItem(READER_PREFERENCES_KEY, JSON.stringify(preferences));
   }, [preferences]);
@@ -349,11 +336,17 @@ function ReaderView({ entry, source }: {
   useEffect(() => {
     setAssistantState("closed");
     setImagePreview(undefined);
+    setTextSelection(undefined);
+    setSelectionQuestion("");
+    setAssistantSelectionRequest(undefined);
   }, [entry.id]);
   useEffect(() => {
     if (!imagePreview) return;
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") setImagePreview(undefined);
+      if (event.key === "Escape") {
+        setImagePreview(undefined);
+        setTextSelection(undefined);
+      }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
@@ -378,6 +371,7 @@ function ReaderView({ entry, source }: {
     const link = target instanceof Element ? target.closest("a[href]") as HTMLAnchorElement | null : null;
     if (!link) return;
     event.preventDefault();
+    setTextSelection(undefined);
     void window.reader.openExternal(link.href);
   }
   function handleContentKeyDown(event: KeyboardEvent<HTMLElement>) {
@@ -389,6 +383,51 @@ function ReaderView({ entry, source }: {
     if (!(image instanceof HTMLImageElement)) return;
     event.preventDefault();
     previewImage(image);
+  }
+  function captureArticleSelection() {
+    const root = articleBodyElement.current;
+    const selection = window.getSelection();
+    if (!root || !selection || selection.isCollapsed || !selection.rangeCount) {
+      setTextSelection(undefined);
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    if (!root.contains(range.commonAncestorContainer)) {
+      setTextSelection(undefined);
+      return;
+    }
+    const text = normaliseSelectedArticleText(selection.toString());
+    const rect = range.getBoundingClientRect();
+    if (!text || (!rect.width && !rect.height)) {
+      setTextSelection(undefined);
+      return;
+    }
+    const left = Math.min(Math.max(156, rect.left + rect.width / 2), window.innerWidth - 156);
+    setSelectionQuestion("");
+    // The popover is translated above its anchor, so leave room for its own
+    // height instead of allowing it to disappear behind the reader toolbar.
+    setTextSelection({ text, left, top: Math.max(52, rect.top - 8), asking: false });
+  }
+  function askAboutSelection(intent: Exclude<AiSelectionIntent, "ask">) {
+    if (!textSelection) return;
+    const question = selectionActionQuestion(intent);
+    if (!question) return;
+    setAssistantState("open");
+    setAssistantSelectionRequest({ id: newAiRequestId(), question, selection: selectionContext(textSelection.text, intent) });
+    setTextSelection(undefined);
+  }
+  function revealSelectionQuestion() {
+    setTextSelection((current) => current ? { ...current, asking: true } : current);
+  }
+  function submitSelectionQuestion(event: FormEvent) {
+    event.preventDefault();
+    if (!textSelection) return;
+    const question = selectionActionQuestion("ask", selectionQuestion);
+    if (!question) return;
+    setAssistantState("open");
+    setAssistantSelectionRequest({ id: newAiRequestId(), question, selection: selectionContext(textSelection.text, "ask") });
+    setTextSelection(undefined);
+    setSelectionQuestion("");
   }
   function handleContentError(event: SyntheticEvent<HTMLElement>) {
     const image = event.target instanceof HTMLImageElement ? event.target : undefined;
@@ -458,12 +497,24 @@ function ReaderView({ entry, source }: {
             const image = event.currentTarget.querySelector("img");
             if (image) previewImage(image);
           }} aria-label="放大封面图片"><img className="reader-cover" src={article.coverImageUrl} alt="" onError={handleContentError} /></button>}
-          <div className="article-body" onClick={handleContentClick} onKeyDown={handleContentKeyDown} onError={handleContentError} dangerouslySetInnerHTML={{ __html: article.contentHtml }} />
+          <div ref={articleBodyElement} className="article-body" onClick={handleContentClick} onKeyDown={handleContentKeyDown} onKeyUp={captureArticleSelection} onMouseUp={captureArticleSelection} onError={handleContentError} dangerouslySetInnerHTML={{ __html: article.contentHtml }} />
         </article>}
       </div>
+      {textSelection && <section className="reader-selection-toolbar" role="toolbar" aria-label="所选文字操作" style={{ left: textSelection.left, top: textSelection.top }}>
+        {!textSelection.asking ? <>
+          <button type="button" onClick={() => askAboutSelection("translate")}>翻译</button>
+          <button type="button" onClick={() => askAboutSelection("explain")}>解释</button>
+          <button type="button" onClick={revealSelectionQuestion}>提问</button>
+        </> : <form onSubmit={submitSelectionQuestion}>
+          <input value={selectionQuestion} onChange={(event) => setSelectionQuestion(event.target.value)} placeholder="问所选文字…" maxLength={600} autoFocus />
+          <button type="submit" disabled={!selectionQuestion.trim()}>发送</button>
+          <button type="button" className="selection-cancel" onClick={() => setTextSelection(undefined)} aria-label="取消所选文字提问">×</button>
+        </form>}
+      </section>}
       {assistantMounted && article && <ReaderAssistant
         article={article}
         sourceTitle={source?.title}
+        selectionRequest={assistantSelectionRequest}
         minimized={assistantState === "minimized"}
         onMinimize={() => setAssistantState("minimized")}
         onClose={() => setAssistantState("closed")}
@@ -494,9 +545,10 @@ const CODEX_EFFORT_OPTIONS: Array<{ value: AiReasoningEffort; label: string }> =
   { value: "max", label: "最大（最难问题）" }
 ];
 
-function ReaderAssistant({ article, sourceTitle, minimized, onMinimize, onClose }: {
+function ReaderAssistant({ article, sourceTitle, selectionRequest, minimized, onMinimize, onClose }: {
   article: ReaderArticle;
   sourceTitle?: string;
+  selectionRequest?: AssistantSelectionRequest;
   minimized: boolean;
   onMinimize: () => void;
   onClose: () => void;
@@ -512,6 +564,7 @@ function ReaderAssistant({ article, sourceTitle, minimized, onMinimize, onClose 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const activeStream = useRef<ActiveAiStream>();
+  const handledSelectionRequest = useRef<string>();
   const messagesElement = useRef<HTMLDivElement>(null);
 
   const selected = providers.find((provider) => provider.id === providerId);
@@ -604,9 +657,8 @@ function ReaderAssistant({ article, sourceTitle, minimized, onMinimize, onClose 
     }
   }
 
-  async function ask(event: FormEvent) {
-    event.preventDefault();
-    const text = question.trim();
+  async function startQuestion(textValue: string, selection?: AiSelectionContext) {
+    const text = textValue.trim();
     if (!text || busy) return;
     if (!selected?.configured) {
       setShowSettings(Boolean(selected?.requiresApiKey) || selected?.id === "codex-cli");
@@ -618,13 +670,17 @@ function ReaderAssistant({ article, sourceTitle, minimized, onMinimize, onClose 
     const requestId = newAiRequestId();
     const assistantMessageId = newAiRequestId();
     activeStream.current = { requestId, assistantMessageId };
-    setMessages((current) => [...current, { id: newAiRequestId(), role: "user", text }, { id: assistantMessageId, role: "assistant", text: "", streaming: true }]);
+    const displayText = selection
+      ? `${selectedTextLabel(selection.intent)}\n\n“${selection.text}”\n\n${text}`
+      : text;
+    setMessages((current) => [...current, { id: newAiRequestId(), role: "user", text: displayText }, { id: assistantMessageId, role: "assistant", text: "", streaming: true }]);
     try {
       await window.reader.startAiStream({
         requestId,
         request: {
           provider: providerId,
           question: text,
+          selection,
           article: { title: article.title, url: article.url, sourceTitle, text: prompt }
         }
       });
@@ -636,6 +692,23 @@ function ReaderAssistant({ article, sourceTitle, minimized, onMinimize, onClose 
       setMessages((current) => current.map((item) => item.id === assistantMessageId ? { ...item, text: message, error: true, streaming: false } : item));
     }
   }
+
+  async function ask(event: FormEvent) {
+    event.preventDefault();
+    await startQuestion(question);
+  }
+
+  useEffect(() => {
+    if (!selectionRequest || handledSelectionRequest.current === selectionRequest.id || busy || !providers.length) return;
+    handledSelectionRequest.current = selectionRequest.id;
+    if (!selected?.configured) {
+      setQuestion(selectionRequest.question);
+      setShowSettings(Boolean(selected?.requiresApiKey) || selected?.id === "codex-cli");
+      setError(selected?.requiresApiKey ? "请先配置 API Key 后再发送所选文字的问题。" : "未检测到本机 Codex CLI。请安装并登录后重试。");
+      return;
+    }
+    void startQuestion(selectionRequest.question, selectionRequest.selection);
+  }, [busy, providers.length, selected, selectionRequest]);
 
   function submitOnEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (!shouldSubmitAssistantQuestion(event.key, event.shiftKey, event.nativeEvent.isComposing)) return;
@@ -823,6 +896,7 @@ const REFRESH_OPTIONS: Array<{ value: "default" | "30" | "60" | "120" | "240" | 
 
 function SourceSettingsDialog({ source, onClose, onSaved }: { source: Source; onClose: () => void; onSaved: () => Promise<void> }) {
   const [title, setTitle] = useState(source.title);
+  const [category, setCategory] = useState(source.category || "");
   const [kind, setKind] = useState<SourceKind>(source.kind);
   const [pollingEnabled, setPollingEnabled] = useState(source.pollingEnabled);
   const [refresh, setRefresh] = useState<"default" | "30" | "60" | "120" | "240" | "720" | "1440">(source.refreshIntervalMinutes ? String(source.refreshIntervalMinutes) as "30" | "60" | "120" | "240" | "720" | "1440" : "default");
@@ -837,6 +911,7 @@ function SourceSettingsDialog({ source, onClose, onSaved }: { source: Source; on
     try {
       await window.reader.updateSourceSettings(source.id, {
         title,
+        category,
         kind,
         pollingEnabled: manual ? false : pollingEnabled,
         refreshIntervalMinutes: !manual && pollingEnabled && refresh !== "default" ? Number(refresh) : undefined
@@ -852,6 +927,8 @@ function SourceSettingsDialog({ source, onClose, onSaved }: { source: Source; on
   return <Dialog title={`配置「${source.title}」`} onClose={onClose}>
     <form className="source-settings-form" onSubmit={(event) => void save(event)}>
       <label>来源名称<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} required autoFocus /></label>
+      <label>分类<input value={category} onChange={(event) => setCategory(event.target.value)} maxLength={60} placeholder="留空则自动归类" /></label>
+      <p className="source-settings-note">分类仅保存在本机，用于将来源整理为可折叠的文件夹。</p>
       <label>信源类型<select value={kind} onChange={(event) => setKind(event.target.value as SourceKind)} disabled={typeLocked || busy}>
         {typeLocked ? <option value={source.kind}>{sourceKindLabel(source.kind)}</option> : PUBLIC_SOURCE_KINDS.map((item) => <option key={item} value={item}>{sourceKindLabel(item)}</option>)}
       </select></label>

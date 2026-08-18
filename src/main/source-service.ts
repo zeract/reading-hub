@@ -114,6 +114,8 @@ export class SourceService {
     if (!source) throw new Error("来源不存在。");
     const title = settings.title.trim();
     if (!title) throw new Error("请填写来源名称。");
+    const category = settings.category?.replace(/\s+/g, " ").trim();
+    if (category && category.length > 60) throw new Error("来源分类最多 60 个字符。");
     const publicKinds = new Set<Source["kind"]>(["rss", "generic", "manual"]);
     const sourceIsPublic = publicKinds.has(source.kind);
     if (!sourceIsPublic && settings.kind !== source.kind) throw new Error("授权平台的信源类型由连接器决定，不能在此更改。");
@@ -123,7 +125,7 @@ export class SourceService {
       throw new Error("刷新间隔必须是预设的安全时间。");
     }
     const pollingEnabled = settings.kind === "manual" ? false : settings.pollingEnabled;
-    return this.db.updateSourceSettings(sourceId, { ...settings, title, pollingEnabled, refreshIntervalMinutes: pollingEnabled ? interval : undefined });
+    return this.db.updateSourceSettings(sourceId, { ...settings, title, category, pollingEnabled, refreshIntervalMinutes: pollingEnabled ? interval : undefined });
   }
 
   async delete(sourceId: string): Promise<void> {

@@ -74,6 +74,7 @@ function isAiStreamRequest(value: unknown): value is AiStreamRequest {
   const requestId = (value as { requestId?: unknown }).requestId;
   const request = (value as { request?: unknown }).request;
   const article = request && typeof request === "object" ? (request as { article?: unknown }).article : undefined;
+  const selection = request && typeof request === "object" ? (request as { selection?: unknown }).selection : undefined;
   return typeof requestId === "string"
     && /^[A-Za-z0-9_-]{8,80}$/.test(requestId)
     && Boolean(request && typeof request === "object")
@@ -82,7 +83,10 @@ function isAiStreamRequest(value: unknown): value is AiStreamRequest {
     && Boolean(article && typeof article === "object")
     && typeof (article as { title?: unknown }).title === "string"
     && typeof (article as { url?: unknown }).url === "string"
-    && typeof (article as { text?: unknown }).text === "string";
+    && typeof (article as { text?: unknown }).text === "string"
+    && (selection === undefined || Boolean(selection && typeof selection === "object"
+      && typeof (selection as { text?: unknown }).text === "string"
+      && ["translate", "explain", "ask"].includes((selection as { intent?: unknown }).intent as string)));
 }
 
 function quitApplication(): void {

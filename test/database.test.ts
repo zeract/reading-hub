@@ -146,6 +146,23 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("persists a local-only source folder without changing the connector", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", category: "  机器学习  ", kind: "rss", pollingEnabled: true });
+
+    const updated = db.updateSourceSettings(source.id, {
+      title: "Example",
+      category: "研究笔记",
+      kind: "rss",
+      pollingEnabled: true
+    });
+
+    expect(source.category).toBe("机器学习");
+    expect(updated).toMatchObject({ category: "研究笔记", connectorId: "rss", kind: "rss" });
+    expect(db.getSource(source.id)?.category).toBe("研究笔记");
+    db.close();
+  });
+
   it("removes a dismissed card and keeps it hidden when its feed returns it again", () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/dismissed", title: "Example", kind: "rss", pollingEnabled: true });

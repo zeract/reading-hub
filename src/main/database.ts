@@ -20,6 +20,7 @@ type SourceRow = {
   id: string;
   url: string;
   title: string;
+  category?: string | null;
   kind: Source["kind"];
   status: SourceStatus;
   extraction_rule: string | null;
@@ -96,11 +97,19 @@ function boundedLimit(value: number | undefined): number | undefined {
   return Math.max(1, Math.min(10_000, Math.floor(value)));
 }
 
+function normaliseSourceCategory(value: string | undefined): string | undefined {
+  const category = value?.replace(/\s+/g, " ").trim();
+  if (!category) return undefined;
+  if (category.length > 60) throw new Error("来源分类最多 60 个字符。");
+  return category;
+}
+
 function sourceFromRow(row: SourceRow): Source {
   return {
     id: row.id,
     url: row.url,
     title: row.title,
+    category: row.category?.trim() || undefined,
     kind: row.kind,
     connectorId: row.connector_id ?? row.kind,
     accountId: row.account_id ?? undefined,
@@ -209,6 +218,7 @@ export class ReadingDatabase {
         id TEXT PRIMARY KEY,
         url TEXT NOT NULL UNIQUE,
         title TEXT NOT NULL,
+        category TEXT,
         kind TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
         extraction_rule TEXT,
@@ -314,6 +324,7 @@ export class ReadingDatabase {
     this.ensureColumn("sources", "config_json", "TEXT");
     this.ensureColumn("sources", "refresh_interval_minutes", "INTEGER");
     this.ensureColumn("sources", "metadata_revision", "INTEGER");
+    this.ensureColumn("sources", "category", "TEXT");
     this.ensureColumn("entries", "observed_at", "INTEGER");
     this.ensureColumn("entries", "provider_id", "TEXT");
     this.ensureColumn("entries", "external_id", "TEXT");
@@ -366,6 +377,7 @@ export class ReadingDatabase {
       id: randomUUID(),
       url: input.url,
       title: input.title,
+      category: normaliseSourceCategory(input.category),
       kind: input.kind,
       connectorId: input.connectorId ?? input.kind,
       accountId: input.accountId,
@@ -382,13 +394,14 @@ export class ReadingDatabase {
     };
     this.db
       .prepare(`INSERT INTO sources (
-          id, url, title, kind, status, extraction_rule, polling_enabled, refresh_interval_minutes, next_check_at,
+          id, url, title, category, kind, status, extraction_rule, polling_enabled, refresh_interval_minutes, next_check_at,
           consecutive_empty, failure_count, connector_id, account_id, config_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)`)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)`)
       .run(
         source.id,
         source.url,
         source.title,
+        source.category ?? null,
         source.kind,
         source.status,
         source.extractionRule ? JSON.stringify(source.extractionRule) : null,
@@ -441,10 +454,10 @@ export class ReadingDatabase {
     const nextCheckAt = settings.pollingEnabled ? now + refreshDelay(settings.refreshIntervalMinutes) : null;
     const extractionRule = kindChanged && settings.kind !== "generic" ? null : source.extractionRule ? JSON.stringify(source.extractionRule) : null;
     this.db.transaction(() => {
-      this.db.prepare(`UPDATE sources SET title = ?, kind = ?, connector_id = ?, polling_enabled = ?, refresh_interval_minutes = ?,
+      this.db.prepare(`UPDATE sources SET title = ?, category = ?, kind = ?, connector_id = ?, polling_enabled = ?, refresh_interval_minutes = ?,
         extraction_rule = ?, etag = CASE WHEN ? THEN NULL ELSE etag END, last_modified = CASE WHEN ? THEN NULL ELSE last_modified END,
         status = CASE WHEN ? THEN 'active' ELSE status END, next_check_at = ?, updated_at = ? WHERE id = ?`)
-        .run(settings.title, settings.kind, settings.kind, Number(settings.pollingEnabled), settings.refreshIntervalMinutes ?? null,
+        .run(settings.title, normaliseSourceCategory(settings.category) ?? null, settings.kind, settings.kind, Number(settings.pollingEnabled), settings.refreshIntervalMinutes ?? null,
           extractionRule, Number(kindChanged), Number(kindChanged), Number(kindChanged), nextCheckAt, now, sourceId);
       if (kindChanged) {
         this.db.prepare("UPDATE subscriptions SET connector_id = ?, account_id = NULL, updated_at = ? WHERE source_id = ?")

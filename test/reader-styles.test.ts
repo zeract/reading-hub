@@ -30,4 +30,9 @@ describe("reader display-equation layout", () => {
     expect(styles).toContain(".shell--fullscreen { --titlebar-leading-inset: 16px; }");
     expect(styles).toContain("padding: 0 20px 0 var(--titlebar-leading-inset);");
   });
+
+  it("keeps the selected-text actions above the article without introducing a page scroll region", () => {
+    expect(styles).toMatch(/\.reader-selection-toolbar\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*25;[^}]*transform:\s*translate\(-50%,-100%\)/s);
+    expect(styles).toMatch(/\.reader-selection-toolbar\s+input\s*\{[^}]*width:\s*min\(210px,45vw\)/s);
+  });
 });

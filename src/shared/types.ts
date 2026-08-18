@@ -27,6 +27,8 @@ export interface Source {
   id: string;
   url: string;
   title: string;
+  /** A reader-owned local folder label. It never changes a connector or remote subscription. */
+  category?: string;
   kind: SourceKind;
   /** Built-in connector ID. It is explicit so future connectors are not tied to SourceKind branches. */
   connectorId?: ConnectorId;
@@ -263,7 +265,17 @@ export interface AiArticleContext {
 export interface AiQuestionRequest {
   provider: AiProviderId;
   question: string;
+  /** Present only after the reader deliberately invokes an action on selected article text. */
+  selection?: AiSelectionContext;
   article: AiArticleContext;
+}
+
+export type AiSelectionIntent = "translate" | "explain" | "ask";
+
+/** A bounded, user-selected excerpt interpreted against the accompanying article context. */
+export interface AiSelectionContext {
+  text: string;
+  intent: AiSelectionIntent;
 }
 
 export interface AiAnswer {
@@ -323,6 +335,7 @@ export interface Connector {
 export interface SourceInput {
   url: string;
   title: string;
+  category?: string;
   kind: SourceKind;
   connectorId?: ConnectorId;
   accountId?: string;
@@ -336,6 +349,7 @@ export interface SourceInput {
 /** User-editable metadata for an existing source. Secrets and connector accounts stay out of this surface. */
 export interface SourceSettings {
   title: string;
+  category?: string;
   kind: SourceKind;
   pollingEnabled: boolean;
   refreshIntervalMinutes?: number;
