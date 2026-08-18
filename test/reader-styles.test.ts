@@ -23,7 +23,7 @@ describe("reader display-equation layout", () => {
     expect(styles).toContain("max-height: calc(100vh - 32px);");
     expect(styles).toMatch(/\.reader-scroll\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*auto/s);
     expect(styles).toMatch(/\.source-list\s*\{[^}]*flex:\s*1\s+1\s+auto;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overflow-x:\s*hidden/s);
-    expect(styles).toMatch(/\.reader-scroll\s*\{[^}]*scrollbar-width:\s*thin;[^}]*scrollbar-color:\s*#99998b\s+transparent/s);
+    expect(styles).toMatch(/\.reader-scroll\s*\{[^}]*scrollbar-width:\s*thin;[^}]*scrollbar-color:\s*var\(--scroll-thumb\)\s+transparent/s);
     expect(styles).toContain(".reader-scroll::-webkit-scrollbar-thumb");
   });
 
@@ -42,15 +42,21 @@ describe("reader display-equation layout", () => {
   });
 
   it("gives the reader a persistent, stateful favourite control", () => {
-    expect(styles).toMatch(/\.reader-toolbar\s+\.favorite-button\s*\{[^}]*color:\s*#8d5a42/s);
-    expect(styles).toMatch(/\.reader-toolbar\s+\.favorite-button\.is-favorite\s*\{[^}]*background:\s*#f3e9ce/s);
+    expect(styles).toMatch(/\.reader-toolbar\s+\.favorite-button\s*\{[^}]*color:\s*var\(--accent-deep\)/s);
+    expect(styles).toMatch(/\.reader-toolbar\s+\.favorite-button\.is-favorite\s*\{[^}]*background:\s*var\(--accent-wash\)/s);
   });
 
-  it("uses the paper palette for persistent selections instead of a large dark-green fill", () => {
-    expect(styles).toContain("--selection-surface: #faf7ef;");
-    expect(styles).toMatch(/\.entry-card\.selected(?:,\s*\.entry-card\.selected:hover)?\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*#2f3029/s);
-    expect(styles).toMatch(/\.source-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*#30312a/s);
+  it("uses a paper-and-ink palette with one tomato-red signal for selections and AI actions", () => {
+    expect(styles).toContain("--accent: #dc3c22;");
+    expect(styles).toContain("--selection-surface: #fffdf8;");
+    expect(styles).toMatch(/\.entry-card\.selected,\s*\.entry-card\.selected:hover\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--ink\)/s);
+    expect(styles).toMatch(/\.source-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--ink\)/s);
     expect(styles).toMatch(/\.library-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface-strong\)/s);
-    expect(styles).not.toContain(".entry-card.selected { background: var(--olive-deep);");
+    expect(styles).toContain(".reader-selection-underlines span { position: fixed; height: 2px; background: var(--selection-accent);");
+    expect(styles).toMatch(/\.selection-assistant-card\s*\{[^}]*box-shadow:\s*6px\s+6px\s+0\s+var\(--accent\)/s);
+    expect(styles).toMatch(/\.status\.active\s*\{[^}]*color:\s*var\(--ink\)/s);
+    expect(styles).not.toMatch(/--(?:olive|citron|rust):/);
+    expect(styles).not.toContain("#d9ed72");
+    expect(styles).not.toContain("#c7dd65");
   });
 });
