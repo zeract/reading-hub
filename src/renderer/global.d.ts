@@ -1,4 +1,4 @@
-import type { AiProviderConfiguration, AiProviderId, AiProviderSettings, AiStreamEvent, AiStreamRequest, ArticleReadResult, CalibrationResult, Entry, EntryListQuery, ExtractionRule, Followee, ProbeResult, Source, SourceSettings, SubscriptionDraft } from "../shared/types";
+import type { AiProviderConfiguration, AiProviderId, AiProviderSettings, AiStreamEvent, AiStreamRequest, ArticleReadResult, CalibrationResult, Entry, EntryListQuery, ExtractionRule, Followee, LibraryCounts, ProbeResult, Source, SourceSettings, SubscriptionDraft } from "../shared/types";
 
 declare global {
   interface Window {
@@ -12,6 +12,7 @@ declare global {
       updateRule(id: string, rule: ExtractionRule): Promise<void>;
       calibrateSource(id: string): Promise<CalibrationResult>;
       listEntries(query?: EntryListQuery): Promise<Entry[]>;
+      getLibraryCounts(): Promise<LibraryCounts>;
       readEntry(id: string): Promise<ArticleReadResult>;
       openEmbeddedEntry(id: string): Promise<void>;
       loadArticleImage(id: string, imageUrl: string): Promise<string>;

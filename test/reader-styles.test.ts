@@ -23,6 +23,8 @@ describe("reader display-equation layout", () => {
     expect(styles).toContain("max-height: calc(100vh - 32px);");
     expect(styles).toMatch(/\.reader-scroll\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*auto/s);
     expect(styles).toMatch(/\.source-list\s*\{[^}]*flex:\s*1\s+1\s+auto;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overflow-x:\s*hidden/s);
+    expect(styles).toMatch(/\.reader-scroll\s*\{[^}]*scrollbar-width:\s*thin;[^}]*scrollbar-color:\s*#99998b\s+transparent/s);
+    expect(styles).toContain(".reader-scroll::-webkit-scrollbar-thumb");
   });
 
   it("reclaims the macOS traffic-light inset while the native window is fullscreen", () => {
@@ -34,5 +36,10 @@ describe("reader display-equation layout", () => {
   it("keeps the selected-text actions above the article without introducing a page scroll region", () => {
     expect(styles).toMatch(/\.reader-selection-toolbar\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*25;[^}]*transform:\s*translate\(-50%,-100%\)/s);
     expect(styles).toMatch(/\.reader-selection-toolbar\s+input\s*\{[^}]*width:\s*min\(210px,45vw\)/s);
+  });
+
+  it("gives the reader a persistent, stateful favourite control", () => {
+    expect(styles).toMatch(/\.reader-toolbar\s+\.favorite-button\s*\{[^}]*color:\s*#8d5a42/s);
+    expect(styles).toMatch(/\.reader-toolbar\s+\.favorite-button\.is-favorite\s*\{[^}]*background:\s*#f3e9ce/s);
   });
 });

@@ -99,6 +99,13 @@ export interface EntryListQuery {
   limit?: number;
 }
 
+/** Small local navigation counters; no article body or remote data is involved. */
+export interface LibraryCounts {
+  unread: number;
+  favorite: number;
+  today: number;
+}
+
 export interface ContentOrigin {
   sourceId: string;
   providerId: ConnectorId;

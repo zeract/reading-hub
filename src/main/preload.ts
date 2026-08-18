@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("reader", {
   updateRule: (id: string, rule: ExtractionRule) => ipcRenderer.invoke("source:update-rule", id, rule),
   calibrateSource: (id: string) => ipcRenderer.invoke("source:calibration", id),
   listEntries: (query?: EntryListQuery) => ipcRenderer.invoke("entry:list", query),
+  getLibraryCounts: () => ipcRenderer.invoke("entry:counts"),
   readEntry: (id: string) => ipcRenderer.invoke("entry:read-content", id),
   openEmbeddedEntry: (id: string) => ipcRenderer.invoke("entry:open-embedded", id),
   loadArticleImage: (id: string, imageUrl: string) => ipcRenderer.invoke("entry:load-image", id, imageUrl),

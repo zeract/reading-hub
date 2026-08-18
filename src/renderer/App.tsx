@@ -1,5 +1,5 @@
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type AiSelectionContext, type AiSelectionIntent, type CalibrationResult, type Entry, type Followee, type ProbeResult, type ReaderArticle, type Source, type SourceKind, type SubscriptionDraft } from "../shared/types";
+import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type AiSelectionContext, type AiSelectionIntent, type CalibrationResult, type Entry, type Followee, type LibraryCounts, type ProbeResult, type ReaderArticle, type Source, type SourceKind, type SubscriptionDraft } from "../shared/types";
 import { AiMarkdownContent } from "./ai-markdown";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { entryQueryForLibrary, type LibraryView } from "./library-view";
@@ -18,6 +18,7 @@ type AssistantSelectionRequest = { id: string; question: string; selection: AiSe
 
 const READER_PREFERENCES_KEY = "reading-hub.reader-preferences.v1";
 const DEFAULT_READER_PREFERENCES: ReaderPreferences = { preset: "reading", fontScale: 1 };
+const EMPTY_LIBRARY_COUNTS: LibraryCounts = { unread: 0, favorite: 0, today: 0 };
 
 function newAiRequestId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -41,6 +42,7 @@ function loadReaderPreferences(): ReaderPreferences {
 export function App() {
   const [sources, setSources] = useState<Source[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [libraryCounts, setLibraryCounts] = useState<LibraryCounts>(EMPTY_LIBRARY_COUNTS);
   const [followees, setFollowees] = useState<Followee[]>([]);
   const [pending, setPending] = useState<PendingPreview>();
   const [notice, setNotice] = useState<string>();
@@ -49,7 +51,7 @@ export function App() {
   const [activeRuleSource, setActiveRuleSource] = useState<Source>();
   const [editingSource, setEditingSource] = useState<Source>();
   const [activeSourceId, setActiveSourceId] = useState<string>();
-  const [libraryView, setLibraryView] = useState<LibraryView>("all");
+  const [libraryView, setLibraryView] = useState<LibraryView>("today");
   const [collapsedSourceGroups, setCollapsedSourceGroups] = useState<Record<string, boolean>>({});
   const [readingEntry, setReadingEntry] = useState<Entry>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -72,10 +74,11 @@ export function App() {
 
   const reload = useCallback(async () => {
     const sequence = ++reloadSequence.current;
-    const [nextSources, nextEntries, nextFollowees] = await Promise.all([
+    const [nextSources, nextEntries, nextFollowees, nextLibraryCounts] = await Promise.all([
       window.reader.listSources(),
       window.reader.listEntries(entriesQuery),
-      window.reader.listFollowees()
+      window.reader.listFollowees(),
+      window.reader.getLibraryCounts()
     ]);
     // A source or time-range change may have started a newer request while an
     // older IPC call was still in flight. Never replace the newest result.
@@ -83,6 +86,7 @@ export function App() {
     setSources(nextSources);
     setEntries(nextEntries);
     setFollowees(nextFollowees);
+    setLibraryCounts(nextLibraryCounts);
   }, [entriesQuery]);
 
   useEffect(() => {
@@ -135,10 +139,17 @@ export function App() {
     }
   }
 
-  async function updateEntry(entry: Entry, field: "read" | "favorite", value: boolean) {
-    if (field === "read") await window.reader.markRead(entry.id, value);
-    else await window.reader.markFavorite(entry.id, value);
-    await reload();
+  async function updateEntry(entry: Entry, field: "read" | "favorite", value: boolean): Promise<boolean> {
+    try {
+      if (field === "read") await window.reader.markRead(entry.id, value);
+      else await window.reader.markFavorite(entry.id, value);
+      setReadingEntry((current) => current?.id === entry.id ? { ...current, [field]: value } : current);
+      await reload();
+      return true;
+    } catch (error) {
+      setNotice(errorMessage(error));
+      return false;
+    }
   }
 
   function openReader(entry: Entry) {
@@ -207,7 +218,14 @@ export function App() {
     return true;
   }), [entries, libraryView]);
   const libraryTitle = activeSource?.title || ({ all: "最新文章", today: "今日更新", unread: "未读文章", favorite: "收藏文章" } satisfies Record<LibraryView, string>)[libraryView];
-  const unreadCount = entries.filter((entry) => !entry.read).length;
+  const unreadCount = libraryCounts.unread;
+  const timelineCount = activeSource
+    ? { value: entries.length, label: "篇内容" }
+    : libraryView === "today"
+      ? { value: libraryCounts.today, label: "篇更新" }
+      : libraryView === "favorite"
+        ? { value: libraryCounts.favorite, label: "篇收藏" }
+        : { value: unreadCount, label: "未读" };
 
   return (
     <main className={`shell${sidebarCollapsed ? " shell--sidebar-collapsed" : ""}${windowFullscreen ? " shell--fullscreen" : ""}`}>
@@ -223,13 +241,10 @@ export function App() {
           <div className="section-title">阅读</div>
           <button className={`library-filter ${libraryView === "today" && !activeSourceId ? "selected" : ""}`} onClick={() => selectLibrary("today")}><span>✳ 今日</span></button>
           <button className={`library-filter ${libraryView === "unread" && !activeSourceId ? "selected" : ""}`} onClick={() => selectLibrary("unread")}><span>○ 未读</span><em>{unreadCount}</em></button>
-          <button className={`library-filter ${libraryView === "favorite" && !activeSourceId ? "selected" : ""}`} onClick={() => selectLibrary("favorite")}><span>☆ 收藏</span></button>
+          <button className={`library-filter ${libraryView === "favorite" && !activeSourceId ? "selected" : ""}`} onClick={() => selectLibrary("favorite")}><span>☆ 收藏</span><em>{libraryCounts.favorite}</em></button>
         </nav>
         <div className="section-title">来源 <span>{sources.length}</span></div>
         <div className="source-list">
-          <button className={`source-filter ${!activeSourceId && libraryView === "all" ? "selected" : ""}`} onClick={() => selectLibrary("all")}>
-            <span className="source-title">全部内容</span><span className="source-meta">按最新时间</span>
-          </button>
           {sourceGroups.map((group) => <section className="source-group" key={group.id}>
             <button type="button" className="source-group-heading" onClick={() => setCollapsedSourceGroups((current) => ({ ...current, [group.id]: !current[group.id] }))} aria-expanded={!collapsedSourceGroups[group.id]}>
               <span>{collapsedSourceGroups[group.id] ? "›" : "⌄"} {group.title}</span><em>{group.sources.length}</em>
@@ -255,7 +270,7 @@ export function App() {
       </aside>
 
       <section className="timeline" aria-label="文章列表">
-        <header><div><p className="eyebrow">{activeSource ? "来源内容" : "阅读收件箱"}</p><h1>{libraryTitle}</h1></div><span className="count">{unreadCount} 未读</span></header>
+        <header><div><p className="eyebrow">{activeSource ? "来源内容" : "阅读收件箱"}</p><h1>{libraryTitle}</h1></div><span className="count">{timelineCount.value} {timelineCount.label}</span></header>
         {notice && <div className="notice">{notice}<button onClick={() => setNotice(undefined)}>×</button></div>}
         <div className="entry-list">
           {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntry?.id === entry.id} onRead={updateEntry} onOpen={openReader} onDismiss={dismissEntry} busy={busy} />)}
@@ -265,6 +280,7 @@ export function App() {
       {readingEntry ? <ReaderView
         entry={readingEntry}
         source={sourceById.get(readingEntry.sourceId)}
+        onUpdateEntry={updateEntry}
       /> : <ReaderPlaceholder />}
 
       {pending && <PreviewDialog pending={pending} onCancel={() => setPending(undefined)} onConfirm={() => void confirm()} busy={busy} />}
@@ -281,7 +297,7 @@ export function App() {
   );
 }
 
-function EntryCard({ entry, source, selected, onRead, onOpen, onDismiss, busy }: { entry: Entry; source?: Source; selected: boolean; onRead: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<void>; onOpen: (entry: Entry) => void; onDismiss: (entry: Entry) => Promise<void>; busy: boolean }) {
+function EntryCard({ entry, source, selected, onRead, onOpen, onDismiss, busy }: { entry: Entry; source?: Source; selected: boolean; onRead: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>; onOpen: (entry: Entry) => void; onDismiss: (entry: Entry) => Promise<void>; busy: boolean }) {
   const date = entry.publishedAt
     ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(entry.publishedAt)
     : entry.observedAt ? `收集于 ${new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(entry.observedAt)}` : "刚刚收集";
@@ -302,9 +318,10 @@ function ReaderPlaceholder() {
   </section>;
 }
 
-function ReaderView({ entry, source }: {
+function ReaderView({ entry, source, onUpdateEntry }: {
   entry: Entry;
   source?: Source;
+  onUpdateEntry: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>;
 }) {
   const [article, setArticle] = useState<ReaderArticle>();
   const [embedded, setEmbedded] = useState(false);
@@ -316,6 +333,7 @@ function ReaderView({ entry, source }: {
   const [textSelection, setTextSelection] = useState<ReaderTextSelection>();
   const [selectionQuestion, setSelectionQuestion] = useState("");
   const [assistantSelectionRequest, setAssistantSelectionRequest] = useState<AssistantSelectionRequest>();
+  const [favoriteUpdating, setFavoriteUpdating] = useState(false);
   const articleBodyElement = useRef<HTMLDivElement>(null);
   useEffect(() => {
     window.localStorage.setItem(READER_PREFERENCES_KEY, JSON.stringify(preferences));
@@ -454,6 +472,15 @@ function ReaderView({ entry, source }: {
   function openEmbedded() {
     void window.reader.openEmbeddedEntry(entry.id).catch((reason) => setError(errorMessage(reason)));
   }
+  async function toggleFavorite() {
+    if (favoriteUpdating) return;
+    setFavoriteUpdating(true);
+    try {
+      await onUpdateEntry(entry, "favorite", !entry.favorite);
+    } finally {
+      setFavoriteUpdating(false);
+    }
+  }
 
   const readerStyle = { "--reader-font-scale": String(preferences.fontScale) } as CSSProperties & Record<"--reader-font-scale", string>;
   const setPreset = (preset: ReaderPreset) => setPreferences((current) => ({ ...current, preset }));
@@ -482,6 +509,7 @@ function ReaderView({ entry, source }: {
         </div>
       </div>
       <div className="reader-toolbar-actions">
+        <button type="button" className={`toolbar-icon-button favorite-button${entry.favorite ? " is-favorite" : ""}`} aria-pressed={entry.favorite} aria-label={entry.favorite ? "取消收藏" : "收藏文章"} title={entry.favorite ? "取消收藏" : "收藏文章"} disabled={favoriteUpdating} onClick={() => void toggleFavorite()}>{entry.favorite ? "★" : "☆"}</button>
         <button type="button" className="toolbar-icon-button ai-toggle" aria-pressed={assistantVisible} aria-label={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} title={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} disabled={!article} onClick={toggleAssistant}>✦</button>
         <button type="button" className="toolbar-icon-button external-button" aria-label="在浏览器中打开原文" title="在浏览器中打开原文" onClick={() => void window.reader.openExternal(entry.url)}>↗</button>
       </div>

@@ -8,6 +8,7 @@ import type {
   Entry,
   EntryListQuery,
   Followee,
+  LibraryCounts,
   Source,
   SourceInput,
   SourceSettings,
@@ -606,6 +607,19 @@ export class ReadingDatabase {
     if (limit) parameters.push(limit);
     const rows = statement.all(...parameters) as EntryRow[];
     return this.withOrigins(rows.map(entryFromRow));
+  }
+
+  getLibraryCounts(now = Date.now()): LibraryCounts {
+    const current = new Date(now);
+    const start = new Date(current.getFullYear(), current.getMonth(), current.getDate()).getTime();
+    const end = new Date(current.getFullYear(), current.getMonth(), current.getDate() + 1).getTime();
+    const timelineTimestamp = "COALESCE(published_at, observed_at, created_at)";
+    const row = this.db.prepare(`SELECT
+      SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread,
+      SUM(CASE WHEN is_favorite = 1 THEN 1 ELSE 0 END) AS favorite,
+      SUM(CASE WHEN ${timelineTimestamp} >= ? AND ${timelineTimestamp} < ? THEN 1 ELSE 0 END) AS today
+      FROM entries`).get(start, end) as { unread: number | null; favorite: number | null; today: number | null };
+    return { unread: row.unread ?? 0, favorite: row.favorite ?? 0, today: row.today ?? 0 };
   }
 
   getEntry(entryId: string): Entry | undefined {

@@ -63,6 +63,24 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("returns navigation counts without loading article bodies", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/counts", title: "Counts", kind: "rss", pollingEnabled: true });
+    const today = new Date(2026, 7, 18, 10).getTime();
+    const yesterday = new Date(2026, 7, 17, 10).getTime();
+    db.saveEntries([
+      entry(source.id, "今日未读", { canonicalUrl: "https://example.com/counts/today", url: "https://example.com/counts/today", publishedAt: today }),
+      entry(source.id, "昨日收藏", { canonicalUrl: "https://example.com/counts/yesterday", url: "https://example.com/counts/yesterday", publishedAt: yesterday })
+    ]);
+    const saved = db.listEntries();
+    const favourite = saved.find((item) => item.title === "昨日收藏");
+    db.markRead(favourite!.id, true);
+    db.markFavorite(favourite!.id, true);
+
+    expect(db.getLibraryCounts(new Date(2026, 7, 18, 16).getTime())).toEqual({ unread: 1, favorite: 1, today: 1 });
+    db.close();
+  });
+
   it("keeps newly collected entries without a publication time below genuinely dated entries", () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/timeline", title: "Example", kind: "rss", pollingEnabled: true });

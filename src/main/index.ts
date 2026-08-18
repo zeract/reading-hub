@@ -242,6 +242,7 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle("source:update-rule", (_event, id: string, rule: ExtractionRule) => database.updateRule(id, rule));
   ipcMain.handle("source:calibration", (_event, id: string) => sources.calibrate(id));
   ipcMain.handle("entry:list", (_event, query?: EntryListQuery) => database.listEntries(query));
+  ipcMain.handle("entry:counts", () => database.getLibraryCounts());
   ipcMain.handle("entry:read-content", async (_event, entryId: string) => {
     const entry = database.getEntry(entryId);
     if (!entry) throw new Error("这篇内容已不存在。请刷新列表后重试。");
