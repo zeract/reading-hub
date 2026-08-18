@@ -42,4 +42,12 @@ describe("reader display-equation layout", () => {
     expect(styles).toMatch(/\.reader-toolbar\s+\.favorite-button\s*\{[^}]*color:\s*#8d5a42/s);
     expect(styles).toMatch(/\.reader-toolbar\s+\.favorite-button\.is-favorite\s*\{[^}]*background:\s*#f3e9ce/s);
   });
+
+  it("uses the paper palette for persistent selections instead of a large dark-green fill", () => {
+    expect(styles).toContain("--selection-surface: #e5ded1;");
+    expect(styles).toMatch(/\.entry-card\.selected\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*#2f3029/s);
+    expect(styles).toMatch(/\.source-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface-strong\);[^}]*color:\s*#30312a/s);
+    expect(styles).toMatch(/\.library-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface\)/s);
+    expect(styles).not.toContain(".entry-card.selected { background: var(--olive-deep);");
+  });
 });
