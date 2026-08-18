@@ -5,7 +5,7 @@ import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { entryQueryForLibrary, type LibraryView } from "./library-view";
 import { requiresSourceReload } from "./source-selection";
 import { groupSources } from "./source-groups";
-import { normaliseSelectedArticleText, selectedTextLabel, selectionActionQuestion, selectionContext } from "./selection-actions";
+import { normaliseSelectedArticleText, selectedTextLabel, selectionActionQuestion, selectionContext, selectionOverlay, type SelectionOverlay, type SelectionRect } from "./selection-actions";
 
 type PendingPreview = { token: string; probe: ProbeResult };
 type ReaderPreset = "reading" | "compact";
@@ -13,7 +13,7 @@ type ReaderPreferences = { preset: ReaderPreset; fontScale: number };
 type AddSourceMethod = "public" | "zhihu" | "x" | "academic";
 type AssistantPanelState = "closed" | "minimized" | "open";
 type ReaderImagePreview = { src: string; alt: string };
-type ReaderTextSelection = { text: string; left: number; top: number; asking: boolean };
+type ReaderTextSelection = { text: string; overlay: SelectionOverlay; asking: boolean; request?: AssistantSelectionRequest };
 type AssistantSelectionRequest = { id: string; question: string; selection: AiSelectionContext };
 
 const READER_PREFERENCES_KEY = "reading-hub.reader-preferences.v1";
@@ -24,6 +24,10 @@ function newAiRequestId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   // This id only pairs same-renderer IPC events; it is never an auth token.
   return `ai-${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function toSelectionRect(rect: DOMRect): SelectionRect {
+  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
 }
 
 function loadReaderPreferences(): ReaderPreferences {
@@ -332,9 +336,10 @@ function ReaderView({ entry, source, onUpdateEntry }: {
   const [imagePreview, setImagePreview] = useState<ReaderImagePreview>();
   const [textSelection, setTextSelection] = useState<ReaderTextSelection>();
   const [selectionQuestion, setSelectionQuestion] = useState("");
-  const [assistantSelectionRequest, setAssistantSelectionRequest] = useState<AssistantSelectionRequest>();
+  const [preferredAiProviderId, setPreferredAiProviderId] = useState<AiProviderId>("codex-cli");
   const [favoriteUpdating, setFavoriteUpdating] = useState(false);
   const articleBodyElement = useRef<HTMLDivElement>(null);
+  const readerWorkspaceElement = useRef<HTMLDivElement>(null);
   useEffect(() => {
     window.localStorage.setItem(READER_PREFERENCES_KEY, JSON.stringify(preferences));
   }, [preferences]);
@@ -356,10 +361,9 @@ function ReaderView({ entry, source, onUpdateEntry }: {
     setImagePreview(undefined);
     setTextSelection(undefined);
     setSelectionQuestion("");
-    setAssistantSelectionRequest(undefined);
   }, [entry.id]);
   useEffect(() => {
-    if (!imagePreview) return;
+    if (!imagePreview && !textSelection) return;
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
         setImagePreview(undefined);
@@ -368,7 +372,7 @@ function ReaderView({ entry, source, onUpdateEntry }: {
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [imagePreview]);
+  }, [imagePreview, textSelection]);
 
   const displayed = article || entry;
   const date = displayed.publishedAt ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "long" }).format(displayed.publishedAt) : undefined;
@@ -404,8 +408,9 @@ function ReaderView({ entry, source, onUpdateEntry }: {
   }
   function captureArticleSelection() {
     const root = articleBodyElement.current;
+    const workspace = readerWorkspaceElement.current;
     const selection = window.getSelection();
-    if (!root || !selection || selection.isCollapsed || !selection.rangeCount) {
+    if (!root || !workspace || !selection || selection.isCollapsed || !selection.rangeCount) {
       setTextSelection(undefined);
       return;
     }
@@ -415,35 +420,39 @@ function ReaderView({ entry, source, onUpdateEntry }: {
       return;
     }
     const text = normaliseSelectedArticleText(selection.toString());
-    const rect = range.getBoundingClientRect();
-    if (!text || (!rect.width && !rect.height)) {
+    const frame = toSelectionRect(workspace.getBoundingClientRect());
+    const overlay = selectionOverlay(Array.from(range.getClientRects()).map(toSelectionRect), frame);
+    if (!text || !overlay) {
       setTextSelection(undefined);
       return;
     }
-    const left = Math.min(Math.max(156, rect.left + rect.width / 2), window.innerWidth - 156);
+    // A text selection starts an in-context reading flow. Keep its anchor and
+    // answer unobscured instead of competing with an already-open side panel.
+    setAssistantState((state) => state === "open" ? "minimized" : state);
     setSelectionQuestion("");
-    // The popover is translated above its anchor, so leave room for its own
-    // height instead of allowing it to disappear behind the reader toolbar.
-    setTextSelection({ text, left, top: Math.max(52, rect.top - 8), asking: false });
+    setTextSelection({ text, overlay, asking: false });
   }
   function askAboutSelection(intent: Exclude<AiSelectionIntent, "ask">) {
     if (!textSelection) return;
     const question = selectionActionQuestion(intent);
     if (!question) return;
-    setAssistantState("open");
-    setAssistantSelectionRequest({ id: newAiRequestId(), question, selection: selectionContext(textSelection.text, intent) });
-    setTextSelection(undefined);
+    window.getSelection()?.removeAllRanges();
+    setTextSelection((current) => current ? { ...current, asking: false, request: { id: newAiRequestId(), question, selection: selectionContext(current.text, intent) } } : current);
   }
   function revealSelectionQuestion() {
-    setTextSelection((current) => current ? { ...current, asking: true } : current);
+    setTextSelection((current) => current ? { ...current, asking: true, request: undefined } : current);
   }
   function submitSelectionQuestion(event: FormEvent) {
     event.preventDefault();
     if (!textSelection) return;
     const question = selectionActionQuestion("ask", selectionQuestion);
     if (!question) return;
-    setAssistantState("open");
-    setAssistantSelectionRequest({ id: newAiRequestId(), question, selection: selectionContext(textSelection.text, "ask") });
+    window.getSelection()?.removeAllRanges();
+    setTextSelection((current) => current ? { ...current, asking: false, request: { id: newAiRequestId(), question, selection: selectionContext(current.text, "ask") } } : current);
+    setSelectionQuestion("");
+  }
+  function clearTextSelection() {
+    window.getSelection()?.removeAllRanges();
     setTextSelection(undefined);
     setSelectionQuestion("");
   }
@@ -514,8 +523,8 @@ function ReaderView({ entry, source, onUpdateEntry }: {
         <button type="button" className="toolbar-icon-button external-button" aria-label="在浏览器中打开原文" title="在浏览器中打开原文" onClick={() => void window.reader.openExternal(entry.url)}>↗</button>
       </div>
     </header>
-    <div className={`reader-workspace ${assistantVisible && article ? "reader-workspace--assistant" : ""}`}>
-      <div className="reader-scroll">
+    <div ref={readerWorkspaceElement} className={`reader-workspace ${assistantVisible && article ? "reader-workspace--assistant" : ""}`}>
+      <div className="reader-scroll" onScroll={textSelection ? clearTextSelection : undefined}>
         {loading && <div className="reader-loading" role="status"><span className="loading-mark" /><p>正在准备适合阅读的正文…</p></div>}
         {!loading && embedded && <div className="reader-embedded"><h1>{entry.title}</h1><p>该站点不允许自动提取正文，原文已在 Reading Hub 的受限窗口中打开。该窗口不使用外部浏览器，也不会复用登录态。</p><button type="button" className="primary-action" onClick={() => void loadArticle()}>重新打开原文</button></div>}
         {!loading && error && <div className="reader-failure"><h1>{entry.title}</h1><p>{error}</p><div><button type="button" className="primary-action" onClick={() => void loadArticle()}>重试</button><button type="button" onClick={openEmbedded}>在应用内打开原文</button></div></div>}
@@ -528,21 +537,33 @@ function ReaderView({ entry, source, onUpdateEntry }: {
           <div ref={articleBodyElement} className="article-body" onClick={handleContentClick} onKeyDown={handleContentKeyDown} onKeyUp={captureArticleSelection} onMouseUp={captureArticleSelection} onError={handleContentError} dangerouslySetInnerHTML={{ __html: article.contentHtml }} />
         </article>}
       </div>
-      {textSelection && <section className="reader-selection-toolbar" role="toolbar" aria-label="所选文字操作" style={{ left: textSelection.left, top: textSelection.top }}>
+      {textSelection && <div className="reader-selection-underlines" aria-hidden="true">{textSelection.overlay.underlines.map((underline, index) => <span key={`${underline.left}-${underline.top}-${index}`} style={{ left: underline.left, top: underline.top, width: underline.width }} />)}</div>}
+      {textSelection && <section className="reader-selection-toolbar" role="toolbar" aria-label="所选文字操作" style={{ left: textSelection.overlay.toolbarLeft, top: textSelection.overlay.toolbarTop }}>
         {!textSelection.asking ? <>
           <button type="button" onClick={() => askAboutSelection("translate")}>翻译</button>
           <button type="button" onClick={() => askAboutSelection("explain")}>解释</button>
           <button type="button" onClick={revealSelectionQuestion}>提问</button>
+          <button type="button" className="selection-cancel" onClick={clearTextSelection} aria-label="取消所选文字操作">×</button>
         </> : <form onSubmit={submitSelectionQuestion}>
           <input value={selectionQuestion} onChange={(event) => setSelectionQuestion(event.target.value)} placeholder="问所选文字…" maxLength={600} autoFocus />
           <button type="submit" disabled={!selectionQuestion.trim()}>发送</button>
-          <button type="button" className="selection-cancel" onClick={() => setTextSelection(undefined)} aria-label="取消所选文字提问">×</button>
+          <button type="button" className="selection-cancel" onClick={clearTextSelection} aria-label="取消所选文字提问">×</button>
         </form>}
       </section>}
+      {textSelection?.request && article && <SelectionAssistantCard
+        request={textSelection.request}
+        overlay={textSelection.overlay}
+        article={article}
+        sourceTitle={source?.title}
+        preferredProviderId={preferredAiProviderId}
+        onClose={clearTextSelection}
+        onOpenAssistant={() => { clearTextSelection(); setAssistantState("open"); }}
+      />}
       {assistantMounted && article && <ReaderAssistant
         article={article}
         sourceTitle={source?.title}
-        selectionRequest={assistantSelectionRequest}
+        providerId={preferredAiProviderId}
+        onProviderChange={setPreferredAiProviderId}
         minimized={assistantState === "minimized"}
         onMinimize={() => setAssistantState("minimized")}
         onClose={() => setAssistantState("closed")}
@@ -551,6 +572,98 @@ function ReaderView({ entry, source, onUpdateEntry }: {
     </div>
     {imagePreview && <ImagePreview image={imagePreview} onClose={() => setImagePreview(undefined)} />}
   </section>;
+}
+
+function SelectionAssistantCard({ request, overlay, article, sourceTitle, preferredProviderId, onClose, onOpenAssistant }: {
+  request: AssistantSelectionRequest;
+  overlay: SelectionOverlay;
+  article: ReaderArticle;
+  sourceTitle?: string;
+  preferredProviderId: AiProviderId;
+  onClose: () => void;
+  onOpenAssistant: () => void;
+}) {
+  const [providers, setProviders] = useState<AiProviderSettings[]>([]);
+  const [answer, setAnswer] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const activeRequestId = useRef<string>();
+  const startedSelectionRequest = useRef<string>();
+  const provider = useMemo(() => providers.find((item) => item.id === preferredProviderId && item.configured)
+    || providers.find((item) => item.configured), [preferredProviderId, providers]);
+  const cardStyle: CSSProperties = {
+    left: overlay.cardLeft,
+    top: overlay.cardTop,
+    width: overlay.cardWidth,
+    maxHeight: overlay.cardMaxHeight
+  };
+
+  useEffect(() => {
+    let current = true;
+    void window.reader.listAiProviders()
+      .then((next) => { if (current) setProviders(next); })
+      .catch((reason) => { if (current) setError(errorMessage(reason)); });
+    return () => { current = false; };
+  }, []);
+  useEffect(() => window.reader.onAiStream((event) => {
+    if (activeRequestId.current !== event.requestId) return;
+    if (event.type === "delta") {
+      setAnswer((current) => `${current}${event.text}`);
+      return;
+    }
+    activeRequestId.current = undefined;
+    setBusy(false);
+    if (event.type === "complete") {
+      setAnswer(event.answer.text);
+      return;
+    }
+    setError(event.message);
+  }), []);
+  useEffect(() => {
+    if (startedSelectionRequest.current === request.id || !providers.length) return;
+    if (!provider) {
+      startedSelectionRequest.current = request.id;
+      setAnswer("");
+      setBusy(false);
+      setError("尚未配置可用的 AI 服务。请先在 AI 学习中完成设置。");
+      return;
+    }
+    startedSelectionRequest.current = request.id;
+    const requestId = newAiRequestId();
+    activeRequestId.current = requestId;
+    setAnswer("");
+    setBusy(true);
+    setError(undefined);
+    void window.reader.startAiStream({
+      requestId,
+      request: {
+        provider: provider.id,
+        question: request.question,
+        selection: request.selection,
+        article: { title: article.title, url: article.url, sourceTitle, text: toArticleText(article.contentHtml) }
+      }
+    }).catch((reason) => {
+      if (activeRequestId.current !== requestId) return;
+      activeRequestId.current = undefined;
+      setBusy(false);
+      setError(errorMessage(reason));
+    });
+  }, [article.contentHtml, article.title, article.url, provider, providers.length, request, sourceTitle]);
+
+  const excerpt = request.selection.text.length > 260 ? `${request.selection.text.slice(0, 260)}…` : request.selection.text;
+  return <aside className="selection-assistant-card" data-placement={overlay.placement} style={cardStyle} aria-label={`${selectedTextLabel(request.selection.intent)}结果`}>
+    <header>
+      <div><p>{selectedTextLabel(request.selection.intent)}</p><strong>{provider?.label || "AI 学习"}</strong></div>
+      <button type="button" onClick={onClose} aria-label="关闭所选文字回答">×</button>
+    </header>
+    <blockquote>“{excerpt}”</blockquote>
+    <div className="selection-assistant-answer" aria-live="polite" aria-busy={busy}>
+      {busy && !answer && <p className="ai-streaming-status">正在结合文章上下文生成…</p>}
+      {answer && <AiMarkdownContent text={answer} />}
+      {error && <p className="selection-assistant-error">{error}</p>}
+    </div>
+    {error && !provider && <button type="button" className="selection-assistant-settings" onClick={onOpenAssistant}>打开 AI 设置</button>}
+  </aside>;
 }
 
 function ImagePreview({ image, onClose }: { image: ReaderImagePreview; onClose: () => void }) {
@@ -573,16 +686,17 @@ const CODEX_EFFORT_OPTIONS: Array<{ value: AiReasoningEffort; label: string }> =
   { value: "max", label: "最大（最难问题）" }
 ];
 
-function ReaderAssistant({ article, sourceTitle, selectionRequest, minimized, onMinimize, onClose }: {
+function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderId, onProviderChange, minimized, onMinimize, onClose }: {
   article: ReaderArticle;
   sourceTitle?: string;
-  selectionRequest?: AssistantSelectionRequest;
+  providerId: AiProviderId;
+  onProviderChange: (providerId: AiProviderId) => void;
   minimized: boolean;
   onMinimize: () => void;
   onClose: () => void;
 }) {
   const [providers, setProviders] = useState<AiProviderSettings[]>([]);
-  const [providerId, setProviderId] = useState<AiProviderId>("codex-cli");
+  const [providerId, setProviderId] = useState<AiProviderId>(controlledProviderId);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState<AiReasoningEffort>("medium");
   const [apiKey, setApiKey] = useState("");
@@ -592,7 +706,6 @@ function ReaderAssistant({ article, sourceTitle, selectionRequest, minimized, on
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const activeStream = useRef<ActiveAiStream>();
-  const handledSelectionRequest = useRef<string>();
   const messagesElement = useRef<HTMLDivElement>(null);
 
   const selected = providers.find((provider) => provider.id === providerId);
@@ -602,14 +715,15 @@ function ReaderAssistant({ article, sourceTitle, selectionRequest, minimized, on
   const reloadProviders = useCallback(async () => {
     const next = await window.reader.listAiProviders();
     setProviders(next);
-    const active = next.find((provider) => provider.id === providerId) || next[0];
+    const active = next.find((provider) => provider.id === controlledProviderId) || next[0];
     if (active) {
       setProviderId(active.id);
+      onProviderChange(active.id);
       setModel(active.model);
       setEffort(active.effort || "medium");
       setShowSettings(active.requiresApiKey && !active.configured);
     }
-  }, [providerId]);
+  }, [controlledProviderId, onProviderChange]);
   useEffect(() => { void reloadProviders().catch((reason) => setError(errorMessage(reason))); }, [reloadProviders]);
   useEffect(() => {
     return window.reader.onAiStream((event) => {
@@ -641,6 +755,7 @@ function ReaderAssistant({ article, sourceTitle, selectionRequest, minimized, on
 
   function switchProvider(nextId: AiProviderId) {
     setProviderId(nextId);
+    onProviderChange(nextId);
     const next = providers.find((provider) => provider.id === nextId);
     if (next) {
       setModel(next.model);
@@ -725,18 +840,6 @@ function ReaderAssistant({ article, sourceTitle, selectionRequest, minimized, on
     event.preventDefault();
     await startQuestion(question);
   }
-
-  useEffect(() => {
-    if (!selectionRequest || handledSelectionRequest.current === selectionRequest.id || busy || !providers.length) return;
-    handledSelectionRequest.current = selectionRequest.id;
-    if (!selected?.configured) {
-      setQuestion(selectionRequest.question);
-      setShowSettings(Boolean(selected?.requiresApiKey) || selected?.id === "codex-cli");
-      setError(selected?.requiresApiKey ? "请先配置 API Key 后再发送所选文字的问题。" : "未检测到本机 Codex CLI。请安装并登录后重试。");
-      return;
-    }
-    void startQuestion(selectionRequest.question, selectionRequest.selection);
-  }, [busy, providers.length, selected, selectionRequest]);
 
   function submitOnEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (!shouldSubmitAssistantQuestion(event.key, event.shiftKey, event.nativeEvent.isComposing)) return;

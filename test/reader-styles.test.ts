@@ -33,9 +33,12 @@ describe("reader display-equation layout", () => {
     expect(styles).toContain("padding: 0 20px 0 var(--titlebar-leading-inset);");
   });
 
-  it("keeps the selected-text actions above the article without introducing a page scroll region", () => {
-    expect(styles).toMatch(/\.reader-selection-toolbar\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*25;[^}]*transform:\s*translate\(-50%,-100%\)/s);
+  it("keeps selected-text actions and the local answer inside the reader without introducing a page scroll region", () => {
+    expect(styles).toMatch(/\.reader-selection-toolbar\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*26/s);
     expect(styles).toMatch(/\.reader-selection-toolbar\s+input\s*\{[^}]*width:\s*min\(210px,45vw\)/s);
+    expect(styles).toContain(".reader-selection-underlines span { position: fixed;");
+    expect(styles).toContain(".selection-assistant-card { position: fixed;");
+    expect(styles).toContain(".selection-assistant-answer { min-height: 72px;");
   });
 
   it("gives the reader a persistent, stateful favourite control", () => {
@@ -44,10 +47,10 @@ describe("reader display-equation layout", () => {
   });
 
   it("uses the paper palette for persistent selections instead of a large dark-green fill", () => {
-    expect(styles).toContain("--selection-surface: #e5ded1;");
-    expect(styles).toMatch(/\.entry-card\.selected\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*#2f3029/s);
-    expect(styles).toMatch(/\.source-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface-strong\);[^}]*color:\s*#30312a/s);
-    expect(styles).toMatch(/\.library-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface\)/s);
+    expect(styles).toContain("--selection-surface: #faf7ef;");
+    expect(styles).toMatch(/\.entry-card\.selected(?:,\s*\.entry-card\.selected:hover)?\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*#2f3029/s);
+    expect(styles).toMatch(/\.source-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*#30312a/s);
+    expect(styles).toMatch(/\.library-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface-strong\)/s);
     expect(styles).not.toContain(".entry-card.selected { background: var(--olive-deep);");
   });
 });

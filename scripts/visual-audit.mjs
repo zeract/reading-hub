@@ -27,7 +27,7 @@ function page() {
         <mjx-container id="formula-mathjax" display="true"><mjx-math><svg width="1040" height="48" aria-label="Scientific Spaces fallback formula"><text x="0" y="28">qᵢ = [(α − 1) / α · (zᵢ − λ)]₊¹⁄⁽ᵅ⁻¹⁾</text></svg></mjx-math></mjx-container>
         <img id="fixture-image" src="${largeImage}" alt="large fixture" />
         <table><thead><tr><th>来源</th><th>状态</th></tr></thead><tbody><tr><td>OpenAlex</td><td>正常</td></tr></tbody></table>
-      </div></article></div><section class="reader-selection-toolbar" id="selection-toolbar" style="left: 58vw; top: 320px"><button>翻译</button><button>解释</button><button>提问</button></section><aside class="reader-ai-panel" id="assistant-panel"><header><div><strong>AI 学习助手</strong><p>提问时才会发送文章摘录。</p></div><div class="assistant-header-actions"><button class="panel-icon-button">−</button><button class="panel-icon-button">×</button></div></header><div class="ai-messages"><div class="ai-message" id="assistant-markdown"><strong>AI</strong><div class="ai-message-content ai-markdown"><h2 class="ai-markdown-heading">推导摘要</h2><p class="ai-markdown-paragraph">这是一段 <strong>Markdown</strong> 回答。</p><ul class="ai-markdown-list"><li>列表项</li><li><code class="ai-inline-code">inline_code</code></li></ul><pre class="ai-code-block" id="assistant-code"><code>very_long_identifier_that_must_scroll_instead_of_overflowing_the_assistant_sidebar_0123456789</code></pre><div class="ai-table-wrap"><table><thead><tr><th>方法</th><th>复杂度</th></tr></thead><tbody><tr><td>线性</td><td>O(n)</td></tr></tbody></table></div></div></div></div><form class="ai-question"><label>向文章提问</label><textarea>这个公式表达什么？</textarea><button class="primary">发送问题</button></form></aside></div>
+      </div></article></div><div class="reader-selection-underlines" aria-hidden="true"><span id="selection-underline" style="left: 58vw; top: 302px; width: 124px"></span></div><section class="reader-selection-toolbar" id="selection-toolbar" style="left: 58vw; top: 308px"><button>翻译</button><button>解释</button><button>提问</button><button>×</button></section><aside class="selection-assistant-card" id="selection-card" data-placement="below" style="left: 56vw; top: 356px; width: min(330px,calc(100vw - 32px)); max-height: 250px"><header><div><p>解释所选文字</p><strong>本机 Codex CLI</strong></div><button>×</button></header><blockquote>“这段选中的文章文字会保留在就地回答旁边。”</blockquote><div class="selection-assistant-answer"><p>这是一个和正文紧邻的流式回答卡片，长内容将在卡片内滚动。</p><pre class="ai-code-block" id="selection-card-code"><code>selection_answer_must_not_expand_the_reading_workspace_0123456789</code></pre></div></aside><aside class="reader-ai-panel" id="assistant-panel"><header><div><strong>AI 学习助手</strong><p>提问时才会发送文章摘录。</p></div><div class="assistant-header-actions"><button class="panel-icon-button">−</button><button class="panel-icon-button">×</button></div></header><div class="ai-messages"><div class="ai-message" id="assistant-markdown"><strong>AI</strong><div class="ai-message-content ai-markdown"><h2 class="ai-markdown-heading">推导摘要</h2><p class="ai-markdown-paragraph">这是一段 <strong>Markdown</strong> 回答。</p><ul class="ai-markdown-list"><li>列表项</li><li><code class="ai-inline-code">inline_code</code></li></ul><pre class="ai-code-block" id="assistant-code"><code>very_long_identifier_that_must_scroll_instead_of_overflowing_the_assistant_sidebar_0123456789</code></pre><div class="ai-table-wrap"><table><thead><tr><th>方法</th><th>复杂度</th></tr></thead><tbody><tr><td>线性</td><td>O(n)</td></tr></tbody></table></div></div></div></div><form class="ai-question"><label>向文章提问</label><textarea>这个公式表达什么？</textarea><button class="primary">发送问题</button></form></aside></div>
     </section></main><div class="reader-image-lightbox" id="image-lightbox" hidden><section class="reader-image-lightbox__frame"><button class="reader-image-lightbox__close">×</button><img id="lightbox-image" src="${largeImage}" alt="large fixture preview" /></section></div></body></html>`;
 }
 
@@ -115,6 +115,21 @@ async function auditViewport(window, viewport) {
         const controls = root ? [...root.querySelectorAll('button')].map((control) => control.getBoundingClientRect()) : [];
         return rootRect ? { left: rootRect.left, right: rootRect.right, top: rootRect.top, bottom: rootRect.bottom, controls: controls.map((control) => ({ left: control.left, right: control.right, top: control.top, bottom: control.bottom })) } : undefined;
       })(),
+      selectionAnswer: (() => {
+        const root = document.querySelector('#selection-card');
+        const answer = document.querySelector('.selection-assistant-answer');
+        const code = document.querySelector('#selection-card-code');
+        const underline = document.querySelector('#selection-underline');
+        const rootRect = root?.getBoundingClientRect();
+        const answerRect = answer?.getBoundingClientRect();
+        const underlineRect = underline?.getBoundingClientRect();
+        return rootRect && answerRect && underlineRect ? {
+          card: { left: rootRect.left, right: rootRect.right, top: rootRect.top, bottom: rootRect.bottom },
+          answer: { left: answerRect.left, right: answerRect.right, top: answerRect.top, bottom: answerRect.bottom, scrollHeight: answer?.scrollHeight, clientHeight: answer?.clientHeight },
+          code: code ? { scrollWidth: code.scrollWidth, clientWidth: code.clientWidth } : undefined,
+          underline: { left: underlineRect.left, right: underlineRect.right, top: underlineRect.top, bottom: underlineRect.bottom }
+        } : undefined;
+      })(),
       sidebars: (() => {
         const shell = document.querySelector('#shell');
         const sidebar = document.querySelector('#source-sidebar');
@@ -179,6 +194,9 @@ async function auditViewport(window, viewport) {
   }
   if (!geometry.selectionToolbar || !geometry.viewport || geometry.selectionToolbar.left < 0 || geometry.selectionToolbar.right > geometry.viewport.width || geometry.selectionToolbar.top < 0 || geometry.selectionToolbar.bottom > geometry.viewport.height || geometry.selectionToolbar.controls.some((control) => control.left < geometry.selectionToolbar.left - 1 || control.right > geometry.selectionToolbar.right + 1)) {
     failures.push("划词操作工具栏在当前窗口或字号下溢出");
+  }
+  if (!geometry.selectionAnswer || !geometry.viewport || geometry.selectionAnswer.card.left < 0 || geometry.selectionAnswer.card.right > geometry.viewport.width || geometry.selectionAnswer.card.top < 0 || geometry.selectionAnswer.card.bottom > geometry.viewport.height || geometry.selectionAnswer.answer.left < geometry.selectionAnswer.card.left - 1 || geometry.selectionAnswer.answer.right > geometry.selectionAnswer.card.right + 1 || !geometry.selectionAnswer.code || geometry.selectionAnswer.code.scrollWidth <= geometry.selectionAnswer.code.clientWidth || geometry.selectionAnswer.underline.width <= 0 || !geometry.selectionToolbar || geometry.selectionAnswer.card.top < geometry.selectionToolbar.bottom - 1) {
+    failures.push("划词就地回答卡片、下划线或长内容滚动异常");
   }
   const expectedSidebarWidth = geometry.viewport && geometry.viewport.width <= 1080 ? 220 : 260;
   if (!geometry.sidebars || Math.abs(geometry.sidebars.initialSidebarWidth - expectedSidebarWidth) > 1 || geometry.sidebars.collapsedSidebarWidth > 1.25 || geometry.sidebars.collapsedReaderWidth < geometry.sidebars.initialReaderWidth + expectedSidebarWidth - 2) {
