@@ -11,6 +11,7 @@ type ReaderPreferences = { preset: ReaderPreset; fontScale: number };
 type AddSourceMethod = "public" | "zhihu" | "x" | "academic";
 type AssistantPanelState = "closed" | "minimized" | "open";
 type ReaderImagePreview = { src: string; alt: string };
+type LibraryView = "all" | "today" | "unread" | "favorite";
 
 const READER_PREFERENCES_KEY = "reading-hub.reader-preferences.v1";
 const DEFAULT_READER_PREFERENCES: ReaderPreferences = { preset: "reading", fontScale: 1 };
@@ -45,6 +46,7 @@ export function App() {
   const [activeRuleSource, setActiveRuleSource] = useState<Source>();
   const [editingSource, setEditingSource] = useState<Source>();
   const [activeSourceId, setActiveSourceId] = useState<string>();
+  const [libraryView, setLibraryView] = useState<LibraryView>("all");
   const [timelineFilter, setTimelineFilter] = useState<TimelineRangeFilter>(DEFAULT_TIMELINE_FILTER);
   const [readingEntry, setReadingEntry] = useState<Entry>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -144,6 +146,8 @@ export function App() {
 
   function selectSource(sourceId?: string) {
     setReadingEntry(undefined);
+    setLibraryView("all");
+    if (timelineFilter.preset === "today") setTimelineFilter(DEFAULT_TIMELINE_FILTER);
     if (requiresSourceReload(activeSourceId, sourceId)) {
       // A repeated click does not change `activeSourceId`, so the effect that
       // normally reloads entries would not run. Do not leave the cleared list
@@ -153,6 +157,16 @@ export function App() {
     }
     setEntries([]);
     setActiveSourceId(sourceId);
+  }
+
+  function selectLibrary(view: LibraryView) {
+    setReadingEntry(undefined);
+    setActiveSourceId(undefined);
+    setLibraryView(view);
+    setTimelineFilter((current) => {
+      if (view === "today") return { ...DEFAULT_TIMELINE_FILTER, preset: "today" };
+      return current.preset === "today" ? DEFAULT_TIMELINE_FILTER : current;
+    });
   }
 
   function chooseTimelinePreset(preset: TimelineRangePreset) {
@@ -195,6 +209,13 @@ export function App() {
 
   const sourceById = useMemo(() => new Map(sources.map((source) => [source.id, source])), [sources]);
   const activeSource = activeSourceId ? sourceById.get(activeSourceId) : undefined;
+  const visibleEntries = useMemo(() => entries.filter((entry) => {
+    if (libraryView === "unread") return !entry.read;
+    if (libraryView === "favorite") return entry.favorite;
+    return true;
+  }), [entries, libraryView]);
+  const libraryTitle = activeSource?.title || ({ all: "最新文章", today: "今日更新", unread: "未读文章", favorite: "收藏文章" } satisfies Record<LibraryView, string>)[libraryView];
+  const unreadCount = entries.filter((entry) => !entry.read).length;
 
   return (
     <main className={`shell${sidebarCollapsed ? " shell--sidebar-collapsed" : ""}${windowFullscreen ? " shell--fullscreen" : ""}`}>
@@ -204,12 +225,19 @@ export function App() {
           <button type="button" className="app-titlebar-button" onClick={() => setSidebarCollapsed((collapsed) => !collapsed)} aria-label={sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"} title={sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"}>☰</button>
           {readingEntry && <button type="button" className="app-titlebar-button" onClick={() => setReadingEntry(undefined)} aria-label="返回列表" title="返回列表">←</button>}
         </div>
+        <p className="app-titlebar-name">READING HUB <span>本地阅读桌</span></p>
       </header>
       <aside className="sidebar">
         <button type="button" className="add-source-button" onClick={() => setShowAddSource(true)}>＋ 添加来源<span>网页、平台动态或学术作者</span></button>
+        <nav className="library-nav" aria-label="阅读分类">
+          <div className="section-title">阅读</div>
+          <button className={`library-filter ${libraryView === "today" && !activeSourceId ? "selected" : ""}`} onClick={() => selectLibrary("today")}><span>✳ 今日</span></button>
+          <button className={`library-filter ${libraryView === "unread" && !activeSourceId ? "selected" : ""}`} onClick={() => selectLibrary("unread")}><span>○ 未读</span><em>{unreadCount}</em></button>
+          <button className={`library-filter ${libraryView === "favorite" && !activeSourceId ? "selected" : ""}`} onClick={() => selectLibrary("favorite")}><span>☆ 收藏</span></button>
+        </nav>
         <div className="section-title">来源 <span>{sources.length}</span></div>
         <div className="source-list">
-          <button className={`source-filter ${!activeSourceId ? "selected" : ""}`} onClick={() => selectSource(undefined)}>
+          <button className={`source-filter ${!activeSourceId && libraryView === "all" ? "selected" : ""}`} onClick={() => selectLibrary("all")}>
             <span className="source-title">全部内容</span><span className="source-meta">按最新时间</span>
           </button>
           {sources.map((source) => (
@@ -232,11 +260,8 @@ export function App() {
         <p className="privacy-note">公开来源不保存登录态；知乎关注动态仅在本机专属会话中保存登录状态，不读取 Chrome Cookie。</p>
       </aside>
 
-      {readingEntry ? <ReaderView
-        entry={readingEntry}
-        source={sourceById.get(readingEntry.sourceId)}
-      /> : <section className="timeline">
-        <header><div><p className="eyebrow">{activeSource ? "来源内容" : "本地优先阅读器"}</p><h1>{activeSource?.title || "最新内容"}</h1></div><span className="count">{entries.filter((entry) => !entry.read).length} 未读</span></header>
+      <section className="timeline" aria-label="文章列表">
+        <header><div><p className="eyebrow">{activeSource ? "来源内容" : "阅读收件箱"}</p><h1>{libraryTitle}</h1></div><span className="count">{unreadCount} 未读</span></header>
         {notice && <div className="notice">{notice}<button onClick={() => setNotice(undefined)}>×</button></div>}
         <section className="timeline-filterbar" aria-label="时间筛选">
           <label><span>时间范围</span><select value={timelineFilter.preset} onChange={(event) => chooseTimelinePreset(event.target.value as TimelineRangePreset)}>
@@ -250,10 +275,14 @@ export function App() {
           {timelineFilter.preset !== "all" && <button type="button" className="timeline-filter-clear" onClick={() => setTimelineFilter(DEFAULT_TIMELINE_FILTER)}>清除筛选</button>}
         </section>
         <div className="entry-list">
-          {entries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} onRead={updateEntry} onOpen={openReader} onDismiss={dismissEntry} busy={busy} />)}
-          {!entries.length && <div className="empty-state"><h2>{timelineRange.hasRange ? "该时间范围没有内容" : activeSource ? "该来源还没有内容" : "还没有内容"}</h2><p>{timelineRange.hasRange ? "可以调整日期范围，或清除时间筛选以查看全部内容。" : activeSource ? "可以刷新来源，或使用“自动校准”重新识别内容列表。" : "添加 RSS、公开文章列表页，或粘贴小红书分享链接开始。"}</p></div>}
+          {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntry?.id === entry.id} onRead={updateEntry} onOpen={openReader} onDismiss={dismissEntry} busy={busy} />)}
+          {!visibleEntries.length && <div className="empty-state"><p className="eyebrow">READING DESK / 00</p><h2>{timelineRange.hasRange ? "该时间范围没有内容" : activeSource ? "该来源还没有内容" : libraryView === "unread" ? "没有未读文章" : libraryView === "favorite" ? "还没有收藏文章" : "还没有内容"}</h2><p>{timelineRange.hasRange ? "可以调整日期范围，或清除时间筛选以查看全部内容。" : activeSource ? "可以刷新来源，或使用“自动校准”重新识别内容列表。" : "添加 RSS、公开文章列表页，或粘贴小红书分享链接开始。"}</p></div>}
         </div>
-      </section>}
+      </section>
+      {readingEntry ? <ReaderView
+        entry={readingEntry}
+        source={sourceById.get(readingEntry.sourceId)}
+      /> : <ReaderPlaceholder />}
 
       {pending && <PreviewDialog pending={pending} onCancel={() => setPending(undefined)} onConfirm={() => void confirm()} busy={busy} />}
       {showAddSource && <AddSourceDialog
@@ -269,18 +298,25 @@ export function App() {
   );
 }
 
-function EntryCard({ entry, source, onRead, onOpen, onDismiss, busy }: { entry: Entry; source?: Source; onRead: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<void>; onOpen: (entry: Entry) => void; onDismiss: (entry: Entry) => Promise<void>; busy: boolean }) {
+function EntryCard({ entry, source, selected, onRead, onOpen, onDismiss, busy }: { entry: Entry; source?: Source; selected: boolean; onRead: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<void>; onOpen: (entry: Entry) => void; onDismiss: (entry: Entry) => Promise<void>; busy: boolean }) {
   const date = entry.publishedAt
     ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(entry.publishedAt)
     : entry.observedAt ? `收集于 ${new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(entry.observedAt)}` : "刚刚收集";
   const providers = [...new Set((entry.origins || []).map((origin) => origin.providerLabel || origin.providerId).filter((id) => id !== source?.connectorId))];
-  return <article className={`entry-card ${entry.read ? "read" : ""}`}>
+  return <article className={`entry-card ${entry.read ? "read" : ""}${selected ? " selected" : ""}`}>
     <button className="entry-main" type="button" onClick={() => onOpen(entry)} aria-label={`在应用内阅读：${entry.title}`}>
       <div className="entry-copy"><p className="entry-source">{source?.title || "已保存内容"} <span>·</span> {date}{providers.length ? <><span>·</span>{providers.join(" / ")}</> : null}</p><h2>{entry.title}</h2>{entry.summary && <p className="summary">{entry.summary}</p>}<p className="byline">{entry.author || "原文链接"}</p></div>
       {entry.imageUrl && <img src={entry.imageUrl} alt="" loading="lazy" />}
     </button>
     <div className="entry-actions"><button type="button" onClick={() => onOpen(entry)}>应用内阅读</button><button aria-label="标记已读" onClick={() => void onRead(entry, "read", !entry.read)}>{entry.read ? "未读" : "已读"}</button><button aria-label="收藏" onClick={() => void onRead(entry, "favorite", !entry.favorite)}>{entry.favorite ? "★" : "☆"}</button><button type="button" className="delete-entry" onClick={() => void onDismiss(entry)} disabled={busy}>删除</button></div>
   </article>;
+}
+
+function ReaderPlaceholder() {
+  return <section className="reader-placeholder" aria-label="选择文章开始阅读">
+    <div className="reader-placeholder-mark">RH<br /><span>01</span></div>
+    <div><p className="eyebrow">YOUR READING DESK</p><h2>选择一篇文章<br />开始阅读</h2><p>来源、时间与阅读状态会保留在本机。<br />正文始终来自原始发布者。</p></div>
+  </section>;
 }
 
 function ReaderView({ entry, source }: {

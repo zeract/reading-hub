@@ -6,11 +6,11 @@ const styles = readFileSync(resolve(process.cwd(), "src/renderer/styles.css"), "
 
 describe("reader display-equation layout", () => {
   it("keeps KaTeX formula bases in flow and places an equation tag afterwards", () => {
-    expect(styles).toContain(".article-body .katex-display > .katex {\n  display: block;");
-    expect(styles).toContain("display: flex;\n  flex-wrap: nowrap;");
-    expect(styles).toContain(".article-body .katex-display > .katex > .katex-html > .base {\n  flex: 0 0 auto;\n  order: 1;");
-    expect(styles).toContain(".article-body .katex-display > .katex > .katex-html > .tag {\n  position: static;\n  flex: 0 0 auto;\n  order: 2;");
-    expect(styles).toContain("margin-left: 1em;");
+    expect(styles).toMatch(/\.article-body\s+\.katex-display\s*>\s*\.katex\s*\{[^}]*display:\s*block/s);
+    expect(styles).toMatch(/\.katex-html\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*nowrap/s);
+    expect(styles).toMatch(/\.article-body\s+\.katex-display\s*>\s*\.katex\s*>\s*\.katex-html\s*>\s*\.base\s*\{[^}]*flex:\s*0\s+0\s+auto;[^}]*order:\s*1/s);
+    expect(styles).toMatch(/\.article-body\s+\.katex-display\s*>\s*\.katex\s*>\s*\.katex-html\s*>\s*\.tag\s*\{[^}]*position:\s*static;[^}]*flex:\s*0\s+0\s+auto;[^}]*order:\s*2/s);
+    expect(styles).toMatch(/\.tag\s*\{[^}]*margin-left:\s*1em/s);
     expect(styles).not.toContain(".article-body .katex-display > .katex { display: inline-block;");
     expect(styles).not.toContain(".article-body .katex-display > .katex > .katex-html > .base {\n  grid-column");
   });
@@ -18,15 +18,16 @@ describe("reader display-equation layout", () => {
   it("constrains reader images and keeps the main scrolling regions intentional", () => {
     expect(styles).toContain(".article-body img { display: block; width: auto; height: auto; max-width: min(100%, 34em);");
     expect(styles).toContain(".article-body img[data-reader-zoomable=\"true\"] { cursor: zoom-in; }");
-    expect(styles).toContain(".reader-image-lightbox {\n  position: fixed;\n  z-index: 30;\n  inset: 0;");
+    expect(styles).toMatch(/\.reader-image-lightbox\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*30;[^}]*inset:\s*0/s);
+    expect(styles).toContain(".reader-image-lightbox[hidden] { display: none; }");
     expect(styles).toContain("max-height: calc(100vh - 32px);");
-    expect(styles).toContain(".reader-scroll { min-height: 0; overflow: auto;");
-    expect(styles).toContain(".source-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;");
+    expect(styles).toMatch(/\.reader-scroll\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*auto/s);
+    expect(styles).toMatch(/\.source-list\s*\{[^}]*flex:\s*1\s+1\s+auto;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overflow-x:\s*hidden/s);
   });
 
   it("reclaims the macOS traffic-light inset while the native window is fullscreen", () => {
     expect(styles).toContain(".shell { --titlebar-leading-inset: 96px;");
     expect(styles).toContain(".shell--fullscreen { --titlebar-leading-inset: 16px; }");
-    expect(styles).toContain("padding: 0 16px 0 var(--titlebar-leading-inset);");
+    expect(styles).toContain("padding: 0 20px 0 var(--titlebar-leading-inset);");
   });
 });

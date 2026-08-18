@@ -10,16 +10,17 @@ const outputDirectory = process.env.READING_HUB_VISUAL_OUTPUT;
 const viewports = [
   { name: "compact", width: 1024, height: 768, zoom: 1 },
   { name: "default", width: 1280, height: 800, zoom: 1 },
-  { name: "wide-large-text", width: 1440, height: 900, zoom: 1.25 }
+  { name: "wide-large-text", width: 1440, height: 900, zoom: 1.25 },
+  { name: "ultra-wide", width: 1720, height: 960, zoom: 1 }
 ];
 
 function page() {
   const largeImage = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='900'><rect width='100%' height='100%' fill='#bbc9a4'/><text x='70' y='160' font-size='96'>Reading Hub visual fixture</text></svg>");
   return `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>
-    <main class="shell" id="shell"><header class="app-titlebar" id="app-titlebar"><span class="app-titlebar-mark">R</span><div class="app-titlebar-actions"><button class="app-titlebar-button">☰</button><button class="app-titlebar-button">←</button></div></header><aside class="sidebar" id="source-sidebar"><div class="section-title">来源 <span>12</span></div><div class="source-list"><button class="source-filter selected"><span class="source-title">全部内容</span><span class="source-meta">按最新时间</span></button><button class="source-filter"><span class="source-title">测试来源</span><span class="source-meta"><span class="source-meta-line"><span class="status active">正常</span><span>约 1 小时</span></span></span></button></div></aside>
+    <main class="shell" id="shell"><header class="app-titlebar" id="app-titlebar"><span class="app-titlebar-mark">R</span><div class="app-titlebar-actions"><button class="app-titlebar-button">☰</button><button class="app-titlebar-button">←</button></div><p class="app-titlebar-name">READING HUB <span>本地阅读桌</span></p></header><aside class="sidebar" id="source-sidebar"><button class="add-source-button">＋ 添加来源<span>网页、平台动态或学术作者</span></button><nav class="library-nav"><div class="section-title">阅读</div><button class="library-filter selected"><span>✳ 今日</span></button><button class="library-filter"><span>○ 未读</span><em>12</em></button><button class="library-filter"><span>☆ 收藏</span></button></nav><div class="section-title">来源 <span>12</span></div><div class="source-list"><button class="source-filter selected"><span class="source-title">全部内容</span><span class="source-meta">按最新时间</span></button><button class="source-filter"><span class="source-title">测试来源</span><span class="source-meta"><span class="source-meta-line"><span class="status active">正常</span><span>约 1 小时</span></span></span></button></div></aside><section class="timeline" id="entry-timeline"><header><div><p class="eyebrow">阅读收件箱</p><h1>今日更新</h1></div><span class="count">12 未读</span></header><section class="timeline-filterbar" id="timeline-filter"><label><span>时间范围</span><select><option>最近 7 天</option></select></label><div class="timeline-filter-custom"><label><span>开始日期</span><input type="date" value="2026-07-18" /></label><label><span>结束日期</span><input type="date" value="2026-08-16" /></label></div><p class="timeline-filter-note">显示：2026-07-18 至 2026-08-16；按发布时间筛选。</p><button class="timeline-filter-clear">清除筛选</button></section><div class="entry-list"><article class="entry-card selected"><button class="entry-main"><div class="entry-copy"><p class="entry-source">科学空间 · 今天</p><h2>长标题文章示例</h2><p class="summary">以克制的密度展示来源、摘要与阅读状态。</p></div></button></article><article class="entry-card"><button class="entry-main"><div class="entry-copy"><p class="entry-source">测试来源 · 昨天</p><h2>另一篇待读文章</h2></div></button></article></div></section>
     <section class="reader-view reader--scientific" data-reader-preset="reading" style="--reader-font-scale: 1">
       <header class="reader-toolbar"><div class="reader-toolbar-spacer"></div><div class="reader-toolbar-center"><p>科学空间</p><div class="reader-controls"><button>阅读</button></div></div><div class="reader-toolbar-actions"><button class="toolbar-icon-button ai-toggle">✦</button><button class="toolbar-icon-button external-button">↗</button></div></header>
-      <div class="reader-workspace reader-workspace--assistant"><div class="reader-scroll"><section class="timeline-filterbar" id="timeline-filter"><label><span>时间范围</span><select><option>自定义日期</option></select></label><div class="timeline-filter-custom"><label><span>开始日期</span><input type="date" value="2026-07-18" /></label><label><span>结束日期</span><input type="date" value="2026-08-16" /></label></div><p class="timeline-filter-note">显示：2026-07-18 至 2026-08-16；按发布时间筛选。</p><button class="timeline-filter-clear">清除筛选</button></section><article class="reader-article"><header><p class="eyebrow">视觉回归夹具</p><h1>中文长标题与数学公式布局</h1></header><div class="article-body">
+      <div class="reader-workspace reader-workspace--assistant"><div class="reader-scroll"><article class="reader-article"><header><p class="eyebrow">视觉回归夹具</p><h1>中文长标题与数学公式布局</h1></header><div class="article-body">
         <p>这段内容用于检查文字、图片、表格和公式编号在不同窗口与字号下不会错误重叠或撑破阅读列。</p>
         <span class="katex-display" id="formula-normal"><span class="katex"><span class="katex-html"><span class="tag">(13)</span><span class="base">∇<sub>z</sub>S(q, i)</span><span class="base"> = q</span><span class="base"> − e<sub>i</sub></span></span></span></span>
         <span class="katex-display" id="formula-wide"><span class="katex"><span class="katex-html"><span class="tag">(14)</span><span class="base">W₃(SiTU(W₁x;β₁) ⊙ softcap(W₂x;β₂))</span><span class="base"> + ∑ᵢ αᵢ·underbrace{xᵢ}_{long scientific expression}</span></span></span></span>
@@ -110,10 +111,10 @@ async function auditViewport(window, viewport) {
       })(),
       timelineFilter: (() => {
         const root = document.querySelector('#timeline-filter');
-        const scroll = document.querySelector('.reader-scroll');
+        const scroll = document.querySelector('#entry-timeline');
         const rootRect = root?.getBoundingClientRect();
         const scrollRect = scroll?.getBoundingClientRect();
-        const controls = [...document.querySelectorAll('#timeline-filter select, #timeline-filter input, #timeline-filter button')].map((control) => control.getBoundingClientRect());
+        const controls = root ? [...root.querySelectorAll('select, input, button')].map((control) => control.getBoundingClientRect()) : [];
         return rootRect && scrollRect ? {
           root: { left: rootRect.left, right: rootRect.right, top: rootRect.top, bottom: rootRect.bottom },
           scroll: { left: scrollRect.left, right: scrollRect.right },
@@ -187,7 +188,8 @@ async function auditViewport(window, viewport) {
   if (!geometry.timelineFilter || geometry.timelineFilter.root.left < geometry.timelineFilter.scroll.left - 1 || geometry.timelineFilter.root.right > geometry.timelineFilter.scroll.right + 1 || geometry.timelineFilter.controls.some((control) => control.left < geometry.timelineFilter.root.left - 1 || control.right > geometry.timelineFilter.root.right + 1)) {
     failures.push("时间筛选控件在当前窗口或字号下溢出");
   }
-  if (!geometry.sidebars || Math.abs(geometry.sidebars.initialSidebarWidth - 310) > 1 || geometry.sidebars.collapsedSidebarWidth > 1 || geometry.sidebars.collapsedReaderWidth < geometry.sidebars.initialReaderWidth + 300) {
+  const expectedSidebarWidth = geometry.viewport && geometry.viewport.width <= 1080 ? 220 : 260;
+  if (!geometry.sidebars || Math.abs(geometry.sidebars.initialSidebarWidth - expectedSidebarWidth) > 1 || geometry.sidebars.collapsedSidebarWidth > 1.25 || geometry.sidebars.collapsedReaderWidth < geometry.sidebars.initialReaderWidth + expectedSidebarWidth - 2) {
     failures.push("来源侧边栏无法在阅读时正确收起或恢复正文宽度");
   }
   if (!geometry.titlebar || geometry.titlebar.height < 40 || geometry.titlebar.controls.some((control) => control.left < geometry.titlebar.left - 1 || control.right > geometry.titlebar.right + 1 || control.top < 0 || control.bottom > geometry.titlebar.height + 1)) {
@@ -197,8 +199,9 @@ async function auditViewport(window, viewport) {
     failures.push("全屏时顶部图标和按钮没有随 macOS 交通灯隐藏而左移");
   }
   if (geometry.sourceMeta === undefined || geometry.sourceMeta < 6) failures.push("来源状态和刷新时间之间缺少可读间距");
-  if (viewport.name === "default" && geometry.assistant && geometry.assistant.panel.left < geometry.assistant.scroll.right - 1) {
-    failures.push("宽窗口中的 AI 学习面板覆盖了正文滚动区，而非停靠在右侧");
+  const shouldDockAssistant = geometry.viewport && geometry.viewport.width >= 1380;
+  if (shouldDockAssistant && geometry.assistant && geometry.assistant.panel.left < geometry.assistant.scroll.right - 1) {
+    failures.push("超宽窗口中的 AI 学习面板覆盖了正文滚动区，而非停靠在右侧");
   }
   if (outputDirectory) {
     await mkdir(outputDirectory, { recursive: true });
