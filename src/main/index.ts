@@ -235,14 +235,14 @@ async function bootstrap(): Promise<void> {
       return { kind: "article", article: await articles.read(entry, database.getSource(entry.sourceId)) };
     } catch (error) {
       if (!(error instanceof RobotsDisallowedError)) throw error;
-      inAppArticleViewer.open(entry.url, entry.title);
+      await inAppArticleViewer.open(entry.url, entry.title);
       return { kind: "embedded" };
     }
   });
-  ipcMain.handle("entry:open-embedded", (_event, entryId: string) => {
+  ipcMain.handle("entry:open-embedded", async (_event, entryId: string) => {
     const entry = database.getEntry(entryId);
     if (!entry) throw new Error("这篇内容已不存在。请刷新列表后重试。");
-    inAppArticleViewer.open(entry.url, entry.title);
+    await inAppArticleViewer.open(entry.url, entry.title);
   });
   ipcMain.handle("entry:load-image", async (_event, entryId: string, imageUrl: string) => {
     const entry = database.getEntry(entryId);

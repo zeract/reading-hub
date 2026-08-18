@@ -2,6 +2,7 @@ import { BrowserWindow, session } from "electron";
 import { assertPublicUrl } from "../shared/url";
 import type { RawEntry } from "../shared/types";
 import { extractZhihuFollowPage } from "./zhihu-follow-parser";
+import { configureChromiumSession } from "./network";
 
 const FOLLOW_URL = "https://www.zhihu.com/follow";
 const PARTITION = "persist:reading-hub-zhihu-follow";
@@ -25,7 +26,7 @@ export class ZhihuFollowConnector {
       this.loginWindow.focus();
       return;
     }
-    const loginWindow = this.createWindow(true);
+    const loginWindow = await this.createWindow(true);
     this.loginWindow = loginWindow;
     const recognizeLogin = (url: string) => {
       void this.maybeCompleteLogin(loginWindow, url).catch((error: unknown) => {
@@ -46,7 +47,7 @@ export class ZhihuFollowConnector {
   }
 
   async fetchEntries(): Promise<RawEntry[]> {
-    const window = this.createWindow(false);
+    const window = await this.createWindow(false);
     try {
       await window.loadURL(FOLLOW_URL);
       if (!isFollowUrl(window.webContents.getURL())) {
@@ -66,7 +67,7 @@ export class ZhihuFollowConnector {
   async renderArticle(rawUrl: string): Promise<string> {
     const url = assertPublicUrl(rawUrl).toString();
     if (!isZhihuUrl(url)) throw new Error("只能在知乎授权会话中打开知乎内容。");
-    const window = this.createWindow(false);
+    const window = await this.createWindow(false);
     try {
       await window.loadURL(url);
       await new Promise((resolve) => setTimeout(resolve, 900));
@@ -83,7 +84,11 @@ export class ZhihuFollowConnector {
     });
   }
 
-  private createWindow(show: boolean): BrowserWindow {
+  private async createWindow(show: boolean): Promise<BrowserWindow> {
+    const isolatedSession = session.fromPartition(PARTITION);
+    // The authorised session remains separate from Chrome and the app's normal
+    // session, while retaining the user's explicit HTTP(S)_PROXY route.
+    await configureChromiumSession(isolatedSession);
     const window = new BrowserWindow({
       show,
       width: 960,
@@ -100,7 +105,6 @@ export class ZhihuFollowConnector {
         spellcheck: false
       }
     });
-    const isolatedSession = session.fromPartition(PARTITION);
     isolatedSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     isolatedSession.setPermissionCheckHandler(() => false);
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));

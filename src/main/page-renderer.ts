@@ -1,5 +1,6 @@
 import { BrowserWindow, session } from "electron";
 import { assertPublicUrl } from "../shared/url";
+import { configureChromiumSession } from "./network";
 
 const RENDER_TIMEOUT_MS = 20_000;
 
@@ -13,6 +14,11 @@ export class IsolatedPageRenderer implements PageRenderer {
     const url = assertPublicUrl(rawUrl).toString();
     const partition = `reader-preview-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const isolatedSession = session.fromPartition(partition);
+    // A partitioned session is intentionally isolated from cookies and other
+    // browsing state, but it must use the same approved proxy route as the
+    // default session. Otherwise terminal-launched development builds bypass
+    // HTTP(S)_PROXY only when they fall back to Chromium rendering.
+    await configureChromiumSession(isolatedSession);
     isolatedSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     isolatedSession.setPermissionCheckHandler(() => false);
     const window = new BrowserWindow({

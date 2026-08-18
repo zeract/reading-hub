@@ -2,6 +2,8 @@ import type { RawEntry, Source, SyncResult } from "../shared/types";
 import { ReadingDatabase } from "./database";
 import { ConnectorRegistry } from "./connector-registry";
 
+const BACKGROUND_SYNC_CONCURRENCY = 2;
+
 class HostGate {
   private readonly tails = new Map<string, Promise<void>>();
 
@@ -27,6 +29,7 @@ class HostGate {
 export class SyncManager {
   private readonly gate = new HostGate();
   private timer?: NodeJS.Timeout;
+  private dueRun?: Promise<void>;
 
   constructor(
     private readonly db: ReadingDatabase,
@@ -36,8 +39,8 @@ export class SyncManager {
 
   start(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => void this.runDue(), 60_000);
-    void this.runDue();
+    this.timer = setInterval(() => this.scheduleDueRun(), 60_000);
+    this.scheduleDueRun();
   }
 
   stop(): void {
@@ -46,7 +49,13 @@ export class SyncManager {
   }
 
   async runDue(): Promise<void> {
-    await Promise.all(this.db.listDueSources().map((source) => this.syncSource(source.id)));
+    const sources = this.db.listDueSources();
+    await forEachWithConcurrency(sources, BACKGROUND_SYNC_CONCURRENCY, async (source) => {
+      // A source-level error has already been recorded by syncSource, including
+      // its backoff deadline. It must not turn an unattended timer tick into an
+      // unhandled rejection; manual refreshes still receive the same failure.
+      await this.syncSource(source.id).catch(() => undefined);
+    });
   }
 
   async syncSource(sourceId: string): Promise<{ inserted: number; source: Source }> {
@@ -97,9 +106,33 @@ export class SyncManager {
     const normalized = entries.map((entry) => connector.normalize(entry, source));
     return this.db.saveEntries(normalized);
   }
+
+  private scheduleDueRun(): void {
+    if (this.dueRun) return;
+    this.dueRun = this.runDue()
+      .catch((error) => {
+        // Only infrastructure errors that prevent a whole scheduling pass from
+        // running arrive here. Per-source failures are persisted above.
+        console.warn("Reading Hub 后台同步未能启动：", userSafeError(error));
+      })
+      .finally(() => {
+        this.dueRun = undefined;
+      });
+  }
 }
 
 export class SyncFailure extends Error {}
+
+async function forEachWithConcurrency<T>(items: T[], limit: number, task: (item: T) => Promise<void>): Promise<void> {
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(limit, 1), items.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex++];
+      await task(item);
+    }
+  }));
+}
 
 function userSafeError(error: unknown): string {
   if (error instanceof Error) return error.message.replace(/Bearer\s+\S+/gi, "Bearer [redacted]");

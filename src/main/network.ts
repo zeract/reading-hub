@@ -3,6 +3,11 @@ import type { ProxyConfig } from "electron";
 
 type Environment = Record<string, string | undefined>;
 
+/** The small subset shared by Electron's default and isolated sessions. */
+export interface ChromiumProxySession {
+  setProxy(config: ProxyConfig): Promise<void>;
+}
+
 /**
  * Electron honours macOS proxy settings, but a development process launched
  * from a terminal also commonly relies on the standard HTTP(S)_PROXY variables.
@@ -30,11 +35,21 @@ export function proxyConfigFromEnvironment(environment: Environment = process.en
   };
 }
 
-/** Configure the default Chromium session once, after Electron is ready. */
-export async function configureChromiumNetwork(environment: Environment = process.env): Promise<void> {
+/**
+ * Apply terminal proxy settings to a Chromium session.
+ *
+ * Offscreen renderers use a fresh partition for each page, so they do not
+ * inherit the default session's proxy configuration automatically.
+ */
+export async function configureChromiumSession(target: ChromiumProxySession, environment: Environment = process.env): Promise<void> {
   const config = proxyConfigFromEnvironment(environment);
   if (!config) return;
-  await session.defaultSession.setProxy(config);
+  await target.setProxy(config);
+}
+
+/** Configure the default Chromium session once, after Electron is ready. */
+export async function configureChromiumNetwork(environment: Environment = process.env): Promise<void> {
+  await configureChromiumSession(session.defaultSession, environment);
 }
 
 function environmentValue(environment: Environment, ...names: string[]): string | undefined {

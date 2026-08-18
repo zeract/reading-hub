@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { proxyConfigFromEnvironment } from "../src/main/network";
+import { describe, expect, it, vi } from "vitest";
+import { configureChromiumSession, proxyConfigFromEnvironment } from "../src/main/network";
 
 describe("Chromium proxy configuration", () => {
   it("maps standard terminal proxy variables to Electron without copying credentials", () => {
@@ -31,5 +31,18 @@ describe("Chromium proxy configuration", () => {
     expect(proxyConfigFromEnvironment({ HTTPS_PROXY: "ftp://proxy.example" })).toBeUndefined();
     expect(proxyConfigFromEnvironment({ HTTPS_PROXY: "not a proxy", https_proxy: "http://127.0.0.1:7890" })?.proxyRules)
       .toBe("https=http://127.0.0.1:7890");
+  });
+
+  it("applies the same safe proxy route to an isolated Chromium session", async () => {
+    const setProxy = vi.fn().mockResolvedValue(undefined);
+
+    await configureChromiumSession({ setProxy }, { HTTPS_PROXY: "http://127.0.0.1:7890", NO_PROXY: "localhost" });
+
+    expect(setProxy).toHaveBeenCalledOnce();
+    expect(setProxy).toHaveBeenCalledWith({
+      mode: "fixed_servers",
+      proxyRules: "https=http://127.0.0.1:7890",
+      proxyBypassRules: "<local>,localhost"
+    });
   });
 });
