@@ -1,5 +1,5 @@
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type AiSelectionContext, type AiSelectionIntent, type CalibrationResult, type Entry, type LibraryCounts, type ProbeResult, type ReaderArticle, type Source, type SourceKind, type SubscriptionDraft } from "../shared/types";
+import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type AiSelectionContext, type AiSelectionIntent, type CalibrationResult, type Entry, type LibraryCounts, type ProbeResult, type ReaderArticle, type RssHubPlatform, type Source, type SourceKind, type SubscriptionDraft } from "../shared/types";
 import { AiMarkdownContent } from "./ai-markdown";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { entryQueryForLibrary, type LibraryView } from "./library-view";
@@ -10,7 +10,7 @@ import { normaliseSelectedArticleText, selectedTextLabel, selectionActionQuestio
 type PendingPreview = { token: string; probe: ProbeResult };
 type ReaderPreset = "reading" | "compact";
 type ReaderPreferences = { preset: ReaderPreset; fontScale: number };
-type AddSourceMethod = "public" | "zhihu" | "x" | "academic";
+type AddSourceMethod = "public" | "zhihu" | "x" | "xiaohongshu" | "academic";
 type AssistantPanelState = "closed" | "minimized" | "open";
 type AppView = "library" | "settings";
 type ReaderImagePreview = { src: string; alt: string };
@@ -256,7 +256,6 @@ export function App() {
           <button type="button" className="app-titlebar-button" onClick={() => readerOnly ? setReaderOnly(false) : setSidebarCollapsed((collapsed) => !collapsed)} aria-label={readerOnly ? "退出沉浸阅读" : sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"} title={readerOnly ? "退出沉浸阅读" : sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"}>▤</button>
           {!readerOnly && <button type="button" className="app-titlebar-button" onClick={refreshCurrentView} disabled={busy} aria-label={activeSource ? `刷新 ${activeSource.title}` : "重新载入收件箱"} title={activeSource ? "刷新当前来源" : "重新载入收件箱"}>↻</button>}
           {!readerOnly && <button type="button" className="app-titlebar-button app-titlebar-add" onClick={() => setShowAddSource(true)} aria-label="添加来源" title="添加来源">＋</button>}
-          {readingEntry && !readerOnly && <button type="button" className="app-titlebar-button" onClick={() => setReadingEntry(undefined)} aria-label="返回列表" title="返回列表">←</button>}
         </div>
       </header>
       <aside className="sidebar">
@@ -270,7 +269,7 @@ export function App() {
         <div className="source-list">
           {sourceGroups.map((group) => <section className="source-group" key={group.id}>
             <button type="button" className="source-group-heading" onClick={() => setCollapsedSourceGroups((current) => ({ ...current, [group.id]: !current[group.id] }))} aria-expanded={!collapsedSourceGroups[group.id]}>
-              <span>{collapsedSourceGroups[group.id] ? "›" : "⌄"} {group.title}</span><em>{group.sources.length}</em>
+              <span className="source-group-label"><span className="source-group-chevron" aria-hidden="true">{collapsedSourceGroups[group.id] ? "›" : "⌄"}</span><span className="folder-icon" aria-hidden="true" /><span>{group.title}</span></span><em>{group.sources.length}</em>
             </button>
             {!collapsedSourceGroups[group.id] && group.sources.map((source) => (
               <div className="source-row" key={source.id} onContextMenu={(event) => { event.preventDefault(); setEditingSource(source); }}>
@@ -280,7 +279,7 @@ export function App() {
                     setEditingSource(source);
                   }
                 }} title={`${source.title}（右键配置）`} aria-label={`查看 ${source.title}；右键打开来源设置`}>
-                  <span className="source-title">{source.title}</span>
+                  <span className={`source-icon source-icon--${sourceIconKind(source)}`} aria-hidden="true">{sourceIconLabel(source)}</span><span className="source-title">{source.title}</span>
                 </button>
               </div>
             ))}
@@ -313,6 +312,7 @@ export function App() {
         onPreview={preview}
         onZhihuStarted={async () => { setShowAddSource(false); setNotice("已打开知乎登录窗口；登录完成后会自动同步关注动态。"); await reload(); }}
         onXStarted={async () => { setShowAddSource(false); setNotice("X 已授权，正在同步关注账号的原创帖子。"); await reload(); }}
+        onRssHubSaved={async (platform) => { setShowAddSource(false); setNotice(`${platform === "x" ? "X / Twitter" : "小红书"} RSSHub 来源已添加，正在读取公开 Feed。`); await reload(); }}
         onAcademicSaved={async () => { setShowAddSource(false); setNotice("学术作者来源已添加，正在同步公开论文记录。"); await reload(); }}
       />}
       {activeRuleSource && <CalibrationDialog source={activeRuleSource} onClose={() => setActiveRuleSource(undefined)} onSaved={async () => { setActiveRuleSource(undefined); await reload(); }} />}
@@ -984,11 +984,12 @@ function PreviewDialog({ pending, onCancel, onConfirm, busy }: { pending: Pendin
   </Dialog>;
 }
 
-function AddSourceDialog({ onClose, onPreview, onZhihuStarted, onXStarted, onAcademicSaved }: {
+function AddSourceDialog({ onClose, onPreview, onZhihuStarted, onXStarted, onRssHubSaved, onAcademicSaved }: {
   onClose: () => void;
   onPreview: (url: string) => Promise<void>;
   onZhihuStarted: () => Promise<void>;
   onXStarted: () => Promise<void>;
+  onRssHubSaved: (platform: RssHubPlatform) => Promise<void>;
   onAcademicSaved: () => Promise<void>;
 }) {
   const [method, setMethod] = useState<AddSourceMethod>("public");
@@ -996,6 +997,7 @@ function AddSourceDialog({ onClose, onPreview, onZhihuStarted, onXStarted, onAca
     { id: "public", label: "网页 / Feed", description: "RSS、公开文章列表页或分享链接" },
     { id: "zhihu", label: "知乎动态", description: "授权账号的关注页公开动态" },
     { id: "x", label: "X 动态", description: "官方 API 的关注账号原创帖" },
+    { id: "xiaohongshu", label: "小红书", description: "RSSHub 的公开博主笔记 Feed" },
     { id: "academic", label: "学术作者", description: "公开学术索引中的新论文" }
   ];
   const selected = methods.find((item) => item.id === method)!;
@@ -1006,7 +1008,8 @@ function AddSourceDialog({ onClose, onPreview, onZhihuStarted, onXStarted, onAca
     <p className="source-method-description">{selected.description}</p>
     {method === "public" && <PublicSourcePane onPreview={onPreview} />}
     {method === "zhihu" && <ZhihuSourcePane onStarted={onZhihuStarted} />}
-    {method === "x" && <XSourcePane onStarted={onXStarted} />}
+    {method === "x" && <XSourcePane onStarted={onXStarted} onRssHubSaved={onRssHubSaved} />}
+    {method === "xiaohongshu" && <RssHubSourcePane platform="xiaohongshu" onSaved={onRssHubSaved} />}
     {method === "academic" && <AcademicSourcePane onSaved={onAcademicSaved} />}
   </Dialog>;
 }
@@ -1046,7 +1049,8 @@ function ZhihuSourcePane({ onStarted }: { onStarted: () => Promise<void> }) {
   </section>;
 }
 
-function XSourcePane({ onStarted }: { onStarted: () => Promise<void> }) {
+function XSourcePane({ onStarted, onRssHubSaved }: { onStarted: () => Promise<void>; onRssHubSaved: (platform: RssHubPlatform) => Promise<void> }) {
+  const [mode, setMode] = useState<"official" | "rsshub">("official");
   const [clientId, setClientId] = useState("");
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -1056,9 +1060,48 @@ function XSourcePane({ onStarted }: { onStarted: () => Promise<void> }) {
     try { await window.reader.connectX(clientId); await onStarted(); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   }
   return <section className="source-method-pane">
+    <div className="connector-mode-tabs" role="tablist" aria-label="X 连接方式"><button type="button" role="tab" aria-selected={mode === "official"} className={mode === "official" ? "selected" : ""} onClick={() => setMode("official")}>官方授权</button><button type="button" role="tab" aria-selected={mode === "rsshub"} className={mode === "rsshub" ? "selected" : ""} onClick={() => setMode("rsshub")}>RSSHub 路由</button></div>
+    {mode === "official" ? <>
     <p className="dialog-intro">此功能使用官方 X API，不读取浏览器 Cookie。请在 X Developer Console 为你的应用配置回调地址 <code>http://127.0.0.1:43119/x/callback</code>，并填写该应用的 Client ID。</p>
     <p className="dialog-intro">授权后默认每 30–60 分钟收集关注账号的原创帖和文章型外链，过滤回复与转推。访问令牌仅保存在本机 Keychain。</p>
     <form className="connector-form" onSubmit={(event) => void submit(event)}><label htmlFor="x-client-id">X Client ID</label><input id="x-client-id" value={clientId} onChange={(event) => setClientId(event.target.value)} placeholder="Developer App Client ID" autoComplete="off" required />{error && <p className="error">{error}</p>}<div className="dialog-actions"><button className="primary" disabled={busy}>{busy ? "等待授权…" : "在浏览器中授权 X"}</button></div></form>
+    </> : <RssHubSourcePane platform="x" onSaved={onRssHubSaved} />}
+  </section>;
+}
+
+function RssHubSourcePane({ platform, onSaved }: { platform: RssHubPlatform; onSaved: (platform: RssHubPlatform) => Promise<void> }) {
+  const [url, setUrl] = useState("");
+  const [title, setTitle] = useState("");
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const isX = platform === "x";
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!url.trim()) return;
+    setBusy(true); setError(undefined);
+    try {
+      await window.reader.subscribeRssHub({ url: url.trim(), platform, title: title.trim() || undefined });
+      await onSaved(platform);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const routeExample = isX
+    ? "https://你的-rsshub.example/twitter/followings/你的用户名"
+    : "https://你的-rsshub.example/xiaohongshu/user/博主ID/notes";
+  return <section className="source-method-pane rsshub-pane">
+    <p className="dialog-intro">粘贴由你信任的 RSSHub 实例返回的公开 Feed 路由。Reading Hub 只读取 Feed，不会保存 RSSHub、{isX ? "X" : "小红书"}的密码、Cookie 或反爬配置。</p>
+    <p className="dialog-intro">{isX ? "你的 RSSHub 实例若已配置关注流路由，可在此订阅整条关注动态；也可订阅单个用户路由。" : "小红书通常每位博主对应一个笔记路由；如你的实例已输出合规的聚合关注流，也可以直接粘贴该 Feed。"}</p>
+    <form className="connector-form" onSubmit={(event) => void submit(event)}>
+      <label htmlFor={`rsshub-${platform}-url`}>RSSHub 路由</label>
+      <input id={`rsshub-${platform}-url`} value={url} onChange={(event) => setUrl(event.target.value)} placeholder={routeExample} type="url" required />
+      <label htmlFor={`rsshub-${platform}-title`}>显示名称（可选）</label>
+      <input id={`rsshub-${platform}-title`} value={title} onChange={(event) => setTitle(event.target.value)} placeholder={isX ? "X 关注动态" : "小红书 · 某位博主"} maxLength={120} />
+      {error && <p className="error">{error}</p>}
+      <div className="dialog-actions"><button className="primary" disabled={busy}>{busy ? "正在验证 Feed…" : "添加 RSSHub 来源"}</button></div>
+    </form>
   </section>;
 }
 
@@ -1143,7 +1186,7 @@ function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCalibrate
   const [refresh, setRefresh] = useState<"default" | "30" | "60" | "120" | "240" | "720" | "1440">(source.refreshIntervalMinutes ? String(source.refreshIntervalMinutes) as "30" | "60" | "120" | "240" | "720" | "1440" : "default");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const typeLocked = !PUBLIC_SOURCE_KINDS.includes(source.kind);
+  const typeLocked = !PUBLIC_SOURCE_KINDS.includes(source.kind) || source.config?.sourceProvider === "rsshub";
   const manual = kind === "manual";
 
   async function save(event: FormEvent) {
@@ -1185,12 +1228,12 @@ function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCalibrate
       <label>信源类型<select value={kind} onChange={(event) => setKind(event.target.value as SourceKind)} disabled={typeLocked || busy}>
         {typeLocked ? <option value={source.kind}>{sourceKindLabel(source.kind)}</option> : PUBLIC_SOURCE_KINDS.map((item) => <option key={item} value={item}>{sourceKindLabel(item)}</option>)}
       </select></label>
-      {typeLocked && <p className="source-settings-note">授权平台的类型及账号绑定由内置连接器管理；这里仍可调整名称和刷新频率。</p>}
+      {typeLocked && <p className="source-settings-note">{source.config?.sourceProvider === "rsshub" ? "RSSHub 路由固定使用 Feed 连接器；这里仍可调整名称和刷新频率。" : "授权平台的类型及账号绑定由内置连接器管理；这里仍可调整名称和刷新频率。"}</p>}
       <label className="source-settings-toggle"><input type="checkbox" checked={!manual && pollingEnabled} onChange={(event) => setPollingEnabled(event.target.checked)} disabled={manual || busy} />自动刷新</label>
       <label>刷新时间<select value={refresh} onChange={(event) => setRefresh(event.target.value as typeof refresh)} disabled={manual || !pollingEnabled || busy}>{REFRESH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
       {manual && <p className="source-settings-note">分享链接是一次性阅读卡片，不会自动轮询。</p>}
       <label>来源地址<input value={source.url} readOnly aria-readonly="true" /></label>
-      <dl className="source-settings-details"><div><dt>当前状态</dt><dd><StatusBadge status={source.status} /></dd></div><div><dt>实际连接器</dt><dd>{sourceKindLabel(source.connectorId || source.kind)}</dd></div></dl>
+      <dl className="source-settings-details"><div><dt>当前状态</dt><dd><StatusBadge status={source.status} /></dd></div><div><dt>实际连接器</dt><dd>{sourceConnectorLabel(source)}</dd></div></dl>
       <div className="source-settings-operations"><button type="button" onClick={() => void runOperation(onRefresh)} disabled={busy}>立即刷新</button>{source.kind === "generic" && <button type="button" onClick={() => void runOperation(onCalibrate)} disabled={busy}>自动校准</button>}{source.kind === "zhihu_follow" && <button type="button" onClick={() => void runOperation(onReconnectZhihu)} disabled={busy}>重新登录知乎</button>}<button type="button" className="danger" onClick={() => void runOperation(onDelete)} disabled={busy}>删除来源</button></div>
       {error && <p className="error">{error}</p>}
       <div className="dialog-actions"><button type="button" onClick={onClose} disabled={busy}>取消</button><button className="primary" disabled={busy}>{busy ? "正在保存…" : "保存配置"}</button></div>
@@ -1209,6 +1252,41 @@ function StatusBadge({ status }: { status: Source["status"] }) {
 
 function sourceKindLabel(kind: SourceKind): string {
   return { rss: "RSS / Atom / JSON Feed", generic: "公开网页", manual: "分享链接", zhihu: "知乎官方数据", zhihu_follow: "知乎关注动态", x: "X 关注动态", academic: "学术作者更新" }[kind];
+}
+
+function sourceConnectorLabel(source: Source): string {
+  if (source.config?.sourceProvider === "rsshub") {
+    return source.config.rsshubPlatform === "xiaohongshu" ? "RSSHub · 小红书" : "RSSHub · X / Twitter";
+  }
+  return sourceKindLabel(source.connectorId || source.kind);
+}
+
+function sourceIconKind(source: Source): string {
+  if (source.config?.sourceProvider === "rsshub") {
+    return source.config.rsshubPlatform === "xiaohongshu" ? "xiaohongshu" : "rsshub-x";
+  }
+  return {
+    rss: "rss",
+    generic: "web",
+    manual: "link",
+    zhihu: "zhihu",
+    zhihu_follow: "zhihu-follow",
+    x: "x",
+    academic: "academic"
+  }[source.kind];
+}
+
+function sourceIconLabel(source: Source): string {
+  if (source.config?.sourceProvider === "rsshub") return source.config.rsshubPlatform === "xiaohongshu" ? "小" : "X";
+  return {
+    rss: "RSS",
+    generic: "⌁",
+    manual: "↗",
+    zhihu: "知",
+    zhihu_follow: "知",
+    x: "X",
+    academic: "学"
+  }[source.kind];
 }
 
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : "操作失败，请稍后重试。"; }

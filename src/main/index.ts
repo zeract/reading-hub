@@ -22,7 +22,7 @@ import { InAppArticleViewer } from "./in-app-article-viewer";
 import { auditLocalReader } from "./reader-audit";
 import { assertPublicUrl } from "../shared/url";
 import { RobotsDisallowedError } from "./robots";
-import type { AiProviderConfiguration, AiStreamEvent, AiStreamRequest, EntryListQuery, ExtractionRule, Source, SourceSettings, SyncResult } from "../shared/types";
+import type { AiProviderConfiguration, AiStreamEvent, AiStreamRequest, EntryListQuery, ExtractionRule, RssHubSubscriptionInput, Source, SourceSettings, SyncResult } from "../shared/types";
 
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
@@ -87,6 +87,14 @@ function isAiStreamRequest(value: unknown): value is AiStreamRequest {
     && (selection === undefined || Boolean(selection && typeof selection === "object"
       && typeof (selection as { text?: unknown }).text === "string"
       && ["translate", "explain", "ask"].includes((selection as { intent?: unknown }).intent as string)));
+}
+
+function isRssHubSubscriptionInput(value: unknown): value is RssHubSubscriptionInput {
+  if (!value || typeof value !== "object") return false;
+  const input = value as Partial<RssHubSubscriptionInput>;
+  return typeof input.url === "string"
+    && (input.platform === "x" || input.platform === "xiaohongshu")
+    && (input.title === undefined || typeof input.title === "string");
 }
 
 function quitApplication(): void {
@@ -241,6 +249,10 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle("source:update-settings", (_event, id: string, settings: SourceSettings) => sources.updateSettings(id, settings));
   ipcMain.handle("source:update-rule", (_event, id: string, rule: ExtractionRule) => database.updateRule(id, rule));
   ipcMain.handle("source:calibration", (_event, id: string) => sources.calibrate(id));
+  ipcMain.handle("rsshub:subscribe", (_event, input: unknown) => {
+    if (!isRssHubSubscriptionInput(input)) throw new Error("RSSHub 来源参数无效，请重新填写。");
+    return sources.createRssHubSource(input);
+  });
   ipcMain.handle("entry:list", (_event, query?: EntryListQuery) => database.listEntries(query));
   ipcMain.handle("entry:counts", () => database.getLibraryCounts());
   ipcMain.handle("entry:read-content", async (_event, entryId: string) => {

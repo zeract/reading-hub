@@ -7,6 +7,8 @@ export type SourceKind = "rss" | "generic" | "manual" | "zhihu" | "zhihu_follow"
 export type SourceStatus = "active" | "needs_review" | "paused" | "error";
 export type ConnectorId = SourceKind;
 export type AccountStatus = "active" | "expired" | "revoked" | "error";
+/** A public RSSHub route supplied by the reader; it never carries credentials. */
+export type RssHubPlatform = "x" | "xiaohongshu";
 
 export interface ExtractionRule {
   version: 1;
@@ -351,6 +353,17 @@ export interface SourceInput {
   pollingEnabled: boolean;
   refreshIntervalMinutes?: number;
   status?: SourceStatus;
+}
+
+/**
+ * RSSHub remains an external Feed producer. Reading Hub only accepts a public
+ * route URL and treats its output exactly like any other RSS/Atom/JSON Feed.
+ */
+export interface RssHubSubscriptionInput {
+  url: string;
+  platform: RssHubPlatform;
+  /** Local-only display name. */
+  title?: string;
 }
 
 /** User-editable metadata for an existing source. Secrets and connector accounts stay out of this surface. */

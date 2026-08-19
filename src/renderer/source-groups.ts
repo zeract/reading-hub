@@ -10,6 +10,7 @@ const DEFAULT_GROUPS: Array<{ id: string; title: string }> = [
 
 function defaultGroup(source: Source): { id: string; title: string } {
   if (source.kind === "academic") return DEFAULT_GROUPS[2];
+  if (source.config?.sourceProvider === "rsshub") return DEFAULT_GROUPS[1];
   if (source.kind === "zhihu" || source.kind === "zhihu_follow" || source.kind === "x") return DEFAULT_GROUPS[1];
   return DEFAULT_GROUPS[0];
 }

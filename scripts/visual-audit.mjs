@@ -1,10 +1,15 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { app, BrowserWindow } from "electron";
 
 console.log("Reading Hub visual audit: starting Electron layout checks");
 
 const root = path.resolve(import.meta.dirname, "..");
+// A running development app owns its normal Chromium profile. Visual checks are
+// deterministic fixtures, so they neither need nor should contend for that
+// profile's SingletonLock.
+app.setPath("userData", path.join(tmpdir(), `reading-hub-visual-audit-${process.pid}`));
 const css = await readFile(path.join(root, "src/renderer/styles.css"), "utf8");
 const outputDirectory = process.env.READING_HUB_VISUAL_OUTPUT;
 const viewports = [
@@ -17,7 +22,7 @@ const viewports = [
 function page() {
   const largeImage = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='900'><rect width='100%' height='100%' fill='#d6cec0'/><text x='70' y='160' fill='#1b1b17' font-size='96'>Reading Hub visual fixture</text></svg>");
   return `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>
-    <main class="shell" id="shell"><header class="app-titlebar" id="app-titlebar"><div class="app-titlebar-actions"><button class="app-titlebar-button" aria-label="收起来源">▤</button><button class="app-titlebar-button" aria-label="刷新">↻</button><button class="app-titlebar-button app-titlebar-add" aria-label="添加来源">＋</button></div></header><aside class="sidebar" id="source-sidebar"><nav class="library-nav"><div class="section-title">阅读</div><button class="library-filter selected"><span>✳ 今日</span></button><button class="library-filter"><span>○ 未读</span><em>12</em></button><button class="library-filter"><span>☆ 收藏</span><em>6</em></button></nav><div class="section-title">来源 <span>12</span></div><div class="source-list"><section class="source-group"><button class="source-group-heading"><span>⌄ 网页与订阅</span><em>2</em></button><button class="source-filter selected"><span class="source-title">测试来源名称应仅显示一行</span></button></section></div><footer class="sidebar-footer"><button class="sidebar-settings-button">⚙ <span>设置</span></button></footer></aside><section class="timeline" id="entry-timeline"><header><div><p class="eyebrow">阅读收件箱</p><h1>今日更新</h1></div><span class="count">12 篇更新</span></header><div class="entry-list"><article class="entry-card selected"><button class="entry-main"><div class="entry-copy"><p class="entry-source">科学空间 · 今天</p><h2>长标题文章示例</h2><p class="summary">以克制的密度展示来源、摘要与阅读状态。</p></div></button></article><article class="entry-card"><button class="entry-main"><div class="entry-copy"><p class="entry-source">测试来源 · 昨天</p><h2>另一篇待读文章</h2></div></button></article></div></section>
+    <main class="shell" id="shell"><header class="app-titlebar" id="app-titlebar"><div class="app-titlebar-actions"><button class="app-titlebar-button" aria-label="收起来源">▤</button><button class="app-titlebar-button" aria-label="刷新">↻</button><button class="app-titlebar-button app-titlebar-add" aria-label="添加来源">＋</button></div></header><aside class="sidebar" id="source-sidebar"><nav class="library-nav"><div class="section-title" id="library-heading">阅读</div><button class="library-filter selected"><span>✳ 今日</span></button><button class="library-filter"><span>○ 未读</span><em>12</em></button><button class="library-filter"><span>☆ 收藏</span><em>6</em></button></nav><div class="section-title">来源 <span>12</span></div><div class="source-list"><section class="source-group"><button class="source-group-heading"><span class="source-group-label"><span class="source-group-chevron">⌄</span><span class="folder-icon"></span><span>网页与订阅</span></span><em>2</em></button><button class="source-filter selected"><span class="source-icon source-icon--rss">RSS</span><span class="source-title">测试来源名称应仅显示一行</span></button></section></div><footer class="sidebar-footer"><button class="sidebar-settings-button">⚙ <span>设置</span></button></footer></aside><section class="timeline" id="entry-timeline"><header><div><p class="eyebrow">阅读收件箱</p><h1>今日更新</h1></div><span class="count">12 篇更新</span></header><div class="entry-list"><article class="entry-card selected"><button class="entry-main"><div class="entry-copy"><p class="entry-source">科学空间 · 今天</p><h2>长标题文章示例</h2><p class="summary">以克制的密度展示来源、摘要与阅读状态。</p></div></button></article><article class="entry-card"><button class="entry-main"><div class="entry-copy"><p class="entry-source">测试来源 · 昨天</p><h2>另一篇待读文章</h2></div></button></article></div></section>
     <section class="reader-view reader--scientific" data-reader-preset="reading" style="--reader-font-scale: 1">
       <header class="reader-toolbar"><div class="reader-toolbar-spacer"></div><div class="reader-toolbar-center"><p>科学空间</p><div class="reader-controls"><button>阅读</button></div></div><div class="reader-toolbar-actions"><button class="toolbar-icon-button favorite-button is-favorite">★</button><button class="toolbar-icon-button ai-toggle">✦</button><button class="toolbar-icon-button reader-focus-toggle" aria-pressed="false">⛶</button><button class="toolbar-icon-button external-button">↗</button></div></header>
       <div class="reader-workspace reader-workspace--assistant"><div class="reader-scroll"><article class="reader-article"><header><p class="eyebrow">视觉回归夹具</p><h1>中文长标题与数学公式布局</h1></header><div class="article-body">
@@ -44,7 +49,7 @@ async function auditViewport(window, viewport) {
   window.setSize(viewport.width, viewport.height);
   window.webContents.setZoomFactor(viewport.zoom);
   await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(page())}`);
-  const geometry = await window.webContents.executeJavaScript(`(${() => {
+  const geometry = await window.webContents.executeJavaScript(`(() => { try { return (${() => {
     const rect = (selector) => {
       const element = document.querySelector(selector);
       const value = element?.getBoundingClientRect();
@@ -172,8 +177,25 @@ async function auditViewport(window, viewport) {
       })(),
       sourceList: (() => {
         const row = document.querySelector('.source-filter')?.getBoundingClientRect();
-        const title = document.querySelector('.source-title')?.getBoundingClientRect();
-        return row && title ? { rowHeight: row.height, titleHeight: title.height } : undefined;
+        const sourceTitle = document.querySelector('.source-title');
+        const title = sourceTitle?.getBoundingClientRect();
+        const icon = document.querySelector('.source-icon')?.getBoundingClientRect();
+        const folder = document.querySelector('.folder-icon')?.getBoundingClientRect();
+        const sourceHeading = document.querySelector('.source-group-heading');
+        const libraryHeading = document.querySelector('#library-heading')?.getBoundingClientRect();
+        const libraryFilterElement = document.querySelector('.library-filter.selected');
+        const libraryFilter = libraryFilterElement?.getBoundingClientRect();
+        return row && title && icon && folder && sourceTitle && sourceHeading && libraryHeading && libraryFilterElement && libraryFilter ? {
+          rowHeight: row.height,
+          titleHeight: title.height,
+          icon: { width: icon.width, height: icon.height },
+          folder: { width: folder.width, height: folder.height },
+          sourceFontSize: Number.parseFloat(getComputedStyle(sourceTitle).fontSize),
+          groupFontSize: Number.parseFloat(getComputedStyle(sourceHeading).fontSize),
+          libraryFontSize: Number.parseFloat(getComputedStyle(libraryFilterElement).fontSize),
+          libraryHeadingBottom: libraryHeading.bottom,
+          libraryFilterTop: libraryFilter.top
+        } : undefined;
       })(),
       theme: (() => {
         const root = getComputedStyle(document.documentElement);
@@ -191,7 +213,8 @@ async function auditViewport(window, viewport) {
         };
       })()
     };
-  }})()`);
+  }})() } catch (error) { return { visualAuditError: String(error), visualAuditStack: error instanceof Error ? error.stack : undefined }; } })()`);
+  if (geometry.visualAuditError) throw new Error(`视觉夹具脚本异常：${geometry.visualAuditError}\n${geometry.visualAuditStack || ""}`);
   const failures = [];
   for (const name of ["normal", "wide"]) {
     const formula = geometry[name];
@@ -234,7 +257,7 @@ async function auditViewport(window, viewport) {
   if (!geometry.titlebar || !geometry.fullscreenTitlebar || geometry.titlebar.controls[0]?.left < 90 || Math.abs((geometry.fullscreenTitlebar.controls[0]?.left || 0) - 16) > 1) {
     failures.push("全屏时顶部按钮没有随 macOS 交通灯隐藏而左移");
   }
-  if (!geometry.sourceList || geometry.sourceList.rowHeight > 36 || geometry.sourceList.titleHeight > 21) failures.push("来源列表未保持单行紧凑展示");
+  if (!geometry.sourceList || geometry.sourceList.rowHeight > 36 || geometry.sourceList.titleHeight > 21 || geometry.sourceList.icon.width < 16 || geometry.sourceList.folder.width < 12 || geometry.sourceList.sourceFontSize > geometry.sourceList.groupFontSize + .01 || geometry.sourceList.libraryFontSize > geometry.sourceList.groupFontSize + .01 || geometry.sourceList.libraryHeadingBottom > geometry.sourceList.libraryFilterTop + 1) failures.push("来源列表的图标、字号层级或阅读分类间距异常");
   if (!geometry.theme || geometry.theme.accent !== "#6a7d63" || geometry.theme.selectionAccent !== "#6a7d63" || !geometry.theme.underline?.includes("106, 125, 99") || !geometry.theme.cardShadow?.includes("rgba(40, 40, 36, 0.1)") || geometry.theme.selectedEntry !== "rgb(237, 237, 232)" || geometry.theme.selectedSource !== "rgb(237, 237, 232)") {
     failures.push("低对比纸张主题的选中状态、划词状态或浮层层级未保持一致");
   }

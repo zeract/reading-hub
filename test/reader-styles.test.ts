@@ -64,8 +64,18 @@ describe("reader display-equation layout", () => {
   it("supports a reader-only view while keeping source rows intentionally compact", () => {
     expect(styles).toContain(".shell--reader-only { grid-template-columns: 0 0 minmax(0,1fr); }");
     expect(styles).toContain(".shell--reader-only > .sidebar, .shell--reader-only > .timeline { display: none; }");
-    expect(styles).toMatch(/\.source-filter\s*\{[^}]*min-height:\s*34px;[^}]*border-radius:\s*8px/s);
+    expect(styles).toMatch(/\.source-filter\s*\{[^}]*display:\s*flex;[^}]*min-height:\s*33px;[^}]*border-radius:\s*7px/s);
     expect(styles).toMatch(/\.source-title\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/s);
+    expect(styles).toMatch(/\.source-icon\s*\{[^}]*flex:\s*0\s+0\s+17px/s);
+    expect(styles).toMatch(/\.folder-icon::before\s*\{[^}]*content:\s*""/s);
     expect(styles).toContain(".settings-shell { --titlebar-leading-inset: 96px;");
+  });
+
+  it("keeps library filters and source names below their local category hierarchy", () => {
+    expect(styles).toMatch(/\.section-title\s*\{[^}]*margin:\s*2px\s+7px\s+0;[^}]*font-size:\s*11px/s);
+    expect(styles).toMatch(/\.source-group-heading\s*\{[^}]*font-size:\s*11px/s);
+    expect(styles).toMatch(/\.library-filter\s*\{[^}]*font-size:\s*11px/s);
+    expect(styles).toMatch(/\.source-title\s*\{[^}]*font-size:\s*11px/s);
+    expect(styles).not.toContain("margin: 2px 7px -8px");
   });
 });

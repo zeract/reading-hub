@@ -1,4 +1,4 @@
-import type { AiProviderConfiguration, AiProviderId, AiProviderSettings, AiStreamEvent, AiStreamRequest, ArticleReadResult, CalibrationResult, Entry, EntryListQuery, ExtractionRule, LibraryCounts, ProbeResult, Source, SourceSettings, SubscriptionDraft } from "../shared/types";
+import type { AiProviderConfiguration, AiProviderId, AiProviderSettings, AiStreamEvent, AiStreamRequest, ArticleReadResult, CalibrationResult, Entry, EntryListQuery, ExtractionRule, LibraryCounts, ProbeResult, RssHubSubscriptionInput, Source, SourceSettings, SubscriptionDraft } from "../shared/types";
 
 declare global {
   interface Window {
@@ -11,6 +11,7 @@ declare global {
       updateSourceSettings(id: string, settings: SourceSettings): Promise<Source>;
       updateRule(id: string, rule: ExtractionRule): Promise<void>;
       calibrateSource(id: string): Promise<CalibrationResult>;
+      subscribeRssHub(input: RssHubSubscriptionInput): Promise<Source>;
       listEntries(query?: EntryListQuery): Promise<Entry[]>;
       getLibraryCounts(): Promise<LibraryCounts>;
       readEntry(id: string): Promise<ArticleReadResult>;
