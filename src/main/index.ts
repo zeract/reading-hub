@@ -264,7 +264,6 @@ async function bootstrap(): Promise<void> {
     if (!entry) throw new Error("这篇内容已不存在。请刷新列表后重试。");
     return http.getImageDataUrl(imageUrl, entry.url);
   });
-  ipcMain.handle("zhihu:followees", () => database.listFollowees());
   ipcMain.handle("entry:read", (_event, id: string, read: boolean) => database.markRead(id, read));
   ipcMain.handle("entry:favorite", (_event, id: string, favorite: boolean) => database.markFavorite(id, favorite));
   ipcMain.handle("entry:dismiss", (_event, id: string) => database.dismissEntry(id));

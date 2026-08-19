@@ -17,9 +17,9 @@ const viewports = [
 function page() {
   const largeImage = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='900'><rect width='100%' height='100%' fill='#d6cec0'/><text x='70' y='160' fill='#1b1b17' font-size='96'>Reading Hub visual fixture</text></svg>");
   return `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>
-    <main class="shell" id="shell"><header class="app-titlebar" id="app-titlebar"><div class="app-titlebar-actions"><button class="app-titlebar-button">☰</button><button class="app-titlebar-button">←</button></div></header><aside class="sidebar" id="source-sidebar"><button class="add-source-button">＋ 添加来源<span>网页、平台动态或学术作者</span></button><nav class="library-nav"><div class="section-title">阅读</div><button class="library-filter selected"><span>✳ 今日</span></button><button class="library-filter"><span>○ 未读</span><em>12</em></button><button class="library-filter"><span>☆ 收藏</span><em>6</em></button></nav><div class="section-title">来源 <span>12</span></div><div class="source-list"><section class="source-group"><button class="source-group-heading"><span>⌄ 网页与订阅</span><em>2</em></button><button class="source-filter"><span class="source-title">测试来源</span><span class="source-meta"><span class="source-meta-line"><span class="status active">正常</span><span>约 1 小时</span></span></span></button></section></div></aside><section class="timeline" id="entry-timeline"><header><div><p class="eyebrow">阅读收件箱</p><h1>今日更新</h1></div><span class="count">12 篇更新</span></header><div class="entry-list"><article class="entry-card selected"><button class="entry-main"><div class="entry-copy"><p class="entry-source">科学空间 · 今天</p><h2>长标题文章示例</h2><p class="summary">以克制的密度展示来源、摘要与阅读状态。</p></div></button></article><article class="entry-card"><button class="entry-main"><div class="entry-copy"><p class="entry-source">测试来源 · 昨天</p><h2>另一篇待读文章</h2></div></button></article></div></section>
+    <main class="shell" id="shell"><header class="app-titlebar" id="app-titlebar"><div class="app-titlebar-actions"><button class="app-titlebar-button" aria-label="收起来源">▤</button><button class="app-titlebar-button" aria-label="刷新">↻</button><button class="app-titlebar-button app-titlebar-add" aria-label="添加来源">＋</button></div></header><aside class="sidebar" id="source-sidebar"><nav class="library-nav"><div class="section-title">阅读</div><button class="library-filter selected"><span>✳ 今日</span></button><button class="library-filter"><span>○ 未读</span><em>12</em></button><button class="library-filter"><span>☆ 收藏</span><em>6</em></button></nav><div class="section-title">来源 <span>12</span></div><div class="source-list"><section class="source-group"><button class="source-group-heading"><span>⌄ 网页与订阅</span><em>2</em></button><button class="source-filter selected"><span class="source-title">测试来源名称应仅显示一行</span></button></section></div><footer class="sidebar-footer"><button class="sidebar-settings-button">⚙ <span>设置</span></button></footer></aside><section class="timeline" id="entry-timeline"><header><div><p class="eyebrow">阅读收件箱</p><h1>今日更新</h1></div><span class="count">12 篇更新</span></header><div class="entry-list"><article class="entry-card selected"><button class="entry-main"><div class="entry-copy"><p class="entry-source">科学空间 · 今天</p><h2>长标题文章示例</h2><p class="summary">以克制的密度展示来源、摘要与阅读状态。</p></div></button></article><article class="entry-card"><button class="entry-main"><div class="entry-copy"><p class="entry-source">测试来源 · 昨天</p><h2>另一篇待读文章</h2></div></button></article></div></section>
     <section class="reader-view reader--scientific" data-reader-preset="reading" style="--reader-font-scale: 1">
-      <header class="reader-toolbar"><div class="reader-toolbar-spacer"></div><div class="reader-toolbar-center"><p>科学空间</p><div class="reader-controls"><button>阅读</button></div></div><div class="reader-toolbar-actions"><button class="toolbar-icon-button favorite-button is-favorite">★</button><button class="toolbar-icon-button ai-toggle">✦</button><button class="toolbar-icon-button external-button">↗</button></div></header>
+      <header class="reader-toolbar"><div class="reader-toolbar-spacer"></div><div class="reader-toolbar-center"><p>科学空间</p><div class="reader-controls"><button>阅读</button></div></div><div class="reader-toolbar-actions"><button class="toolbar-icon-button favorite-button is-favorite">★</button><button class="toolbar-icon-button ai-toggle">✦</button><button class="toolbar-icon-button reader-focus-toggle" aria-pressed="false">⛶</button><button class="toolbar-icon-button external-button">↗</button></div></header>
       <div class="reader-workspace reader-workspace--assistant"><div class="reader-scroll"><article class="reader-article"><header><p class="eyebrow">视觉回归夹具</p><h1>中文长标题与数学公式布局</h1></header><div class="article-body">
         <p>这段内容用于检查文字、图片、表格和公式编号在不同窗口与字号下不会错误重叠或撑破阅读列。</p>
         <span class="katex-display" id="formula-normal"><span class="katex"><span class="katex-html"><span class="tag">(13)</span><span class="base">∇<sub>z</sub>S(q, i)</span><span class="base"> = q</span><span class="base"> − e<sub>i</sub></span></span></span></span>
@@ -133,18 +133,29 @@ async function auditViewport(window, viewport) {
       sidebars: (() => {
         const shell = document.querySelector('#shell');
         const sidebar = document.querySelector('#source-sidebar');
+        const timeline = document.querySelector('#entry-timeline');
         const reader = document.querySelector('.reader-view');
         const initialSidebar = sidebar?.getBoundingClientRect();
+        const initialTimeline = timeline?.getBoundingClientRect();
         const initialReader = reader?.getBoundingClientRect();
         shell?.classList.add('shell--sidebar-collapsed');
         const collapsedSidebar = sidebar?.getBoundingClientRect();
         const collapsedReader = reader?.getBoundingClientRect();
         shell?.classList.remove('shell--sidebar-collapsed');
-        return initialSidebar && initialReader && collapsedSidebar && collapsedReader ? {
+        shell?.classList.add('shell--reader-only');
+        const readerOnlySidebar = sidebar?.getBoundingClientRect();
+        const readerOnlyTimeline = timeline?.getBoundingClientRect();
+        const readerOnlyReader = reader?.getBoundingClientRect();
+        shell?.classList.remove('shell--reader-only');
+        return initialSidebar && initialTimeline && initialReader && collapsedSidebar && collapsedReader && readerOnlySidebar && readerOnlyTimeline && readerOnlyReader ? {
           initialSidebarWidth: initialSidebar.width,
+          initialTimelineWidth: initialTimeline.width,
           initialReaderWidth: initialReader.width,
           collapsedSidebarWidth: collapsedSidebar.width,
-          collapsedReaderWidth: collapsedReader.width
+          collapsedReaderWidth: collapsedReader.width,
+          readerOnlySidebarWidth: readerOnlySidebar.width,
+          readerOnlyTimelineWidth: readerOnlyTimeline.width,
+          readerOnlyReaderWidth: readerOnlyReader.width
         } : undefined;
       })(),
       titlebar: (() => {
@@ -159,24 +170,24 @@ async function auditViewport(window, viewport) {
         shell?.classList.remove('shell--fullscreen');
         return { controls: controls.map((control) => ({ left: control.left, right: control.right, top: control.top, bottom: control.bottom })) };
       })(),
-      sourceMeta: (() => {
-        const badge = document.querySelector('.source-meta-line .status')?.getBoundingClientRect();
-        const text = document.querySelector('.source-meta-line span:last-child')?.getBoundingClientRect();
-        return badge && text ? { gap: text.left - badge.right } : undefined;
+      sourceList: (() => {
+        const row = document.querySelector('.source-filter')?.getBoundingClientRect();
+        const title = document.querySelector('.source-title')?.getBoundingClientRect();
+        return row && title ? { rowHeight: row.height, titleHeight: title.height } : undefined;
       })(),
       theme: (() => {
         const root = getComputedStyle(document.documentElement);
         const underline = document.querySelector('#selection-underline');
         const card = document.querySelector('#selection-card');
         const selectedEntry = document.querySelector('.entry-card.selected');
-        const addSource = document.querySelector('.add-source-button');
+        const selectedSource = document.querySelector('.source-filter.selected');
         return {
           accent: root.getPropertyValue('--accent').trim(),
           selectionAccent: root.getPropertyValue('--selection-accent').trim(),
           underline: underline ? getComputedStyle(underline).backgroundColor : undefined,
           cardShadow: card ? getComputedStyle(card).boxShadow : undefined,
           selectedEntry: selectedEntry ? getComputedStyle(selectedEntry).backgroundColor : undefined,
-          primaryAction: addSource ? getComputedStyle(addSource).backgroundColor : undefined
+          selectedSource: selectedSource ? getComputedStyle(selectedSource).backgroundColor : undefined
         };
       })()
     };
@@ -214,7 +225,7 @@ async function auditViewport(window, viewport) {
     failures.push("划词就地回答卡片、下划线或长内容滚动异常");
   }
   const expectedSidebarWidth = geometry.viewport && geometry.viewport.width <= 1080 ? 220 : 260;
-  if (!geometry.sidebars || Math.abs(geometry.sidebars.initialSidebarWidth - expectedSidebarWidth) > 1 || geometry.sidebars.collapsedSidebarWidth > 1.25 || geometry.sidebars.collapsedReaderWidth < geometry.sidebars.initialReaderWidth + expectedSidebarWidth - 2) {
+  if (!geometry.sidebars || Math.abs(geometry.sidebars.initialSidebarWidth - expectedSidebarWidth) > 1 || geometry.sidebars.collapsedSidebarWidth > 1.25 || geometry.sidebars.collapsedReaderWidth < geometry.sidebars.initialReaderWidth + expectedSidebarWidth - 2 || geometry.sidebars.readerOnlySidebarWidth > 1.25 || geometry.sidebars.readerOnlyTimelineWidth > 1.25 || geometry.sidebars.readerOnlyReaderWidth < geometry.sidebars.initialReaderWidth + geometry.sidebars.initialSidebarWidth + geometry.sidebars.initialTimelineWidth - 2) {
     failures.push("来源侧边栏无法在阅读时正确收起或恢复正文宽度");
   }
   if (!geometry.titlebar || geometry.titlebar.height < 40 || geometry.titlebar.controls.some((control) => control.left < geometry.titlebar.left - 1 || control.right > geometry.titlebar.right + 1 || control.top < 0 || control.bottom > geometry.titlebar.height + 1)) {
@@ -223,9 +234,9 @@ async function auditViewport(window, viewport) {
   if (!geometry.titlebar || !geometry.fullscreenTitlebar || geometry.titlebar.controls[0]?.left < 90 || Math.abs((geometry.fullscreenTitlebar.controls[0]?.left || 0) - 16) > 1) {
     failures.push("全屏时顶部按钮没有随 macOS 交通灯隐藏而左移");
   }
-  if (geometry.sourceMeta === undefined || geometry.sourceMeta < 6) failures.push("来源状态和刷新时间之间缺少可读间距");
-  if (!geometry.theme || geometry.theme.accent !== "#dc3c22" || geometry.theme.selectionAccent !== "#dc3c22" || !geometry.theme.underline?.includes("220, 60, 34") || !geometry.theme.cardShadow?.includes("220, 60, 34") || geometry.theme.selectedEntry !== "rgb(255, 253, 248)" || geometry.theme.primaryAction !== "rgb(27, 27, 23)") {
-    failures.push("极简纸张主题的主色、划词状态或主要操作色未保持一致");
+  if (!geometry.sourceList || geometry.sourceList.rowHeight > 36 || geometry.sourceList.titleHeight > 21) failures.push("来源列表未保持单行紧凑展示");
+  if (!geometry.theme || geometry.theme.accent !== "#6a7d63" || geometry.theme.selectionAccent !== "#6a7d63" || !geometry.theme.underline?.includes("106, 125, 99") || !geometry.theme.cardShadow?.includes("rgba(40, 40, 36, 0.1)") || geometry.theme.selectedEntry !== "rgb(237, 237, 232)" || geometry.theme.selectedSource !== "rgb(237, 237, 232)") {
+    failures.push("低对比纸张主题的选中状态、划词状态或浮层层级未保持一致");
   }
   const shouldDockAssistant = geometry.viewport && geometry.viewport.width >= 1380;
   if (shouldDockAssistant && geometry.assistant && geometry.assistant.panel.left < geometry.assistant.scroll.right - 1) {

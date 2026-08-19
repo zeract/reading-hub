@@ -1,5 +1,5 @@
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type AiSelectionContext, type AiSelectionIntent, type CalibrationResult, type Entry, type Followee, type LibraryCounts, type ProbeResult, type ReaderArticle, type Source, type SourceKind, type SubscriptionDraft } from "../shared/types";
+import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type AiSelectionContext, type AiSelectionIntent, type CalibrationResult, type Entry, type LibraryCounts, type ProbeResult, type ReaderArticle, type Source, type SourceKind, type SubscriptionDraft } from "../shared/types";
 import { AiMarkdownContent } from "./ai-markdown";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { entryQueryForLibrary, type LibraryView } from "./library-view";
@@ -12,6 +12,7 @@ type ReaderPreset = "reading" | "compact";
 type ReaderPreferences = { preset: ReaderPreset; fontScale: number };
 type AddSourceMethod = "public" | "zhihu" | "x" | "academic";
 type AssistantPanelState = "closed" | "minimized" | "open";
+type AppView = "library" | "settings";
 type ReaderImagePreview = { src: string; alt: string };
 type ReaderTextSelection = { text: string; overlay: SelectionOverlay; asking: boolean; request?: AssistantSelectionRequest };
 type AssistantSelectionRequest = { id: string; question: string; selection: AiSelectionContext };
@@ -47,7 +48,6 @@ export function App() {
   const [sources, setSources] = useState<Source[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [libraryCounts, setLibraryCounts] = useState<LibraryCounts>(EMPTY_LIBRARY_COUNTS);
-  const [followees, setFollowees] = useState<Followee[]>([]);
   const [pending, setPending] = useState<PendingPreview>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -59,6 +59,8 @@ export function App() {
   const [collapsedSourceGroups, setCollapsedSourceGroups] = useState<Record<string, boolean>>({});
   const [readingEntry, setReadingEntry] = useState<Entry>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [readerOnly, setReaderOnly] = useState(false);
+  const [appView, setAppView] = useState<AppView>("library");
   const [windowFullscreen, setWindowFullscreen] = useState(false);
   const reloadSequence = useRef(0);
 
@@ -78,10 +80,9 @@ export function App() {
 
   const reload = useCallback(async () => {
     const sequence = ++reloadSequence.current;
-    const [nextSources, nextEntries, nextFollowees, nextLibraryCounts] = await Promise.all([
+    const [nextSources, nextEntries, nextLibraryCounts] = await Promise.all([
       window.reader.listSources(),
       window.reader.listEntries(entriesQuery),
-      window.reader.listFollowees(),
       window.reader.getLibraryCounts()
     ]);
     // A source or time-range change may have started a newer request while an
@@ -89,7 +90,6 @@ export function App() {
     if (sequence !== reloadSequence.current) return;
     setSources(nextSources);
     setEntries(nextEntries);
-    setFollowees(nextFollowees);
     setLibraryCounts(nextLibraryCounts);
   }, [entriesQuery]);
 
@@ -98,6 +98,10 @@ export function App() {
     const timer = window.setInterval(() => void reload(), 15_000);
     return () => window.clearInterval(timer);
   }, [reload]);
+
+  useEffect(() => {
+    if (!readingEntry) setReaderOnly(false);
+  }, [readingEntry]);
 
   async function preview(url: string) {
     if (!url.trim()) return;
@@ -182,8 +186,8 @@ export function App() {
     setEntries([]);
   }
 
-  async function deleteSource(source: Source) {
-    if (!window.confirm(`删除「${source.title}」及其已收集内容？此操作无法撤销。`)) return;
+  async function deleteSource(source: Source): Promise<boolean> {
+    if (!window.confirm(`删除「${source.title}」及其已收集内容？此操作无法撤销。`)) return false;
     setBusy(true);
     try {
       await window.reader.deleteSource(source.id);
@@ -191,8 +195,10 @@ export function App() {
       if (readingEntry?.sourceId === source.id) setReadingEntry(undefined);
       setNotice(`已删除「${source.title}」。`);
       await reload();
+      return true;
     } catch (error) {
       setNotice(errorMessage(error));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -229,18 +235,31 @@ export function App() {
       ? { value: libraryCounts.today, label: "篇更新" }
       : libraryView === "favorite"
         ? { value: libraryCounts.favorite, label: "篇收藏" }
-        : { value: unreadCount, label: "未读" };
+      : { value: unreadCount, label: "未读" };
+
+  function refreshCurrentView() {
+    if (activeSource) {
+      void refresh(activeSource);
+      return;
+    }
+    void reload().then(() => setNotice("已重新载入收件箱。")).catch((error) => setNotice(errorMessage(error)));
+  }
+
+  if (appView === "settings") {
+    return <SettingsView onClose={() => setAppView("library")} windowFullscreen={windowFullscreen} />;
+  }
 
   return (
-    <main className={`shell${sidebarCollapsed ? " shell--sidebar-collapsed" : ""}${windowFullscreen ? " shell--fullscreen" : ""}`}>
+    <main className={`shell${sidebarCollapsed ? " shell--sidebar-collapsed" : ""}${readerOnly ? " shell--reader-only" : ""}${windowFullscreen ? " shell--fullscreen" : ""}`}>
       <header className="app-titlebar">
         <div className="app-titlebar-actions">
-          <button type="button" className="app-titlebar-button" onClick={() => setSidebarCollapsed((collapsed) => !collapsed)} aria-label={sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"} title={sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"}>☰</button>
-          {readingEntry && <button type="button" className="app-titlebar-button" onClick={() => setReadingEntry(undefined)} aria-label="返回列表" title="返回列表">←</button>}
+          <button type="button" className="app-titlebar-button" onClick={() => readerOnly ? setReaderOnly(false) : setSidebarCollapsed((collapsed) => !collapsed)} aria-label={readerOnly ? "退出沉浸阅读" : sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"} title={readerOnly ? "退出沉浸阅读" : sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"}>▤</button>
+          {!readerOnly && <button type="button" className="app-titlebar-button" onClick={refreshCurrentView} disabled={busy} aria-label={activeSource ? `刷新 ${activeSource.title}` : "重新载入收件箱"} title={activeSource ? "刷新当前来源" : "重新载入收件箱"}>↻</button>}
+          {!readerOnly && <button type="button" className="app-titlebar-button app-titlebar-add" onClick={() => setShowAddSource(true)} aria-label="添加来源" title="添加来源">＋</button>}
+          {readingEntry && !readerOnly && <button type="button" className="app-titlebar-button" onClick={() => setReadingEntry(undefined)} aria-label="返回列表" title="返回列表">←</button>}
         </div>
       </header>
       <aside className="sidebar">
-        <button type="button" className="add-source-button" onClick={() => setShowAddSource(true)}>＋ 添加来源<span>网页、平台动态或学术作者</span></button>
         <nav className="library-nav" aria-label="阅读分类">
           <div className="section-title">阅读</div>
           <button className={`library-filter ${libraryView === "today" && !activeSourceId ? "selected" : ""}`} onClick={() => selectLibrary("today")}><span>✳ 今日</span></button>
@@ -255,22 +274,20 @@ export function App() {
             </button>
             {!collapsedSourceGroups[group.id] && group.sources.map((source) => (
               <div className="source-row" key={source.id} onContextMenu={(event) => { event.preventDefault(); setEditingSource(source); }}>
-                <button className={`source-filter ${activeSourceId === source.id ? "selected" : ""}`} onClick={() => selectSource(source.id)}>
+                <button className={`source-filter ${activeSourceId === source.id ? "selected" : ""}`} onClick={() => selectSource(source.id)} onKeyDown={(event) => {
+                  if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+                    event.preventDefault();
+                    setEditingSource(source);
+                  }
+                }} title={`${source.title}（右键配置）`} aria-label={`查看 ${source.title}；右键打开来源设置`}>
                   <span className="source-title">{source.title}</span>
-                  <span className="source-meta"><span className="source-meta-line"><StatusBadge status={source.status} /><span>{sourceMetaLabel(source, followees.length)}</span></span></span>
                 </button>
-                <div className="source-actions">
-                  <button onClick={() => void refresh(source)} disabled={busy}>刷新</button>
-                  {source.kind === "generic" && <button onClick={() => setActiveRuleSource(source)}>自动校准</button>}
-                  {source.kind === "zhihu_follow" && <button onClick={() => { void window.reader.connectZhihuFollow(); setNotice("已打开知乎登录窗口；登录完成后会自动同步。"); }}>重新登录知乎</button>}
-                  <button type="button" className="source-settings-button" onClick={() => setEditingSource(source)} aria-label={`配置 ${source.title}`} title="配置来源">⚙</button>
-                  <button className="delete-source" onClick={() => void deleteSource(source)} disabled={busy}>删除</button>
-                </div>
               </div>
             ))}
           </section>)}
           {!sources.length && <p className="empty-side">先添加一个公开 Feed 或网页。</p>}
         </div>
+        <footer className="sidebar-footer"><button type="button" className="sidebar-settings-button" onClick={() => setAppView("settings")} aria-label="打开设置" title="设置">⚙ <span>设置</span></button></footer>
       </aside>
 
       <section className="timeline" aria-label="文章列表">
@@ -285,6 +302,9 @@ export function App() {
         entry={readingEntry}
         source={sourceById.get(readingEntry.sourceId)}
         onUpdateEntry={updateEntry}
+        readerOnly={readerOnly}
+        onToggleReaderOnly={() => setReaderOnly((current) => !current)}
+        onOpenSettings={() => setAppView("settings")}
       /> : <ReaderPlaceholder />}
 
       {pending && <PreviewDialog pending={pending} onCancel={() => setPending(undefined)} onConfirm={() => void confirm()} busy={busy} />}
@@ -296,7 +316,15 @@ export function App() {
         onAcademicSaved={async () => { setShowAddSource(false); setNotice("学术作者来源已添加，正在同步公开论文记录。"); await reload(); }}
       />}
       {activeRuleSource && <CalibrationDialog source={activeRuleSource} onClose={() => setActiveRuleSource(undefined)} onSaved={async () => { setActiveRuleSource(undefined); await reload(); }} />}
-      {editingSource && <SourceSettingsDialog source={editingSource} onClose={() => setEditingSource(undefined)} onSaved={async () => { setEditingSource(undefined); await reload(); }} />}
+      {editingSource && <SourceSettingsDialog
+        source={editingSource}
+        onClose={() => setEditingSource(undefined)}
+        onSaved={async () => { setEditingSource(undefined); await reload(); }}
+        onRefresh={() => refresh(editingSource)}
+        onCalibrate={() => { setEditingSource(undefined); setActiveRuleSource(editingSource); }}
+        onDelete={async () => { if (await deleteSource(editingSource)) setEditingSource(undefined); }}
+        onReconnectZhihu={async () => { await window.reader.connectZhihuFollow(); setNotice("已打开知乎登录窗口；登录完成后会自动同步。"); }}
+      />}
     </main>
   );
 }
@@ -322,10 +350,13 @@ function ReaderPlaceholder() {
   </section>;
 }
 
-function ReaderView({ entry, source, onUpdateEntry }: {
+function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleReaderOnly, onOpenSettings }: {
   entry: Entry;
   source?: Source;
   onUpdateEntry: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>;
+  readerOnly: boolean;
+  onToggleReaderOnly: () => void;
+  onOpenSettings: () => void;
 }) {
   const [article, setArticle] = useState<ReaderArticle>();
   const [embedded, setEmbedded] = useState(false);
@@ -520,6 +551,7 @@ function ReaderView({ entry, source, onUpdateEntry }: {
       <div className="reader-toolbar-actions">
         <button type="button" className={`toolbar-icon-button favorite-button${entry.favorite ? " is-favorite" : ""}`} aria-pressed={entry.favorite} aria-label={entry.favorite ? "取消收藏" : "收藏文章"} title={entry.favorite ? "取消收藏" : "收藏文章"} disabled={favoriteUpdating} onClick={() => void toggleFavorite()}>{entry.favorite ? "★" : "☆"}</button>
         <button type="button" className="toolbar-icon-button ai-toggle" aria-pressed={assistantVisible} aria-label={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} title={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} disabled={!article} onClick={toggleAssistant}>✦</button>
+        <button type="button" className="toolbar-icon-button reader-focus-toggle" aria-pressed={readerOnly} aria-label={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} title={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} onClick={onToggleReaderOnly}>⛶</button>
         <button type="button" className="toolbar-icon-button external-button" aria-label="在浏览器中打开原文" title="在浏览器中打开原文" onClick={() => void window.reader.openExternal(entry.url)}>↗</button>
       </div>
     </header>
@@ -557,7 +589,7 @@ function ReaderView({ entry, source, onUpdateEntry }: {
         sourceTitle={source?.title}
         preferredProviderId={preferredAiProviderId}
         onClose={clearTextSelection}
-        onOpenAssistant={() => { clearTextSelection(); setAssistantState("open"); }}
+        onOpenSettings={() => { clearTextSelection(); onOpenSettings(); }}
       />}
       {assistantMounted && article && <ReaderAssistant
         article={article}
@@ -567,6 +599,7 @@ function ReaderView({ entry, source, onUpdateEntry }: {
         minimized={assistantState === "minimized"}
         onMinimize={() => setAssistantState("minimized")}
         onClose={() => setAssistantState("closed")}
+        onOpenSettings={onOpenSettings}
       />}
       {assistantState === "minimized" && article && <button type="button" className="assistant-launcher" onClick={() => setAssistantState("open")} aria-label="恢复 AI 学习助手" title="恢复 AI 学习助手">✦</button>}
     </div>
@@ -574,14 +607,14 @@ function ReaderView({ entry, source, onUpdateEntry }: {
   </section>;
 }
 
-function SelectionAssistantCard({ request, overlay, article, sourceTitle, preferredProviderId, onClose, onOpenAssistant }: {
+function SelectionAssistantCard({ request, overlay, article, sourceTitle, preferredProviderId, onClose, onOpenSettings }: {
   request: AssistantSelectionRequest;
   overlay: SelectionOverlay;
   article: ReaderArticle;
   sourceTitle?: string;
   preferredProviderId: AiProviderId;
   onClose: () => void;
-  onOpenAssistant: () => void;
+  onOpenSettings: () => void;
 }) {
   const [providers, setProviders] = useState<AiProviderSettings[]>([]);
   const [answer, setAnswer] = useState("");
@@ -651,7 +684,7 @@ function SelectionAssistantCard({ request, overlay, article, sourceTitle, prefer
   }, [article.contentHtml, article.title, article.url, provider, providers.length, request, sourceTitle]);
 
   const excerpt = request.selection.text.length > 260 ? `${request.selection.text.slice(0, 260)}…` : request.selection.text;
-  return <aside className="selection-assistant-card" data-placement={overlay.placement} style={cardStyle} aria-label={`${selectedTextLabel(request.selection.intent)}结果`}>
+  return <aside className="selection-assistant-card" data-placement={overlay.placement} data-intent={request.selection.intent} style={cardStyle} aria-label={`${selectedTextLabel(request.selection.intent)}结果`}>
     <header>
       <div><p>{selectedTextLabel(request.selection.intent)}</p><strong>{provider?.label || "AI 学习"}</strong></div>
       <button type="button" onClick={onClose} aria-label="关闭所选文字回答">×</button>
@@ -662,7 +695,7 @@ function SelectionAssistantCard({ request, overlay, article, sourceTitle, prefer
       {answer && <AiMarkdownContent text={answer} />}
       {error && <p className="selection-assistant-error">{error}</p>}
     </div>
-    {error && !provider && <button type="button" className="selection-assistant-settings" onClick={onOpenAssistant}>打开 AI 设置</button>}
+    {error && !provider && <button type="button" className="selection-assistant-settings" onClick={onOpenSettings}>打开 AI 设置</button>}
   </aside>;
 }
 
@@ -686,7 +719,7 @@ const CODEX_EFFORT_OPTIONS: Array<{ value: AiReasoningEffort; label: string }> =
   { value: "max", label: "最大（最难问题）" }
 ];
 
-function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderId, onProviderChange, minimized, onMinimize, onClose }: {
+function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderId, onProviderChange, minimized, onMinimize, onClose, onOpenSettings }: {
   article: ReaderArticle;
   sourceTitle?: string;
   providerId: AiProviderId;
@@ -694,13 +727,10 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
   minimized: boolean;
   onMinimize: () => void;
   onClose: () => void;
+  onOpenSettings: () => void;
 }) {
   const [providers, setProviders] = useState<AiProviderSettings[]>([]);
   const [providerId, setProviderId] = useState<AiProviderId>(controlledProviderId);
-  const [model, setModel] = useState("");
-  const [effort, setEffort] = useState<AiReasoningEffort>("medium");
-  const [apiKey, setApiKey] = useState("");
-  const [showSettings, setShowSettings] = useState(false);
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<AiMessage[]>([]);
   const [busy, setBusy] = useState(false);
@@ -709,9 +739,6 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
   const messagesElement = useRef<HTMLDivElement>(null);
 
   const selected = providers.find((provider) => provider.id === providerId);
-  const requiresApiKey = selected?.requiresApiKey === true;
-  const usingCodexCli = selected?.id === "codex-cli";
-  const canConfigure = Boolean(selected && (requiresApiKey || usingCodexCli));
   const reloadProviders = useCallback(async () => {
     const next = await window.reader.listAiProviders();
     setProviders(next);
@@ -719,9 +746,6 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
     if (active) {
       setProviderId(active.id);
       onProviderChange(active.id);
-      setModel(active.model);
-      setEffort(active.effort || "medium");
-      setShowSettings(active.requiresApiKey && !active.configured);
     }
   }, [controlledProviderId, onProviderChange]);
   useEffect(() => { void reloadProviders().catch((reason) => setError(errorMessage(reason))); }, [reloadProviders]);
@@ -756,56 +780,15 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
   function switchProvider(nextId: AiProviderId) {
     setProviderId(nextId);
     onProviderChange(nextId);
-    const next = providers.find((provider) => provider.id === nextId);
-    if (next) {
-      setModel(next.model);
-      setEffort(next.effort || "medium");
-      setShowSettings(next.requiresApiKey && !next.configured);
-    }
     setError(undefined);
-  }
-
-  async function saveSettings(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true); setError(undefined);
-    try {
-      await window.reader.configureAiProvider({ provider: providerId, apiKey, model, effort: usingCodexCli ? effort : undefined });
-      setApiKey("");
-      await reloadProviders();
-      setShowSettings(false);
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function clearProvider() {
-    const isCodex = selected?.id === "codex-cli";
-    const message = isCodex
-      ? "恢复本机 Codex CLI 的默认模型与推理强度？"
-      : `清除 ${selected?.label || "该服务"} 的 API Key？`;
-    if (!window.confirm(message)) return;
-    setBusy(true); setError(undefined);
-    try {
-      await window.reader.clearAiProvider(providerId);
-      setMessages([]);
-      if (isCodex) { setModel("default"); setEffort("medium"); }
-      await reloadProviders();
-      setShowSettings(isCodex || Boolean(selected?.requiresApiKey));
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
   }
 
   async function startQuestion(textValue: string, selection?: AiSelectionContext) {
     const text = textValue.trim();
     if (!text || busy) return;
     if (!selected?.configured) {
-      setShowSettings(Boolean(selected?.requiresApiKey) || selected?.id === "codex-cli");
-      setError(selected?.requiresApiKey ? "请先配置 API Key。" : "未检测到本机 Codex CLI。请安装并登录后重试。");
+      setError(selected?.requiresApiKey ? "请先在设置中配置 API Key。" : "未检测到本机 Codex CLI。请安装并登录后重试。");
+      onOpenSettings();
       return;
     }
     const prompt = toArticleText(article.contentHtml);
@@ -849,23 +832,142 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
 
   return <aside className={`reader-ai-panel${minimized ? " is-minimized" : ""}`} aria-label="AI 学习助手" aria-hidden={minimized}>
     <header><div><strong>AI 学习助手</strong><p>提问时才会发送当前文章的文本摘录。</p></div><div className="assistant-header-actions"><button type="button" className="panel-icon-button" onClick={onMinimize} aria-label="最小化 AI 学习助手" title="最小化">−</button><button type="button" className="panel-icon-button" onClick={onClose} aria-label="关闭 AI 学习助手" title="关闭">×</button></div></header>
-    <div className="ai-provider-row"><label htmlFor="ai-provider">服务</label><select id="ai-provider" value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={busy}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select>{canConfigure && <button type="button" onClick={() => setShowSettings((visible) => !visible)} disabled={busy}>设置</button>}</div>
-    {!requiresApiKey && selected?.availabilityMessage && <p className="ai-provider-note">{selected.availabilityMessage}</p>}
-    {showSettings && <form className="ai-settings" onSubmit={(event) => void saveSettings(event)}>
-      {usingCodexCli ? <>
-        <label htmlFor="codex-model">模型</label><select id="codex-model" value={model} onChange={(event) => setModel(event.target.value)} disabled={busy}>{CODEX_CLI_MODEL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select>
-        <label htmlFor="codex-effort">推理强度</label><select id="codex-effort" value={effort} onChange={(event) => setEffort(event.target.value as AiReasoningEffort)} disabled={busy}>{CODEX_EFFORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-        <p className="ai-settings-note">模型可用性取决于你的 Codex/ChatGPT 账户；高、极高和最大强度会延长回答时间。</p>
-      </> : <>
-        <label htmlFor="ai-model">模型</label><input id="ai-model" value={model} onChange={(event) => setModel(event.target.value)} placeholder={selected?.model || "模型名称"} required />
-        <label htmlFor="ai-key">API Key</label><input id="ai-key" value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" autoComplete="off" placeholder={selected?.configured ? "留空则保留现有密钥" : "仅保存到 macOS Keychain"} required={!selected?.configured} />
-      </>}
-      <div><button className="primary" disabled={busy}>{busy ? "正在保存…" : "保存设置"}</button>{selected?.configured && <button type="button" className="danger" onClick={() => void clearProvider()} disabled={busy}>{usingCodexCli ? "恢复默认" : "清除密钥"}</button>}</div>
-    </form>}
+    <div className="ai-provider-row"><label htmlFor="ai-provider">服务</label><select id="ai-provider" value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={busy}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select><button type="button" onClick={onOpenSettings} disabled={busy}>设置</button></div>
+    {selected?.availabilityMessage && <p className="ai-provider-note">{selected.availabilityMessage}</p>}
     {error && <p className="error ai-error">{error}</p>}
     <div className="ai-messages" aria-live="polite" aria-busy={busy} ref={messagesElement}>{!messages.length && <p className="ai-empty">可以让 AI 解释概念、公式推导、例子或文章中的论证。回答不会保存到数据库。</p>}{messages.map((message) => <div key={message.id} className={`ai-message ${message.role}${message.error ? " error" : ""}${message.streaming ? " is-streaming" : ""}`}><strong>{message.role === "user" ? "你" : selected?.label || "AI"}</strong>{message.streaming && !message.text ? <p className="ai-streaming-status">正在生成…</p> : <AiMarkdownContent text={message.text} />}</div>)}</div>
     <form className="ai-question" onSubmit={(event) => void ask(event)}><label htmlFor="ai-question">向文章提问（Enter 发送，Shift+Enter 换行）</label><textarea id="ai-question" value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={submitOnEnter} placeholder="例如：请用直觉解释这个公式的含义" disabled={busy} /><button className="primary" disabled={busy || !question.trim()}>{busy ? "回答中…" : "发送问题"}</button></form>
   </aside>;
+}
+
+type SettingsSection = "reading" | "ai";
+
+/** Global preferences live in a dedicated view so the article surface stays for reading. */
+function SettingsView({ onClose, windowFullscreen }: { onClose: () => void; windowFullscreen: boolean }) {
+  const [section, setSection] = useState<SettingsSection>("reading");
+  const [preferences, setPreferences] = useState<ReaderPreferences>(loadReaderPreferences);
+  const [providers, setProviders] = useState<AiProviderSettings[]>([]);
+  const [providerId, setProviderId] = useState<AiProviderId>("codex-cli");
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState<AiReasoningEffort>("medium");
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    window.localStorage.setItem(READER_PREFERENCES_KEY, JSON.stringify(preferences));
+  }, [preferences]);
+
+  const reloadProviders = useCallback(async () => {
+    const next = await window.reader.listAiProviders();
+    setProviders(next);
+    const active = next.find((provider) => provider.id === providerId) || next[0];
+    if (!active) return;
+    setProviderId(active.id);
+    setModel(active.model);
+    setEffort(active.effort || "medium");
+  }, [providerId]);
+
+  useEffect(() => { void reloadProviders().catch((reason) => setError(errorMessage(reason))); }, [reloadProviders]);
+
+  const selected = providers.find((provider) => provider.id === providerId);
+  const usingCodexCli = selected?.id === "codex-cli";
+  const requiresApiKey = selected?.requiresApiKey === true;
+
+  function switchProvider(nextId: AiProviderId) {
+    const next = providers.find((provider) => provider.id === nextId);
+    setProviderId(nextId);
+    setModel(next?.model || "");
+    setEffort(next?.effort || "medium");
+    setApiKey("");
+    setError(undefined);
+  }
+
+  async function saveAiSettings(event: FormEvent) {
+    event.preventDefault();
+    if (!selected) return;
+    setBusy(true); setError(undefined);
+    try {
+      await window.reader.configureAiProvider({
+        provider: providerId,
+        apiKey,
+        model,
+        effort: usingCodexCli ? effort : undefined
+      });
+      setApiKey("");
+      await reloadProviders();
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearAiSettings() {
+    if (!selected) return;
+    const message = usingCodexCli
+      ? "恢复本机 Codex CLI 的默认模型与推理强度？"
+      : `清除 ${selected.label} 的 API Key？`;
+    if (!window.confirm(message)) return;
+    setBusy(true); setError(undefined);
+    try {
+      await window.reader.clearAiProvider(providerId);
+      setApiKey("");
+      await reloadProviders();
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const adjustFont = (amount: number) => setPreferences((current) => ({
+    ...current,
+    fontScale: Math.min(1.25, Math.max(0.85, Number((current.fontScale + amount).toFixed(2))))
+  }));
+
+  return <main className={`settings-shell${windowFullscreen ? " settings-shell--fullscreen" : ""}`} aria-label="Reading Hub 设置">
+    <header className="app-titlebar settings-titlebar">
+      <div className="app-titlebar-actions"><button type="button" className="app-titlebar-button" onClick={onClose} aria-label="返回阅读器" title="返回阅读器">←</button></div>
+      <p>设置</p>
+    </header>
+    <aside className="settings-sidebar" aria-label="设置分类">
+      <p className="settings-sidebar-title">设置</p>
+      <nav>
+        <button type="button" className={section === "reading" ? "selected" : ""} onClick={() => setSection("reading")} aria-current={section === "reading" ? "page" : undefined}>▤ <span>阅读体验</span></button>
+        <button type="button" className={section === "ai" ? "selected" : ""} onClick={() => setSection("ai")} aria-current={section === "ai" ? "page" : undefined}>✦ <span>AI 功能</span></button>
+      </nav>
+      <p className="settings-sidebar-note">偏好仅保存在此设备。</p>
+    </aside>
+    <section className="settings-content">
+      {section === "reading" ? <>
+        <header><p className="eyebrow">阅读</p><h1>阅读体验</h1><p>控制正文的密度与字号，不改变原文内容。</p></header>
+        <section className="settings-card">
+          <h2>正文排版</h2>
+          <div className="settings-row"><div><strong>阅读密度</strong><span>阅读模式保留更舒适的行距；紧凑模式用于快速浏览。</span></div><div className="settings-segmented" role="group" aria-label="阅读密度"><button type="button" className={preferences.preset === "compact" ? "selected" : ""} onClick={() => setPreferences((current) => ({ ...current, preset: "compact" }))}>紧凑</button><button type="button" className={preferences.preset === "reading" ? "selected" : ""} onClick={() => setPreferences((current) => ({ ...current, preset: "reading" }))}>阅读</button></div></div>
+          <div className="settings-row"><div><strong>正文字号</strong><span>当前 {Math.round(preferences.fontScale * 100)}%</span></div><div className="settings-font-controls"><button type="button" onClick={() => adjustFont(-0.05)} disabled={preferences.fontScale <= 0.85}>A−</button><output>{Math.round(preferences.fontScale * 100)}%</output><button type="button" onClick={() => adjustFont(0.05)} disabled={preferences.fontScale >= 1.25}>A+</button></div></div>
+        </section>
+        <section className="settings-card settings-card--quiet"><h2>沉浸阅读</h2><p>打开任意文章后，使用阅读栏右上角的 ⛶ 可隐藏来源与文章列表，只保留正文阅读栏。</p></section>
+      </> : <>
+        <header><p className="eyebrow">AI 功能</p><h1>服务与连接</h1><p>密钥仅写入 macOS Keychain，不保存在数据库或页面中。</p></header>
+        <form className="settings-card settings-ai-form" onSubmit={(event) => void saveAiSettings(event)}>
+          <h2>AI 服务</h2>
+          <label>服务<select value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={busy}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
+          {usingCodexCli ? <>
+            <label>模型<select value={model} onChange={(event) => setModel(event.target.value)} disabled={busy}>{CODEX_CLI_MODEL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+            <label>推理强度<select value={effort} onChange={(event) => setEffort(event.target.value as AiReasoningEffort)} disabled={busy}>{CODEX_EFFORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+            <p className="settings-help">模型可用性取决于 Codex/ChatGPT 账户；较高推理强度会延长回答时间。</p>
+          </> : <>
+            <label>模型<input value={model} onChange={(event) => setModel(event.target.value)} placeholder={selected?.model || "模型名称"} required disabled={busy} /></label>
+            <label>API Key<input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" autoComplete="off" placeholder={selected?.configured ? "留空则保留现有密钥" : "仅保存到 macOS Keychain"} required={requiresApiKey && !selected?.configured} disabled={busy} /></label>
+          </>}
+          {selected?.availabilityMessage && <p className="settings-help">{selected.availabilityMessage}</p>}
+          {error && <p className="error">{error}</p>}
+          <div className="settings-actions"><button type="submit" className="primary" disabled={!selected || busy}>{busy ? "正在保存…" : "保存设置"}</button>{selected?.configured && <button type="button" className="danger" onClick={() => void clearAiSettings()} disabled={busy}>{usingCodexCli ? "恢复默认" : "清除密钥"}</button>}</div>
+        </form>
+      </>}
+    </section>
+  </main>;
 }
 
 function toArticleText(html: string): string {
@@ -1025,7 +1127,15 @@ const REFRESH_OPTIONS: Array<{ value: "default" | "30" | "60" | "120" | "240" | 
   { value: "1440", label: "约每天一次" }
 ];
 
-function SourceSettingsDialog({ source, onClose, onSaved }: { source: Source; onClose: () => void; onSaved: () => Promise<void> }) {
+function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCalibrate, onDelete, onReconnectZhihu }: {
+  source: Source;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+  onRefresh: () => Promise<void>;
+  onCalibrate: () => void;
+  onDelete: () => Promise<void>;
+  onReconnectZhihu: () => Promise<void>;
+}) {
   const [title, setTitle] = useState(source.title);
   const [category, setCategory] = useState(source.category || "");
   const [kind, setKind] = useState<SourceKind>(source.kind);
@@ -1055,6 +1165,18 @@ function SourceSettingsDialog({ source, onClose, onSaved }: { source: Source; on
     }
   }
 
+  async function runOperation(operation: () => void | Promise<void>) {
+    if (busy) return;
+    setBusy(true); setError(undefined);
+    try {
+      await operation();
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return <Dialog title={`配置「${source.title}」`} onClose={onClose}>
     <form className="source-settings-form" onSubmit={(event) => void save(event)}>
       <label>来源名称<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} required autoFocus /></label>
@@ -1069,6 +1191,7 @@ function SourceSettingsDialog({ source, onClose, onSaved }: { source: Source; on
       {manual && <p className="source-settings-note">分享链接是一次性阅读卡片，不会自动轮询。</p>}
       <label>来源地址<input value={source.url} readOnly aria-readonly="true" /></label>
       <dl className="source-settings-details"><div><dt>当前状态</dt><dd><StatusBadge status={source.status} /></dd></div><div><dt>实际连接器</dt><dd>{sourceKindLabel(source.connectorId || source.kind)}</dd></div></dl>
+      <div className="source-settings-operations"><button type="button" onClick={() => void runOperation(onRefresh)} disabled={busy}>立即刷新</button>{source.kind === "generic" && <button type="button" onClick={() => void runOperation(onCalibrate)} disabled={busy}>自动校准</button>}{source.kind === "zhihu_follow" && <button type="button" onClick={() => void runOperation(onReconnectZhihu)} disabled={busy}>重新登录知乎</button>}<button type="button" className="danger" onClick={() => void runOperation(onDelete)} disabled={busy}>删除来源</button></div>
       {error && <p className="error">{error}</p>}
       <div className="dialog-actions"><button type="button" onClick={onClose} disabled={busy}>取消</button><button className="primary" disabled={busy}>{busy ? "正在保存…" : "保存配置"}</button></div>
     </form>
@@ -1086,17 +1209,6 @@ function StatusBadge({ status }: { status: Source["status"] }) {
 
 function sourceKindLabel(kind: SourceKind): string {
   return { rss: "RSS / Atom / JSON Feed", generic: "公开网页", manual: "分享链接", zhihu: "知乎官方数据", zhihu_follow: "知乎关注动态", x: "X 关注动态", academic: "学术作者更新" }[kind];
-}
-
-function sourceScheduleLabel(source: Source): string {
-  if (!source.pollingEnabled) return "一次性保存";
-  if (!source.refreshIntervalMinutes) return "30–60 分钟";
-  return REFRESH_OPTIONS.find((option) => Number(option.value) === source.refreshIntervalMinutes)?.label || `约 ${source.refreshIntervalMinutes} 分钟`;
-}
-
-function sourceMetaLabel(source: Source, followeeCount: number): string {
-  const prefix = source.kind === "zhihu_follow" ? "授权会话" : source.kind === "zhihu" ? `官方数据 · ${followeeCount} 位关注` : source.kind === "x" ? "官方 API · 原创帖" : source.kind === "academic" ? "公开学术索引" : undefined;
-  return prefix ? `${prefix} · ${sourceScheduleLabel(source)}` : sourceScheduleLabel(source);
 }
 
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : "操作失败，请稍后重试。"; }

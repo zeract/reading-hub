@@ -845,21 +845,6 @@ export class ReadingDatabase {
     this.db.transaction((items: Followee[]) => items.forEach((item) => query.run(item)))(followees);
   }
 
-  listFollowees(): Followee[] {
-    return this.db
-      .prepare("SELECT url_token, fullname, url, avatar_url, headline, follower_count, updated_at FROM followees ORDER BY fullname COLLATE NOCASE")
-      .all()
-      .map((row: any) => ({
-        urlToken: row.url_token,
-        fullname: row.fullname,
-        url: row.url,
-        avatarUrl: row.avatar_url ?? undefined,
-        headline: row.headline ?? undefined,
-        followerCount: row.follower_count ?? undefined,
-        updatedAt: row.updated_at
-      }));
-  }
-
   close(): void {
     this.db.close();
   }

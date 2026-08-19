@@ -1,4 +1,4 @@
-import type { AiProviderConfiguration, AiProviderId, AiProviderSettings, AiStreamEvent, AiStreamRequest, ArticleReadResult, CalibrationResult, Entry, EntryListQuery, ExtractionRule, Followee, LibraryCounts, ProbeResult, Source, SourceSettings, SubscriptionDraft } from "../shared/types";
+import type { AiProviderConfiguration, AiProviderId, AiProviderSettings, AiStreamEvent, AiStreamRequest, ArticleReadResult, CalibrationResult, Entry, EntryListQuery, ExtractionRule, LibraryCounts, ProbeResult, Source, SourceSettings, SubscriptionDraft } from "../shared/types";
 
 declare global {
   interface Window {
@@ -16,7 +16,6 @@ declare global {
       readEntry(id: string): Promise<ArticleReadResult>;
       openEmbeddedEntry(id: string): Promise<void>;
       loadArticleImage(id: string, imageUrl: string): Promise<string>;
-      listFollowees(): Promise<Followee[]>;
       markRead(id: string, read: boolean): Promise<void>;
       markFavorite(id: string, favorite: boolean): Promise<void>;
       dismissEntry(id: string): Promise<void>;

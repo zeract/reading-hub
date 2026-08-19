@@ -46,17 +46,26 @@ describe("reader display-equation layout", () => {
     expect(styles).toMatch(/\.reader-toolbar\s+\.favorite-button\.is-favorite\s*\{[^}]*background:\s*var\(--accent-wash\)/s);
   });
 
-  it("uses a paper-and-ink palette with one tomato-red signal for selections and AI actions", () => {
-    expect(styles).toContain("--accent: #dc3c22;");
-    expect(styles).toContain("--selection-surface: #fffdf8;");
+  it("uses a muted paper palette for selection and keeps translation as a separate soft signal", () => {
+    expect(styles).toContain("--accent: #6a7d63;");
+    expect(styles).toContain("--selection-surface: #edede8;");
     expect(styles).toMatch(/\.entry-card\.selected,\s*\.entry-card\.selected:hover\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--ink\)/s);
     expect(styles).toMatch(/\.source-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--ink\)/s);
     expect(styles).toMatch(/\.library-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface-strong\)/s);
-    expect(styles).toContain(".reader-selection-underlines span { position: fixed; height: 2px; background: var(--selection-accent);");
-    expect(styles).toMatch(/\.selection-assistant-card\s*\{[^}]*box-shadow:\s*6px\s+6px\s+0\s+var\(--accent\)/s);
+    expect(styles).toContain(".reader-selection-underlines span { position: fixed; height: 1px; background: rgba(106,125,99,.56);");
+    expect(styles).toMatch(/\.selection-assistant-card\s*\{[^}]*border-radius:\s*22px;[^}]*box-shadow:\s*0\s+16px\s+38px\s+rgba\(40,40,36,\.1\)/s);
+    expect(styles).toMatch(/\.selection-assistant-card\[data-intent="translate"\]\s*>\s*header\s+p\s*\{[^}]*color:\s*var\(--danger\)/s);
     expect(styles).toMatch(/\.status\.active\s*\{[^}]*color:\s*var\(--ink\)/s);
-    expect(styles).not.toMatch(/--(?:olive|citron|rust):/);
+    expect(styles).not.toContain("#dc3c22");
     expect(styles).not.toContain("#d9ed72");
     expect(styles).not.toContain("#c7dd65");
+  });
+
+  it("supports a reader-only view while keeping source rows intentionally compact", () => {
+    expect(styles).toContain(".shell--reader-only { grid-template-columns: 0 0 minmax(0,1fr); }");
+    expect(styles).toContain(".shell--reader-only > .sidebar, .shell--reader-only > .timeline { display: none; }");
+    expect(styles).toMatch(/\.source-filter\s*\{[^}]*min-height:\s*34px;[^}]*border-radius:\s*8px/s);
+    expect(styles).toMatch(/\.source-title\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/s);
+    expect(styles).toContain(".settings-shell { --titlebar-leading-inset: 96px;");
   });
 });
