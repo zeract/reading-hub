@@ -7,6 +7,8 @@ import { ReadingDatabase } from "./database";
 import { builtInManifest } from "./connector-registry";
 import { chromiumFetch } from "./network";
 import { SecretStore } from "./secrets";
+import { PublicHttpClient } from "./http";
+import { parsePublicXTimeline, xPublicTimelineUrl } from "./x-public-timeline";
 
 const REDIRECT_URI = "http://127.0.0.1:43119/x/callback";
 const X_AUTHORIZE_URL = "https://x.com/i/oauth2/authorize";
@@ -15,6 +17,10 @@ const X_API_ROOT = "https://api.x.com/2";
 const X_SCOPES = ["tweet.read", "users.read", "follows.read", "offline.access"];
 const FOLLOW_REFRESH_MS = 6 * 60 * 60_000;
 const DEFAULT_FOLLOW_LIMIT = 200;
+// The public embed endpoint is shared by X's website widgets. Keep profile
+// requests sparse even during an initial multi-source sync; a user can still
+// refresh different non-X sources independently through the host scheduler.
+const PUBLIC_EMBED_MIN_INTERVAL_MS = 3_000;
 
 type XToken = {
   accessToken: string;
@@ -42,9 +48,14 @@ export class XApiError extends Error {
   }
 }
 
-/** Official X API connector; it never reads a browser profile or X cookies. */
+/**
+ * X supports two deliberately separated paths: official OAuth for a reader's
+ * following list, and X's public embed timeline for one public profile. Both
+ * paths avoid browser cookies and private web API calls.
+ */
 export class XConnector implements ConnectorAdapter {
-  readonly manifest = builtInManifest("x", "X 关注动态", ["oauth"], ["api.x.com", "x.com"], true);
+  readonly manifest = builtInManifest("x", "X", ["oauth", "public-http"], ["api.x.com", "x.com", "syndication.twitter.com"]);
+  private publicEmbedNextRequestAt = 0;
 
   constructor(
     private readonly database: ReadingDatabase,
@@ -52,7 +63,8 @@ export class XConnector implements ConnectorAdapter {
     private readonly openExternal: (url: string) => Promise<void> = (url) => shell.openExternal(url),
     // Keep X on Electron's Chromium network stack. It honours the system
     // proxy/VPN configuration, unlike Node's built-in fetch on macOS.
-    private readonly fetchX: XFetch = chromiumFetch
+    private readonly fetchX: XFetch = chromiumFetch,
+    private readonly publicHttp: Pick<PublicHttpClient, "getText"> = new PublicHttpClient()
   ) {}
 
   /**
@@ -101,11 +113,15 @@ export class XConnector implements ConnectorAdapter {
   }
 
   async sync(context: SyncContext): Promise<SyncResult> {
+    const profileUsername = stringValue(context.subscription.config.username);
+    if (context.subscription.config.mode === "public-profile") {
+      if (!profileUsername) throw new Error("X 公开博主来源缺少用户名，请删除后重新添加。");
+      return this.syncPublicProfile(profileUsername, context.source);
+    }
     const account = context.account;
     if (!account?.subjectId) throw new Error("X 来源缺少有效的授权账号，请重新连接 X。");
     try {
       const token = await this.tokenFor(account);
-      const profileUsername = stringValue(context.subscription.config.username);
       if (context.subscription.config.mode === "profile") {
         if (!profileUsername) throw new Error("X 博主来源缺少用户名，请删除后重新添加。");
         return this.syncProfile(profileUsername, token.accessToken, context.checkpoint);
@@ -118,6 +134,40 @@ export class XConnector implements ConnectorAdapter {
       if (error instanceof XApiError && error.status === 401) this.database.updateAccountStatus(account.id, "expired");
       throw error;
     }
+  }
+
+  private async syncPublicProfile(username: string, source: Source): Promise<SyncResult> {
+    let response;
+    try {
+      await this.waitForPublicEmbedSlot();
+      response = await this.publicHttp.getText(xPublicTimelineUrl(username), {
+        etag: source.etag,
+        lastModified: source.lastModified
+      });
+    } catch (error) {
+      throw publicTimelineError(error);
+    }
+    if (response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true };
+    const timeline = parsePublicXTimeline(response.text, username);
+    if (!timeline.recognized) {
+      throw new Error("X 未在公开嵌入时间线中返回可解析的帖子数据。该博主可能受保护、页面结构已变化或暂不可公开订阅；Reading Hub 不会使用 Cookie、登录态或私有 X Web API 绕过限制。");
+    }
+    const newest = latestId(timeline.entries.flatMap((entry) => entry.externalId ? [entry.externalId] : []));
+    return {
+      entries: timeline.entries,
+      emptyIsHealthy: true,
+      etag: response.etag,
+      lastModified: response.lastModified,
+      checkpoint: { sinceId: newest, data: { username, transport: "x-public-embed" } }
+    };
+  }
+
+  private async waitForPublicEmbedSlot(): Promise<void> {
+    const now = Date.now();
+    const requestedAt = Math.max(now, this.publicEmbedNextRequestAt);
+    this.publicEmbedNextRequestAt = requestedAt + PUBLIC_EMBED_MIN_INTERVAL_MS;
+    const delay = requestedAt - now;
+    if (delay > 0) await new Promise<void>((resolve) => setTimeout(resolve, delay));
   }
 
   private async syncFollowing(
@@ -436,4 +486,15 @@ function xHttpFailureMessage(status: number, path: string): string {
     return `${operation}需要 X API 的可用计费访问（HTTP 402）。请在 X Developer Console 的 Billing / Usage 中为该项目启用 API 额度后重新连接。`;
   }
   return `X API 请求失败（HTTP ${status}）。请检查开发者权限、额度和授权范围。`;
+}
+
+function publicTimelineError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : "";
+  if (/HTTP 429/.test(message)) {
+    return new Error("X 公开嵌入时间线暂时限流（HTTP 429）。Reading Hub 会按来源刷新间隔和同域串行策略重试；请不要频繁手动刷新。");
+  }
+  if (/HTTP 404|HTTP 403/.test(message)) {
+    return new Error("该 X 主页不可通过公开嵌入时间线读取。它可能受保护、已不存在或暂时限制公开嵌入；Reading Hub 不会使用 Cookie、登录态或私有 Web API 绕过限制。");
+  }
+  return error instanceof Error ? error : new Error("无法读取 X 公开嵌入时间线。");
 }

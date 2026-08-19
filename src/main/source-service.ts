@@ -74,9 +74,8 @@ export class SourceService {
 
   createXProfileSource(input: ProfileSubscriptionInput): Source {
     const profile = parseXProfileUrl(input.url);
-    const account = this.db.listAccounts("x").find((candidate) => candidate.status === "active");
-    if (!account) throw new Error("请先在“X 动态”中完成官方授权，再添加 X 博主主页。");
     const existing = this.db.getSourceByUrl(profile.url);
+    if (existing?.kind === "x" && existing.connectorId === "x") return this.db.usePublicXProfile(existing.id, profile.username);
     if (existing) return existing;
     const title = normalizedOptionalTitle(input.title) || `X · @${profile.username}`;
     return this.db.createSource({
@@ -85,8 +84,7 @@ export class SourceService {
       category: "平台动态",
       kind: "x",
       connectorId: "x",
-      accountId: account.id,
-      config: { mode: "profile", username: profile.username },
+      config: { mode: "public-profile", username: profile.username, transport: "x-public-embed" },
       pollingEnabled: true
     });
   }

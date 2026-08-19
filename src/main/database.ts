@@ -468,6 +468,28 @@ export class ReadingDatabase {
     return this.getSource(sourceId)!;
   }
 
+  /**
+   * A user explicitly switching an existing X profile to the no-cost public
+   * timeline must not retain its OAuth account, API checkpoint, validators or
+   * former error state. This is intentionally narrow rather than a generic
+   * connector mutation API.
+   */
+  usePublicXProfile(sourceId: string, username: string): Source {
+    const source = this.getSource(sourceId);
+    if (!source || source.kind !== "x" || source.connectorId !== "x") throw new Error("X 博主来源不存在或无法切换为公开订阅。");
+    const now = Date.now();
+    const config = { mode: "public-profile", username, transport: "x-public-embed" };
+    this.db.transaction(() => {
+      this.db.prepare(`UPDATE sources SET account_id = NULL, config_json = ?, status = 'active', etag = NULL, last_modified = NULL,
+        consecutive_empty = 0, failure_count = 0, last_error = NULL, next_check_at = ?, updated_at = ? WHERE id = ?`)
+        .run(JSON.stringify(config), now, now, sourceId);
+      this.db.prepare("UPDATE subscriptions SET connector_id = 'x', account_id = NULL, config_json = ?, updated_at = ? WHERE source_id = ?")
+        .run(JSON.stringify(config), now, sourceId);
+      this.db.prepare("DELETE FROM sync_checkpoints WHERE subscription_id = (SELECT id FROM subscriptions WHERE source_id = ?)").run(sourceId);
+    })();
+    return this.getSource(sourceId)!;
+  }
+
   getSourceByUrl(url: string): Source | undefined {
     const row = this.db.prepare("SELECT * FROM sources WHERE url = ?").get(url) as SourceRow | undefined;
     return row ? sourceFromRow(row) : undefined;

@@ -998,7 +998,7 @@ function AddSourceDialog({ onClose, onPreview, onZhihuStarted, onXStarted, onXPr
   const methods: Array<{ id: AddSourceMethod; label: string; description: string }> = [
     { id: "public", label: "网页 / Feed", description: "RSS、公开文章列表页或分享链接" },
     { id: "zhihu", label: "知乎动态", description: "授权账号的关注页公开动态" },
-    { id: "x", label: "X 动态", description: "官方 API 的关注账号或单个博主原创帖" },
+    { id: "x", label: "X 动态", description: "公开博主免 API；官方 API 关注动态可选" },
     { id: "xiaohongshu", label: "小红书", description: "公开博主主页中的结构化笔记卡片" },
     { id: "academic", label: "学术作者", description: "公开学术索引中的新论文" }
   ];
@@ -1052,7 +1052,7 @@ function ZhihuSourcePane({ onStarted }: { onStarted: () => Promise<void> }) {
 }
 
 function XSourcePane({ onStarted, onProfileSaved }: { onStarted: () => Promise<void>; onProfileSaved: () => Promise<void> }) {
-  const [mode, setMode] = useState<"official" | "profile">("official");
+  const [mode, setMode] = useState<"official" | "profile">("profile");
   const [clientId, setClientId] = useState("");
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -1062,7 +1062,7 @@ function XSourcePane({ onStarted, onProfileSaved }: { onStarted: () => Promise<v
     try { await window.reader.connectX(clientId); await onStarted(); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   }
   return <section className="source-method-pane">
-    <div className="connector-mode-tabs" role="tablist" aria-label="X 连接方式"><button type="button" role="tab" aria-selected={mode === "official"} className={mode === "official" ? "selected" : ""} onClick={() => setMode("official")}>关注动态</button><button type="button" role="tab" aria-selected={mode === "profile"} className={mode === "profile" ? "selected" : ""} onClick={() => setMode("profile")}>博主主页</button></div>
+    <div className="connector-mode-tabs" role="tablist" aria-label="X 连接方式"><button type="button" role="tab" aria-selected={mode === "profile"} className={mode === "profile" ? "selected" : ""} onClick={() => setMode("profile")}>公开博主</button><button type="button" role="tab" aria-selected={mode === "official"} className={mode === "official" ? "selected" : ""} onClick={() => setMode("official")}>官方 API（可选）</button></div>
     {mode === "official" ? <>
     <p className="dialog-intro">此功能使用官方 X API，不读取浏览器 Cookie。请在 X Developer Console 为你的应用配置回调地址 <code>http://127.0.0.1:43119/x/callback</code>，并填写该应用的 Client ID。</p>
     <p className="dialog-intro">授权后默认每 30–60 分钟收集关注账号的原创帖和文章型外链，过滤回复与转推。访问令牌仅保存在本机 Keychain。</p>
@@ -1090,15 +1090,15 @@ function XProfileSourcePane({ onSaved }: { onSaved: () => Promise<void> }) {
     }
   }
   return <section className="source-method-pane profile-source-pane">
-    <p className="dialog-intro">输入单个公开 X 博主主页（例如 <code>https://x.com/username</code>）。Reading Hub 会直接使用已授权的官方 API 查找该账号并增量收集其原创帖；不需要 RSSHub。</p>
-    <p className="dialog-intro">请先在“关注动态”完成官方授权。X 的开发者额度或权限不足时会显示明确错误，不会改用 Cookie 或网页绕过。</p>
+    <p className="dialog-intro">输入单个公开 X 博主主页（例如 <code>https://x.com/username</code>）。Reading Hub 使用 X 的公开嵌入时间线直接收集其原创帖，不需要 API 额度、Client ID 或 RSSHub。</p>
+    <p className="dialog-intro">仅适用于允许公开嵌入的博主；应用会遵守 robots、同域限流和 X 的响应限制。受保护账号、登录墙、验证码或限流不会被绕过。</p>
     <form className="connector-form" onSubmit={(event) => void submit(event)}>
       <label htmlFor="x-profile-url">X 博主主页</label>
       <input id="x-profile-url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://x.com/username" type="url" required />
       <label htmlFor="x-profile-title">显示名称（可选）</label>
       <input id="x-profile-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="X · @username" maxLength={120} />
       {error && <p className="error">{error}</p>}
-      <div className="dialog-actions"><button className="primary" disabled={busy}>{busy ? "正在连接…" : "添加 X 博主"}</button></div>
+      <div className="dialog-actions"><button className="primary" disabled={busy}>{busy ? "正在读取公开时间线…" : "添加 X 博主"}</button></div>
     </form>
   </section>;
 }
