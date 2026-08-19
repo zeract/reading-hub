@@ -15,6 +15,7 @@ import { SyncManager } from "./sync-manager";
 import { ZhihuConnector } from "./zhihu";
 import { ZhihuFollowConnector } from "./zhihu-follow";
 import { XConnector } from "./x";
+import { XiaohongshuConnector } from "./xiaohongshu";
 import { AcademicAuthorConnector } from "./academic";
 import { AiService } from "./ai-service";
 import { ArticleReader } from "./article-reader";
@@ -22,7 +23,7 @@ import { InAppArticleViewer } from "./in-app-article-viewer";
 import { auditLocalReader } from "./reader-audit";
 import { assertPublicUrl } from "../shared/url";
 import { RobotsDisallowedError } from "./robots";
-import type { AiProviderConfiguration, AiStreamEvent, AiStreamRequest, EntryListQuery, ExtractionRule, RssHubSubscriptionInput, Source, SourceSettings, SyncResult } from "../shared/types";
+import type { AiProviderConfiguration, AiStreamEvent, AiStreamRequest, EntryListQuery, ExtractionRule, ProfileSubscriptionInput, Source, SourceSettings, SyncResult } from "../shared/types";
 
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
@@ -89,11 +90,10 @@ function isAiStreamRequest(value: unknown): value is AiStreamRequest {
       && ["translate", "explain", "ask"].includes((selection as { intent?: unknown }).intent as string)));
 }
 
-function isRssHubSubscriptionInput(value: unknown): value is RssHubSubscriptionInput {
+function isProfileSubscriptionInput(value: unknown): value is ProfileSubscriptionInput {
   if (!value || typeof value !== "object") return false;
-  const input = value as Partial<RssHubSubscriptionInput>;
+  const input = value as Partial<ProfileSubscriptionInput>;
   return typeof input.url === "string"
-    && (input.platform === "x" || input.platform === "xiaohongshu")
     && (input.title === undefined || typeof input.title === "string");
 }
 
@@ -216,8 +216,10 @@ async function bootstrap(): Promise<void> {
     (entry, source) => generic.normalize(entry, source)
   ));
   const x = new XConnector(database, secrets);
+  const xiaohongshu = new XiaohongshuConnector(http);
   const academic = new AcademicAuthorConnector();
   registry.register(x);
+  registry.register(xiaohongshu);
   registry.register(academic);
   const articles = new ArticleReader(http, renderer, (url) => zhihuFollow.renderArticle(url));
   const inAppArticleViewer = new InAppArticleViewer();
@@ -249,10 +251,6 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle("source:update-settings", (_event, id: string, settings: SourceSettings) => sources.updateSettings(id, settings));
   ipcMain.handle("source:update-rule", (_event, id: string, rule: ExtractionRule) => database.updateRule(id, rule));
   ipcMain.handle("source:calibration", (_event, id: string) => sources.calibrate(id));
-  ipcMain.handle("rsshub:subscribe", (_event, input: unknown) => {
-    if (!isRssHubSubscriptionInput(input)) throw new Error("RSSHub 来源参数无效，请重新填写。");
-    return sources.createRssHubSource(input);
-  });
   ipcMain.handle("entry:list", (_event, query?: EntryListQuery) => database.listEntries(query));
   ipcMain.handle("entry:counts", () => database.getLibraryCounts());
   ipcMain.handle("entry:read-content", async (_event, entryId: string) => {
@@ -312,6 +310,16 @@ async function bootstrap(): Promise<void> {
     const account = await x.authorizeWithClientId(clientId);
     const source = sources.ensureXSource(account);
     return sync.syncSource(source.id);
+  });
+  ipcMain.handle("x:subscribe-profile", async (_event, input: unknown) => {
+    if (!isProfileSubscriptionInput(input)) throw new Error("X 博主主页参数无效，请重新填写。");
+    const source = sources.createXProfileSource(input);
+    return (await sync.syncSource(source.id)).source;
+  });
+  ipcMain.handle("xiaohongshu:subscribe-profile", async (_event, input: unknown) => {
+    if (!isProfileSubscriptionInput(input)) throw new Error("小红书博主主页参数无效，请重新填写。");
+    const source = sources.createXiaohongshuProfileSource(input);
+    return (await sync.syncSource(source.id)).source;
   });
   ipcMain.handle("academic:search", (_event, query: string) => academic.discover(query));
   ipcMain.handle("academic:subscribe", async (_event, draft: { title: string; targetId?: string; config?: Record<string, unknown> }) => {

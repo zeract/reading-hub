@@ -3,12 +3,10 @@
  * existing UI. New integrations are selected through `connectorId`, rather
  * than adding more special cases to the scheduler.
  */
-export type SourceKind = "rss" | "generic" | "manual" | "zhihu" | "zhihu_follow" | "x" | "academic";
+export type SourceKind = "rss" | "generic" | "manual" | "zhihu" | "zhihu_follow" | "x" | "xiaohongshu" | "academic";
 export type SourceStatus = "active" | "needs_review" | "paused" | "error";
 export type ConnectorId = SourceKind;
 export type AccountStatus = "active" | "expired" | "revoked" | "error";
-/** A public RSSHub route supplied by the reader; it never carries credentials. */
-export type RssHubPlatform = "x" | "xiaohongshu";
 
 export interface ExtractionRule {
   version: 1;
@@ -355,13 +353,9 @@ export interface SourceInput {
   status?: SourceStatus;
 }
 
-/**
- * RSSHub remains an external Feed producer. Reading Hub only accepts a public
- * route URL and treats its output exactly like any other RSS/Atom/JSON Feed.
- */
-export interface RssHubSubscriptionInput {
+/** A direct, user-supplied public author/profile URL. */
+export interface ProfileSubscriptionInput {
   url: string;
-  platform: RssHubPlatform;
   /** Local-only display name. */
   title?: string;
 }

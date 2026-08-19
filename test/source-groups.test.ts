@@ -24,7 +24,7 @@ describe("source folders", () => {
     const sources = [
       source("Zeta", "generic"),
       source("知乎", "zhihu_follow"),
-      source("小红书博主", "rss", undefined, { sourceProvider: "rsshub", rsshubPlatform: "xiaohongshu" }),
+      source("小红书博主", "xiaohongshu"),
       source("论文", "academic"),
       source("Alpha", "rss", "机器学习")
     ];

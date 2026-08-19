@@ -105,52 +105,94 @@ export class XConnector implements ConnectorAdapter {
     if (!account?.subjectId) throw new Error("X 来源缺少有效的授权账号，请重新连接 X。");
     try {
       const token = await this.tokenFor(account);
-      const checkpointData = context.checkpoint?.data ?? {};
-      const now = Date.now();
-      let followed = decodeFollowed(checkpointData.followed);
-      const refreshedAt = numberValue(checkpointData.followingRefreshedAt);
-      if (!followed.length || !refreshedAt || now - refreshedAt >= FOLLOW_REFRESH_MS) {
-        followed = await this.fetchFollowing(account.subjectId, token.accessToken);
+      const profileUsername = stringValue(context.subscription.config.username);
+      if (context.subscription.config.mode === "profile") {
+        if (!profileUsername) throw new Error("X 博主来源缺少用户名，请删除后重新添加。");
+        return this.syncProfile(profileUsername, token.accessToken, context.checkpoint);
       }
-      const configuredLimit = numberValue(context.subscription.config.maxFollowees);
-      const limit = Math.max(1, Math.min(configuredLimit || DEFAULT_FOLLOW_LIMIT, DEFAULT_FOLLOW_LIMIT));
-      const tracked = followed.slice(0, limit);
-      const sinceByUser = objectValue(checkpointData.sinceByUser);
-      const nextSinceByUser: Record<string, string> = { ...stringRecord(sinceByUser) };
-      const entries: RawEntry[] = [];
-      for (const user of tracked) {
-        const query = new URLSearchParams({
-          max_results: "20",
-          exclude: "replies,retweets",
-          "tweet.fields": "created_at,entities,referenced_tweets,in_reply_to_user_id"
-        });
-        if (nextSinceByUser[user.id]) query.set("since_id", nextSinceByUser[user.id]);
-        const response = await this.requestJson<XResponse<XPost[]>>(
-          `/users/${encodeURIComponent(user.id)}/tweets?${query}`,
-          token.accessToken
-        );
-        for (const post of response.data ?? []) {
-          // Advance the provider cursor across every returned status, including
-          // filtered replies/reposts, so a busy account cannot keep the same
-          // unwanted page at the front of every subsequent poll.
-          if (!nextSinceByUser[user.id] || isNewerId(post.id, nextSinceByUser[user.id])) nextSinceByUser[user.id] = post.id;
-          if (!isOriginalPost(post)) continue;
-          const raw = postToEntry(post, user);
-          if (raw) entries.push(raw);
-        }
-      }
-      return {
-        entries,
-        emptyIsHealthy: true,
-        checkpoint: {
-          sinceId: latestId(Object.values(nextSinceByUser)),
-          data: { followed, followingRefreshedAt: now, sinceByUser: nextSinceByUser }
-        }
-      };
+      return this.syncFollowing(account.subjectId, token.accessToken, context.subscription.config, context.checkpoint);
     } catch (error) {
-      if (error instanceof XApiError && (error.status === 401 || error.status === 403)) this.database.updateAccountStatus(account.id, "expired");
+      // A 403 can mean a protected target or a product entitlement issue; it
+      // does not prove the local OAuth token has expired. Only X's 401 is a
+      // safe reason to invalidate the saved account.
+      if (error instanceof XApiError && error.status === 401) this.database.updateAccountStatus(account.id, "expired");
       throw error;
     }
+  }
+
+  private async syncFollowing(
+    accountUserId: string,
+    accessToken: string,
+    config: Record<string, unknown>,
+    checkpoint: SyncContext["checkpoint"]
+  ): Promise<SyncResult> {
+    const checkpointData = checkpoint?.data ?? {};
+    const now = Date.now();
+    let followed = decodeFollowed(checkpointData.followed);
+    const refreshedAt = numberValue(checkpointData.followingRefreshedAt);
+    if (!followed.length || !refreshedAt || now - refreshedAt >= FOLLOW_REFRESH_MS) {
+      followed = await this.fetchFollowing(accountUserId, accessToken);
+    }
+    const configuredLimit = numberValue(config.maxFollowees);
+    const limit = Math.max(1, Math.min(configuredLimit || DEFAULT_FOLLOW_LIMIT, DEFAULT_FOLLOW_LIMIT));
+    const tracked = followed.slice(0, limit);
+    const sinceByUser = objectValue(checkpointData.sinceByUser);
+    const nextSinceByUser: Record<string, string> = { ...stringRecord(sinceByUser) };
+    const entries: RawEntry[] = [];
+    for (const user of tracked) {
+      const fetched = await this.fetchUserPosts(user, accessToken, nextSinceByUser[user.id]);
+      if (fetched.sinceId) nextSinceByUser[user.id] = fetched.sinceId;
+      entries.push(...fetched.entries);
+    }
+    return {
+      entries,
+      emptyIsHealthy: true,
+      checkpoint: {
+        sinceId: latestId(Object.values(nextSinceByUser)),
+        data: { followed, followingRefreshedAt: now, sinceByUser: nextSinceByUser }
+      }
+    };
+  }
+
+  private async syncProfile(username: string, accessToken: string, checkpoint: SyncContext["checkpoint"]): Promise<SyncResult> {
+    const profile = await this.requestJson<XResponse<XUser>>(
+      `/users/by/username/${encodeURIComponent(username)}?user.fields=name,username`,
+      accessToken
+    ).then((response) => response.data);
+    if (!profile?.id || !profile.username) throw new Error("未找到该 X 博主，或该主页目前不可公开读取。");
+    const fetched = await this.fetchUserPosts(profile, accessToken, checkpoint?.sinceId);
+    return {
+      entries: fetched.entries,
+      emptyIsHealthy: true,
+      checkpoint: {
+        sinceId: fetched.sinceId,
+        data: { username: profile.username, userId: profile.id }
+      }
+    };
+  }
+
+  private async fetchUserPosts(user: XUser, accessToken: string, sinceId?: string): Promise<{ entries: RawEntry[]; sinceId?: string }> {
+    const query = new URLSearchParams({
+      max_results: "20",
+      exclude: "replies,retweets",
+      "tweet.fields": "created_at,entities,referenced_tweets,in_reply_to_user_id"
+    });
+    if (sinceId) query.set("since_id", sinceId);
+    const response = await this.requestJson<XResponse<XPost[]>>(
+      `/users/${encodeURIComponent(user.id)}/tweets?${query}`,
+      accessToken
+    );
+    let nextSinceId = sinceId;
+    const entries: RawEntry[] = [];
+    for (const post of response.data ?? []) {
+      // Advance across filtered replies/reposts too, otherwise a busy author
+      // can keep an unwanted page at the front of every poll.
+      if (!nextSinceId || isNewerId(post.id, nextSinceId)) nextSinceId = post.id;
+      if (!isOriginalPost(post)) continue;
+      const raw = postToEntry(post, user);
+      if (raw) entries.push(raw);
+    }
+    return { entries, sinceId: nextSinceId };
   }
 
   normalize(item: RawEntry, source: Source) {
@@ -383,6 +425,8 @@ function latestId(ids: string[]): string | undefined {
 function xHttpFailureMessage(status: number, path: string): string {
   const operation = path.startsWith("/users/me")
     ? "读取当前 X 账号"
+    : path.includes("/by/username/")
+      ? "读取 X 博主主页"
     : path.includes("/following")
       ? "读取 X 关注列表"
       : path.includes("/tweets")

@@ -80,6 +80,34 @@ describe("connector platform", () => {
     database.close();
   });
 
+  it("syncs a single X author URL through the official lookup and posts endpoints", async () => {
+    const database = new ReadingDatabase(":memory:");
+    const account = database.saveAccount({
+      connectorId: "x", displayName: "X", subjectId: "owner", keychainAccount: "x:account", scopes: ["tweet.read"], status: "active", config: { clientId: "client" }
+    });
+    const source = database.createSource({
+      url: "https://x.com/example", title: "Example", kind: "x", connectorId: "x", accountId: account.id,
+      config: { mode: "profile", username: "example" }, pollingEnabled: true
+    });
+    const secretStore = { getConnectorSecret: async () => JSON.stringify({ accessToken: "local-only", expiresAt: Date.now() + 3_600_000 }) };
+    const fetchMock = vi.fn(async (input: URL | string) => {
+      const url = String(input);
+      if (url.includes("/by/username/example")) return new Response(JSON.stringify({ data: { id: "author", name: "Example", username: "example" } }), { status: 200 });
+      if (url.includes("/users/author/tweets")) return new Response(JSON.stringify({ data: [{ id: "200", text: "A direct profile post", created_at: "2026-08-19T00:00:00Z" }] }), { status: 200 });
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const connector = new XConnector(database, secretStore as any, async () => undefined, fetchMock);
+    const result = await connector.sync({ source, subscription: database.getSubscriptionForSource(source.id)!, account });
+    expect(result.entries).toMatchObject([{ url: "https://x.com/example/status/200", externalId: "200" }]);
+    expect(result.checkpoint).toMatchObject({ sinceId: "200", data: { username: "example", userId: "author" } });
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual(expect.arrayContaining([
+      expect.stringContaining("https://api.x.com/2/users/by/username/example"),
+      expect.stringContaining("https://api.x.com/2/users/author/tweets")
+    ]));
+    expect(fetchMock.mock.calls.map(([url]) => String(url)).join("\n")).not.toContain("/following");
+    database.close();
+  });
+
   it("reports a safe, actionable error when the X token service cannot be reached", async () => {
     const connector = new XConnector({} as any, {} as any, async () => undefined, async () => {
       throw new TypeError("fetch failed with request credentials");

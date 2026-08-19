@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { Account, CalibrationResult, ProbeResult, RssHubSubscriptionInput, Source, SourceInput, SourceSettings, SubscriptionDraft } from "../shared/types";
+import type { Account, CalibrationResult, ProbeResult, ProfileSubscriptionInput, Source, SourceInput, SourceSettings, SubscriptionDraft } from "../shared/types";
 import { ReadingDatabase } from "./database";
 import { isXiaohongshuUrl, manualProbe, SourceProbe } from "./source-probe";
 import { SyncManager } from "./sync-manager";
 import { ZhihuFollowConnector } from "./zhihu-follow";
-import { assertPublicUrl } from "../shared/url";
+import { parseXiaohongshuProfileUrl, parseXProfileUrl } from "./platform-profile-url";
 
 type PendingProbe = { expiresAt: number; probe: ProbeResult };
 
@@ -59,7 +59,7 @@ export class SourceService {
   }
 
   ensureXSource(account: Account): Source {
-    const existing = this.db.listSources().find((source) => source.connectorId === "x" && source.accountId === account.id);
+    const existing = this.db.listSources().find((source) => source.connectorId === "x" && source.accountId === account.id && source.config?.mode !== "profile");
     if (existing) return existing;
     return this.db.createSource({
       url: `https://api.x.com/2/users/${encodeURIComponent(account.subjectId || account.id)}/following`,
@@ -72,41 +72,38 @@ export class SourceService {
     });
   }
 
-  /**
-   * RSSHub is deliberately modelled as an RSS transport, not as a privileged
-   * platform connector. This preserves the host's usual robots, request and
-   * retry policies and keeps third-party credentials outside Reading Hub.
-   */
-  async createRssHubSource(input: RssHubSubscriptionInput): Promise<Source> {
-    const url = input.url.trim();
-    if (!url) throw new Error("请填写 RSSHub 路由地址。");
-    const route = assertPublicUrl(url);
-    const routePrefix = input.platform === "x" ? "/twitter/" : "/xiaohongshu/";
-    if (!route.pathname.startsWith(routePrefix)) {
-      throw new Error(input.platform === "x"
-        ? "X 的 RSSHub 路由应以 /twitter/ 开头。"
-        : "小红书的 RSSHub 路由应以 /xiaohongshu/ 开头。");
-    }
-
-    const probe = await this.probeService.probe(route.toString());
-    if (probe.kind !== "rss") throw new Error("该 RSSHub 路由没有返回可订阅的 Feed，请检查路由、实例状态和公开访问权限。");
-    const existing = this.db.getSourceByUrl(probe.url);
+  createXProfileSource(input: ProfileSubscriptionInput): Source {
+    const profile = parseXProfileUrl(input.url);
+    const account = this.db.listAccounts("x").find((candidate) => candidate.status === "active");
+    if (!account) throw new Error("请先在“X 动态”中完成官方授权，再添加 X 博主主页。");
+    const existing = this.db.getSourceByUrl(profile.url);
     if (existing) return existing;
-
-    const providedTitle = input.title?.replace(/\s+/g, " ").trim();
-    if (providedTitle && providedTitle.length > 120) throw new Error("来源名称最多 120 个字符。");
-    const platformTitle = input.platform === "x" ? "X / Twitter" : "小红书";
-    const source = this.db.createSource({
-      url: probe.url,
-      title: providedTitle || `${platformTitle} · ${probe.title}`,
+    const title = normalizedOptionalTitle(input.title) || `X · @${profile.username}`;
+    return this.db.createSource({
+      url: profile.url,
+      title,
       category: "平台动态",
-      kind: "rss",
-      connectorId: "rss",
-      config: { sourceProvider: "rsshub", rsshubPlatform: input.platform },
+      kind: "x",
+      connectorId: "x",
+      accountId: account.id,
+      config: { mode: "profile", username: profile.username },
       pollingEnabled: true
     });
-    this.sync.savePreview(source, probe.preview);
-    return source;
+  }
+
+  createXiaohongshuProfileSource(input: ProfileSubscriptionInput): Source {
+    const profile = parseXiaohongshuProfileUrl(input.url);
+    const existing = this.db.getSourceByUrl(profile.url);
+    if (existing) return existing;
+    return this.db.createSource({
+      url: profile.url,
+      title: normalizedOptionalTitle(input.title) || `小红书 · ${profile.profileId}`,
+      category: "平台动态",
+      kind: "xiaohongshu",
+      connectorId: "xiaohongshu",
+      config: { mode: "profile", profileId: profile.profileId },
+      pollingEnabled: true
+    });
   }
 
   createAcademicSource(draft: SubscriptionDraft): Source {
@@ -156,9 +153,9 @@ export class SourceService {
     if (category && category.length > 60) throw new Error("来源分类最多 60 个字符。");
     const publicKinds = new Set<Source["kind"]>(["rss", "generic", "manual"]);
     const sourceIsPublic = publicKinds.has(source.kind);
-    const sourceUsesRssHub = source.config?.sourceProvider === "rsshub";
+    const sourceUsesLegacyRssHub = source.config?.sourceProvider === "rsshub";
     if (!sourceIsPublic && settings.kind !== source.kind) throw new Error("授权平台的信源类型由连接器决定，不能在此更改。");
-    if (sourceUsesRssHub && settings.kind !== source.kind) throw new Error("RSSHub 路由固定使用 Feed 连接器，不能在此更改。");
+    if (sourceUsesLegacyRssHub && settings.kind !== source.kind) throw new Error("已保存的 RSSHub Feed 固定使用 RSS 连接器，不能在此更改。");
     if (sourceIsPublic && !publicKinds.has(settings.kind)) throw new Error("只能将公开来源设置为 RSS、公开网页或分享链接。");
     const interval = settings.refreshIntervalMinutes;
     if (settings.pollingEnabled && interval !== undefined && ![30, 60, 120, 240, 720, 1440].includes(interval)) {
@@ -179,4 +176,10 @@ export class SourceService {
     const now = Date.now();
     for (const [token, item] of this.pending) if (item.expiresAt < now) this.pending.delete(token);
   }
+}
+
+function normalizedOptionalTitle(value: string | undefined): string | undefined {
+  const title = value?.replace(/\s+/g, " ").trim();
+  if (title && title.length > 120) throw new Error("来源名称最多 120 个字符。");
+  return title || undefined;
 }
