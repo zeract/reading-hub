@@ -353,7 +353,7 @@ export interface SourceInput {
   status?: SourceStatus;
 }
 
-/** A direct, user-supplied public author/profile URL. */
+/** A direct, user-supplied platform profile URL. */
 export interface ProfileSubscriptionInput {
   url: string;
   /** Local-only display name. */

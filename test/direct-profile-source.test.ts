@@ -9,48 +9,23 @@ function serviceFor(database: ReadingDatabase) {
 }
 
 describe("direct platform profile sources", () => {
-  it("creates an X author target from a profile URL without an API account", () => {
+  it("pauses legacy X public-profile sources instead of retrying a robots-blocked transport", () => {
     const database = new ReadingDatabase(":memory:");
     const service = serviceFor(database);
-    const source = service.createXProfileSource({ url: "https://twitter.com/Example_User/", title: "Example posts" });
-
-    expect(source).toMatchObject({
-      url: "https://x.com/Example_User",
-      title: "Example posts",
-      category: "平台动态",
-      kind: "x",
-      connectorId: "x",
-      accountId: undefined,
-      config: { mode: "public-profile", username: "Example_User", transport: "x-public-embed" }
+    const source = database.createSource({
+      url: "https://x.com/example", title: "X · @example", kind: "x", connectorId: "x",
+      config: { mode: "public-profile", username: "example", transport: "x-public-embed" }, pollingEnabled: true
     });
-    expect(database.getSubscriptionForSource(source.id)).toMatchObject({ connectorId: "x", accountId: undefined, config: { mode: "public-profile", username: "Example_User", transport: "x-public-embed" } });
-    expect(service.createXProfileSource({ url: "https://x.com/Example_User" }).id).toBe(source.id);
-    database.close();
-  });
-
-  it("switches a failed OAuth profile subscription to the public transport", () => {
-    const database = new ReadingDatabase(":memory:");
-    const account = database.saveAccount({
-      connectorId: "x", displayName: "X · @reader", subjectId: "reader", keychainAccount: "x:reader", scopes: ["tweet.read"], status: "active"
+    expect(service.retireUnsupportedXPublicProfileSources()).toBe(1);
+    expect(database.getSource(source.id)).toMatchObject({
+      status: "paused",
+      pollingEnabled: false,
+      lastError: expect.stringContaining("已停止刷新")
     });
-    const service = serviceFor(database);
-    const old = database.createSource({
-      url: "https://x.com/example", title: "Old X", kind: "x", connectorId: "x", accountId: account.id,
-      config: { mode: "profile", username: "example" }, pollingEnabled: true, status: "error"
-    });
-    database.saveCheckpoint(old.id, { sinceId: "111", data: { old: true } });
-    const source = service.createXProfileSource({ url: "https://x.com/example" });
-    expect(source).toMatchObject({ id: old.id, accountId: undefined, status: "active", config: { mode: "public-profile", username: "example", transport: "x-public-embed" } });
-    expect(database.getSubscriptionForSource(source.id)).toMatchObject({ accountId: undefined, config: { mode: "public-profile", username: "example" } });
-    expect(database.getCheckpoint(source.id)).toBeUndefined();
-    database.close();
-  });
-
-  it("requires a profile URL rather than a status or RSSHub route", () => {
-    const database = new ReadingDatabase(":memory:");
-    const service = serviceFor(database);
-    expect(() => service.createXProfileSource({ url: "https://x.com/example/status/42" })).toThrow("单个 X 博主主页");
-    expect(() => service.createXProfileSource({ url: "https://rsshub.example/twitter/user/example" })).toThrow("x.com 或 twitter.com");
+    expect(service.updateSettings(source.id, {
+      title: "X · @example", kind: "x", pollingEnabled: true, refreshIntervalMinutes: 30
+    })).toMatchObject({ status: "paused", pollingEnabled: false });
+    expect(service.retireUnsupportedXPublicProfileSources()).toBe(0);
     database.close();
   });
 

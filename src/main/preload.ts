@@ -10,7 +10,6 @@ contextBridge.exposeInMainWorld("reader", {
   updateSourceSettings: (id: string, settings: SourceSettings) => ipcRenderer.invoke("source:update-settings", id, settings),
   updateRule: (id: string, rule: ExtractionRule) => ipcRenderer.invoke("source:update-rule", id, rule),
   calibrateSource: (id: string) => ipcRenderer.invoke("source:calibration", id),
-  subscribeXProfile: (input: ProfileSubscriptionInput) => ipcRenderer.invoke("x:subscribe-profile", input),
   subscribeXiaohongshuProfile: (input: ProfileSubscriptionInput) => ipcRenderer.invoke("xiaohongshu:subscribe-profile", input),
   listEntries: (query?: EntryListQuery) => ipcRenderer.invoke("entry:list", query),
   getLibraryCounts: () => ipcRenderer.invoke("entry:counts"),

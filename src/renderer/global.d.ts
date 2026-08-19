@@ -11,7 +11,6 @@ declare global {
       updateSourceSettings(id: string, settings: SourceSettings): Promise<Source>;
       updateRule(id: string, rule: ExtractionRule): Promise<void>;
       calibrateSource(id: string): Promise<CalibrationResult>;
-      subscribeXProfile(input: ProfileSubscriptionInput): Promise<Source>;
       subscribeXiaohongshuProfile(input: ProfileSubscriptionInput): Promise<Source>;
       listEntries(query?: EntryListQuery): Promise<Entry[]>;
       getLibraryCounts(): Promise<LibraryCounts>;

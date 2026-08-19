@@ -238,6 +238,7 @@ async function bootstrap(): Promise<void> {
   };
   const sync = new SyncManager(database, registry, afterSync);
   const sources = new SourceService(database, probe, sync, zhihuFollow);
+  sources.retireUnsupportedXPublicProfileSources();
   zhihuFollow.setOnAuthenticated(async () => {
     const source = sources.ensureZhihuFollowSource();
     await sync.syncSource(source.id);
@@ -310,11 +311,6 @@ async function bootstrap(): Promise<void> {
     const account = await x.authorizeWithClientId(clientId);
     const source = sources.ensureXSource(account);
     return sync.syncSource(source.id);
-  });
-  ipcMain.handle("x:subscribe-profile", async (_event, input: unknown) => {
-    if (!isProfileSubscriptionInput(input)) throw new Error("X 博主主页参数无效，请重新填写。");
-    const source = sources.createXProfileSource(input);
-    return (await sync.syncSource(source.id)).source;
   });
   ipcMain.handle("xiaohongshu:subscribe-profile", async (_event, input: unknown) => {
     if (!isProfileSubscriptionInput(input)) throw new Error("小红书博主主页参数无效，请重新填写。");

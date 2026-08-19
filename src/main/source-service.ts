@@ -4,7 +4,7 @@ import { ReadingDatabase } from "./database";
 import { isXiaohongshuUrl, manualProbe, SourceProbe } from "./source-probe";
 import { SyncManager } from "./sync-manager";
 import { ZhihuFollowConnector } from "./zhihu-follow";
-import { parseXiaohongshuProfileUrl, parseXProfileUrl } from "./platform-profile-url";
+import { parseXiaohongshuProfileUrl } from "./platform-profile-url";
 
 type PendingProbe = { expiresAt: number; probe: ProbeResult };
 
@@ -72,23 +72,6 @@ export class SourceService {
     });
   }
 
-  createXProfileSource(input: ProfileSubscriptionInput): Source {
-    const profile = parseXProfileUrl(input.url);
-    const existing = this.db.getSourceByUrl(profile.url);
-    if (existing?.kind === "x" && existing.connectorId === "x") return this.db.usePublicXProfile(existing.id, profile.username);
-    if (existing) return existing;
-    const title = normalizedOptionalTitle(input.title) || `X · @${profile.username}`;
-    return this.db.createSource({
-      url: profile.url,
-      title,
-      category: "平台动态",
-      kind: "x",
-      connectorId: "x",
-      config: { mode: "public-profile", username: profile.username, transport: "x-public-embed" },
-      pollingEnabled: true
-    });
-  }
-
   createXiaohongshuProfileSource(input: ProfileSubscriptionInput): Source {
     const profile = parseXiaohongshuProfileUrl(input.url);
     const existing = this.db.getSourceByUrl(profile.url);
@@ -152,6 +135,7 @@ export class SourceService {
     const publicKinds = new Set<Source["kind"]>(["rss", "generic", "manual"]);
     const sourceIsPublic = publicKinds.has(source.kind);
     const sourceUsesLegacyRssHub = source.config?.sourceProvider === "rsshub";
+    const unsupportedXPublicProfile = source.kind === "x" && source.connectorId === "x" && source.config?.mode === "public-profile";
     if (!sourceIsPublic && settings.kind !== source.kind) throw new Error("授权平台的信源类型由连接器决定，不能在此更改。");
     if (sourceUsesLegacyRssHub && settings.kind !== source.kind) throw new Error("已保存的 RSSHub Feed 固定使用 RSS 连接器，不能在此更改。");
     if (sourceIsPublic && !publicKinds.has(settings.kind)) throw new Error("只能将公开来源设置为 RSS、公开网页或分享链接。");
@@ -159,7 +143,7 @@ export class SourceService {
     if (settings.pollingEnabled && interval !== undefined && ![30, 60, 120, 240, 720, 1440].includes(interval)) {
       throw new Error("刷新间隔必须是预设的安全时间。");
     }
-    const pollingEnabled = settings.kind === "manual" ? false : settings.pollingEnabled;
+    const pollingEnabled = settings.kind === "manual" || unsupportedXPublicProfile ? false : settings.pollingEnabled;
     return this.db.updateSourceSettings(sourceId, { ...settings, title, category, pollingEnabled, refreshIntervalMinutes: pollingEnabled ? interval : undefined });
   }
 
@@ -168,6 +152,21 @@ export class SourceService {
     if (!source) throw new Error("来源不存在。");
     if (source.kind === "zhihu_follow") await this.zhihuFollow.clearSession();
     this.db.deleteSource(sourceId);
+  }
+
+  /**
+   * Older builds offered an unauthenticated X embed transport. X's robots
+   * policy now rejects that endpoint, so retain any already collected cards
+   * but stop the legacy source before the scheduler can retry it again.
+   */
+  retireUnsupportedXPublicProfileSources(): number {
+    const legacySources = this.db.listSources().filter((source) => source.kind === "x"
+      && source.connectorId === "x" && source.config?.mode === "public-profile"
+      && (source.status !== "paused" || source.pollingEnabled));
+    for (const source of legacySources) {
+      this.db.pauseSource(source.id, "X 不提供可由 Reading Hub 自动读取的公开订阅通道；此旧来源已停止刷新。可保留已有卡片，或删除来源后改用官方 API。");
+    }
+    return legacySources.length;
   }
 
   private prunePending(): void {

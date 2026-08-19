@@ -239,6 +239,10 @@ export function App() {
 
   function refreshCurrentView() {
     if (activeSource) {
+      if (isRetiredXPublicProfile(activeSource)) {
+        setNotice("此旧 X 公开来源已停止刷新：X 没有提供可合规自动读取的公开订阅接口。可保留已有卡片，或删除来源后使用官方 API。");
+        return;
+      }
       void refresh(activeSource);
       return;
     }
@@ -254,7 +258,7 @@ export function App() {
       <header className="app-titlebar">
         <div className="app-titlebar-actions">
           <button type="button" className="app-titlebar-button" onClick={() => readerOnly ? setReaderOnly(false) : setSidebarCollapsed((collapsed) => !collapsed)} aria-label={readerOnly ? "退出沉浸阅读" : sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"} title={readerOnly ? "退出沉浸阅读" : sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"}><AppIcon name={readerOnly ? "expand" : "sidebar"} /></button>
-          {!readerOnly && <button type="button" className="app-titlebar-button" onClick={refreshCurrentView} disabled={busy} aria-label={activeSource ? `刷新 ${activeSource.title}` : "重新载入收件箱"} title={activeSource ? "刷新当前来源" : "重新载入收件箱"}><AppIcon name="refresh" /></button>}
+          {!readerOnly && <button type="button" className="app-titlebar-button" onClick={refreshCurrentView} disabled={busy || isRetiredXPublicProfile(activeSource)} aria-label={activeSource ? `刷新 ${activeSource.title}` : "重新载入收件箱"} title={isRetiredXPublicProfile(activeSource) ? "此旧 X 公开来源已停止刷新" : activeSource ? "刷新当前来源" : "重新载入收件箱"}><AppIcon name="refresh" /></button>}
           {!readerOnly && <button type="button" className="app-titlebar-button app-titlebar-add" onClick={() => setShowAddSource(true)} aria-label="添加来源" title="添加来源"><AppIcon name="add" /></button>}
         </div>
       </header>
@@ -312,7 +316,6 @@ export function App() {
         onPreview={preview}
         onZhihuStarted={async () => { setShowAddSource(false); setNotice("已打开知乎登录窗口；登录完成后会自动同步关注动态。"); await reload(); }}
         onXStarted={async () => { setShowAddSource(false); setNotice("X 已授权，正在同步关注账号的原创帖子。"); await reload(); }}
-        onXProfileSaved={async () => { setShowAddSource(false); setNotice("X 博主来源已添加，正在同步原创帖子。"); await reload(); }}
         onXiaohongshuSaved={async () => { setShowAddSource(false); setNotice("小红书公开博主来源已添加，正在读取公开笔记。"); await reload(); }}
         onAcademicSaved={async () => { setShowAddSource(false); setNotice("学术作者来源已添加，正在同步公开论文记录。"); await reload(); }}
       />}
@@ -985,12 +988,11 @@ function PreviewDialog({ pending, onCancel, onConfirm, busy }: { pending: Pendin
   </Dialog>;
 }
 
-function AddSourceDialog({ onClose, onPreview, onZhihuStarted, onXStarted, onXProfileSaved, onXiaohongshuSaved, onAcademicSaved }: {
+function AddSourceDialog({ onClose, onPreview, onZhihuStarted, onXStarted, onXiaohongshuSaved, onAcademicSaved }: {
   onClose: () => void;
   onPreview: (url: string) => Promise<void>;
   onZhihuStarted: () => Promise<void>;
   onXStarted: () => Promise<void>;
-  onXProfileSaved: () => Promise<void>;
   onXiaohongshuSaved: () => Promise<void>;
   onAcademicSaved: () => Promise<void>;
 }) {
@@ -998,7 +1000,7 @@ function AddSourceDialog({ onClose, onPreview, onZhihuStarted, onXStarted, onXPr
   const methods: Array<{ id: AddSourceMethod; label: string; description: string }> = [
     { id: "public", label: "网页 / Feed", description: "RSS、公开文章列表页或分享链接" },
     { id: "zhihu", label: "知乎动态", description: "授权账号的关注页公开动态" },
-    { id: "x", label: "X 动态", description: "公开博主免 API；官方 API 关注动态可选" },
+    { id: "x", label: "X 动态", description: "官方 API 授权后的关注动态" },
     { id: "xiaohongshu", label: "小红书", description: "公开博主主页中的结构化笔记卡片" },
     { id: "academic", label: "学术作者", description: "公开学术索引中的新论文" }
   ];
@@ -1010,7 +1012,7 @@ function AddSourceDialog({ onClose, onPreview, onZhihuStarted, onXStarted, onXPr
     <p className="source-method-description">{selected.description}</p>
     {method === "public" && <PublicSourcePane onPreview={onPreview} />}
     {method === "zhihu" && <ZhihuSourcePane onStarted={onZhihuStarted} />}
-    {method === "x" && <XSourcePane onStarted={onXStarted} onProfileSaved={onXProfileSaved} />}
+    {method === "x" && <XSourcePane onStarted={onXStarted} />}
     {method === "xiaohongshu" && <XiaohongshuSourcePane onSaved={onXiaohongshuSaved} />}
     {method === "academic" && <AcademicSourcePane onSaved={onAcademicSaved} />}
   </Dialog>;
@@ -1029,7 +1031,7 @@ function PublicSourcePane({ onPreview }: { onPreview: (url: string) => Promise<v
   return <form className="connector-form" onSubmit={(event) => void submit(event)}>
     <label htmlFor="source-url">网址</label>
     <input id="source-url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://… 或 http://…" type="url" required />
-    <p className="dialog-intro">优先识别 RSS、Atom、JSON Feed；没有 Feed 时会从公开页面提取文章卡片。X 主页请在“X 动态”中处理，不会在这里被误当成普通网页抓取；小红书分享链接仅作为一次性原文入口保存。</p>
+    <p className="dialog-intro">优先识别 RSS、Atom、JSON Feed；没有 Feed 时会从公开页面提取文章卡片。X 主页不提供无授权自动订阅，请在“X 动态”中使用官方 API；小红书分享链接仅作为一次性原文入口保存。</p>
     {error && <p className="error">{error}</p>}
     <div className="dialog-actions"><button className="primary" disabled={busy}>{busy ? "正在探测…" : "探测来源"}</button></div>
   </form>;
@@ -1051,8 +1053,7 @@ function ZhihuSourcePane({ onStarted }: { onStarted: () => Promise<void> }) {
   </section>;
 }
 
-function XSourcePane({ onStarted, onProfileSaved }: { onStarted: () => Promise<void>; onProfileSaved: () => Promise<void> }) {
-  const [mode, setMode] = useState<"official" | "profile">("profile");
+function XSourcePane({ onStarted }: { onStarted: () => Promise<void> }) {
   const [clientId, setClientId] = useState("");
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -1062,44 +1063,10 @@ function XSourcePane({ onStarted, onProfileSaved }: { onStarted: () => Promise<v
     try { await window.reader.connectX(clientId); await onStarted(); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   }
   return <section className="source-method-pane">
-    <div className="connector-mode-tabs" role="tablist" aria-label="X 连接方式"><button type="button" role="tab" aria-selected={mode === "profile"} className={mode === "profile" ? "selected" : ""} onClick={() => setMode("profile")}>公开博主</button><button type="button" role="tab" aria-selected={mode === "official"} className={mode === "official" ? "selected" : ""} onClick={() => setMode("official")}>官方 API（可选）</button></div>
-    {mode === "official" ? <>
+    <p className="dialog-intro">X 当前未提供可由 Reading Hub 在免 API 模式下自动读取的公开博主时间线，因此“公开博主”订阅已下线。应用不会使用 Cookie、登录态或私有 Web API 绕过此限制。</p>
     <p className="dialog-intro">此功能使用官方 X API，不读取浏览器 Cookie。请在 X Developer Console 为你的应用配置回调地址 <code>http://127.0.0.1:43119/x/callback</code>，并填写该应用的 Client ID。</p>
-    <p className="dialog-intro">授权后默认每 30–60 分钟收集关注账号的原创帖和文章型外链，过滤回复与转推。访问令牌仅保存在本机 Keychain。</p>
+    <p className="dialog-intro">授权后默认每 30–60 分钟收集关注账号的原创帖和文章型外链，过滤回复与转推。访问令牌仅保存在本机 Keychain；X 当前的 API 额度和计费资格由你的开发者项目决定。</p>
     <form className="connector-form" onSubmit={(event) => void submit(event)}><label htmlFor="x-client-id">X Client ID</label><input id="x-client-id" value={clientId} onChange={(event) => setClientId(event.target.value)} placeholder="Developer App Client ID" autoComplete="off" required />{error && <p className="error">{error}</p>}<div className="dialog-actions"><button className="primary" disabled={busy}>{busy ? "等待授权…" : "在浏览器中授权 X"}</button></div></form>
-    </> : <XProfileSourcePane onSaved={onProfileSaved} />}
-  </section>;
-}
-
-function XProfileSourcePane({ onSaved }: { onSaved: () => Promise<void> }) {
-  const [url, setUrl] = useState("");
-  const [title, setTitle] = useState("");
-  const [error, setError] = useState<string>();
-  const [busy, setBusy] = useState(false);
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    if (!url.trim()) return;
-    setBusy(true); setError(undefined);
-    try {
-      await window.reader.subscribeXProfile({ url: url.trim(), title: title.trim() || undefined });
-      await onSaved();
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
-  }
-  return <section className="source-method-pane profile-source-pane">
-    <p className="dialog-intro">输入单个公开 X 博主主页（例如 <code>https://x.com/username</code>）。Reading Hub 使用 X 的公开嵌入时间线直接收集其原创帖，不需要 API 额度、Client ID 或 RSSHub。</p>
-    <p className="dialog-intro">仅适用于允许公开嵌入的博主；应用会遵守 robots、同域限流和 X 的响应限制。受保护账号、登录墙、验证码或限流不会被绕过。</p>
-    <form className="connector-form" onSubmit={(event) => void submit(event)}>
-      <label htmlFor="x-profile-url">X 博主主页</label>
-      <input id="x-profile-url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://x.com/username" type="url" required />
-      <label htmlFor="x-profile-title">显示名称（可选）</label>
-      <input id="x-profile-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="X · @username" maxLength={120} />
-      {error && <p className="error">{error}</p>}
-      <div className="dialog-actions"><button className="primary" disabled={busy}>{busy ? "正在读取公开时间线…" : "添加 X 博主"}</button></div>
-    </form>
   </section>;
 }
 
@@ -1200,6 +1167,10 @@ const REFRESH_OPTIONS: Array<{ value: "default" | "30" | "60" | "120" | "240" | 
   { value: "1440", label: "约每天一次" }
 ];
 
+function isRetiredXPublicProfile(source: Source | undefined): boolean {
+  return source?.kind === "x" && source.connectorId === "x" && source.config?.mode === "public-profile";
+}
+
 function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCalibrate, onDelete, onReconnectZhihu }: {
   source: Source;
   onClose: () => void;
@@ -1217,6 +1188,7 @@ function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCalibrate
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const legacyRssHubFeed = source.config?.sourceProvider === "rsshub";
+  const retiredXPublicProfile = isRetiredXPublicProfile(source);
   const typeLocked = !PUBLIC_SOURCE_KINDS.includes(source.kind) || legacyRssHubFeed;
   const manual = kind === "manual";
 
@@ -1259,13 +1231,13 @@ function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCalibrate
       <label>信源类型<select value={kind} onChange={(event) => setKind(event.target.value as SourceKind)} disabled={typeLocked || busy}>
         {typeLocked ? <option value={source.kind}>{sourceKindLabel(source.kind)}</option> : PUBLIC_SOURCE_KINDS.map((item) => <option key={item} value={item}>{sourceKindLabel(item)}</option>)}
       </select></label>
-      {typeLocked && <p className="source-settings-note">{legacyRssHubFeed ? "已保存的 RSSHub Feed 仍使用 RSS 连接器；这里可调整名称和刷新频率。" : "平台来源的类型及账号绑定由内置连接器管理；这里仍可调整名称和刷新频率。"}</p>}
-      <label className="source-settings-toggle"><input type="checkbox" checked={!manual && pollingEnabled} onChange={(event) => setPollingEnabled(event.target.checked)} disabled={manual || busy} />自动刷新</label>
-      <label>刷新时间<select value={refresh} onChange={(event) => setRefresh(event.target.value as typeof refresh)} disabled={manual || !pollingEnabled || busy}>{REFRESH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+      {typeLocked && <p className="source-settings-note">{retiredXPublicProfile ? "此旧 X 公开来源已停止刷新：X 没有提供可合规自动读取的公开订阅接口。已有卡片会保留；如需继续同步，请删除它后使用官方 API。" : legacyRssHubFeed ? "已保存的 RSSHub Feed 仍使用 RSS 连接器；这里可调整名称和刷新频率。" : "平台来源的类型及账号绑定由内置连接器管理；这里仍可调整名称和刷新频率。"}</p>}
+      <label className="source-settings-toggle"><input type="checkbox" checked={!manual && pollingEnabled} onChange={(event) => setPollingEnabled(event.target.checked)} disabled={manual || retiredXPublicProfile || busy} />自动刷新</label>
+      <label>刷新时间<select value={refresh} onChange={(event) => setRefresh(event.target.value as typeof refresh)} disabled={manual || retiredXPublicProfile || !pollingEnabled || busy}>{REFRESH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
       {manual && <p className="source-settings-note">分享链接是一次性阅读卡片，不会自动轮询。</p>}
       <label>来源地址<input value={source.url} readOnly aria-readonly="true" /></label>
       <dl className="source-settings-details"><div><dt>当前状态</dt><dd><StatusBadge status={source.status} /></dd></div><div><dt>实际连接器</dt><dd>{sourceConnectorLabel(source)}</dd></div></dl>
-      <div className="source-settings-operations"><button type="button" onClick={() => void runOperation(onRefresh)} disabled={busy}>立即刷新</button>{source.kind === "generic" && <button type="button" onClick={() => void runOperation(onCalibrate)} disabled={busy}>自动校准</button>}{source.kind === "zhihu_follow" && <button type="button" onClick={() => void runOperation(onReconnectZhihu)} disabled={busy}>重新登录知乎</button>}<button type="button" className="danger" onClick={() => void runOperation(onDelete)} disabled={busy}>删除来源</button></div>
+      <div className="source-settings-operations">{!retiredXPublicProfile && <button type="button" onClick={() => void runOperation(onRefresh)} disabled={busy}>立即刷新</button>}{source.kind === "generic" && <button type="button" onClick={() => void runOperation(onCalibrate)} disabled={busy}>自动校准</button>}{source.kind === "zhihu_follow" && <button type="button" onClick={() => void runOperation(onReconnectZhihu)} disabled={busy}>重新登录知乎</button>}<button type="button" className="danger" onClick={() => void runOperation(onDelete)} disabled={busy}>删除来源</button></div>
       {error && <p className="error">{error}</p>}
       <div className="dialog-actions"><button type="button" onClick={onClose} disabled={busy}>取消</button><button className="primary" disabled={busy}>{busy ? "正在保存…" : "保存配置"}</button></div>
     </form>
