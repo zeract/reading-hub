@@ -1029,7 +1029,7 @@ function PublicSourcePane({ onPreview }: { onPreview: (url: string) => Promise<v
   return <form className="connector-form" onSubmit={(event) => void submit(event)}>
     <label htmlFor="source-url">网址</label>
     <input id="source-url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://… 或 http://…" type="url" required />
-    <p className="dialog-intro">优先识别 RSS、Atom、JSON Feed；没有 Feed 时会从公开页面提取文章卡片。小红书分享链接仅作为一次性原文入口保存。</p>
+    <p className="dialog-intro">优先识别 RSS、Atom、JSON Feed；没有 Feed 时会从公开页面提取文章卡片。X 主页请在“X 动态”中处理，不会在这里被误当成普通网页抓取；小红书分享链接仅作为一次性原文入口保存。</p>
     {error && <p className="error">{error}</p>}
     <div className="dialog-actions"><button className="primary" disabled={busy}>{busy ? "正在探测…" : "探测来源"}</button></div>
   </form>;

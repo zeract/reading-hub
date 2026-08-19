@@ -12,6 +12,7 @@ export class SourceProbe {
 
   async probe(rawUrl: string): Promise<ProbeResult> {
     const input = assertPublicUrl(rawUrl).toString();
+    assertSupportedPublicProbeUrl(input);
     let response;
     try {
       response = await this.http.getText(input);
@@ -85,6 +86,7 @@ export class SourceProbe {
 
   async calibrate(rawUrl: string): Promise<CalibrationResult> {
     const input = assertPublicUrl(rawUrl).toString();
+    assertSupportedPublicProbeUrl(input);
     let html: string;
     let pageUrl: string;
     try {
@@ -129,6 +131,24 @@ export function isXiaohongshuUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * X explicitly blocks generic crawler access on its profile pages. Detect it
+ * before the public probe touches the network so pasting a profile URL into
+ * “网页 / Feed” gives a product-level explanation rather than an IPC error.
+ */
+export function isXUrl(url: string): boolean {
+  try {
+    return /(^|\.)(?:x|twitter)\.com$/i.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function assertSupportedPublicProbeUrl(url: string): void {
+  if (!isXUrl(url)) return;
+  throw new Error("X 主页不能通过“网页 / Feed”自动探测：X 的 robots.txt 禁止自动读取。请在“X 动态”中查看可用连接方式；当前免 API 的公开自动订阅同样受此限制，Reading Hub 不会使用 Cookie、登录态或私有 Web API 绕过它。");
 }
 
 export function manualProbe(url: string, preview: RawEntry[], title: string): ProbeResult {
