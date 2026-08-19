@@ -8,6 +8,7 @@ import { builtInManifest } from "./connector-registry";
 import { chromiumFetch } from "./network";
 import { SecretStore } from "./secrets";
 import { PublicHttpClient } from "./http";
+import { RobotsDisallowedError } from "./robots";
 import { parsePublicXTimeline, xPublicTimelineUrl } from "./x-public-timeline";
 
 const REDIRECT_URI = "http://127.0.0.1:43119/x/callback";
@@ -490,6 +491,9 @@ function xHttpFailureMessage(status: number, path: string): string {
 
 function publicTimelineError(error: unknown): Error {
   const message = error instanceof Error ? error.message : "";
+  if (error instanceof RobotsDisallowedError) {
+    return new Error("X 的公开嵌入时间线 robots.txt 明确禁止自动读取。为遵守该限制，Reading Hub 不能在免 API 模式下同步此博主；请删除这个来源后改用“官方 API（可选）”，或等待 X 开放可抓取的公开订阅接口。不会使用 Cookie、登录态或私有 Web API 绕过限制。");
+  }
   if (/HTTP 429/.test(message)) {
     return new Error("X 公开嵌入时间线暂时限流（HTTP 429）。Reading Hub 会按来源刷新间隔和同域串行策略重试；请不要频繁手动刷新。");
   }

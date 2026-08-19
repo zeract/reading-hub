@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ReadingDatabase } from "../src/main/database";
+import { RobotsDisallowedError } from "../src/main/robots";
 import { XConnector } from "../src/main/x";
 import { parsePublicXTimeline, xPublicTimelineUrl } from "../src/main/x-public-timeline";
 
@@ -94,6 +95,19 @@ describe("X public embed timeline", () => {
       getText: async () => { throw new Error("请求失败（HTTP 429）"); }
     } as any);
     await expect(connector.sync({ source, subscription: database.getSubscriptionForSource(source.id)! })).rejects.toThrow("公开嵌入时间线暂时限流（HTTP 429）");
+    database.close();
+  });
+
+  it("explains an explicit robots restriction without suggesting a bypass", async () => {
+    const database = new ReadingDatabase(":memory:");
+    const source = database.createSource({
+      url: "https://x.com/example", title: "Example", kind: "x", connectorId: "x",
+      config: { mode: "public-profile", username: "example" }, pollingEnabled: true
+    });
+    const connector = new XConnector(database, {} as any, async () => undefined, vi.fn(), {
+      getText: async () => { throw new RobotsDisallowedError(); }
+    } as any);
+    await expect(connector.sync({ source, subscription: database.getSubscriptionForSource(source.id)! })).rejects.toThrow("robots.txt 明确禁止自动读取");
     database.close();
   });
 });
