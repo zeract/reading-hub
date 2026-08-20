@@ -472,6 +472,51 @@ describe("article reader extraction", () => {
     expect(article.contentHtml).not.toContain("<img");
   });
 
+  it("dynamically sanitizes a subscribed RSSHub item body without reading or storing the blocked X page", async () => {
+    const source: Source = {
+      id: "rsshub-x", url: "http://127.0.0.1:1200/twitter/user/example", title: "Twitter @example", kind: "rss", status: "active",
+      config: { allowTrustedLoopbackFeed: true }, pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1
+    };
+    const xEntry: Entry = {
+      ...entry,
+      url: "https://x.com/example/status/1",
+      canonicalUrl: "https://x.com/example/status/1",
+      summary: "这是卡片摘要，不应作为完整 Feed 正文。",
+      imageUrl: "https://pbs.twimg.com/media/diagram.jpg"
+    };
+    const requests: Array<{ url: string; options?: unknown }> = [];
+    const http = {
+      getText: async (url: string, _cached?: unknown, options?: unknown) => {
+        requests.push({ url, options });
+        if (url === xEntry.url) throw new RobotsDisallowedError();
+        if (url === source.url) {
+          return {
+            url: source.url,
+            status: 200,
+            contentType: "application/rss+xml",
+            text: `<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>RSSHub</title><item><title>示例推文</title><link>${xEntry.url}</link><description>${xEntry.summary}</description><content:encoded><![CDATA[<p>RSSHub 提供的 <strong>完整推文正文</strong>，可在本地安全阅读。</p><img src="https://pbs.twimg.com/media/diagram.jpg" onerror="alert(1)"><script>alert(1)</script>]]></content:encoded></item></channel></rss>`
+          };
+        }
+        throw new Error("不应请求其他地址");
+      }
+    } as unknown as PublicHttpClient;
+    const renderer: PageRenderer = {
+      render: async () => { throw new Error("不能渲染受 robots 限制的 X 原页"); }
+    };
+
+    const article = await new ArticleReader(http, renderer).read(xEntry, source);
+
+    expect(article.contentMode).toBe("feed_body");
+    expect(article.contentHtml).toContain("RSSHub 提供的");
+    expect(article.contentHtml).toContain('src="https://pbs.twimg.com/media/diagram.jpg"');
+    expect(article.contentHtml).not.toMatch(/script|onerror/);
+    expect(article.coverImageUrl).toBeUndefined();
+    expect(requests).toEqual([
+      { url: xEntry.url, options: { maxBytes: 8_000_000 } },
+      { url: source.url, options: { allowTrustedLoopbackFeed: true } }
+    ]);
+  });
+
   it("keeps the restricted original-page fallback when a feed has no useful summary", async () => {
     const http = {
       getText: async () => { throw new RobotsDisallowedError(); }

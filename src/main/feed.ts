@@ -6,9 +6,20 @@ import type { RawEntry } from "../shared/types";
 
 const parser = new RSSParser({
   customFields: {
-    item: [["media:content", "mediaContent", { keepArray: true }]]
+    item: [
+      ["media:content", "mediaContent", { keepArray: true }],
+      // rss-parser's generic `content` field can be populated from a plain
+      // <description>. Keep content:encoded distinct so the reader can
+      // prefer the actual feed body when both are present.
+      ["content:encoded", "contentEncoded"]
+    ]
   }
 });
+
+// This is deliberately separate from the bounded card summary. Feed HTML is
+// not durable data: it is retained only for the current fetch so the reader
+// can sanitize it in memory if the linked page cannot be requested.
+const MAX_TRANSIENT_FEED_HTML_LENGTH = 250_000;
 
 /**
  * Bumped when feed-level metadata parsing changes. Existing RSS sources are
@@ -103,7 +114,8 @@ export async function parseFeed(text: string, feedUrl: string): Promise<{ title:
       author: compactText(item.creator || (item as any).author, 120),
       publishedAt: parsePublishedAt(item.isoDate) ?? parsePublishedAt(item.pubDate),
       summary: compactText(item.contentSnippet || item.content || item.summary, 500),
-      imageUrl: toAbsoluteUrl((item as any).mediaContent?.[0]?.$.url || item.enclosure?.url, feedUrl)
+      imageUrl: toAbsoluteUrl((item as any).mediaContent?.[0]?.$.url || item.enclosure?.url, feedUrl),
+      feedContentHtml: transientFeedHtml((item as any).contentEncoded || item.content)
     });
   }
   return { title: compactText(feed.title, 180) || new URL(feedUrl).hostname, entries };
@@ -123,7 +135,8 @@ function parseJsonFeed(text: string, feedUrl: string): { title: string; entries:
       author: compactText(item.authors?.[0]?.name || item.author?.name, 120),
       publishedAt: parsePublishedAt(item.date_published) ?? parsePublishedAt(item.date_modified),
       summary: compactText(item.summary || item.content_text || stripHtml(item.content_html), 500),
-      imageUrl: toAbsoluteUrl(item.image || item.banner_image, feedUrl)
+      imageUrl: toAbsoluteUrl(item.image || item.banner_image, feedUrl),
+      feedContentHtml: transientFeedHtml(item.content_html)
     });
   }
   return { title: compactText(feed.title, 180) || new URL(feedUrl).hostname, entries };
@@ -131,4 +144,13 @@ function parseJsonFeed(text: string, feedUrl: string): { title: string; entries:
 
 function stripHtml(value?: string): string | undefined {
   return value?.replace(/<[^>]*>/g, " ");
+}
+
+function transientFeedHtml(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const html = value.trim();
+  // Truncating HTML would make the subsequent sanitizer operate on a broken
+  // document. Prefer the already-persisted summary if a Feed item is too
+  // large for the ephemeral reader path.
+  return html && html.length <= MAX_TRANSIENT_FEED_HTML_LENGTH ? html : undefined;
 }

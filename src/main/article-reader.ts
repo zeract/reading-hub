@@ -4,8 +4,9 @@ import { JSDOM, VirtualConsole } from "jsdom";
 import katex from "katex";
 import { compactText, parsePublishedAt } from "../shared/text";
 import { inlineDollarMathAt } from "../shared/tex";
-import { assertPublicUrl, toAbsoluteUrl } from "../shared/url";
+import { assertPublicUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl, toAbsoluteUrl } from "../shared/url";
 import type { Entry, ReaderArticle, ReaderRenderProfile, Source } from "../shared/types";
+import { parseFeed } from "./feed";
 import { PublicHttpClient } from "./http";
 import { extractPagePublishedAt } from "./extractor";
 import { ScientificMathRenderer } from "./mathjax-renderer";
@@ -155,6 +156,8 @@ export class ArticleReader {
         // subscription data rather than an extraction of the blocked page.
         // This makes RSSHub/X items readable without trying to fetch X again.
         if (error instanceof RobotsDisallowedError) {
+          const feedBody = await this.readTransientFeedBody(entry, source).catch(() => undefined);
+          if (feedBody) return feedBody;
           const feedSummary = createFeedSummaryArticle(entry, source);
           if (feedSummary) return feedSummary;
           throw error;
@@ -176,6 +179,48 @@ export class ArticleReader {
     if (staticArticle) return staticArticle.article;
     if (staticFailure) throw staticFailure;
     throw new ArticleContentUnavailableError();
+  }
+
+  /**
+   * A Feed body is an explicit part of the subscription response, not a
+   * request to the linked article. Re-read it only when the user opens a
+   * blocked item, sanitize it in this process, and discard it with the
+   * ReaderArticle. SQLite never receives feedContentHtml.
+   */
+  private async readTransientFeedBody(entry: Entry, source?: Source): Promise<ReaderArticle | undefined> {
+    if (source?.kind !== "rss") return undefined;
+    const allowTrustedLoopbackFeed = source.config?.allowTrustedLoopbackFeed === true && isTrustedLoopbackFeedUrl(source.url);
+    const response = await this.http.getText(
+      source.url,
+      undefined,
+      allowTrustedLoopbackFeed ? { allowTrustedLoopbackFeed: true } : undefined
+    );
+    const requestedUrls = new Set([entry.canonicalUrl, canonicalizeUrl(entry.url)]);
+    const item = (await parseFeed(response.text, response.url)).entries.find((candidate) => {
+      try {
+        return requestedUrls.has(canonicalizeUrl(candidate.url));
+      } catch {
+        return false;
+      }
+    });
+    if (!item?.feedContentHtml) return undefined;
+
+    const renderProfile = resolveReaderProfile(entry.url);
+    const contentHtml = sanitizeContent(item.feedContentHtml, response.url, renderProfile, this.scientificMath, "");
+    const content = load(contentHtml);
+    if (normalText(content.text()).length < 24 && !content("img").length) return undefined;
+    const coverCandidate = safeUrl(entry.imageUrl, response.url);
+    return {
+      entryId: entry.id,
+      url: entry.url,
+      title: entry.title,
+      author: entry.author,
+      publishedAt: entry.publishedAt,
+      coverImageUrl: coverCandidate && !containsImage(contentHtml, coverCandidate) ? coverCandidate : undefined,
+      renderProfile,
+      contentMode: "feed_body",
+      contentHtml
+    };
   }
 }
 

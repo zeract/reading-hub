@@ -30,6 +30,15 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("does not persist transient Feed HTML with an entry", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+    db.saveEntries([{ ...entry(source.id), feedContentHtml: "<p>只可在内存中使用的 Feed 正文</p>" }]);
+
+    expect(db.listEntries()[0]).not.toHaveProperty("feedContentHtml");
+    db.close();
+  });
+
   it("pauses a generic source for review after three empty extractions", () => {
     const db = new ReadingDatabase(":memory:");
     let source = db.createSource({ url: "https://example.com/list", title: "Example", kind: "generic", pollingEnabled: true });

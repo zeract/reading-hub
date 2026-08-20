@@ -63,6 +63,12 @@ export interface RawEntry {
   publishedAt?: number;
   summary?: string;
   imageUrl?: string;
+  /**
+   * Feed-supplied HTML used only while an already-subscribed Feed is being
+   * opened in the reader. It is never written to SQLite or returned by the
+   * database APIs.
+   */
+  feedContentHtml?: string;
   /** Provider-stable object id, never shown to the reader. */
   externalId?: string;
   /** DOI, arXiv id, canonical URL, or provider id used for cross-provider grouping. */
@@ -222,10 +228,11 @@ export interface ReaderArticle {
   /** Rendering mode is chosen locally from the URL and document structure. */
   renderProfile: ReaderRenderProfile;
   /**
-   * A feed may provide a safe, local summary even when the original article
-   * cannot be read because its robots policy forbids automated access.
+   * A feed may provide an explicit body or a safe local summary even when the
+   * original article cannot be read because its robots policy forbids
+   * automated access.
    */
-  contentMode?: "article" | "feed_summary";
+  contentMode?: "article" | "feed_body" | "feed_summary";
   contentHtml: string;
 }
 

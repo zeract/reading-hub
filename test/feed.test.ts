@@ -24,6 +24,27 @@ describe("feed parser", () => {
     expect(feed.entries[0]).toMatchObject({ title: "JSON 条目", url: "https://example.com/post" });
   });
 
+  it("keeps a bounded feed body only on the transient parsed item", async () => {
+    const feed = await parseFeed(
+      `<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>测试订阅</title><item><title>完整条目</title><link>/post</link><description>卡片摘要</description><content:encoded><![CDATA[<p>订阅提供的 <strong>完整正文</strong></p>]]></content:encoded></item></channel></rss>`,
+      "https://example.com/feed.xml"
+    );
+
+    expect(feed.entries[0]).toMatchObject({
+      summary: "卡片摘要",
+      feedContentHtml: "<p>订阅提供的 <strong>完整正文</strong></p>"
+    });
+  });
+
+  it("keeps JSON Feed content_html on the transient item", async () => {
+    const feed = await parseFeed(
+      JSON.stringify({ version: "https://jsonfeed.org/version/1", title: "JSON Feed", items: [{ id: "x", url: "/post", title: "JSON 条目", content_html: "<p>完整 JSON 正文</p>" }] }),
+      "https://example.com/feed.json"
+    );
+
+    expect(feed.entries[0]?.feedContentHtml).toBe("<p>完整 JSON 正文</p>");
+  });
+
   it("discovers an RSS endpoint linked from a page footer", () => {
     const urls = discoverFeedUrls(
       `<html><body><footer><a href="/rss.xml" aria-label="RSS feed"><svg></svg></a></footer></body></html>`,
