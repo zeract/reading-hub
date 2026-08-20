@@ -269,27 +269,29 @@ export function App() {
           <button className={`library-filter ${libraryView === "unread" && !activeSourceId ? "selected" : ""}`} onClick={() => selectLibrary("unread")}><span><AppIcon name="unread" />未读</span><em>{unreadCount}</em></button>
           <button className={`library-filter ${libraryView === "favorite" && !activeSourceId ? "selected" : ""}`} onClick={() => selectLibrary("favorite")}><span><AppIcon name="favorite" />收藏</span><em>{libraryCounts.favorite}</em></button>
         </nav>
-        <div className="section-title">来源 <span>{sources.length}</span></div>
-        <div className="source-list">
-          {sourceGroups.map((group) => <section className="source-group" key={group.id}>
-            <button type="button" className="source-group-heading" onClick={() => setCollapsedSourceGroups((current) => ({ ...current, [group.id]: !current[group.id] }))} aria-expanded={!collapsedSourceGroups[group.id]}>
-              <span className="source-group-label"><AppIcon name={collapsedSourceGroups[group.id] ? "chevron-right" : "chevron-down"} /><AppIcon name="folder" /><span>{group.title}</span></span><em>{group.sources.length}</em>
-            </button>
-            {!collapsedSourceGroups[group.id] && group.sources.map((source) => (
-              <div className="source-row" key={source.id} onContextMenu={(event) => { event.preventDefault(); setEditingSource(source); }}>
-                <button className={`source-filter ${activeSourceId === source.id ? "selected" : ""}`} onClick={() => selectSource(source.id)} onKeyDown={(event) => {
-                  if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
-                    event.preventDefault();
-                    setEditingSource(source);
-                  }
-                }} title={`${source.title}（右键配置）`} aria-label={`查看 ${source.title}；右键打开来源设置`}>
-                  <SourceIcon source={source} /><span className="source-title">{source.title}</span>
-                </button>
-              </div>
-            ))}
-          </section>)}
-          {!sources.length && <p className="empty-side">先添加一个公开 Feed 或网页。</p>}
-        </div>
+        <section className="source-section" aria-labelledby="source-heading">
+          <div className="section-title" id="source-heading">来源 <span>{sources.length}</span></div>
+          <div className="source-list">
+            {sourceGroups.map((group) => <section className="source-group" key={group.id}>
+              <button type="button" className="source-group-heading" onClick={() => setCollapsedSourceGroups((current) => ({ ...current, [group.id]: !current[group.id] }))} aria-expanded={!collapsedSourceGroups[group.id]}>
+                <span className="source-group-label"><AppIcon name={collapsedSourceGroups[group.id] ? "chevron-right" : "chevron-down"} /><AppIcon name="folder" /><span>{group.title}</span></span><em>{group.sources.length}</em>
+              </button>
+              {!collapsedSourceGroups[group.id] && group.sources.map((source) => (
+                <div className="source-row" key={source.id} onContextMenu={(event) => { event.preventDefault(); setEditingSource(source); }}>
+                  <button className={`source-filter ${activeSourceId === source.id ? "selected" : ""}`} onClick={() => selectSource(source.id)} onKeyDown={(event) => {
+                    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+                      event.preventDefault();
+                      setEditingSource(source);
+                    }
+                  }} title={`${source.title}（右键配置）`} aria-label={`查看 ${source.title}；右键打开来源设置`}>
+                    <SourceIcon source={source} /><span className="source-title">{source.title}</span>
+                  </button>
+                </div>
+              ))}
+            </section>)}
+            {!sources.length && <p className="empty-side">先添加一个公开 Feed 或网页。</p>}
+          </div>
+        </section>
         <footer className="sidebar-footer"><button type="button" className="sidebar-settings-button" onClick={() => setAppView("settings")} aria-label="打开设置" title="设置"><AppIcon name="settings" /><span>设置</span></button></footer>
       </aside>
 
@@ -1281,7 +1283,7 @@ function SourceIcon({ source }: { source: Source }) {
 
 type AppIconName = "sidebar" | "expand" | "refresh" | "add" | "today" | "unread" | "favorite" | "folder" | "chevron-down" | "chevron-right" | "settings" | "back" | "reading" | "ai" | "rss" | "web" | "link" | "zhihu" | "zhihu-follow" | "x" | "xiaohongshu" | "academic";
 
-/** Compact, local-only line icons based on the PaperRss/Papr visual language. */
+/** Compact, local-only line icons with a native macOS reading-list emphasis. */
 function AppIcon({ name }: { name: AppIconName }) {
   const props = { viewBox: "0 0 24 24", width: 18, height: 18, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
   switch (name) {
@@ -1289,7 +1291,7 @@ function AppIcon({ name }: { name: AppIconName }) {
     case "expand": return <svg {...props}><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5" /></svg>;
     case "refresh": return <svg {...props}><path d="M21 12a9 9 0 0 0-15.5-6.2L3 8" /><path d="M3 3v5h5" /><path d="M3 12a9 9 0 0 0 15.5 6.2L21 16" /><path d="M21 21v-5h-5" /></svg>;
     case "add": return <svg {...props}><path d="M12 5v14M5 12h14" /></svg>;
-    case "today": return <svg {...props}><path d="M12 3v18M3 12h18" /><circle cx="12" cy="12" r="4" /></svg>;
+    case "today": return <svg {...props}><rect x="4" y="5.5" width="16" height="14" rx="2.5" /><path d="M8 3.5v4M16 3.5v4M4 10h16" /><circle cx="12" cy="14.5" r="1.2" fill="currentColor" stroke="none" /></svg>;
     case "unread": return <svg {...props}><circle cx="12" cy="12" r="7" /></svg>;
     case "favorite": return <svg {...props}><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.8-5.4 2.8 1-6.1-4.4-4.3 6.1-.9Z" /></svg>;
     case "folder": return <svg {...props}><path d="M3.5 7.5h6l1.7 2H20.5v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z" /><path d="M3.5 7.5v-1a2 2 0 0 1 2-2H10l1.7 2" /></svg>;

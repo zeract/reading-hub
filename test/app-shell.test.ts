@@ -12,6 +12,8 @@ describe("application shell source controls", () => {
   });
 
   it("renders source metadata icons and folder headings in the unified source list", () => {
+    expect(app).toContain('className="source-section"');
+    expect(app).toContain('id="source-heading"');
     expect(app).toContain('className="source-group-label"');
     expect(app).toContain('<AppIcon name="folder" />');
     expect(app).toContain("sourceIconKind(source)");

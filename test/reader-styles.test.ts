@@ -28,9 +28,9 @@ describe("reader display-equation layout", () => {
   });
 
   it("reclaims the macOS traffic-light inset while the native window is fullscreen", () => {
-    expect(styles).toContain(".shell { --titlebar-leading-inset: 96px;");
+    expect(styles).toContain(".shell { --titlebar-leading-inset: 88px;");
     expect(styles).toContain(".shell--fullscreen { --titlebar-leading-inset: 16px; }");
-    expect(styles).toContain("padding: 0 20px 0 var(--titlebar-leading-inset);");
+    expect(styles).toContain("padding: 0 16px 0 var(--titlebar-leading-inset);");
   });
 
   it("keeps selected-text actions and the local answer inside the reader without introducing a page scroll region", () => {
@@ -46,14 +46,14 @@ describe("reader display-equation layout", () => {
     expect(styles).toMatch(/\.reader-toolbar\s+\.favorite-button\.is-favorite\s*\{[^}]*background:\s*var\(--accent-wash\)/s);
   });
 
-  it("uses a muted paper palette for selection and keeps translation as a separate soft signal", () => {
-    expect(styles).toContain("--accent: #6a7d63;");
-    expect(styles).toContain("--selection-surface: #edede8;");
+  it("uses a restrained native-blue palette for selection and keeps translation as a separate soft signal", () => {
+    expect(styles).toContain("--accent: #4f7ea8;");
+    expect(styles).toContain("--selection-surface: #dce8f5;");
     expect(styles).toMatch(/\.entry-card\.selected,\s*\.entry-card\.selected:hover\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--ink\)/s);
-    expect(styles).toMatch(/\.source-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--ink\)/s);
+    expect(styles).toMatch(/\.source-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--accent-ink\)/s);
     expect(styles).toMatch(/\.library-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface-strong\)/s);
-    expect(styles).toContain(".reader-selection-underlines span { position: fixed; height: 1px; background: rgba(106,125,99,.56);");
-    expect(styles).toMatch(/\.selection-assistant-card\s*\{[^}]*border-radius:\s*22px;[^}]*box-shadow:\s*0\s+16px\s+38px\s+rgba\(40,40,36,\.1\)/s);
+    expect(styles).toContain(".reader-selection-underlines span { position: fixed; height: 1px; background: rgba(79,126,168,.60);");
+    expect(styles).toMatch(/\.selection-assistant-card\s*\{[^}]*border-radius:\s*10px;[^}]*box-shadow:\s*0\s+16px\s+38px\s+rgba\(27,32,39,\.12\)/s);
     expect(styles).toMatch(/\.selection-assistant-card\[data-intent="translate"\]\s*>\s*header\s+p\s*\{[^}]*color:\s*var\(--danger\)/s);
     expect(styles).toMatch(/\.status\.active\s*\{[^}]*color:\s*var\(--ink\)/s);
     expect(styles).not.toContain("#dc3c22");
@@ -64,16 +64,18 @@ describe("reader display-equation layout", () => {
   it("supports a reader-only view while keeping source rows intentionally compact", () => {
     expect(styles).toContain(".shell--reader-only { grid-template-columns: 0 0 minmax(0,1fr); }");
     expect(styles).toContain(".shell--reader-only > .sidebar, .shell--reader-only > .timeline { display: none; }");
-    expect(styles).toMatch(/\.source-filter\s*\{[^}]*display:\s*flex;[^}]*min-height:\s*37px;[^}]*border-radius:\s*8px/s);
+    expect(styles).toMatch(/\.source-filter\s*\{[^}]*display:\s*flex;[^}]*min-height:\s*34px;[^}]*border-radius:\s*6px/s);
     expect(styles).toMatch(/\.source-title\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/s);
-    expect(styles).toMatch(/\.source-icon\s*\{[^}]*flex:\s*0\s+0\s+22px/s);
-    expect(styles).toMatch(/\.source-group-label svg\s*\{[^}]*width:\s*15px/s);
-    expect(styles).toContain(".settings-shell { --titlebar-leading-inset: 96px;");
+    expect(styles).toMatch(/\.source-icon\s*\{[^}]*flex:\s*0\s+0\s+18px/s);
+    expect(styles).toMatch(/\.source-group-label svg\s*\{[^}]*width:\s*13px/s);
+    expect(styles).toContain(".settings-shell { --titlebar-leading-inset: 88px;");
   });
 
-  it("keeps library filters and source names below their local category hierarchy", () => {
-    expect(styles).toMatch(/\.section-title\s*\{[^}]*margin:\s*2px\s+7px\s+0;[^}]*font-size:\s*11px/s);
-    expect(styles).toMatch(/\.source-group-heading\s*\{[^}]*font-size:\s*12px/s);
+  it("keeps the source collection directly beneath the reading filters with a compact local hierarchy", () => {
+    expect(styles).toMatch(/\.sidebar\s*\{[^}]*gap:\s*9px/s);
+    expect(styles).toMatch(/\.source-section\s*\{[^}]*flex:\s*1\s+1\s+auto;[^}]*flex-direction:\s*column;[^}]*gap:\s*1px/s);
+    expect(styles).toMatch(/\.section-title\s*\{[^}]*margin:\s*1px\s+8px\s+2px;[^}]*font-size:\s*10px/s);
+    expect(styles).toMatch(/\.source-group-heading\s*\{[^}]*font-size:\s*10px/s);
     expect(styles).toMatch(/\.library-filter\s*\{[^}]*font-size:\s*12px/s);
     expect(styles).toMatch(/\.source-title\s*\{[^}]*font-size:\s*12px/s);
     expect(styles).not.toContain("margin: 2px 7px -8px");
