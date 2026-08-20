@@ -1287,7 +1287,7 @@ function AppIcon({ name }: { name: AppIconName }) {
   switch (name) {
     case "sidebar": return <svg {...props}><rect x="3.5" y="4" width="17" height="16" rx="2" /><path d="M9 4v16M12.5 9h4M12.5 13h4M12.5 17h2.5" /></svg>;
     case "expand": return <svg {...props}><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5" /></svg>;
-    case "refresh": return <svg {...props}><path d="M20 11a8 8 0 1 0 1.1 4M20 5v6h-6" /></svg>;
+    case "refresh": return <svg {...props}><path d="M21 12a9 9 0 0 0-15.5-6.2L3 8" /><path d="M3 3v5h5" /><path d="M3 12a9 9 0 0 0 15.5 6.2L21 16" /><path d="M21 21v-5h-5" /></svg>;
     case "add": return <svg {...props}><path d="M12 5v14M5 12h14" /></svg>;
     case "today": return <svg {...props}><path d="M12 3v18M3 12h18" /><circle cx="12" cy="12" r="4" /></svg>;
     case "unread": return <svg {...props}><circle cx="12" cy="12" r="7" /></svg>;

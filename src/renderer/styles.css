@@ -44,7 +44,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .app-titlebar-actions { display: flex; align-items: center; gap: 8px; -webkit-app-region: no-drag; }
 .app-titlebar-button, .reader-toolbar .toolbar-icon-button { display: grid; place-items: center; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; background: rgba(255,255,255,.38); color: var(--ink-soft); box-shadow: 0 3px 10px rgba(40,40,36,.045); line-height: 1; }
 .app-titlebar-button { width: 36px; height: 36px; }
-.app-titlebar-button svg { width: 18px; height: 18px; }
+.app-titlebar-button svg { display: block; flex: 0 0 auto; width: 18px; height: 18px; }
 .app-titlebar-button svg, .library-filter svg, .source-group-label svg, .source-icon svg, .sidebar-settings-button svg, .settings-sidebar nav button svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .app-titlebar-button:hover, .reader-toolbar .toolbar-icon-button:hover:not(:disabled) { border-color: rgba(83,100,77,.58); background: var(--accent-wash); color: var(--accent-deep); }
 
