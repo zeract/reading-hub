@@ -6,6 +6,7 @@ import { ScientificMathRenderer } from "../src/main/mathjax-renderer";
 import type { PageRenderer } from "../src/main/page-renderer";
 import type { Entry } from "../src/shared/types";
 import type { Source } from "../src/shared/types";
+import { RobotsDisallowedError } from "../src/main/robots";
 
 const entry: Entry = {
   id: "entry-1",
@@ -443,6 +444,44 @@ describe("article reader extraction", () => {
 
     expect(article.title).toBe("渲染后正文");
     expect(article.contentHtml).toContain('class="katex"');
+  });
+
+  it("renders a feed-provided X summary locally when the original page is blocked by robots", async () => {
+    const http = {
+      getText: async () => { throw new RobotsDisallowedError(); }
+    } as unknown as PublicHttpClient;
+    const renderer: PageRenderer = {
+      render: async () => { throw new Error("robots fallback must not render the original X page"); }
+    };
+    const source: Source = {
+      id: "rsshub-x", url: "http://127.0.0.1:1200/twitter/user/example", title: "Twitter @example", kind: "rss", status: "active",
+      pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1
+    };
+    const xEntry: Entry = {
+      ...entry,
+      url: "https://x.com/example/status/1",
+      canonicalUrl: "https://x.com/example/status/1",
+      summary: "这是 RSS 订阅已提供的 X 内容摘要，能够在不读取受 robots 限制原页的前提下安全显示。<img src=x onerror=alert(1)>"
+    };
+
+    const article = await new ArticleReader(http, renderer).read(xEntry, source);
+
+    expect(article.contentMode).toBe("feed_summary");
+    expect(article.contentHtml).toContain("RSS 订阅已提供的 X 内容摘要");
+    expect(article.contentHtml).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(article.contentHtml).not.toContain("<img");
+  });
+
+  it("keeps the restricted original-page fallback when a feed has no useful summary", async () => {
+    const http = {
+      getText: async () => { throw new RobotsDisallowedError(); }
+    } as unknown as PublicHttpClient;
+    const source: Source = {
+      id: "rsshub-x", url: "http://127.0.0.1:1200/twitter/user/example", title: "Twitter @example", kind: "rss", status: "active",
+      pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1
+    };
+
+    await expect(new ArticleReader(http, { render: async () => "" }).read({ ...entry, summary: "过短摘要" }, source)).rejects.toBeInstanceOf(RobotsDisallowedError);
   });
 
   it("uses the dedicated Zhihu session before any public HTTP request", async () => {

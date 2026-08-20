@@ -169,6 +169,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .reader-article > header { margin: 0 0 32px; padding-bottom: 25px; border-bottom: 1px solid var(--line); }
 .reader-article h1 { margin: 0; color: var(--ink); font-family: "Iowan Old Style","Songti SC","STSong",Georgia,serif; font-size: clamp(32px,3.8vw,51px); font-weight: 650; line-height: 1.13; letter-spacing: -.04em; overflow-wrap: anywhere; text-wrap: balance; }
 .reader-byline { margin: 15px 0 0; color: var(--muted); font-family: -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; font-size: .76em; line-height: 1.6; }
+.reader-content-notice { margin: 0 0 28px; padding: 11px 13px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 4px 8px 8px 4px; background: var(--selection-surface); color: var(--ink-soft); font-family: -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; font-size: .72em; font-weight: 600; line-height: 1.65; }
 
 .article-body::selection { background: rgba(79,126,168,.20); color: var(--ink); }
 .reader-selection-underlines { position: fixed; z-index: 23; pointer-events: none; }

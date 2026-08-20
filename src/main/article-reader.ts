@@ -150,9 +150,15 @@ export class ArticleReader {
         staticArticle = extractReaderArticle(response.text, response.url, entry, this.scientificMath);
         if (staticArticle && staticArticle.textLength >= 220) return staticArticle.article;
       } catch (error) {
-        // robots.txt must remain a hard boundary. The caller opens the original
-        // page in a restricted, user-facing app window instead of extracting it.
-        if (error instanceof RobotsDisallowedError) throw error;
+        // robots.txt must remain a hard boundary. A feed can nevertheless
+        // already contain an explicitly supplied summary, which is local
+        // subscription data rather than an extraction of the blocked page.
+        // This makes RSSHub/X items readable without trying to fetch X again.
+        if (error instanceof RobotsDisallowedError) {
+          const feedSummary = createFeedSummaryArticle(entry, source);
+          if (feedSummary) return feedSummary;
+          throw error;
+        }
         staticFailure = error;
       }
     }
@@ -171,6 +177,31 @@ export class ArticleReader {
     if (staticFailure) throw staticFailure;
     throw new ArticleContentUnavailableError();
   }
+}
+
+/**
+ * Keeps a useful in-app reading path for feeds whose links point to a page
+ * that forbids automated article retrieval. This intentionally only renders
+ * the normalised, bounded summary already saved for an RSS/X subscription;
+ * it never reaches back to the blocked origin or treats the summary as a full
+ * article.
+ */
+function createFeedSummaryArticle(entry: Entry, source?: Source): ReaderArticle | undefined {
+  const rawSummary = entry.summary;
+  if ((source?.kind !== "rss" && source?.kind !== "x") || !rawSummary) return undefined;
+  const summary = compactText(rawSummary, 500) || "";
+  if (summary.length < 24) return undefined;
+  return {
+    entryId: entry.id,
+    url: entry.url,
+    title: entry.title,
+    author: entry.author,
+    publishedAt: entry.publishedAt,
+    coverImageUrl: entry.imageUrl,
+    renderProfile: "standard",
+    contentMode: "feed_summary",
+    contentHtml: `<p>${escapeHtml(summary)}</p>`
+  };
 }
 
 /** Exported for deterministic extraction tests; it does not perform network requests. */

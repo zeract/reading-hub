@@ -48,6 +48,10 @@ describe("reader display-equation layout", () => {
     expect(styles).toMatch(/\.reader-toolbar\s+\.favorite-button\.is-favorite\s*\{[^}]*background:\s*var\(--accent-wash\)/s);
   });
 
+  it("visually identifies a locally supplied feed summary without presenting it as full-page content", () => {
+    expect(styles).toMatch(/\.reader-content-notice\s*\{[^}]*border-left:\s*3px\s+solid\s+var\(--accent\);[^}]*background:\s*var\(--selection-surface\)/s);
+  });
+
   it("uses a restrained native-blue palette for selection and keeps translation as a separate soft signal", () => {
     expect(styles).toContain("--accent: #4f7ea8;");
     expect(styles).toContain("--selection-surface: #dce8f5;");

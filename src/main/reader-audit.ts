@@ -20,7 +20,7 @@ export type ReaderAuditResult = {
   formulaDiagnostics?: string[];
   rawTeXDiagnostics?: string[];
   renderedMathDiagnostics?: string[];
-  mode?: "article" | "embedded";
+  mode?: "article" | "feed_summary" | "embedded";
   sample?: "newest" | "historical";
   issues: string[];
 };
@@ -61,7 +61,7 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
   const issues: string[] = [];
   // Follow-feed cards can legitimately be a short public status update rather
   // than a long-form article. Their in-app display is still valid.
-  if (text.length < 180 && source.kind !== "zhihu_follow") issues.push("正文过短");
+  if (text.length < 180 && source.kind !== "zhihu_follow" && article.contentMode !== "feed_summary") issues.push("正文过短");
   const sanitised = load(`<article id="audit-sanitised">${html}</article>`);
   const executableElement = sanitised("script, iframe, object, embed").length > 0 || sanitised("#audit-sanitised *").toArray().some((node: any) => {
     const attributes = node.attribs || {};
@@ -90,6 +90,7 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
     source: source.title,
     kind: source.kind,
     entry: entry.title,
+    mode: article.contentMode || "article",
     profile: article.renderProfile,
     textLength: text.length,
     images: countMatches(html, /<img\b/gi),

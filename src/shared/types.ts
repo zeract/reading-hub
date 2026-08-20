@@ -221,6 +221,11 @@ export interface ReaderArticle {
   coverImageUrl?: string;
   /** Rendering mode is chosen locally from the URL and document structure. */
   renderProfile: ReaderRenderProfile;
+  /**
+   * A feed may provide a safe, local summary even when the original article
+   * cannot be read because its robots policy forbids automated access.
+   */
+  contentMode?: "article" | "feed_summary";
   contentHtml: string;
 }
 

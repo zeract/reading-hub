@@ -591,6 +591,7 @@ function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleReaderOn
         {!loading && error && <div className="reader-failure"><h1>{entry.title}</h1><p>{error}</p><div><button type="button" className="primary-action" onClick={() => void loadArticle()}>重试</button><button type="button" onClick={openEmbedded}>在应用内打开原文</button></div></div>}
         {!loading && article && <article className="reader-article">
           <header><p className="eyebrow">{source?.title || "已保存内容"}</p><h1>{article.title}</h1>{(article.author || date) && <p className="reader-byline">{article.author}{article.author && date ? " · " : ""}{date}</p>}</header>
+          {article.contentMode === "feed_summary" && <aside className="reader-content-notice" role="note">正在显示订阅 Feed 提供的内容摘要。该原页不允许自动读取；请使用右上角 ↗ 查看完整原文。</aside>}
           {article.coverImageUrl && <button type="button" className="reader-cover-button" onClick={(event) => {
             const image = event.currentTarget.querySelector("img");
             if (image) previewImage(image);
