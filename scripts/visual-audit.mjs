@@ -88,6 +88,14 @@ async function auditViewport(window, viewport) {
         const articleRect = article?.getBoundingClientRect();
         return noticeRect && articleRect ? { left: noticeRect.left, right: noticeRect.right, width: noticeRect.width, articleWidth: articleRect.width, height: noticeRect.height } : undefined;
       })(),
+      typography: (() => {
+        const title = document.querySelector('.reader-article > header > h1');
+        const body = document.querySelector('.article-body');
+        return title && body ? {
+          titleFontSize: Number.parseFloat(getComputedStyle(title).fontSize),
+          bodyFontSize: Number.parseFloat(getComputedStyle(body).fontSize)
+        } : undefined;
+      })(),
       timelineSummary: (() => {
         const summary = document.querySelector('.entry-card.selected .summary');
         const copy = document.querySelector('.entry-card.selected .entry-copy');
@@ -255,6 +263,7 @@ async function auditViewport(window, viewport) {
   if (!geometry.mathJax || geometry.mathJax.scrollWidth <= geometry.mathJax.clientWidth) failures.push("科学空间 MathJax/SVG 公式没有落入自身可滚动容器");
   if (!geometry.image || geometry.image.width > geometry.image.articleWidth + 1 || geometry.image.height > Math.min(360, viewport.height * 0.45) + 2) failures.push("图片尺寸没有受正文列约束");
   if (!geometry.feedSummaryNotice || geometry.feedSummaryNotice.left < -1 || geometry.feedSummaryNotice.right > geometry.feedSummaryNotice.articleWidth + geometry.feedSummaryNotice.left + 1 || geometry.feedSummaryNotice.width > geometry.feedSummaryNotice.articleWidth + 1 || geometry.feedSummaryNotice.height < 20) failures.push("订阅摘要提示没有受正文列约束");
+  if (!geometry.typography || geometry.typography.titleFontSize > geometry.typography.bodyFontSize * 2.1 || geometry.typography.titleFontSize < geometry.typography.bodyFontSize * 1.6) failures.push("阅读器标题与正文字号比例失衡");
   if (!geometry.timelineSummary || geometry.timelineSummary.right > geometry.timelineSummary.copyRight + 1 || geometry.timelineSummary.height > 36 || geometry.timelineSummary.scrollHeight <= geometry.timelineSummary.clientHeight) {
     failures.push("时间线摘要没有在卡片宽度内截断为两行");
   }

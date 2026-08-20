@@ -167,7 +167,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .reader-scroll { min-height: 0; padding: clamp(38px,5vw,68px) clamp(24px,7vw,104px) clamp(72px,9vw,112px); overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; scrollbar-gutter: stable; }
 .reader-article { width: min(100%,42em); margin: 0 auto; color: var(--ink-soft); font-size: calc(var(--reader-base-size) * var(--reader-font-scale)); }
 .reader-article > header { margin: 0 0 32px; padding-bottom: 25px; border-bottom: 1px solid var(--line); }
-.reader-article h1 { margin: 0; color: var(--ink); font-family: "Iowan Old Style","Songti SC","STSong",Georgia,serif; font-size: clamp(32px,3.8vw,51px); font-weight: 650; line-height: 1.13; letter-spacing: -.04em; overflow-wrap: anywhere; text-wrap: balance; }
+.reader-article h1 { margin: 0; color: var(--ink); font-family: "Iowan Old Style","Songti SC","STSong",Georgia,serif; font-size: 2em; font-weight: 650; line-height: 1.16; letter-spacing: -.032em; overflow-wrap: anywhere; text-wrap: balance; }
 .reader-byline { margin: 15px 0 0; color: var(--muted); font-family: -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; font-size: .76em; line-height: 1.6; }
 .reader-content-notice { margin: 0 0 28px; padding: 11px 13px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 4px 8px 8px 4px; background: var(--selection-surface); color: var(--ink-soft); font-family: -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; font-size: .72em; font-weight: 600; line-height: 1.65; }
 

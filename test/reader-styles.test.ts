@@ -52,6 +52,11 @@ describe("reader display-equation layout", () => {
     expect(styles).toMatch(/\.reader-content-notice\s*\{[^}]*border-left:\s*3px\s+solid\s+var\(--accent\);[^}]*background:\s*var\(--selection-surface\)/s);
   });
 
+  it("keeps the article title proportional to the adjustable body size", () => {
+    expect(styles).toMatch(/\.reader-article h1\s*\{[^}]*font-size:\s*2em;[^}]*line-height:\s*1\.16/s);
+    expect(styles).not.toContain(".reader-article h1 { margin: 0; color: var(--ink); font-family: \"Iowan Old Style\",\"Songti SC\",\"STSong\",Georgia,serif; font-size: clamp(32px,3.8vw,51px);");
+  });
+
   it("uses a restrained native-blue palette for selection and keeps translation as a separate soft signal", () => {
     expect(styles).toContain("--accent: #4f7ea8;");
     expect(styles).toContain("--selection-surface: #dce8f5;");
