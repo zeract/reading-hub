@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Connector, Entry, ExtractionRule, ProbeResult, RawEntry, Source } from "../shared/types";
 import { canonicalizeUrl, contentHash } from "../shared/url";
 import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage, withPublicationDateRevision } from "./extractor";
-import { parseFeed, RSS_METADATA_REVISION } from "./feed";
+import { discoverFeedUrls, FEED_DISCOVERY_REVISION, looksLikeFeed, parseFeed, RSS_METADATA_REVISION } from "./feed";
 import { PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
 import { SourceProbe } from "./source-probe";
@@ -91,10 +91,37 @@ export class GenericConnector extends BaseConnector {
   async fetchWithMetadata(source: Source): Promise<FetchOutcome> {
     const needsLegacyRuleAudit = Boolean(source.extractionRule?.itemRootSelector && source.extractionRule.autoRepairRevision !== AUTOMATIC_RULE_REVISION);
     const needsPublicationDateAudit = source.extractionRule?.publicationDateRevision !== PUBLICATION_DATE_REVISION;
+    const configuredFeedUrl = source.extractionRule?.feedUrl;
+    if (configuredFeedUrl) return this.fetchDeclaredFeed(source, configuredFeedUrl);
+
+    // Existing web sources were created before footer/feed-link discovery was
+    // available. Replay each once even when the homepage validator says 304,
+    // then persist either the verified Feed URL or the audit revision.
+    const needsFeedDiscoveryAudit = source.extractionRule?.feedDiscoveryRevision !== FEED_DISCOVERY_REVISION;
     const response = source.extractionRule?.rendererRequired && this.renderer
       ? { url: source.url, text: await this.renderer.render(source.url) }
-      : await this.http.getText(source.url, needsLegacyRuleAudit || needsPublicationDateAudit ? undefined : { etag: source.etag, lastModified: source.lastModified });
+      : await this.http.getText(source.url, needsLegacyRuleAudit || needsPublicationDateAudit || needsFeedDiscoveryAudit ? undefined : { etag: source.etag, lastModified: source.lastModified });
     if ("status" in response && response.status === 304) return { entries: [], notModified: true };
+
+    for (const feedUrl of discoverFeedUrls(response.text, response.url)) {
+      try {
+        const feedResponse = await this.http.getText(feedUrl);
+        if (!looksLikeFeed(feedResponse.contentType, feedResponse.text)) continue;
+        const feed = await parseFeed(feedResponse.text, feedResponse.url);
+        if (!feed.entries.length) continue;
+        return {
+          entries: feed.entries,
+          notModified: false,
+          etag: feedResponse.etag,
+          lastModified: feedResponse.lastModified,
+          extractionRule: withFeedDiscoveryRevision({ version: 1, ...source.extractionRule, feedUrl: feedResponse.url })
+        };
+      } catch {
+        // A candidate is only an optimisation. Preserve the working generic
+        // path when it is malformed, unavailable, or robots-disallowed.
+      }
+    }
+
     const extraction = extractGenericPage(response.text, response.url, source.extractionRule);
     return {
       entries: extraction.entries,
@@ -103,9 +130,28 @@ export class GenericConnector extends BaseConnector {
       lastModified: "lastModified" in response ? response.lastModified : undefined,
       // A metadata-only rule is safe: it does not constrain item detection,
       // but records that existing entries have been replayed by this parser.
-      extractionRule: withPublicationDateRevision(extraction.rule)
+      extractionRule: withFeedDiscoveryRevision(withPublicationDateRevision(extraction.rule ?? source.extractionRule))
     };
   }
+
+  private async fetchDeclaredFeed(source: Source, feedUrl: string): Promise<FetchOutcome> {
+    const response = await this.http.getText(feedUrl, { etag: source.etag, lastModified: source.lastModified });
+    if (response.status === 304) return { entries: [], notModified: true };
+    if (!looksLikeFeed(response.contentType, response.text)) throw new Error("来源声明的 Feed 已不再是有效订阅，请重新校准该来源。");
+    const feed = await parseFeed(response.text, response.url);
+    return {
+      entries: feed.entries,
+      notModified: false,
+      etag: response.etag,
+      lastModified: response.lastModified,
+      extractionRule: withFeedDiscoveryRevision({ version: 1, ...source.extractionRule, feedUrl: response.url })
+    };
+  }
+}
+
+function withFeedDiscoveryRevision(rule?: ExtractionRule): ExtractionRule {
+  const base = rule ?? { version: 1 };
+  return base.feedDiscoveryRevision === FEED_DISCOVERY_REVISION ? base : { ...base, feedDiscoveryRevision: FEED_DISCOVERY_REVISION };
 }
 
 /** Manual sources are fetched only when first saved or when the user explicitly refreshes. */

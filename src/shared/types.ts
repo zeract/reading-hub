@@ -14,6 +14,10 @@ export interface ExtractionRule {
   autoRepairRevision?: number;
   /** Internal revision used to re-read published dates after parser upgrades. */
   publicationDateRevision?: number;
+  /** Internal revision used to discover a declared Feed on older web sources. */
+  feedDiscoveryRevision?: number;
+  /** A public Feed declared by the source page and verified by the host. */
+  feedUrl?: string;
   itemRootSelector?: string;
   titleSelector?: string;
   timeSelector?: string;

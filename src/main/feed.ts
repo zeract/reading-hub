@@ -1,4 +1,5 @@
 import RSSParser from "rss-parser";
+import { load } from "cheerio";
 import { compactText, parsePublishedAt } from "../shared/text";
 import { toAbsoluteUrl } from "../shared/url";
 import type { RawEntry } from "../shared/types";
@@ -16,8 +17,76 @@ const parser = new RSSParser({
  */
 export const RSS_METADATA_REVISION = 1;
 
+/**
+ * Older generic sources are rechecked once for a declared Feed. A Feed is
+ * preferable to structural page extraction because it carries stable ids and
+ * publication timestamps, and it does not depend on a site's visual layout.
+ */
+export const FEED_DISCOVERY_REVISION = 1;
+
 export function looksLikeFeed(contentType: string, text: string): boolean {
   return /(?:rss|atom|feed\+json|xml)/i.test(contentType) || /^\s*<(?:\?xml[^>]*>)?\s*<(rss|feed)\b/i.test(text) || /^\s*\{/.test(text);
+}
+
+/**
+ * Finds feeds declared by either the standard document head or a deliberate
+ * page link such as a footer "RSS" button. The latter matters for sites that
+ * publish a feed but omit the conventional `rel=alternate` declaration.
+ *
+ * This function only returns public, resolved candidates. Callers still fetch
+ * them through PublicHttpClient, which applies the normal HTTPS/robots checks.
+ */
+export function discoverFeedUrls(html: string, pageUrl: string): string[] {
+  const $ = load(html);
+  const discovered: string[] = [];
+  const add = (rawHref: string | undefined, declared = false) => {
+    const url = toAbsoluteUrl(rawHref, pageUrl);
+    if (!url || (!declared && !isLikelyFeedUrl(url)) || discovered.includes(url)) return;
+    discovered.push(url);
+  };
+
+  $("link[href]").each((_index, node) => {
+    const link = $(node);
+    const rel = link.attr("rel") || "";
+    const type = link.attr("type") || "";
+    const href = link.attr("href");
+    const declaredFeed = /(?:rss|atom|feed\+json|application\/(?:json|xml))/i.test(`${rel} ${type}`);
+    if (declaredFeed) add(href, true);
+    else if (isLikelyFeedUrl(href, pageUrl)) add(href);
+  });
+
+  $("a[href]").each((_index, node) => {
+    const link = $(node);
+    const href = link.attr("href");
+    // A path such as /rss.xml is an explicit feed endpoint even when the
+    // visual button is an icon and has no accessible text. For less explicit
+    // paths, require feed-related link text/metadata to avoid navigation.
+    const label = `${link.text()} ${link.attr("title") || ""} ${link.attr("aria-label") || ""} ${link.attr("class") || ""}`;
+    if (isLikelyFeedUrl(href, pageUrl) || /(?:rss|atom|feed|subscribe|syndicat)/i.test(label) && isFeedLikeQuery(href, pageUrl)) add(href);
+  });
+
+  return discovered.slice(0, 5);
+}
+
+function isLikelyFeedUrl(rawUrl: string | undefined, pageUrl = "https://example.invalid/"): boolean {
+  if (!rawUrl) return false;
+  try {
+    const url = new URL(rawUrl, pageUrl);
+    return /(?:^|\/)(?:rss|atom|feed)(?:[/.]|$)|\.(?:rss|atom|xml|json)$/i.test(url.pathname)
+      || isFeedLikeQuery(url.toString(), pageUrl);
+  } catch {
+    return false;
+  }
+}
+
+function isFeedLikeQuery(rawUrl: string | undefined, pageUrl: string): boolean {
+  if (!rawUrl) return false;
+  try {
+    const url = new URL(rawUrl, pageUrl);
+    return [...url.searchParams.entries()].some(([key, value]) => /^(?:format|output|type)$/i.test(key) && /^(?:rss|atom|feed|json)$/i.test(value));
+  } catch {
+    return false;
+  }
 }
 
 export async function parseFeed(text: string, feedUrl: string): Promise<{ title: string; entries: RawEntry[] }> {

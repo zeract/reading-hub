@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { GenericConnector, RssConnector } from "../src/main/connectors";
 import { PUBLICATION_DATE_REVISION } from "../src/main/extractor";
-import { RSS_METADATA_REVISION } from "../src/main/feed";
+import { FEED_DISCOVERY_REVISION, RSS_METADATA_REVISION } from "../src/main/feed";
 import type { Source } from "../src/shared/types";
 
 describe("GenericConnector", () => {
@@ -57,6 +57,55 @@ describe("GenericConnector", () => {
     expect(receivedOptions).toBeUndefined();
     expect(outcome.entries[0]).toMatchObject({ publishedAt: Date.UTC(2026, 7, 16) });
     expect(outcome.extractionRule?.publicationDateRevision).toBe(PUBLICATION_DATE_REVISION);
+  });
+
+  it("upgrades an existing web source to a verified footer Feed", async () => {
+    const requests: Array<{ url: string; options: unknown }> = [];
+    const http = {
+      getText: async (url: string, options: unknown) => {
+        requests.push({ url, options });
+        if (url.endsWith("/rss.xml")) {
+          return {
+            url,
+            status: 200,
+            contentType: "application/rss+xml",
+            etag: "feed-etag",
+            lastModified: "Tue, 18 Aug 2026 05:44:39 GMT",
+            text: `<?xml version="1.0"?><rss version="2.0"><channel><title>AINews</title><item><title>Newest issue</title><link>/issues/latest</link><pubDate>Tue, 18 Aug 2026 05:44:39 GMT</pubDate></item></channel></rss>`
+          };
+        }
+        return {
+          url,
+          status: 200,
+          contentType: "text/html",
+          text: `<html><body><footer><a href="/rss.xml">RSS</a></footer></body></html>`
+        };
+      }
+    };
+    const source: Source = {
+      id: "source", url: "https://news.example/", title: "AINews", kind: "generic", status: "active",
+      pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1,
+      etag: "home-etag", lastModified: "Mon, 17 Aug 2026 12:00:00 GMT",
+      extractionRule: { version: 1, publicationDateRevision: PUBLICATION_DATE_REVISION }
+    };
+    const connector = new GenericConnector(http as any, {} as any);
+
+    const outcome = await connector.fetchWithMetadata(source);
+
+    expect(requests).toEqual([
+      { url: "https://news.example/", options: undefined },
+      { url: "https://news.example/rss.xml", options: undefined }
+    ]);
+    expect(outcome.entries).toEqual([expect.objectContaining({
+      title: "Newest issue",
+      url: "https://news.example/issues/latest",
+      publishedAt: Date.UTC(2026, 7, 18)
+    })]);
+    expect(outcome.extractionRule).toMatchObject({
+      feedUrl: "https://news.example/rss.xml",
+      feedDiscoveryRevision: FEED_DISCOVERY_REVISION
+    });
+    expect(outcome.etag).toBe("feed-etag");
   });
 });
 

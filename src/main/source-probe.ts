@@ -1,10 +1,9 @@
-import { load } from "cheerio";
 import { extractGenericPage } from "./extractor";
-import { parseFeed, looksLikeFeed } from "./feed";
+import { discoverFeedUrls, parseFeed, looksLikeFeed } from "./feed";
 import { NetworkRequestError, PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
 import type { CalibrationResult, ProbeResult, RawEntry } from "../shared/types";
-import { assertPublicUrl, toAbsoluteUrl } from "../shared/url";
+import { assertPublicUrl } from "../shared/url";
 import { extractCalibrationCandidates } from "./extractor";
 
 export class SourceProbe {
@@ -40,13 +39,7 @@ export class SourceProbe {
       return { kind: "rss", title: feed.title, url: response.url, confidence: 1, preview: feed.entries.slice(0, 10), requiresReview: false };
     }
 
-    const $ = load(response.text);
-    const discovered = $("link[type*='rss'], link[type*='atom'], link[type*='json'], link[rel='alternate']")
-      .toArray()
-      .map((node) => toAbsoluteUrl($(node).attr("href"), response.url))
-      .filter((value): value is string => Boolean(value))
-      .filter((value) => /feed|rss|atom|\.xml|\.json/i.test(value));
-    for (const feedUrl of [...new Set(discovered)].slice(0, 3)) {
+    for (const feedUrl of discoverFeedUrls(response.text, response.url)) {
       try {
         const feedResponse = await this.http.getText(feedUrl);
         if (!looksLikeFeed(feedResponse.contentType, feedResponse.text)) continue;

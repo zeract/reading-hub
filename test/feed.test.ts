@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseFeed } from "../src/main/feed";
+import { discoverFeedUrls, parseFeed } from "../src/main/feed";
 
 describe("feed parser", () => {
   it("normalizes Atom/RSS fields into reader entries", async () => {
@@ -22,5 +22,21 @@ describe("feed parser", () => {
       "https://example.com/feed.json"
     );
     expect(feed.entries[0]).toMatchObject({ title: "JSON 条目", url: "https://example.com/post" });
+  });
+
+  it("discovers an RSS endpoint linked from a page footer", () => {
+    const urls = discoverFeedUrls(
+      `<html><body><footer><a href="/rss.xml" aria-label="RSS feed"><svg></svg></a></footer></body></html>`,
+      "https://news.example/"
+    );
+    expect(urls).toEqual(["https://news.example/rss.xml"]);
+  });
+
+  it("accepts a type-declared Feed even when its path does not mention feeds", () => {
+    const urls = discoverFeedUrls(
+      `<link rel="alternate" type="application/atom+xml" href="/subscribe">`,
+      "https://news.example/"
+    );
+    expect(urls).toEqual(["https://news.example/subscribe"]);
   });
 });

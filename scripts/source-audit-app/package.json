@@ -1,0 +1,5 @@
+{
+  "name": "reading-hub-source-audit",
+  "private": true,
+  "main": "main.cjs"
+}
