@@ -275,7 +275,9 @@ async function auditViewport(window, viewport) {
   if (!geometry.titlebar || geometry.titlebar.height < 40 || geometry.titlebar.controls.some((control) => control.left < geometry.titlebar.left - 1 || control.right > geometry.titlebar.right + 1 || control.top < 0 || control.bottom > geometry.titlebar.height + 1)) {
     failures.push("应用顶部导航没有保持在标题栏内");
   }
-  if (!geometry.titlebar || !geometry.fullscreenTitlebar || Math.abs((geometry.titlebar.controls[0]?.left || 0) - 96) > 1 || Math.abs((geometry.fullscreenTitlebar.controls[0]?.left || 0) - 16) > 1) {
+  const titlebarControlCenter = geometry.titlebar?.controls[0] ? (geometry.titlebar.controls[0].top + geometry.titlebar.controls[0].bottom) / 2 : 0;
+  const fullscreenControlCenter = geometry.fullscreenTitlebar?.controls[0] ? (geometry.fullscreenTitlebar.controls[0].top + geometry.fullscreenTitlebar.controls[0].bottom) / 2 : 0;
+  if (!geometry.titlebar || !geometry.fullscreenTitlebar || Math.abs((geometry.titlebar.controls[0]?.left || 0) - 96) > 1 || Math.abs(titlebarControlCenter - 20) > 1 || Math.abs((geometry.fullscreenTitlebar.controls[0]?.left || 0) - 16) > 1 || Math.abs(fullscreenControlCenter - geometry.titlebar.height / 2) > 1) {
     failures.push("全屏时顶部按钮没有随 macOS 交通灯隐藏而左移");
   }
   if (!geometry.sourceList || geometry.sourceList.rowHeight > 37 || geometry.sourceList.titleHeight > 21 || Math.abs(geometry.sourceList.icon.width - 18) > 1 || Math.abs(geometry.sourceList.folder.width - 13) > 1 || Math.abs(geometry.sourceList.sourceFontSize - geometry.sourceList.groupFontSize) > .1 || geometry.sourceList.libraryFontSize > geometry.sourceList.groupFontSize + .1 || geometry.sourceList.libraryHeadingBottom > geometry.sourceList.libraryFilterTop + 1 || geometry.sourceList.sourceHeadingTop - geometry.sourceList.libraryNavBottom > 12) failures.push("来源列表的图标、字号层级或阅读分类间距异常");

@@ -31,6 +31,8 @@ describe("reader display-equation layout", () => {
     expect(styles).toContain(".shell { --titlebar-leading-inset: 96px;");
     expect(styles).toContain(".shell--fullscreen { --titlebar-leading-inset: 16px; }");
     expect(styles).toContain("padding: 0 16px 0 var(--titlebar-leading-inset);");
+    expect(styles).toContain(".shell:not(.shell--fullscreen) .app-titlebar-actions, .settings-shell:not(.settings-shell--fullscreen) .app-titlebar-actions { transform: translateY(-9px); }");
+    expect(styles).toMatch(/\.app-titlebar-button:hover:not\(:disabled\),\s*\.app-titlebar-button:active:not\(:disabled\)\s*\{[^}]*background:\s*transparent/s);
   });
 
   it("keeps selected-text actions and the local answer inside the reader without introducing a page scroll region", () => {
