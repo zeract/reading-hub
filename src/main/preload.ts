@@ -4,6 +4,7 @@ import type { AiProviderConfiguration, AiProviderId, AiStreamEvent, AiStreamRequ
 contextBridge.exposeInMainWorld("reader", {
   previewSource: (url: string) => ipcRenderer.invoke("source:preview", url),
   confirmSource: (token: string) => ipcRenderer.invoke("source:confirm", token),
+  importOpml: () => ipcRenderer.invoke("source:import-opml"),
   listSources: () => ipcRenderer.invoke("source:list"),
   deleteSource: (id: string) => ipcRenderer.invoke("source:delete", id),
   refreshSource: (id: string) => ipcRenderer.invoke("source:refresh", id),

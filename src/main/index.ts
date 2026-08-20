@@ -1,6 +1,6 @@
 import path from "node:path";
 import { readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { lstat, readFile, writeFile } from "node:fs/promises";
 import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell } from "electron";
 import { ReadingDatabase } from "./database";
 import { GenericConnector, ManualConnector, RssConnector } from "./connectors";
@@ -23,7 +23,7 @@ import { InAppArticleViewer } from "./in-app-article-viewer";
 import { auditLocalReader } from "./reader-audit";
 import { assertPublicUrl } from "../shared/url";
 import { RobotsDisallowedError } from "./robots";
-import type { AiProviderConfiguration, AiStreamEvent, AiStreamRequest, EntryListQuery, ExtractionRule, ProfileSubscriptionInput, Source, SourceSettings, SyncResult } from "../shared/types";
+import type { AiProviderConfiguration, AiStreamEvent, AiStreamRequest, EntryListQuery, ExtractionRule, OpmlImportResult, ProfileSubscriptionInput, Source, SourceSettings, SyncResult } from "../shared/types";
 
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
@@ -246,6 +246,21 @@ async function bootstrap(): Promise<void> {
 
   ipcMain.handle("source:preview", (_event, url: string) => sources.preview(url));
   ipcMain.handle("source:confirm", (_event, token: string) => sources.confirm(token));
+  ipcMain.handle("source:import-opml", async (event): Promise<OpmlImportResult> => {
+    const options = {
+      title: "导入 OPML 订阅",
+      properties: ["openFile"] as Array<"openFile">,
+      filters: [{ name: "OPML 订阅", extensions: ["opml", "xml"] }]
+    };
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    const selection = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
+    if (selection.canceled || !selection.filePaths[0]) return { cancelled: true, imported: 0, existing: 0, skipped: 0 };
+    const filePath = selection.filePaths[0];
+    const file = await lstat(filePath);
+    if (!file.isFile() || file.size > 2_000_000) throw new Error("OPML 文件必须是小于 2 MB 的普通文件。");
+    const text = await readFile(filePath, "utf8");
+    return { cancelled: false, ...sources.importOpml(text) };
+  });
   ipcMain.handle("source:list", () => database.listSources());
   ipcMain.handle("source:delete", (_event, id: string) => sources.delete(id));
   ipcMain.handle("source:refresh", async (_event, id: string) => sync.syncSource(id));

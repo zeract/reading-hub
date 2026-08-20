@@ -1,5 +1,5 @@
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type AiSelectionContext, type AiSelectionIntent, type CalibrationResult, type Entry, type LibraryCounts, type ProbeResult, type ReaderArticle, type Source, type SourceKind, type SubscriptionDraft } from "../shared/types";
+import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort, type AiSelectionContext, type AiSelectionIntent, type CalibrationResult, type Entry, type LibraryCounts, type OpmlImportResult, type ProbeResult, type ReaderArticle, type Source, type SourceKind, type SubscriptionDraft } from "../shared/types";
 import { AiMarkdownContent } from "./ai-markdown";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { entryQueryForLibrary, type LibraryView } from "./library-view";
@@ -112,6 +112,28 @@ export function App() {
       setShowAddSource(false);
     } catch (error) {
       setNotice(errorMessage(error));
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importOpml(): Promise<OpmlImportResult> {
+    setBusy(true);
+    setNotice(undefined);
+    try {
+      const result = await window.reader.importOpml();
+      if (!result.cancelled) {
+        const details = [`导入 ${result.imported} 个 Feed`];
+        if (result.existing) details.push(`${result.existing} 个已存在`);
+        if (result.skipped) details.push(`${result.skipped} 个无效或不支持`);
+        setNotice(`${details.join("；")}。正在按安全限流初始化同步。`);
+        await reload();
+      }
+      return result;
+    } catch (error) {
+      const message = errorMessage(error);
+      setNotice(message);
       throw error;
     } finally {
       setBusy(false);
@@ -316,6 +338,7 @@ export function App() {
       {showAddSource && <AddSourceDialog
         onClose={() => setShowAddSource(false)}
         onPreview={preview}
+        onImportOpml={importOpml}
         onZhihuStarted={async () => { setShowAddSource(false); setNotice("已打开知乎登录窗口；登录完成后会自动同步关注动态。"); await reload(); }}
         onXStarted={async () => { setShowAddSource(false); setNotice("X 已授权，正在同步关注账号的原创帖子。"); await reload(); }}
         onXiaohongshuSaved={async () => { setShowAddSource(false); setNotice("小红书公开博主来源已添加，正在读取公开笔记。"); await reload(); }}
@@ -990,9 +1013,10 @@ function PreviewDialog({ pending, onCancel, onConfirm, busy }: { pending: Pendin
   </Dialog>;
 }
 
-function AddSourceDialog({ onClose, onPreview, onZhihuStarted, onXStarted, onXiaohongshuSaved, onAcademicSaved }: {
+function AddSourceDialog({ onClose, onPreview, onImportOpml, onZhihuStarted, onXStarted, onXiaohongshuSaved, onAcademicSaved }: {
   onClose: () => void;
   onPreview: (url: string) => Promise<void>;
+  onImportOpml: () => Promise<OpmlImportResult>;
   onZhihuStarted: () => Promise<void>;
   onXStarted: () => Promise<void>;
   onXiaohongshuSaved: () => Promise<void>;
@@ -1012,7 +1036,7 @@ function AddSourceDialog({ onClose, onPreview, onZhihuStarted, onXStarted, onXia
       {methods.map((item) => <button key={item.id} type="button" role="tab" aria-selected={method === item.id} className={method === item.id ? "selected" : ""} onClick={() => setMethod(item.id)}>{item.label}</button>)}
     </div>
     <p className="source-method-description">{selected.description}</p>
-    {method === "public" && <PublicSourcePane onPreview={onPreview} />}
+    {method === "public" && <PublicSourcePane onPreview={onPreview} onImportOpml={onImportOpml} />}
     {method === "zhihu" && <ZhihuSourcePane onStarted={onZhihuStarted} />}
     {method === "x" && <XSourcePane onStarted={onXStarted} />}
     {method === "xiaohongshu" && <XiaohongshuSourcePane onSaved={onXiaohongshuSaved} />}
@@ -1020,9 +1044,10 @@ function AddSourceDialog({ onClose, onPreview, onZhihuStarted, onXStarted, onXia
   </Dialog>;
 }
 
-function PublicSourcePane({ onPreview }: { onPreview: (url: string) => Promise<void> }) {
+function PublicSourcePane({ onPreview, onImportOpml }: { onPreview: (url: string) => Promise<void>; onImportOpml: () => Promise<OpmlImportResult> }) {
   const [url, setUrl] = useState("");
   const [error, setError] = useState<string>();
+  const [imported, setImported] = useState<string>();
   const [busy, setBusy] = useState(false);
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -1030,12 +1055,24 @@ function PublicSourcePane({ onPreview }: { onPreview: (url: string) => Promise<v
     setBusy(true); setError(undefined);
     try { await onPreview(url.trim()); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   }
+  async function importFile() {
+    setBusy(true); setError(undefined); setImported(undefined);
+    try {
+      const result = await onImportOpml();
+      if (!result.cancelled) setImported(`已导入 ${result.imported} 个 Feed${result.existing ? `；${result.existing} 个已存在` : ""}${result.skipped ? `；跳过 ${result.skipped} 个` : ""}。`);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
   return <form className="connector-form" onSubmit={(event) => void submit(event)}>
     <label htmlFor="source-url">网址</label>
     <input id="source-url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://… 或 http://…" type="url" required />
-    <p className="dialog-intro">优先识别 RSS、Atom、JSON Feed；没有 Feed 时会从公开页面提取文章卡片。X 主页不提供无授权自动订阅，请在“X 动态”中使用官方 API；小红书分享链接仅作为一次性原文入口保存。</p>
+    <p className="dialog-intro">优先识别 RSS、Atom、JSON Feed；没有 Feed 时会从公开页面提取文章卡片。也可导入 OPML。明确添加的本机地址仅接受 RSS/Atom/JSON Feed，不能用于网页提取。X 主页请在“X 动态”中使用官方 API。</p>
     {error && <p className="error">{error}</p>}
-    <div className="dialog-actions"><button className="primary" disabled={busy}>{busy ? "正在探测…" : "探测来源"}</button></div>
+    {imported && <p className="source-settings-note">{imported}</p>}
+    <div className="dialog-actions"><button type="button" onClick={() => void importFile()} disabled={busy}>导入 OPML…</button><button className="primary" disabled={busy}>{busy ? "正在探测…" : "探测来源"}</button></div>
   </form>;
 }
 

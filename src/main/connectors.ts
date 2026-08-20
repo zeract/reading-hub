@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Connector, Entry, ExtractionRule, ProbeResult, RawEntry, Source } from "../shared/types";
-import { canonicalizeUrl, contentHash } from "../shared/url";
+import { canonicalizeUrl, contentHash, isTrustedLoopbackFeedUrl } from "../shared/url";
 import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage, withPublicationDateRevision } from "./extractor";
 import { discoverFeedUrls, FEED_DISCOVERY_REVISION, looksLikeFeed, parseFeed, RSS_METADATA_REVISION } from "./feed";
 import { PublicHttpClient } from "./http";
@@ -58,9 +58,11 @@ export class RssConnector extends BaseConnector {
     // upgrade, deliberately make one normal public request so existing cards
     // can be enriched; the revision prevents this from recurring on refresh.
     const needsMetadataReplay = source.metadataRevision !== RSS_METADATA_REVISION;
+    const allowTrustedLoopbackFeed = source.config?.allowTrustedLoopbackFeed === true && isTrustedLoopbackFeedUrl(source.url);
     const response = await this.http.getText(
       source.url,
-      needsMetadataReplay ? undefined : { etag: source.etag, lastModified: source.lastModified }
+      needsMetadataReplay ? undefined : { etag: source.etag, lastModified: source.lastModified },
+      allowTrustedLoopbackFeed ? { allowTrustedLoopbackFeed: true } : undefined
     );
     if (response.status === 304) return { entries: [], notModified: true };
     return {

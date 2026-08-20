@@ -28,7 +28,7 @@ describe("reader display-equation layout", () => {
   });
 
   it("reclaims the macOS traffic-light inset while the native window is fullscreen", () => {
-    expect(styles).toContain(".shell { --titlebar-leading-inset: 88px;");
+    expect(styles).toContain(".shell { --titlebar-leading-inset: 96px;");
     expect(styles).toContain(".shell--fullscreen { --titlebar-leading-inset: 16px; }");
     expect(styles).toContain("padding: 0 16px 0 var(--titlebar-leading-inset);");
   });
@@ -68,16 +68,21 @@ describe("reader display-equation layout", () => {
     expect(styles).toMatch(/\.source-title\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/s);
     expect(styles).toMatch(/\.source-icon\s*\{[^}]*flex:\s*0\s+0\s+18px/s);
     expect(styles).toMatch(/\.source-group-label svg\s*\{[^}]*width:\s*13px/s);
-    expect(styles).toContain(".settings-shell { --titlebar-leading-inset: 88px;");
+    expect(styles).toContain(".settings-shell { --titlebar-leading-inset: 96px;");
   });
 
   it("keeps the source collection directly beneath the reading filters with a compact local hierarchy", () => {
     expect(styles).toMatch(/\.sidebar\s*\{[^}]*gap:\s*9px/s);
     expect(styles).toMatch(/\.source-section\s*\{[^}]*flex:\s*1\s+1\s+auto;[^}]*flex-direction:\s*column;[^}]*gap:\s*1px/s);
     expect(styles).toMatch(/\.section-title\s*\{[^}]*margin:\s*1px\s+8px\s+2px;[^}]*font-size:\s*10px/s);
-    expect(styles).toMatch(/\.source-group-heading\s*\{[^}]*font-size:\s*10px/s);
+    expect(styles).toMatch(/\.source-group-heading\s*\{[^}]*font-size:\s*12px/s);
     expect(styles).toMatch(/\.library-filter\s*\{[^}]*font-size:\s*12px/s);
     expect(styles).toMatch(/\.source-title\s*\{[^}]*font-size:\s*12px/s);
     expect(styles).not.toContain("margin: 2px 7px -8px");
+  });
+
+  it("clips timeline titles and summaries to the card width and two lines", () => {
+    expect(styles).toMatch(/\.entry-card h2\s*\{[^}]*max-width:\s*100%;[^}]*overflow:\s*hidden;[^}]*overflow-wrap:\s*anywhere;[^}]*-webkit-line-clamp:\s*2/s);
+    expect(styles).toMatch(/\.summary\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;[^}]*max-height:\s*calc\(1\.48em\s*\*\s*2\);[^}]*overflow:\s*hidden;[^}]*overflow-wrap:\s*anywhere;[^}]*-webkit-line-clamp:\s*2/s);
   });
 });

@@ -1,10 +1,11 @@
-import type { AiProviderConfiguration, AiProviderId, AiProviderSettings, AiStreamEvent, AiStreamRequest, ArticleReadResult, CalibrationResult, Entry, EntryListQuery, ExtractionRule, LibraryCounts, ProbeResult, ProfileSubscriptionInput, Source, SourceSettings, SubscriptionDraft } from "../shared/types";
+import type { AiProviderConfiguration, AiProviderId, AiProviderSettings, AiStreamEvent, AiStreamRequest, ArticleReadResult, CalibrationResult, Entry, EntryListQuery, ExtractionRule, LibraryCounts, OpmlImportResult, ProbeResult, ProfileSubscriptionInput, Source, SourceSettings, SubscriptionDraft } from "../shared/types";
 
 declare global {
   interface Window {
     reader: {
       previewSource(url: string): Promise<{ token: string; probe: ProbeResult }>;
       confirmSource(token: string): Promise<Source>;
+      importOpml(): Promise<OpmlImportResult>;
       listSources(): Promise<Source[]>;
       deleteSource(id: string): Promise<void>;
       refreshSource(id: string): Promise<unknown>;

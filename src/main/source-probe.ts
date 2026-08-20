@@ -3,19 +3,21 @@ import { discoverFeedUrls, parseFeed, looksLikeFeed } from "./feed";
 import { NetworkRequestError, PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
 import type { CalibrationResult, ProbeResult, RawEntry } from "../shared/types";
-import { assertPublicUrl } from "../shared/url";
+import { assertFeedSubscriptionUrl, assertPublicUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 import { extractCalibrationCandidates } from "./extractor";
 
 export class SourceProbe {
   constructor(private readonly http: PublicHttpClient, private readonly renderer?: PageRenderer) {}
 
   async probe(rawUrl: string): Promise<ProbeResult> {
-    const input = assertPublicUrl(rawUrl).toString();
+    const localFeed = isTrustedLoopbackFeedUrl(rawUrl);
+    const input = localFeed ? assertFeedSubscriptionUrl(rawUrl, true).toString() : assertPublicUrl(rawUrl).toString();
     assertSupportedPublicProbeUrl(input);
     let response;
     try {
-      response = await this.http.getText(input);
+      response = await this.http.getText(input, undefined, localFeed ? { allowTrustedLoopbackFeed: true } : undefined);
     } catch (error) {
+      if (localFeed) throw error;
       if (!(error instanceof NetworkRequestError) || !this.renderer) throw error;
       try {
         const rendered = await this.renderer.render(input);
@@ -36,8 +38,18 @@ export class SourceProbe {
     }
     if (looksLikeFeed(response.contentType, response.text)) {
       const feed = await parseFeed(response.text, response.url);
-      return { kind: "rss", title: feed.title, url: response.url, confidence: 1, preview: feed.entries.slice(0, 10), requiresReview: false };
+      return {
+        kind: "rss",
+        title: feed.title,
+        url: response.url,
+        confidence: 1,
+        preview: feed.entries.slice(0, 10),
+        requiresReview: false,
+        message: localFeed ? "已验证本机 Feed；只会按 RSS/Atom/JSON Feed 读取。" : undefined
+      };
     }
+
+    if (localFeed) throw new Error("本机地址只支持 RSS、Atom 或 JSON Feed，不能用于网页结构提取。");
 
     for (const feedUrl of discoverFeedUrls(response.text, response.url)) {
       try {

@@ -21,4 +21,9 @@ describe("application shell source controls", () => {
     expect(app).toContain('function AppIcon({ name }');
     expect(app).not.toContain("RSSHub 路由");
   });
+
+  it("offers OPML import alongside a single public source probe", () => {
+    expect(app).toContain("导入 OPML…");
+    expect(app).toContain("window.reader.importOpml()");
+  });
 });

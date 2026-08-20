@@ -1,4 +1,4 @@
-import { assertPublicUrl } from "../shared/url";
+import { assertFeedSubscriptionUrl, assertPublicUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 import { chromiumFetch } from "./network";
 import { RobotsPolicy } from "./robots";
 
@@ -33,9 +33,11 @@ export class PublicHttpClient {
 
   private readonly imageCache = new Map<string, string>();
 
-  async getText(rawUrl: string, cached?: { etag?: string; lastModified?: string }, options?: { maxBytes?: number }): Promise<TextResponse> {
+  async getText(rawUrl: string, cached?: { etag?: string; lastModified?: string }, options?: { maxBytes?: number; allowTrustedLoopbackFeed?: boolean }): Promise<TextResponse> {
     const maxBytes = options?.maxBytes ?? 3_000_000;
-    let targetUrl = assertPublicUrl(rawUrl).toString();
+    const localFeed = options?.allowTrustedLoopbackFeed === true && isTrustedLoopbackFeedUrl(rawUrl);
+    const localFeedOrigin = localFeed ? assertFeedSubscriptionUrl(rawUrl, true).origin : undefined;
+    let targetUrl = localFeed ? assertFeedSubscriptionUrl(rawUrl, true).toString() : assertPublicUrl(rawUrl).toString();
     const headers: Record<string, string> = {
       "User-Agent": "ReadingHub/0.1 (+local reader)",
       Accept: "application/atom+xml, application/rss+xml, application/feed+json, application/json, text/html;q=0.9, */*;q=0.1"
@@ -43,7 +45,7 @@ export class PublicHttpClient {
     if (cached?.etag) headers["If-None-Match"] = cached.etag;
     if (cached?.lastModified) headers["If-Modified-Since"] = cached.lastModified;
     for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
-      await this.robots.assertAllowed(targetUrl);
+      if (!localFeed) await this.robots.assertAllowed(targetUrl);
       let response;
       try {
         // Redirects are followed explicitly so every destination is checked for
@@ -55,7 +57,15 @@ export class PublicHttpClient {
       const location = response.headers.get("location");
       if (location && response.status >= 300 && response.status < 400) {
         if (redirectCount === 5) throw new Error("重定向次数过多，已停止请求。");
-        targetUrl = assertPublicUrl(new URL(location, targetUrl).toString()).toString();
+        const redirected = new URL(location, targetUrl);
+        if (localFeed) {
+          if (!isTrustedLoopbackFeedUrl(redirected.toString()) || redirected.origin !== localFeedOrigin) {
+            throw new Error("本机 Feed 不能重定向到其他地址。");
+          }
+          targetUrl = redirected.toString();
+        } else {
+          targetUrl = assertPublicUrl(redirected.toString()).toString();
+        }
         continue;
       }
       if (response.status === 304) {

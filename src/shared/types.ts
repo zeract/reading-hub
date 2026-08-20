@@ -357,6 +357,13 @@ export interface SourceInput {
   status?: SourceStatus;
 }
 
+export interface OpmlImportResult {
+  cancelled: boolean;
+  imported: number;
+  existing: number;
+  skipped: number;
+}
+
 /** A direct, user-supplied platform profile URL. */
 export interface ProfileSubscriptionInput {
   url: string;

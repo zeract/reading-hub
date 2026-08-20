@@ -5,6 +5,8 @@ import { isXiaohongshuUrl, manualProbe, SourceProbe } from "./source-probe";
 import { SyncManager } from "./sync-manager";
 import { ZhihuFollowConnector } from "./zhihu-follow";
 import { parseXiaohongshuProfileUrl } from "./platform-profile-url";
+import { parseOpml } from "./opml";
+import { assertFeedSubscriptionUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 
 type PendingProbe = { expiresAt: number; probe: ProbeResult };
 
@@ -39,12 +41,55 @@ export class SourceService {
       title: probe.title,
       kind: probe.kind,
       extractionRule: probe.extractionRule,
+      config: probe.kind === "rss" && isTrustedLoopbackFeedUrl(probe.url) ? { allowTrustedLoopbackFeed: true } : undefined,
       pollingEnabled: probe.kind !== "manual",
       status: probe.kind === "generic" && probe.confidence < 0.5 ? "needs_review" : "active"
     };
     const source = this.db.createSource(input);
     this.sync.savePreview(source, probe.preview);
     return source;
+  }
+
+  importOpml(text: string): { imported: number; existing: number; skipped: number } {
+    const seen = new Set<string>();
+    const existingIdentities = new Set(this.db.listSources().map((source) => canonicalizeUrl(source.url)));
+    const created: Source[] = [];
+    let existing = 0;
+    let skipped = 0;
+    for (const item of parseOpml(text)) {
+      try {
+        const url = assertFeedSubscriptionUrl(item.url, true).toString();
+        const identity = canonicalizeUrl(url);
+        if (seen.has(identity)) {
+          existing += 1;
+          continue;
+        }
+        seen.add(identity);
+        if (existingIdentities.has(identity)) {
+          existing += 1;
+          continue;
+        }
+        const localFeed = isTrustedLoopbackFeedUrl(url);
+        const source = this.db.createSource({
+          url,
+          title: normalizedOptionalTitle(item.title) || new URL(url).hostname,
+          category: item.category,
+          kind: "rss",
+          connectorId: "rss",
+          config: localFeed ? { allowTrustedLoopbackFeed: true } : undefined,
+          pollingEnabled: true
+        });
+        created.push(source);
+        existingIdentities.add(identity);
+      } catch {
+        // One malformed or private-network outline must not block all other
+        // user-selected subscriptions. The aggregate count is shown in UI.
+        skipped += 1;
+      }
+    }
+    if (!created.length && !existing) throw new Error("OPML 中没有可导入的公开或本机 Feed。");
+    void this.syncImportedSources(created);
+    return { imported: created.length, existing, skipped };
   }
 
   connectZhihu(): Source {
@@ -172,6 +217,12 @@ export class SourceService {
   private prunePending(): void {
     const now = Date.now();
     for (const [token, item] of this.pending) if (item.expiresAt < now) this.pending.delete(token);
+  }
+
+  private async syncImportedSources(sources: Source[]): Promise<void> {
+    // Queue imports rather than firing every feed at once. SyncManager keeps
+    // same-host sources serial and stores individual failures/backs-off.
+    for (const source of sources) await this.sync.syncSource(source.id).catch(() => undefined);
   }
 }
 
