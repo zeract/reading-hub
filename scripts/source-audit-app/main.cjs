@@ -3,13 +3,14 @@ const path = require("node:path");
 const { tmpdir } = require("node:os");
 const { writeFile } = require("node:fs/promises");
 const Database = require("better-sqlite3");
+const { redactAuditMessage, redactAuditUrl } = require("../../dist/main/main/audit-redaction.js");
 
 // This script intentionally uses the same public HTTP client as the app. It
 // is read-only: no source, checkpoint, card, cookie, or credential is changed.
 app.setPath("userData", path.join(tmpdir(), `reading-hub-source-audit-${process.pid}`));
 
 function safeError(error) {
-  return error instanceof Error ? error.message.replace(/Bearer\s+\S+/gi, "Bearer [redacted]") : "未知错误";
+  return error instanceof Error ? redactAuditMessage(error.message) : "未知错误";
 }
 
 function sourceDatabasePath() {
@@ -37,7 +38,7 @@ async function inspectFeed(http, parseFeed, looksLikeFeed, feedUrl, allowTrusted
   const feed = await parseFeed(response.text, response.url);
   const newestPublishedAt = feed.entries.reduce((latest, entry) => Math.max(latest, entry.publishedAt || 0), 0);
   return {
-    url: response.url,
+    url: redactAuditUrl(response.url),
     entries: feed.entries.length,
     newestPublishedAt: timestamp(newestPublishedAt || undefined)
   };
