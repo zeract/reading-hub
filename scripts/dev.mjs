@@ -67,11 +67,13 @@ function bin(modulePath) {
   return path.join(projectRoot, "node_modules", ...modulePath.split("/"));
 }
 
-function launch(label, command, args, environment = {}, { restartable = false } = {}) {
+function launch(label, command, args, environment = {}, { restartable = false, ipc = false } = {}) {
   const child = spawn(command, args, {
     cwd: projectRoot,
     env: { ...process.env, ...environment },
-    stdio: "inherit"
+    // Electron receives a Node IPC channel only in development. Its main
+    // process uses closure of this channel to quit when this supervisor dies.
+    stdio: ipc ? ["inherit", "inherit", "inherit", "ipc"] : "inherit"
   });
   children.push(child);
   child.on("exit", (code, signal) => {
@@ -123,17 +125,56 @@ async function waitUntilReady(port, entryPaths) {
   throw new Error("开发服务器或 Electron 主进程编译在 30 秒内没有就绪。");
 }
 
+function childHasExited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+function waitForChildExit(child, timeoutMs) {
+  if (childHasExited(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.removeListener("exit", onExit);
+      child.removeListener("error", onError);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const onError = () => finish(childHasExited(child));
+    const timeout = setTimeout(() => finish(childHasExited(child)), timeoutMs);
+    child.once("exit", onExit);
+    child.once("error", onError);
+    // The process could end between the first check and listener registration.
+    if (childHasExited(child)) finish(true);
+  });
+}
+
+async function terminateChild(child) {
+  if (childHasExited(child) || !child.pid) return;
+  child.kill("SIGTERM");
+  if (await waitForChildExit(child, 5_000)) return;
+  if (childHasExited(child)) return;
+  child.kill("SIGKILL");
+  await waitForChildExit(child, 1_000);
+}
+
 async function stop(exitCode = 0) {
   if (stopping) return;
   stopping = true;
   clearTimeout(restartTimer);
   clearTimeout(restartForceTimer);
-  for (const child of children) if (!child.killed) child.kill("SIGTERM");
+  // Do not abandon the Electron main process immediately after signalling it.
+  // Its shutdown path closes SQLite and its Chromium children. A bounded force
+  // kill covers a wedged development build without making normal shutdowns
+  // slow, and prevents a live process from being re-parented to launchd.
+  await Promise.allSettled(children.map((child) => terminateChild(child)));
   await releaseDevLock();
   process.exit(exitCode);
 }
 
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => void stop(0));
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => void stop(0));
 
 const port = await findAvailablePort();
 const rendererUrl = `http://${host}:${port}`;
@@ -148,7 +189,13 @@ function launchElectron() {
   // Spawn Electron itself rather than `electron/cli.js`. The CLI is a Node
   // wrapper which can leave its Electron child alive after a restart signal,
   // producing one extra window on every main-process recompilation.
-  electronChild = launch("Electron", electronBinary, ["."], { VITE_DEV_SERVER_URL: rendererUrl }, { restartable: true });
+  electronChild = launch(
+    "Electron",
+    electronBinary,
+    ["."],
+    { VITE_DEV_SERVER_URL: rendererUrl, READING_HUB_DEV_SUPERVISOR_IPC: "1" },
+    { restartable: true, ipc: true }
+  );
   electronChild.on("exit", (code, signal) => {
     // Closing the development window should also release its watchers and
     // project lock. During an automatic main-process rebuild restartPending

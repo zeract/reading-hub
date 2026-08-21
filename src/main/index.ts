@@ -7,6 +7,7 @@ import { createApplicationServices, type ApplicationServices } from "./app-servi
 import { registerIpcHandlers } from "./ipc-handlers";
 import { configureChromiumNetwork } from "./network";
 import { auditLocalReader, type ReaderAuditProgress, type ReaderAuditResult } from "./reader-audit";
+import { installDevelopmentSupervisorGuard } from "./dev-supervisor";
 
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
@@ -65,6 +66,12 @@ function quitApplication(): void {
 // On macOS, window close normally hides this menu-bar app, so translate terminal
 // signals into an explicit app quit instead of leaving a hidden lock owner.
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, quitApplication);
+
+// The development launcher provides an IPC parent channel. Unlike a PID
+// check, its closure cannot be confused by PID reuse after a terminal crash.
+// Keep this strictly development-only: production apps are intentionally
+// allowed to remain resident in the macOS menu bar after their window closes.
+if (isDevelopment) installDevelopmentSupervisorGuard(process, quitApplication);
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
