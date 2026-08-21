@@ -47,6 +47,7 @@ export type LegacyFetchOutcome = {
   notModified?: boolean;
   extractionRule?: Source["extractionRule"];
   metadataRevision?: number;
+  iconUrl?: string;
 };
 
 /** Adapts the existing safe RSS/web/manual pipeline to the new host contract. */
@@ -65,7 +66,8 @@ export class LegacyConnectorAdapter implements ConnectorAdapter {
       lastModified: outcome.lastModified,
       notModified: outcome.notModified,
       extractionRule: outcome.extractionRule,
-      metadataRevision: outcome.metadataRevision
+      metadataRevision: outcome.metadataRevision,
+      iconUrl: outcome.iconUrl
     };
   }
 

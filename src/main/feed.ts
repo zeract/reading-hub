@@ -6,6 +6,9 @@ import type { RawEntry } from "../shared/types";
 
 const parser = new RSSParser({
   customFields: {
+    // Keep the namespaced key intact: rss-parser's typed configuration only
+    // accepts field names here, and feedIconUrl normalizes it below.
+    feed: ["itunes:image"],
     item: [
       ["media:content", "mediaContent", { keepArray: true }],
       // rss-parser's generic `content` field can be populated from a plain
@@ -26,7 +29,7 @@ const MAX_TRANSIENT_FEED_HTML_LENGTH = 250_000;
  * replayed once so cached cards can receive newly supported fields, then
  * resume normal conditional requests.
  */
-export const RSS_METADATA_REVISION = 3;
+export const RSS_METADATA_REVISION = 4;
 
 /**
  * Older generic sources are rechecked once for a declared Feed. A Feed is
@@ -100,7 +103,7 @@ function isFeedLikeQuery(rawUrl: string | undefined, pageUrl: string): boolean {
   }
 }
 
-export async function parseFeed(text: string, feedUrl: string): Promise<{ title: string; entries: RawEntry[] }> {
+export async function parseFeed(text: string, feedUrl: string): Promise<{ title: string; entries: RawEntry[]; iconUrl?: string }> {
   if (/^\s*\{/.test(text)) return parseJsonFeed(text, feedUrl);
   const feed = await parser.parseString(text);
   const feedTitle = compactText(feed.title, 180);
@@ -124,7 +127,7 @@ export async function parseFeed(text: string, feedUrl: string): Promise<{ title:
       feedContentHtml
     });
   }
-  return { title: compactText(feed.title, 180) || new URL(feedUrl).hostname, entries };
+  return { title: compactText(feed.title, 180) || new URL(feedUrl).hostname, entries, iconUrl: feedIconUrl(feed, feedUrl) };
 }
 
 /**
@@ -152,7 +155,7 @@ function isFeedNavigationLink(
   }
 }
 
-function parseJsonFeed(text: string, feedUrl: string): { title: string; entries: RawEntry[] } {
+function parseJsonFeed(text: string, feedUrl: string): { title: string; entries: RawEntry[]; iconUrl?: string } {
   const feed = JSON.parse(text);
   if (!feed.version || !Array.isArray(feed.items)) throw new Error("JSON 不符合 JSON Feed 格式。");
   const entries: RawEntry[] = [];
@@ -170,7 +173,19 @@ function parseJsonFeed(text: string, feedUrl: string): { title: string; entries:
       feedContentHtml: transientFeedHtml(item.content_html)
     });
   }
-  return { title: compactText(feed.title, 180) || new URL(feedUrl).hostname, entries };
+  return {
+    title: compactText(feed.title, 180) || new URL(feedUrl).hostname,
+    entries,
+    iconUrl: toAbsoluteUrl(feed.icon || feed.favicon, feedUrl)
+  };
+}
+
+/** Extracts only the Feed-declared logo URL; callers still apply public URL validation before persistence. */
+function feedIconUrl(feed: any, feedUrl: string): string | undefined {
+  const itunesImage = feed.itunesImage ?? feed["itunes:image"];
+  const itunesHref = typeof itunesImage === "string" ? itunesImage : itunesImage?.href ?? itunesImage?.$?.href;
+  const candidate = feed.image?.url || feed.icon || feed.logo || itunesHref;
+  return toAbsoluteUrl(candidate, feedUrl);
 }
 
 function stripHtml(value?: string): string | undefined {

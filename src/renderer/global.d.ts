@@ -18,6 +18,7 @@ declare global {
       readEntry(id: string): Promise<ArticleReadResult>;
       openEmbeddedEntry(id: string): Promise<void>;
       loadArticleImage(id: string, imageUrl: string): Promise<string>;
+      loadSourceIcon(id: string): Promise<string | undefined>;
       markRead(id: string, read: boolean): Promise<void>;
       markFavorite(id: string, favorite: boolean): Promise<void>;
       dismissEntry(id: string): Promise<void>;

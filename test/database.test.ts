@@ -39,6 +39,15 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("stores only validated public source icon metadata", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+
+    expect(db.updateSourceIcon(source.id, "https://cdn.example.com/logo.png")).toMatchObject({ iconUrl: "https://cdn.example.com/logo.png" });
+    expect(db.updateSourceIcon(source.id, "http://127.0.0.1/logo.png")).toMatchObject({ iconUrl: "https://cdn.example.com/logo.png" });
+    db.close();
+  });
+
   it("removes only empty legacy navigation cards from a refreshed Feed source", () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://news.example/", title: "News", kind: "rss", pollingEnabled: true });

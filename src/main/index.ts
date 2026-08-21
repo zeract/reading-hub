@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { lstat, readFile, writeFile } from "node:fs/promises";
 import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell } from "electron";
 import { ReadingDatabase } from "./database";
+import { sourceFaviconCandidate } from "../shared/source-icon";
 import { GenericConnector, ManualConnector, RssConnector } from "./connectors";
 import { builtInManifest, CallbackConnectorAdapter, ConnectorRegistry, LegacyConnectorAdapter } from "./connector-registry";
 import { PublicHttpClient } from "./http";
@@ -305,6 +306,19 @@ async function bootstrap(): Promise<void> {
     const entry = database.getEntry(entryId);
     if (!entry) throw new Error("这篇内容已不存在。请刷新列表后重试。");
     return http.getImageDataUrl(imageUrl, entry.url);
+  });
+  ipcMain.handle("source:load-icon", async (_event, sourceId: string) => {
+    const source = database.getSource(sourceId);
+    if (!source) return undefined;
+    const iconUrl = sourceFaviconCandidate(source);
+    if (!iconUrl) return undefined;
+    try {
+      return await http.getImageDataUrl(iconUrl, source.url);
+    } catch {
+      // A favicon is decorative. It must never make a source appear broken,
+      // and the renderer will use its local platform/type icon instead.
+      return undefined;
+    }
   });
   ipcMain.handle("entry:read", (_event, id: string, read: boolean) => database.markRead(id, read));
   ipcMain.handle("entry:favorite", (_event, id: string, favorite: boolean) => database.markFavorite(id, favorite));

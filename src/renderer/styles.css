@@ -84,6 +84,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .source-filter.selected { background: var(--selection-surface); color: var(--accent-ink); box-shadow: none; font-weight: 700; }
 .source-icon { display: grid; flex: 0 0 18px; width: 18px; height: 18px; place-items: center; overflow: hidden; border: 0; border-radius: 4px; background: color-mix(in srgb, currentColor 12%, var(--paper-bright)); color: var(--ink-soft); line-height: 1; }
 .source-icon svg { width: 12px; height: 12px; }
+.source-icon--favicon { border: 1px solid color-mix(in srgb, var(--line-strong) 74%, transparent); background: var(--paper-bright); color: var(--ink-soft); }
+.source-icon img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .source-filter.selected .source-icon { background: var(--paper-bright); }
 .source-icon--rss { color: #a26b4d; }.source-icon--web { color: #527b9d; }.source-icon--link { color: #8a7a45; }.source-icon--x { color: #4f5358; }.source-icon--xiaohongshu { color: #b55c5c; }.source-icon--zhihu, .source-icon--zhihu-follow { color: #4f7d9f; }.source-icon--academic { color: #7667a2; }
 .source-title { display: block; min-width: 0; overflow: hidden; font-size: 12px; font-weight: 600; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }

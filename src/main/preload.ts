@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld("reader", {
   readEntry: (id: string) => ipcRenderer.invoke("entry:read-content", id),
   openEmbeddedEntry: (id: string) => ipcRenderer.invoke("entry:open-embedded", id),
   loadArticleImage: (id: string, imageUrl: string) => ipcRenderer.invoke("entry:load-image", id, imageUrl),
+  loadSourceIcon: (id: string) => ipcRenderer.invoke("source:load-icon", id),
   markRead: (id: string, read: boolean) => ipcRenderer.invoke("entry:read", id, read),
   markFavorite: (id: string, favorite: boolean) => ipcRenderer.invoke("entry:favorite", id, favorite),
   dismissEntry: (id: string) => ipcRenderer.invoke("entry:dismiss", id),

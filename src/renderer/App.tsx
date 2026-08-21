@@ -5,6 +5,7 @@ import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { entryQueryForLibrary, type LibraryView } from "./library-view";
 import { requiresSourceReload } from "./source-selection";
 import { groupSources } from "./source-groups";
+import { sourceIconKind, type SourceIconKind } from "../shared/source-icon";
 import { normaliseSelectedArticleText, selectedTextLabel, selectionActionQuestion, selectionContext, selectionOverlay, type SelectionOverlay, type SelectionRect } from "./selection-actions";
 
 type PendingPreview = { token: string; probe: ProbeResult };
@@ -1302,25 +1303,23 @@ function sourceConnectorLabel(source: Source): string {
   return sourceKindLabel(source.connectorId || source.kind);
 }
 
-function sourceIconKind(source: Source): AppIconName {
-  if (source.config?.sourceProvider === "rsshub") return source.config.rsshubPlatform === "xiaohongshu" ? "xiaohongshu" : "x";
-  return {
-    rss: "rss",
-    generic: "web",
-    manual: "link",
-    zhihu: "zhihu",
-    zhihu_follow: "zhihu-follow",
-    x: "x",
-    xiaohongshu: "xiaohongshu",
-    academic: "academic"
-  }[source.kind];
-}
-
 function SourceIcon({ source }: { source: Source }) {
-  return <span className={`source-icon source-icon--${sourceIconKind(source)}`} aria-hidden="true"><AppIcon name={sourceIconKind(source)} /></span>;
+  const kind = sourceIconKind(source);
+  const [favicon, setFavicon] = useState<string>();
+  useEffect(() => {
+    let disposed = false;
+    setFavicon(undefined);
+    void window.reader.loadSourceIcon(source.id).then((icon) => {
+      if (!disposed) setFavicon(icon);
+    }).catch(() => undefined);
+    return () => { disposed = true; };
+  }, [source.id, source.url, source.kind, source.iconUrl, source.config?.sourceProvider, source.config?.rsshubPlatform]);
+  return <span className={`source-icon source-icon--${kind}${favicon ? " source-icon--favicon" : ""}`} aria-hidden="true">
+    {favicon ? <img src={favicon} alt="" /> : <AppIcon name={kind} />}
+  </span>;
 }
 
-type AppIconName = "sidebar" | "expand" | "refresh" | "add" | "today" | "unread" | "favorite" | "folder" | "chevron-down" | "chevron-right" | "settings" | "back" | "reading" | "ai" | "rss" | "web" | "link" | "zhihu" | "zhihu-follow" | "x" | "xiaohongshu" | "academic";
+type AppIconName = "sidebar" | "expand" | "refresh" | "add" | "today" | "unread" | "favorite" | "folder" | "chevron-down" | "chevron-right" | "settings" | "back" | "reading" | "ai" | SourceIconKind;
 
 /** Compact, local-only line icons with a native macOS reading-list emphasis. */
 function AppIcon({ name }: { name: AppIconName }) {

@@ -31,6 +31,8 @@ export interface Source {
   id: string;
   url: string;
   title: string;
+  /** Public icon declared by the feed, retained as source metadata only. */
+  iconUrl?: string;
   /** A reader-owned local folder label. It never changes a connector or remote subscription. */
   category?: string;
   kind: SourceKind;
@@ -201,6 +203,8 @@ export interface SyncResult {
   extractionRule?: ExtractionRule;
   /** Persisted by the host after a connector has replayed upgraded metadata. */
   metadataRevision?: number;
+  /** Public source icon discovered from the synchronised Feed, if provided. */
+  iconUrl?: string;
 }
 
 export type NormalizedEntry = Entry;

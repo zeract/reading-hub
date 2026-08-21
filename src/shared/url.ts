@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 const TRACKING_PARAMS = ["fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"];
 
 export function assertPublicUrl(rawUrl: string): URL {
@@ -101,12 +99,6 @@ export function isZhihuBusinessPromotionUrl(rawUrl: string): boolean {
   } catch {
     return false;
   }
-}
-
-export function contentHash(entry: { title: string; summary?: string; publishedAt?: number }): string {
-  return createHash("sha256")
-    .update(`${entry.title.trim()}\u0000${entry.publishedAt ?? ""}\u0000${entry.summary?.trim() ?? ""}`)
-    .digest("hex");
 }
 
 export function toAbsoluteUrl(value: string | undefined, pageUrl: string): string | undefined {

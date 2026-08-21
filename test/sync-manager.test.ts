@@ -18,6 +18,7 @@ describe("SyncManager", () => {
     const result = await new SyncManager(db, registry).syncSource(source.id);
 
     expect(result.source.metadataRevision).toBe(1);
+    expect(result.source.iconUrl).toBe("https://example.com/feed-icon.png");
     expect(result.inserted).toBe(0);
     expect(db.listEntries(source.id)).toEqual([expect.objectContaining({ publishedAt: Date.UTC(2024, 1, 4) })]);
     db.close();
@@ -70,7 +71,8 @@ function replayAdapter(): ConnectorAdapter {
     async sync() {
       return {
         entries: [{ url: "https://example.com/post", title: "Dated post", publishedAt: Date.UTC(2024, 1, 4) }],
-        metadataRevision: 1
+        metadataRevision: 1,
+        iconUrl: "https://example.com/feed-icon.png"
       };
     },
     normalize(item: RawEntry, source: Source): Entry {

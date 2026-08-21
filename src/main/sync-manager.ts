@@ -83,6 +83,7 @@ export class SyncManager {
         if (outcome.metadataRevision !== undefined) {
           effectiveSource = this.db.updateMetadataRevision(effectiveSource.id, outcome.metadataRevision);
         }
+        if (outcome.iconUrl) effectiveSource = this.db.updateSourceIcon(effectiveSource.id, outcome.iconUrl);
         // Filter a narrow class of legacy RSS navigation cards only after a
         // successful response. We never delete ordinary entries merely
         // because a paginated Feed no longer returns them.

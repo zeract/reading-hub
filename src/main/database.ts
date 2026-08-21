@@ -16,12 +16,13 @@ import type {
   Subscription,
   SyncCheckpoint
 } from "../shared/types";
-import { canonicalizeContentUrl, isScourRssRedirectUrl, isZhihuBusinessPromotionUrl } from "../shared/url";
+import { assertPublicUrl, canonicalizeContentUrl, isScourRssRedirectUrl, isZhihuBusinessPromotionUrl } from "../shared/url";
 
 type SourceRow = {
   id: string;
   url: string;
   title: string;
+  icon_url?: string | null;
   category?: string | null;
   kind: Source["kind"];
   status: SourceStatus;
@@ -151,6 +152,7 @@ function sourceFromRow(row: SourceRow): Source {
     id: row.id,
     url: row.url,
     title: row.title,
+    iconUrl: row.icon_url ?? undefined,
     category: row.category?.trim() || undefined,
     kind: row.kind,
     connectorId: row.connector_id ?? row.kind,
@@ -260,6 +262,7 @@ export class ReadingDatabase {
         id TEXT PRIMARY KEY,
         url TEXT NOT NULL UNIQUE,
         title TEXT NOT NULL,
+        icon_url TEXT,
         category TEXT,
         kind TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
@@ -367,6 +370,7 @@ export class ReadingDatabase {
     this.ensureColumn("sources", "refresh_interval_minutes", "INTEGER");
     this.ensureColumn("sources", "metadata_revision", "INTEGER");
     this.ensureColumn("sources", "category", "TEXT");
+    this.ensureColumn("sources", "icon_url", "TEXT");
     this.ensureColumn("entries", "observed_at", "INTEGER");
     this.ensureColumn("entries", "provider_id", "TEXT");
     this.ensureColumn("entries", "external_id", "TEXT");
@@ -1022,6 +1026,22 @@ export class ReadingDatabase {
   updateMetadataRevision(sourceId: string, metadataRevision: number): Source {
     this.db.prepare("UPDATE sources SET metadata_revision = ?, updated_at = ? WHERE id = ?")
       .run(metadataRevision, Date.now(), sourceId);
+    return this.getSource(sourceId)!;
+  }
+
+  /** Stores only a public Feed-declared icon URL; image bytes remain in memory. */
+  updateSourceIcon(sourceId: string, rawIconUrl: string | undefined): Source {
+    if (!rawIconUrl) return this.getSource(sourceId)!;
+    let iconUrl: string;
+    try {
+      iconUrl = assertPublicUrl(rawIconUrl).toString();
+    } catch {
+      return this.getSource(sourceId)!;
+    }
+    const source = this.getSource(sourceId);
+    if (!source) throw new Error("来源不存在。");
+    if (source.iconUrl === iconUrl) return source;
+    this.db.prepare("UPDATE sources SET icon_url = ?, updated_at = ? WHERE id = ?").run(iconUrl, Date.now(), sourceId);
     return this.getSource(sourceId)!;
   }
 

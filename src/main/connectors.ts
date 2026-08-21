@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { load } from "cheerio";
 import type { Connector, Entry, ExtractionRule, ProbeResult, RawEntry, Source } from "../shared/types";
-import { canonicalizeContentUrl, contentHash, isTrustedLoopbackFeedUrl } from "../shared/url";
+import { canonicalizeContentUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
+import { contentHash } from "./content-hash";
 import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage, extractPagePublishedAt, extractPublicationDateFromUrl, withPublicationDateRevision } from "./extractor";
 import { discoverFeedUrls, FEED_DISCOVERY_REVISION, looksLikeFeed, parseFeed, RSS_METADATA_REVISION } from "./feed";
 import { PublicHttpClient } from "./http";
@@ -15,6 +16,7 @@ export interface FetchOutcome {
   lastModified?: string;
   extractionRule?: ExtractionRule;
   metadataRevision?: number;
+  iconUrl?: string;
 }
 
 abstract class BaseConnector implements Connector {
@@ -66,12 +68,14 @@ export class RssConnector extends BaseConnector {
       allowTrustedLoopbackFeed ? { allowTrustedLoopbackFeed: true } : undefined
     );
     if (response.status === 304) return { entries: [], notModified: true };
+    const feed = await parseFeed(response.text, response.url);
     return {
-      entries: (await parseFeed(response.text, response.url)).entries,
+      entries: feed.entries,
       notModified: false,
       etag: response.etag,
       lastModified: response.lastModified,
-      metadataRevision: RSS_METADATA_REVISION
+      metadataRevision: RSS_METADATA_REVISION,
+      iconUrl: feed.iconUrl
     };
   }
 }
@@ -142,6 +146,7 @@ export class GenericConnector extends BaseConnector {
           etag: feedResponse.etag,
           lastModified: feedResponse.lastModified,
           metadataRevision: RSS_METADATA_REVISION,
+          iconUrl: feed.iconUrl,
           extractionRule: withFeedDiscoveryRevision({ version: 1, ...source.extractionRule, feedUrl: feedResponse.url })
         };
       } catch {
@@ -213,6 +218,7 @@ export class GenericConnector extends BaseConnector {
       etag: response.etag,
       lastModified: response.lastModified,
       metadataRevision: RSS_METADATA_REVISION,
+      iconUrl: feed.iconUrl,
       extractionRule: withFeedDiscoveryRevision({ version: 1, ...source.extractionRule, feedUrl: response.url })
     };
   }

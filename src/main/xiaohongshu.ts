@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { compactText, parsePublishedAt } from "../shared/text";
-import { canonicalizeUrl, contentHash, toAbsoluteUrl } from "../shared/url";
+import { canonicalizeUrl, toAbsoluteUrl } from "../shared/url";
+import { contentHash } from "./content-hash";
 import type { ConnectorAdapter, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
 import { builtInManifest } from "./connector-registry";
 import { PublicHttpClient } from "./http";

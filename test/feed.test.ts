@@ -18,10 +18,20 @@ describe("feed parser", () => {
 
   it("accepts JSON Feed", async () => {
     const feed = await parseFeed(
-      JSON.stringify({ version: "https://jsonfeed.org/version/1", title: "JSON Feed", items: [{ id: "x", url: "/post", title: "JSON 条目", summary: "摘要" }] }),
+      JSON.stringify({ version: "https://jsonfeed.org/version/1", title: "JSON Feed", icon: "/assets/site-icon.png", items: [{ id: "x", url: "/post", title: "JSON 条目", summary: "摘要" }] }),
       "https://example.com/feed.json"
     );
     expect(feed.entries[0]).toMatchObject({ title: "JSON 条目", url: "https://example.com/post" });
+    expect(feed.iconUrl).toBe("https://example.com/assets/site-icon.png");
+  });
+
+  it("retains a declared RSS channel image as source metadata", async () => {
+    const feed = await parseFeed(
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>测试订阅</title><image><url>/static/logo.png</url><title>测试订阅</title><link>https://example.com/</link></image><item><title>第一条</title><link>/first</link></item></channel></rss>`,
+      "https://example.com/feed.xml"
+    );
+
+    expect(feed.iconUrl).toBe("https://example.com/static/logo.png");
   });
 
   it("keeps a bounded feed body only on the transient parsed item", async () => {

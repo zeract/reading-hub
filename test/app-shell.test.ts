@@ -17,6 +17,7 @@ describe("application shell source controls", () => {
     expect(app).toContain('className="source-group-label"');
     expect(app).toContain('<AppIcon name="folder" />');
     expect(app).toContain("sourceIconKind(source)");
+    expect(app).toContain("window.reader.loadSourceIcon(source.id)");
     expect(app).toContain('source-icon--');
     expect(app).toContain('function AppIcon({ name }');
     expect(app).not.toContain("RSSHub 路由");

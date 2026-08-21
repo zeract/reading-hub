@@ -78,6 +78,8 @@ describe("reader display-equation layout", () => {
     expect(styles).toMatch(/\.source-filter\s*\{[^}]*display:\s*flex;[^}]*min-height:\s*34px;[^}]*border-radius:\s*6px/s);
     expect(styles).toMatch(/\.source-title\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/s);
     expect(styles).toMatch(/\.source-icon\s*\{[^}]*flex:\s*0\s+0\s+18px/s);
+    expect(styles).toMatch(/\.source-icon--favicon\s*\{[^}]*border:\s*1px\s+solid/s);
+    expect(styles).toMatch(/\.source-icon img\s*\{[^}]*object-fit:\s*contain/s);
     expect(styles).toMatch(/\.source-group-label svg\s*\{[^}]*width:\s*13px/s);
     expect(styles).toContain(".settings-shell { --titlebar-leading-inset: 96px;");
   });

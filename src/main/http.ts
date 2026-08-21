@@ -113,7 +113,7 @@ export class PublicHttpClient {
         response = await chromiumFetch(targetUrl, {
           headers: {
             "User-Agent": "ReadingHub/0.1 (+local reader)",
-            Accept: "image/avif,image/webp,image/apng,image/png,image/jpeg,image/gif;q=0.9,*/*;q=0.1"
+            Accept: "image/avif,image/webp,image/apng,image/png,image/jpeg,image/gif,image/x-icon,image/vnd.microsoft.icon;q=0.9,*/*;q=0.1"
           },
           redirect: "manual",
           referrer,
@@ -131,7 +131,7 @@ export class PublicHttpClient {
       }
       if (!response.ok) throw new Error(`图片请求失败（HTTP ${response.status}）`);
       const contentType = response.headers.get("content-type")?.split(";", 1)[0].toLowerCase() || "";
-      if (!/^(image\/(?:avif|gif|jpe?g|png|webp))$/.test(contentType)) throw new Error("远程资源不是可安全显示的图片。");
+      if (!/^(image\/(?:avif|gif|jpe?g|png|webp|x-icon|vnd\.microsoft\.icon))$/.test(contentType)) throw new Error("远程资源不是可安全显示的图片。");
       const maxBytes = 8_000_000;
       const size = Number(response.headers.get("content-length") ?? 0);
       if (size > maxBytes) throw new Error("图片响应超过 8 MB，已跳过加载。");
