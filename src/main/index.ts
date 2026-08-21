@@ -239,6 +239,12 @@ async function bootstrap(): Promise<void> {
   const sync = new SyncManager(database, registry, afterSync);
   const sources = new SourceService(database, probe, sync, zhihuFollow);
   sources.retireUnsupportedXPublicProfileSources();
+  // Older builds could save Zhihu ideas (/pin/) before the Follow parser was
+  // narrowed to authored posts. Remove only those known legacy activities on
+  // startup; ordinary answers and columns stay untouched.
+  for (const source of database.listSources()) {
+    if (source.kind === "zhihu_follow") database.deleteUnsupportedZhihuFollowEntries(source.id);
+  }
   zhihuFollow.setOnAuthenticated(async () => {
     const source = sources.ensureZhihuFollowSource();
     await sync.syncSource(source.id);

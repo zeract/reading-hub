@@ -82,6 +82,19 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("removes legacy Zhihu ideas while retaining answers from the authorised Follow source", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://www.zhihu.com/follow", title: "知乎关注动态", kind: "zhihu_follow", pollingEnabled: true });
+    db.saveEntries([
+      entry(source.id, "旧版想法", { canonicalUrl: "https://www.zhihu.com/pin/123", url: "https://www.zhihu.com/pin/123" }),
+      entry(source.id, "已发布回答", { canonicalUrl: "https://www.zhihu.com/question/1/answer/2", url: "https://www.zhihu.com/question/1/answer/2" })
+    ]);
+
+    expect(db.deleteUnsupportedZhihuFollowEntries(source.id)).toBe(1);
+    expect(db.listEntries(source.id).map((item) => item.title)).toEqual(["已发布回答"]);
+    db.close();
+  });
+
   it("pauses a generic source for review after three empty extractions", () => {
     const db = new ReadingDatabase(":memory:");
     let source = db.createSource({ url: "https://example.com/list", title: "Example", kind: "generic", pollingEnabled: true });

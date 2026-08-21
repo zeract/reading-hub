@@ -44,7 +44,7 @@ export function extractGenericPage(html: string, pageUrl: string, existingRule?:
  * calibrated rule has field-level selectors and is deliberately left alone;
  * only simple automatically-generated roots may self-heal.
  */
-export const AUTOMATIC_RULE_REVISION = 2;
+export const AUTOMATIC_RULE_REVISION = 3;
 /**
  * Bump this only when the page-level publish-date parser gains a new safe
  * capability. Generic sources then make one unconditional request so entries
@@ -238,7 +238,7 @@ function cssEscape(value: string): string {
 
 function scoreItem($: ReturnType<typeof load>, element: any): number {
   const root = $(element);
-  const heading = root.is("h1,h2,h3,h4") ? root : root.find("h1,h2,h3,h4").filter((_, node) => Boolean(compactText($(node).text(), 240)?.length)).first();
+  const heading = root.is("h1,h2,h3,h4,h5,h6") ? root : root.find("h1,h2,h3,h4,h5,h6").filter((_, node) => Boolean(compactText($(node).text(), 240)?.length)).first();
   const headingLink = heading.find("a[href]").filter((_, node) => Boolean(compactText($(node).text(), 240)?.length)).first();
   const fallbackLink = root.is("a[href]") ? root : root.find("a[href]").filter((_, a) => Boolean(compactText($(a).text(), 240)?.length)).first();
   const link = root.is("a[href]") ? root : headingLink.length ? headingLink : fallbackLink;
@@ -272,12 +272,16 @@ function entryFromElement($: ReturnType<typeof load>, element: any, pageUrl: str
   const timeNode = rule.timeSelector ? root.find(rule.timeSelector).first() : root.find("time,[datetime]").first();
   const authorNode = rule.authorSelector ? root.find(rule.authorSelector).first() : root.find("[rel='author'],.author,[class*='author']").first();
   const imageNode = rule.imageSelector ? root.find(rule.imageSelector).first() : root.find("img").first();
-  const summaryNode = rule.summarySelector ? root.find(rule.summarySelector).first() : root.find("p").first();
+  const summaryNode = rule.summarySelector ? root.find(rule.summarySelector).first() : preferredSummaryNode($, root, title);
   return {
     url,
     title,
     author: compactText(authorNode.text(), 120),
-    publishedAt: parsePublishedAt(timeNode.attr("datetime") || timeNode.text() || compactText(root.text(), 200)),
+    // Cheerio's `.text()` concatenates adjacent card containers without a
+    // separator (for example `sandboxJul 15, 2026`). `nodeDateValue` joins
+    // direct children deliberately, preserving the date without weakening the
+    // global text-date parser for ordinary prose.
+    publishedAt: parsePublishedAt(timeNode.attr("datetime") || timeNode.text() || nodeDateValue($, root)),
     summary: compactText(summaryNode.text(), 500),
     imageUrl: toAbsoluteUrl(imageNode.attr("src") || imageNode.attr("data-src"), pageUrl)
   };
@@ -376,8 +380,8 @@ function findSelfOrDescendant(root: any, selector: string) {
 }
 
 function preferredTitleNode($: ReturnType<typeof load>, root: any) {
-  if (root.is("h1,h2,h3,h4")) return root;
-  const heading = root.find("h1,h2,h3,h4").filter((_index: number, node: any) => Boolean(compactText($(node).text(), 240)?.length)).first();
+  if (root.is("h1,h2,h3,h4,h5,h6")) return root;
+  const heading = root.find("h1,h2,h3,h4,h5,h6").filter((_index: number, node: any) => Boolean(compactText($(node).text(), 240)?.length)).first();
   if (heading.length) return heading;
   const labelledTitle = root.find("[data-title], [class*='title'], [class*='headline']").filter((_index: number, node: any) => {
     const identity = `${$(node).attr("data-title") || ""} ${$(node).attr("class") || ""}`;
@@ -386,6 +390,23 @@ function preferredTitleNode($: ReturnType<typeof load>, root: any) {
   }).first();
   if (labelledTitle.length) return labelledTitle;
   return root.is("a[href]") ? root : root.find("a[href]").filter((_index: number, node: any) => Boolean(compactText($(node).text(), 240)?.length)).first();
+}
+
+/**
+ * Card layouts often put a short category or date in the first paragraph and
+ * the actual excerpt later in the same linked card. Prefer explicit excerpt
+ * fields, otherwise use the most substantial non-title paragraph. This keeps
+ * generic whole-card links usable without a site-specific Framer rule.
+ */
+function preferredSummaryNode($: ReturnType<typeof load>, root: any, title: string) {
+  const candidates: Array<{ node: any; text: string }> = root.find("[class*='summary'],[class*='excerpt'],[class*='description'],p").toArray()
+    .map((node: any) => ({ node, text: compactText($(node).text(), 500) || "" }))
+    .filter((candidate: { node: any; text: string }) => candidate.text.length >= 32 && candidate.text !== title);
+  if (!candidates.length) return root.find("p").first();
+  const semantic = candidates.filter(({ node }: { node: any; text: string }) => /summary|excerpt|description/i.test($(node).attr("class") || ""));
+  const selected = (semantic.length ? semantic : candidates)
+    .sort((left: { node: any; text: string }, right: { node: any; text: string }) => right.text.length - left.text.length)[0];
+  return $(selected.node);
 }
 
 function isTaxonomyOrNavigation($: ReturnType<typeof load>, element: any): boolean {

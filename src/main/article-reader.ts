@@ -177,6 +177,15 @@ export class ArticleReader {
     const renderedArticle = renderedHtml ? extractReaderArticle(renderedHtml, entry.url, entry, this.scientificMath) : undefined;
     if (renderedArticle && renderedArticle.textLength > (staticArticle?.textLength ?? 0)) return renderedArticle.article;
     if (staticArticle) return staticArticle.article;
+    // A public original can intermittently reject a reader request (or time
+    // out) even though its RSS response already supplied a body. That body is
+    // part of the user's subscription, so re-fetch and sanitise it in memory
+    // before surfacing an avoidable read error. This never retries a blocked
+    // original page and never persists full Feed content.
+    const feedBody = await this.readTransientFeedBody(entry, source).catch(() => undefined);
+    if (feedBody) return feedBody;
+    const feedSummary = createFeedSummaryArticle(entry, source);
+    if (feedSummary) return feedSummary;
     if (staticFailure) throw staticFailure;
     throw new ArticleContentUnavailableError();
   }

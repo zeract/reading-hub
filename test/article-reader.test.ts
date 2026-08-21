@@ -517,6 +517,35 @@ describe("article reader extraction", () => {
     ]);
   });
 
+  it("uses a supplied RSS body when an otherwise public original page temporarily rejects the reader", async () => {
+    const source: Source = {
+      id: "feed-source", url: "https://example.com/feed.xml", title: "Example Feed", kind: "rss", status: "active",
+      pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1
+    };
+    const requests: string[] = [];
+    const http = {
+      getText: async (url: string) => {
+        requests.push(url);
+        if (url === entry.url) throw new Error("请求失败（HTTP 403）");
+        if (url === source.url) return {
+          url: source.url,
+          status: 200,
+          contentType: "application/rss+xml",
+          text: `<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>Example</title><item><title>示例文章</title><link>${entry.url}</link><content:encoded><![CDATA[<p>Feed 已明确提供的正文，在原页临时不可读时仍可安全显示。</p><script>alert(1)</script>]]></content:encoded></item></channel></rss>`
+        };
+        throw new Error("不应请求其他地址");
+      }
+    } as unknown as PublicHttpClient;
+    const reader = new ArticleReader(http, { render: async () => { throw new Error("渲染也不可用"); } });
+
+    const article = await reader.read(entry, source);
+
+    expect(article.contentMode).toBe("feed_body");
+    expect(article.contentHtml).toContain("Feed 已明确提供的正文");
+    expect(article.contentHtml).not.toContain("script");
+    expect(requests).toEqual([entry.url, source.url]);
+  });
+
   it("keeps the restricted original-page fallback when a feed has no useful summary", async () => {
     const http = {
       getText: async () => { throw new RobotsDisallowedError(); }

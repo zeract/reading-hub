@@ -84,6 +84,33 @@ describe("generic-page extractor", () => {
     });
   });
 
+  it("uses h5 headlines and substantial excerpts inside a whole-card link", () => {
+    const result = extractGenericPage(
+      `<main>
+        <a class="framer-card" href="/articles/making-space">
+          <p>sandbox</p><p>Jul 15, 2026</p>
+          <h5>Making SPACE: Secure and Efficient Runtimes for Long-Running Agents</h5>
+          <p>SPACE is a secure, efficient platform powering long-running agentic workflows and fast, isolated code execution.</p>
+        </a>
+        <a class="framer-card" href="/articles/wandr">
+          <p>research</p><p>Jul 14, 2026</p>
+          <h5>WANDR Benchmark: Evaluating Research Agents That Must Search Wide and Deep</h5>
+          <p>A benchmark for high-volume, evidence-heavy knowledge work across realistic research tasks.</p>
+        </a>
+      </main>`,
+      "https://research.example/"
+    );
+
+    expect(result.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        url: "https://research.example/articles/making-space",
+        title: "Making SPACE: Secure and Efficient Runtimes for Long-Running Agents",
+        summary: "SPACE is a secure, efficient platform powering long-running agentic workflows and fast, isolated code execution.",
+        publishedAt: Date.UTC(2026, 6, 15)
+      })
+    ]));
+  });
+
   it("uses article JSON-LD and dated URL paths only as safe page-level fallbacks", () => {
     expect(extractPagePublishedAt(load(`<script type="application/ld+json">{"@type":"BlogPosting","datePublished":"2026-07-22"}</script>`))).toBe(Date.UTC(2026, 6, 22));
     expect(extractPublicationDateFromUrl("https://vllm.ai/blog/2026-07-22-kimi-k3-preview")).toBe(Date.UTC(2026, 6, 22));

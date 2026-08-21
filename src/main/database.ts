@@ -693,6 +693,24 @@ export class ReadingDatabase {
         original_url LIKE '%/taxonomy/%' OR original_url LIKE '%/archive/%' OR original_url LIKE '%/archives/%'
       )`)
       .all(sourceId) as Array<{ id: string; source_id: string }>;
+    return this.removeEntriesForSourceOrigins(sourceId, matches);
+  }
+
+  /** Removes legacy Zhihu ideas and bare question activity kept by older builds. */
+  deleteUnsupportedZhihuFollowEntries(sourceId: string): number {
+    const matches = this.db.prepare(`SELECT id, source_id FROM entries WHERE source_id = ? AND (
+      original_url LIKE 'https://www.zhihu.com/pin/%' OR
+      (original_url LIKE 'https://www.zhihu.com/question/%' AND original_url NOT LIKE '%/answer/%')
+    )`).all(sourceId) as Array<{ id: string; source_id: string }>;
+    return this.removeEntriesForSourceOrigins(sourceId, matches);
+  }
+
+  /**
+   * Removing an erroneous origin must retain a shared Content row for any
+   * other subscription that still attributes it. This is the same ownership
+   * model used when an entire source is deleted.
+   */
+  private removeEntriesForSourceOrigins(sourceId: string, matches: Array<{ id: string; source_id: string }>): number {
     if (!matches.length) return 0;
     const alternate = this.db.prepare("SELECT source_id FROM entry_origins WHERE entry_id = ? AND source_id != ? ORDER BY observed_at ASC LIMIT 1");
     const assign = this.db.prepare("UPDATE entries SET source_id = ? WHERE id = ?");
@@ -764,23 +782,7 @@ export class ReadingDatabase {
         return false;
       }
     });
-    if (!doomed.length) return 0;
-    // Content can belong to more than one subscription.  Remove just this
-    // source's origin and promote another origin when needed, mirroring the
-    // source-deletion path rather than deleting shared content outright.
-    const alternate = this.db.prepare("SELECT source_id FROM entry_origins WHERE entry_id = ? AND source_id != ? ORDER BY observed_at ASC LIMIT 1");
-    const assign = this.db.prepare("UPDATE entries SET source_id = ? WHERE id = ?");
-    const removeOrigin = this.db.prepare("DELETE FROM entry_origins WHERE entry_id = ? AND source_id = ?");
-    const removeContent = this.db.prepare("DELETE FROM entries WHERE id = ? AND NOT EXISTS (SELECT 1 FROM entry_origins WHERE entry_origins.entry_id = entries.id)");
-    this.db.transaction((entries: typeof doomed) => {
-      for (const entry of entries) {
-        const fallback = alternate.get(entry.id, source.id) as { source_id: string } | undefined;
-        if (entry.source_id === source.id && fallback) assign.run(fallback.source_id, entry.id);
-        removeOrigin.run(entry.id, source.id);
-        removeContent.run(entry.id);
-      }
-    })(doomed);
-    return doomed.length;
+    return this.removeEntriesForSourceOrigins(source.id, doomed);
   }
 
   saveEntries(entries: Entry[]): number {
