@@ -7,6 +7,11 @@ import { RobotsDisallowedError } from "./robots";
 import { ZhihuFollowConnector } from "./zhihu-follow";
 import type { Entry, ReaderArticle, Source } from "../shared/types";
 
+const DEFAULT_READ_TIMEOUT_MS = 45_000;
+const DEFAULT_IMAGE_TIMEOUT_MS = 25_000;
+const DEFAULT_SAMPLE_DELAY_MS = 400;
+const DEFAULT_HEARTBEAT_MS = 5_000;
+
 export type ReaderAuditResult = {
   source: string;
   kind: Source["kind"];
@@ -22,8 +27,42 @@ export type ReaderAuditResult = {
   renderedMathDiagnostics?: string[];
   mode?: "article" | "feed_body" | "feed_summary" | "embedded";
   sample?: "newest" | "historical";
+  status?: "passed" | "issues" | "skipped" | "failed" | "timed_out";
+  durationMs?: number;
   issues: string[];
 };
+
+export type ReaderAuditProgress = {
+  phase: "started" | "waiting" | "finished" | "source_skipped";
+  completed: number;
+  total: number;
+  source: string;
+  kind: Source["kind"];
+  entry?: string;
+  sample?: "newest" | "historical";
+  stage?: "read" | "image";
+  elapsedMs?: number;
+  status?: ReaderAuditResult["status"];
+  issueCount?: number;
+};
+
+export interface ReaderAuditOptions {
+  sourceFilter?: string;
+  readTimeoutMs?: number;
+  imageTimeoutMs?: number;
+  sampleDelayMs?: number;
+  heartbeatMs?: number;
+  /** Receives safe metadata only; article HTML and credentials are never reported. */
+  onProgress?: (progress: ReaderAuditProgress) => void | Promise<void>;
+  onResult?: (result: ReaderAuditResult) => void | Promise<void>;
+}
+
+export class ReaderAuditTimeoutError extends Error {
+  constructor(label: string, timeoutMs: number) {
+    super(`${label}超时（${Math.ceil(timeoutMs / 1_000)} 秒），已取消该样本的网络与页面渲染工作。`);
+    this.name = "ReaderAuditTimeoutError";
+  }
+}
 
 function plainText(html: string): string {
   return load(html).text().replace(/\s+/g, " ").trim();
@@ -33,15 +72,29 @@ function countMatches(value: string, expression: RegExp): number {
   return [...value.matchAll(expression)].length;
 }
 
-function leakedInlineMath(value: string): string[] {
+/**
+ * Finds dollar-delimited TeX that escaped the reader pipeline. This remains a
+ * deliberately conservative audit rather than a second formula parser: a
+ * pair of currency markers can span an ordinary sentence, and social handles
+ * often contain a trailing underscore. Those are not evidence of a broken
+ * inline formula.
+ */
+export function findLeakedInlineMath(value: string): string[] {
   const fragments: string[] = [];
   const expression = /(?<!\\)\$([^$\r\n]{1,400})\$/g;
   for (const match of value.matchAll(expression)) {
     const formula = match[1].trim();
-    // A dollar-delimited fragment is a plausible formula only when it has a
-    // TeX command, a mathematical operator, or a standalone symbolic value.
-    // This avoids falsely flagging prose containing two monetary amounts.
-    if (/\\[A-Za-z]+|[_^=<>±×÷]|^[A-Za-zα-ωΑ-Ω][A-Za-z0-9α-ωΑ-Ω]*$/.test(formula)) {
+    const hasTeXCommand = /\\[A-Za-z]+/.test(formula);
+    // Require a complete sub/superscript such as `q_i`, `q_{i}` or `x^2`.
+    // A lone underscore at the end of an account name (for example
+    // `@someone_`) is ordinary prose, not mathematical syntax.
+    const hasScript = /[A-Za-zα-ωΑ-Ω0-9)}\]]\s*[_^]\s*(?:\{[^}\r\n]+\}|[A-Za-zα-ωΑ-Ω0-9])/.test(formula);
+    const hasOperator = /[=<>±×÷]/.test(formula);
+    const standaloneSymbol = /^[A-Za-zα-ωΑ-Ω][A-Za-z0-9α-ωΑ-Ω]*$/.test(formula);
+    const sentenceLike = /(?:^|[.!?])\s+(?:@|https?:\/\/|[A-Z])/.test(formula);
+    // A valid TeX expression may contain prose through `\\text{…}`, so only
+    // reject sentence-shaped content when it has no unambiguous TeX command.
+    if ((hasTeXCommand || hasScript || hasOperator || standaloneSymbol) && !(sentenceLike && !hasTeXCommand)) {
       fragments.push(`$${formula}$`);
     }
   }
@@ -80,7 +133,7 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
   unrendered("#audit-content .katex, #audit-content mjx-container, #audit-content .reader-math-source, #audit-content pre, #audit-content code").remove();
   const unrenderedHtml = unrendered("#audit-content").html() || "";
   const rawTeXCommands = plainText(unrenderedHtml).match(/\\(?:[A-Za-z]+|[{}\[\]\\])[^\s<]{0,180}/g) || [];
-  const rawInlineTeX = leakedInlineMath(plainText(unrenderedHtml));
+  const rawInlineTeX = findLeakedInlineMath(plainText(unrenderedHtml));
   const rawFormulaDiagnostics = [...rawTeXCommands, ...rawInlineTeX].slice(0, 2);
   const issues: string[] = [];
   // Follow-feed cards can legitimately be a short public status update rather
@@ -136,14 +189,15 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
   };
 }
 
-async function inspectFirstImage(http: PublicHttpClient, entry: Entry, article: ReaderArticle, result: ReaderAuditResult): Promise<void> {
+async function inspectFirstImage(http: PublicHttpClient, entry: Entry, article: ReaderArticle, result: ReaderAuditResult, signal?: AbortSignal): Promise<void> {
   const imageUrl = load(article.contentHtml)("img").first().attr("src");
   if (!imageUrl) return;
   try {
     // The data URL is held in memory only. This checks the same robots-aware
     // proxy used for a failed renderer image without retaining a copy.
-    await http.getImageDataUrl(imageUrl, entry.url);
+    await http.getImageDataUrl(imageUrl, entry.url, { signal });
   } catch (error) {
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : error;
     result.issues.push(`首图本地代理失败：${error instanceof Error ? error.message : "未知错误"}`);
   }
 }
@@ -152,16 +206,84 @@ async function sleep(milliseconds: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function withAuditTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+/**
+ * Unlike a plain Promise.race, a deadline here first aborts the supplied
+ * signal. ArticleReader propagates it into robots, Chromium fetch and its
+ * offscreen BrowserWindow, so the next sample never waits behind abandoned
+ * renderer/network work. The race still returns promptly if an injected test
+ * double ignores cancellation.
+ */
+export async function runReaderAuditOperation<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  label: string,
+  onWaiting?: (elapsedMs: number) => void,
+  heartbeatMs = DEFAULT_HEARTBEAT_MS
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutError = new ReaderAuditTimeoutError(label, timeoutMs);
+  const startedAt = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([
-    operation,
-    new Promise<T>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(`${label}超时，已跳过。`)), timeoutMs);
-    })
-  ]).finally(() => {
-    if (timer) clearTimeout(timer);
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const operationPromise = Promise.resolve().then(() => operation(controller.signal));
+
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (heartbeat) clearInterval(heartbeat);
+      callback();
+    };
+    timer = setTimeout(() => {
+      controller.abort(timeoutError);
+      finish(() => reject(timeoutError));
+    }, timeoutMs);
+    if (heartbeatMs > 0) {
+      heartbeat = setInterval(() => onWaiting?.(Date.now() - startedAt), heartbeatMs);
+    }
+    operationPromise.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(controller.signal.aborted ? timeoutError : error))
+    );
   });
+}
+
+type SourceSample = { source: Source; entry: Entry; sample: "newest" | "historical" };
+
+function sourceSamples(database: ReadingDatabase, source: Source): SourceSample[] {
+  const available = database.listEntries(source.id, 200);
+  if (!available.length) return [];
+  const samples: SourceSample[] = [{ source, entry: available[0], sample: "newest" }];
+  if (available.length > 1) {
+    const index = Math.min(available.length - 1, 1 + source.id.split("").reduce((sum, character) => sum + character.charCodeAt(0), 0) % (available.length - 1));
+    samples.push({ source, entry: available[index], sample: "historical" });
+  }
+  return samples;
+}
+
+async function reportProgress(options: ReaderAuditOptions, progress: ReaderAuditProgress): Promise<void> {
+  const target = progress.entry ? `「${progress.source}」/「${progress.entry}」` : `「${progress.source}」`;
+  const stage = progress.stage === "read" ? "读取正文" : progress.stage === "image" ? "检查首图" : "";
+  const elapsed = progress.elapsedMs === undefined ? "" : `，已用 ${Math.ceil(progress.elapsedMs / 1_000)} 秒`;
+  const status = progress.status ? `，${progress.status}` : "";
+  console.log(`[reader-audit] ${progress.completed}/${progress.total} ${progress.phase} ${target}${stage ? `，${stage}` : ""}${elapsed}${status}`);
+  try {
+    await options.onProgress?.(progress);
+  } catch (error) {
+    // Progress telemetry must never make a read-only audit fail. The final
+    // result still prints to stdout even if its optional report path fails.
+    console.warn(`[reader-audit] 写入进度失败：${error instanceof Error ? error.message : "未知错误"}`);
+  }
+}
+
+async function reportResult(options: ReaderAuditOptions, result: ReaderAuditResult): Promise<void> {
+  try {
+    await options.onResult?.(result);
+  } catch (error) {
+    console.warn(`[reader-audit] 写入中间结果失败：${error instanceof Error ? error.message : "未知错误"}`);
+  }
 }
 
 /**
@@ -170,54 +292,102 @@ async function withAuditTimeout<T>(operation: Promise<T>, timeoutMs: number, lab
  * and returns metrics, never article HTML, so it can be used for release or
  * regression checks safely without becoming a full-text archive.
  */
-export async function auditLocalReader(databasePath: string): Promise<ReaderAuditResult[]> {
+export async function auditLocalReader(databasePath: string, options: ReaderAuditOptions = {}): Promise<ReaderAuditResult[]> {
   const database = new ReadingDatabase(databasePath);
   const http = new PublicHttpClient();
   const renderer = new IsolatedPageRenderer();
   const zhihuFollow = new ZhihuFollowConnector();
-  const reader = new ArticleReader(http, renderer, (url) => zhihuFollow.renderArticle(url));
+  const reader = new ArticleReader(http, renderer, (url, options) => zhihuFollow.renderArticle(url, options));
   const results: ReaderAuditResult[] = [];
   try {
-    const sourceFilter = process.env.READING_HUB_AUDIT_SOURCE?.trim().toLocaleLowerCase();
+    const configuredSourceFilter = options.sourceFilter ?? process.env.READING_HUB_AUDIT_SOURCE;
+    const sourceFilter = configuredSourceFilter?.trim().toLocaleLowerCase();
     const sources = database.listSources().filter((source) => !sourceFilter
       || source.id.toLocaleLowerCase() === sourceFilter
       || source.title.toLocaleLowerCase() === sourceFilter);
     if (sourceFilter && !sources.length) {
-      return [{ source: process.env.READING_HUB_AUDIT_SOURCE || "未知来源", kind: "generic", issues: ["未找到指定来源"] }];
+      const result: ReaderAuditResult = { source: configuredSourceFilter || "未知来源", kind: "generic", status: "skipped", issues: ["未找到指定来源"] };
+      await reportResult(options, result);
+      await reportProgress(options, { phase: "source_skipped", completed: 0, total: 0, source: result.source, kind: result.kind, status: result.status, issueCount: result.issues.length });
+      return [result];
     }
-    for (const source of sources) {
-      const available = database.listEntries(source.id, 200);
-      if (!available.length) {
-        results.push({ source: source.title, kind: source.kind, issues: ["没有可审计的文章"] });
+    const planned = sources.map((source) => ({ source, samples: sourceSamples(database, source) }));
+    const total = planned.reduce((count, item) => count + item.samples.length, 0);
+    const readTimeoutMs = options.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
+    const imageTimeoutMs = options.imageTimeoutMs ?? DEFAULT_IMAGE_TIMEOUT_MS;
+    const sampleDelayMs = options.sampleDelayMs ?? DEFAULT_SAMPLE_DELAY_MS;
+    const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
+    let completed = 0;
+
+    for (const { source, samples } of planned) {
+      if (!samples.length) {
+        const result: ReaderAuditResult = { source: source.title, kind: source.kind, status: "skipped", issues: ["没有可审计的文章"] };
+        results.push(result);
+        await reportResult(options, result);
+        await reportProgress(options, { phase: "source_skipped", completed, total, source: source.title, kind: source.kind, status: result.status, issueCount: result.issues.length });
         continue;
       }
-      const samples: Array<{ entry: Entry; sample: "newest" | "historical" }> = [{ entry: available[0], sample: "newest" }];
-      if (available.length > 1) {
-        const index = Math.min(available.length - 1, 1 + source.id.split("").reduce((sum, character) => sum + character.charCodeAt(0), 0) % (available.length - 1));
-        samples.push({ entry: available[index], sample: "historical" as const });
-      }
       for (const { entry, sample } of samples) {
+        const startedAt = Date.now();
+        await reportProgress(options, { phase: "started", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "read" });
         try {
-          const article = await withAuditTimeout(reader.read(entry, source), 45_000, "正文读取");
+          const article = await runReaderAuditOperation(
+            (signal) => reader.read(entry, source, { signal }),
+            readTimeoutMs,
+            "正文读取",
+            (elapsedMs) => void reportProgress(options, { phase: "waiting", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "read", elapsedMs }),
+            heartbeatMs
+          );
           const result = inspectArticle(source, entry, article);
           result.sample = sample;
-          await withAuditTimeout(inspectFirstImage(http, entry, article, result), 25_000, "首图检查");
+          await reportProgress(options, { phase: "started", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "image" });
+          await runReaderAuditOperation(
+            (signal) => inspectFirstImage(http, entry, article, result, signal),
+            imageTimeoutMs,
+            "首图检查",
+            (elapsedMs) => void reportProgress(options, { phase: "waiting", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "image", elapsedMs }),
+            heartbeatMs
+          );
+          result.status = result.issues.length ? "issues" : "passed";
+          result.durationMs = Date.now() - startedAt;
           results.push(result);
+          await reportResult(options, result);
         } catch (error) {
+          const timedOut = error instanceof ReaderAuditTimeoutError;
           if (error instanceof RobotsDisallowedError) {
-            results.push({ source: source.title, kind: source.kind, entry: entry.title, sample, mode: "embedded", issues: [] });
+            const result: ReaderAuditResult = { source: source.title, kind: source.kind, entry: entry.title, sample, mode: "embedded", status: "skipped", durationMs: Date.now() - startedAt, issues: [] };
+            results.push(result);
+            await reportResult(options, result);
           } else {
-            results.push({
+            const result: ReaderAuditResult = {
               source: source.title,
               kind: source.kind,
               entry: entry.title,
               sample,
+              status: timedOut ? "timed_out" : "failed",
+              durationMs: Date.now() - startedAt,
               issues: [error instanceof Error ? error.message : "读取失败"]
-            });
+            };
+            results.push(result);
+            await reportResult(options, result);
           }
         }
+        completed += 1;
+        const result = results[results.length - 1];
+        await reportProgress(options, {
+          phase: "finished",
+          completed,
+          total,
+          source: source.title,
+          kind: source.kind,
+          entry: entry.title,
+          sample,
+          elapsedMs: Date.now() - startedAt,
+          status: result?.status,
+          issueCount: result?.issues.length
+        });
         // Stay polite to every source while exercising the same reader path.
-        await sleep(400);
+        if (sampleDelayMs > 0) await sleep(sampleDelayMs);
       }
     }
   } finally {

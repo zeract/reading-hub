@@ -1,0 +1,103 @@
+import type {
+  AiProviderConfiguration,
+  AiProviderId,
+  AiProviderSettings,
+  AiStreamEvent,
+  AiStreamRequest,
+  ArticleReadResult,
+  CalibrationResult,
+  Entry,
+  EntryListQuery,
+  LibraryCounts,
+  OpmlImportResult,
+  ProbeResult,
+  ProfileSubscriptionInput,
+  Source,
+  SourceSettings,
+  SubscriptionDraft
+} from "./types";
+
+/**
+ * The sole shared contract between the sandboxed renderer and Electron's main
+ * process. Channel names and callable methods live together so a new feature
+ * cannot silently update preload, renderer types, and main handlers out of
+ * sync.
+ */
+export const IPC_CHANNELS = {
+  source: {
+    preview: "source:preview",
+    confirm: "source:confirm",
+    importOpml: "source:import-opml",
+    list: "source:list",
+    remove: "source:delete",
+    refresh: "source:refresh",
+    updateSettings: "source:update-settings",
+    updateRule: "source:update-rule",
+    calibration: "source:calibration",
+    loadIcon: "source:load-icon"
+  },
+  entry: {
+    list: "entry:list",
+    counts: "entry:counts",
+    readContent: "entry:read-content",
+    openEmbedded: "entry:open-embedded",
+    loadImage: "entry:load-image",
+    markRead: "entry:read",
+    markFavorite: "entry:favorite",
+    dismiss: "entry:dismiss"
+  },
+  ai: {
+    listProviders: "ai:list-providers",
+    configure: "ai:configure",
+    clearProvider: "ai:clear-provider",
+    askStream: "ai:ask-stream",
+    streamEvent: "ai:stream"
+  },
+  window: {
+    isFullscreen: "window:is-fullscreen",
+    fullscreenChanged: "window:fullscreen-changed"
+  },
+  app: { openExternal: "app:open-external" },
+  zhihu: { connect: "zhihu:connect", followLogin: "zhihu:follow-login" },
+  x: { connect: "x:connect" },
+  xiaohongshu: { subscribeProfile: "xiaohongshu:subscribe-profile" },
+  academic: { search: "academic:search", subscribe: "academic:subscribe" }
+} as const;
+
+export type SourceSyncResult = { inserted: number; source: Source };
+
+/** Renderer-safe surface exposed by preload through `window.reader`. */
+export interface ReaderApi {
+  previewSource(url: string): Promise<{ token: string; probe: ProbeResult }>;
+  confirmSource(token: string): Promise<Source>;
+  importOpml(): Promise<OpmlImportResult>;
+  listSources(): Promise<Source[]>;
+  deleteSource(id: string): Promise<void>;
+  refreshSource(id: string): Promise<SourceSyncResult>;
+  updateSourceSettings(id: string, settings: SourceSettings): Promise<Source>;
+  updateRule(id: string, rule: Source["extractionRule"]): Promise<void>;
+  calibrateSource(id: string): Promise<CalibrationResult>;
+  subscribeXiaohongshuProfile(input: ProfileSubscriptionInput): Promise<Source>;
+  listEntries(query?: EntryListQuery): Promise<Entry[]>;
+  getLibraryCounts(): Promise<LibraryCounts>;
+  readEntry(id: string): Promise<ArticleReadResult>;
+  openEmbeddedEntry(id: string): Promise<void>;
+  loadArticleImage(id: string, imageUrl: string): Promise<string>;
+  loadSourceIcon(id: string): Promise<string | undefined>;
+  markRead(id: string, read: boolean): Promise<void>;
+  markFavorite(id: string, favorite: boolean): Promise<void>;
+  dismissEntry(id: string): Promise<void>;
+  listAiProviders(): Promise<AiProviderSettings[]>;
+  configureAiProvider(configuration: AiProviderConfiguration): Promise<AiProviderSettings>;
+  clearAiProvider(provider: AiProviderId): Promise<void>;
+  startAiStream(request: AiStreamRequest): Promise<{ requestId: string }>;
+  onAiStream(listener: (event: AiStreamEvent) => void): () => void;
+  isWindowFullscreen(): Promise<boolean>;
+  onWindowFullscreenChange(listener: (fullscreen: boolean) => void): () => void;
+  openExternal(url: string): Promise<void>;
+  connectZhihu(accessSecret: string): Promise<SourceSyncResult>;
+  connectZhihuFollow(): Promise<void>;
+  connectX(clientId: string): Promise<SourceSyncResult>;
+  searchAcademicAuthors(query: string): Promise<SubscriptionDraft[]>;
+  subscribeAcademicAuthor(draft: SubscriptionDraft): Promise<SourceSyncResult>;
+}

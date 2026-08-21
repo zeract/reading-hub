@@ -1,34 +1,18 @@
 import path from "node:path";
 import { readFileSync } from "node:fs";
-import { lstat, readFile, writeFile } from "node:fs/promises";
-import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell } from "electron";
-import { ReadingDatabase } from "./database";
-import { sourceFaviconCandidate } from "../shared/source-icon";
-import { GenericConnector, ManualConnector, RssConnector } from "./connectors";
-import { builtInManifest, CallbackConnectorAdapter, ConnectorRegistry, LegacyConnectorAdapter } from "./connector-registry";
-import { PublicHttpClient } from "./http";
+import { writeFile } from "node:fs/promises";
+import { app, BrowserWindow, Menu, Tray, dialog, nativeImage } from "electron";
+import { IPC_CHANNELS } from "../shared/ipc";
+import { createApplicationServices, type ApplicationServices } from "./app-services";
+import { registerIpcHandlers } from "./ipc-handlers";
 import { configureChromiumNetwork } from "./network";
-import { IsolatedPageRenderer } from "./page-renderer";
-import { SecretStore } from "./secrets";
-import { SourceProbe } from "./source-probe";
-import { SourceService } from "./source-service";
-import { SyncManager } from "./sync-manager";
-import { ZhihuConnector } from "./zhihu";
-import { ZhihuFollowConnector } from "./zhihu-follow";
-import { XConnector } from "./x";
-import { XiaohongshuConnector } from "./xiaohongshu";
-import { AcademicAuthorConnector } from "./academic";
-import { AiService } from "./ai-service";
-import { ArticleReader } from "./article-reader";
-import { InAppArticleViewer } from "./in-app-article-viewer";
-import { auditLocalReader } from "./reader-audit";
-import { assertPublicUrl } from "../shared/url";
-import { RobotsDisallowedError } from "./robots";
-import type { AiProviderConfiguration, AiStreamEvent, AiStreamRequest, EntryListQuery, ExtractionRule, OpmlImportResult, ProfileSubscriptionInput, Source, SourceSettings, SyncResult } from "../shared/types";
+import { auditLocalReader, type ReaderAuditProgress, type ReaderAuditResult } from "./reader-audit";
 
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
+let services: ApplicationServices | undefined;
 let quitting = false;
+
 const APPLICATION_NAME = "Reading Hub";
 const USER_DATA_DIRECTORY = "reading-hub";
 const readerAuditMode = process.env.READING_HUB_READER_AUDIT === "1";
@@ -71,33 +55,6 @@ function applicationIcon() {
   return nativeImage.createEmpty();
 }
 
-function isAiStreamRequest(value: unknown): value is AiStreamRequest {
-  if (!value || typeof value !== "object") return false;
-  const requestId = (value as { requestId?: unknown }).requestId;
-  const request = (value as { request?: unknown }).request;
-  const article = request && typeof request === "object" ? (request as { article?: unknown }).article : undefined;
-  const selection = request && typeof request === "object" ? (request as { selection?: unknown }).selection : undefined;
-  return typeof requestId === "string"
-    && /^[A-Za-z0-9_-]{8,80}$/.test(requestId)
-    && Boolean(request && typeof request === "object")
-    && ["openai", "deepseek", "codex-cli"].includes((request as { provider?: unknown }).provider as string)
-    && typeof (request as { question?: unknown }).question === "string"
-    && Boolean(article && typeof article === "object")
-    && typeof (article as { title?: unknown }).title === "string"
-    && typeof (article as { url?: unknown }).url === "string"
-    && typeof (article as { text?: unknown }).text === "string"
-    && (selection === undefined || Boolean(selection && typeof selection === "object"
-      && typeof (selection as { text?: unknown }).text === "string"
-      && ["translate", "explain", "ask"].includes((selection as { intent?: unknown }).intent as string)));
-}
-
-function isProfileSubscriptionInput(value: unknown): value is ProfileSubscriptionInput {
-  if (!value || typeof value !== "object") return false;
-  const input = value as Partial<ProfileSubscriptionInput>;
-  return typeof input.url === "string"
-    && (input.title === undefined || typeof input.title === "string");
-}
-
 function quitApplication(): void {
   if (quitting) return;
   quitting = true;
@@ -129,7 +86,7 @@ function createWindow(): BrowserWindow {
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
   const publishFullscreenState = () => {
-    if (!window.isDestroyed()) window.webContents.send("window:fullscreen-changed", window.isFullScreen());
+    if (!window.isDestroyed()) window.webContents.send(IPC_CHANNELS.window.fullscreenChanged, window.isFullScreen());
   };
   window.on("enter-full-screen", publishFullscreenState);
   window.on("leave-full-screen", publishFullscreenState);
@@ -164,12 +121,7 @@ function createTray(): void {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: `打开 ${APPLICATION_NAME}`, click: showWindow },
-      {
-        label: "退出",
-        click: () => {
-          quitApplication();
-        }
-      }
+      { label: "退出", click: quitApplication }
     ])
   );
   tray.on("click", showWindow);
@@ -178,205 +130,17 @@ function createTray(): void {
 async function bootstrap(): Promise<void> {
   const icon = applicationIcon();
   if (process.platform === "darwin" && !icon.isEmpty()) app.dock?.setIcon(icon);
-  await configureChromiumNetwork();
-  const database = new ReadingDatabase(path.join(app.getPath("userData"), "reading-hub.sqlite"));
-  const http = new PublicHttpClient();
-  const renderer = new IsolatedPageRenderer();
-  const probe = new SourceProbe(http, renderer);
-  const secrets = new SecretStore();
-  const learningAssistant = new AiService(secrets);
-  const rss = new RssConnector(http, probe);
-  const generic = new GenericConnector(http, probe, renderer);
-  const manual = new ManualConnector(http, probe, renderer);
-  const zhihu = new ZhihuConnector(() => secrets.getZhihuAccessSecret());
-  const zhihuFollow = new ZhihuFollowConnector();
-  const registry = new ConnectorRegistry();
-  registry.register(new LegacyConnectorAdapter(
-    builtInManifest("rss", "RSS / Atom / JSON Feed", ["public-http"], []),
-    (source) => rss.fetchWithMetadata(source),
-    (entry, source) => rss.normalize(entry, source)
-  ));
-  registry.register(new LegacyConnectorAdapter(
-    builtInManifest("generic", "公开网页", ["public-http"], []),
-    (source) => generic.fetchWithMetadata(source),
-    (entry, source) => generic.normalize(entry, source)
-  ));
-  registry.register(new LegacyConnectorAdapter(
-    builtInManifest("manual", "分享链接", ["public-http"], []),
-    (source) => manual.fetchWithMetadata(source),
-    (entry, source) => manual.normalize(entry, source)
-  ));
-  registry.register(new CallbackConnectorAdapter(
-    builtInManifest("zhihu", "知乎（官方数据）", ["oauth"], ["developer.zhihu.com"]),
-    async () => ({ entries: await zhihu.fetchEntries(), emptyIsHealthy: true }),
-    (entry, source) => generic.normalize(entry, source)
-  ));
-  registry.register(new CallbackConnectorAdapter(
-    builtInManifest("zhihu_follow", "知乎关注动态", ["oauth"], ["www.zhihu.com"]),
-    async () => ({ entries: await zhihuFollow.fetchEntries(), emptyIsHealthy: true }),
-    (entry, source) => generic.normalize(entry, source)
-  ));
-  const x = new XConnector(database, secrets);
-  const xiaohongshu = new XiaohongshuConnector(http);
-  const academic = new AcademicAuthorConnector();
-  registry.register(x);
-  registry.register(xiaohongshu);
-  registry.register(academic);
-  const articles = new ArticleReader(http, renderer, (url) => zhihuFollow.renderArticle(url));
-  const inAppArticleViewer = new InAppArticleViewer();
-  let zhihuSecondarySync: Promise<void> | undefined;
-  const afterSync = async (source: Source, _result: SyncResult): Promise<void> => {
-    if (source.kind === "zhihu_follow") {
-      database.deleteUnsupportedZhihuFollowEntries(source.id);
-      database.deletePromotedZhihuFollowEntries(source.id);
-      return;
-    }
-    if ((source.connectorId ?? source.kind) !== "zhihu" || zhihuSecondarySync) return;
-    zhihuSecondarySync = (async () => {
-      const [collections, followees] = await Promise.allSettled([zhihu.fetchRecentCollections(), zhihu.fetchFollowees()]);
-      if (collections.status === "fulfilled") {
-        const storedSource = database.getSource(source.id);
-        if (storedSource) database.saveEntries(collections.value.map((entry) => generic.normalize(entry, storedSource)));
-      }
-      if (followees.status === "fulfilled") database.upsertFollowees(followees.value);
-    })().finally(() => { zhihuSecondarySync = undefined; });
-    void zhihuSecondarySync;
-  };
-  const sync = new SyncManager(database, registry, afterSync);
-  const sources = new SourceService(database, probe, sync, zhihuFollow);
-  sources.retireUnsupportedXPublicProfileSources();
-  // Older builds could save Zhihu ideas (/pin/) before the Follow parser was
-  // narrowed to authored posts. Remove only those known legacy activities on
-  // startup; ordinary answers and columns stay untouched.
-  for (const source of database.listSources()) {
-    if ((source.connectorId ?? source.kind) === "rss") database.repairScourRedirectEntries(source.id);
-    if ((source.connectorId ?? source.kind) === "generic") database.repairGenericHomepageEntryUrls(source);
-    if (source.kind === "zhihu_follow") {
-      database.deleteUnsupportedZhihuFollowEntries(source.id);
-      database.deletePromotedZhihuFollowEntries(source.id);
-    }
-  }
-  zhihuFollow.setOnAuthenticated(async () => {
-    const source = sources.ensureZhihuFollowSource();
-    await sync.syncSource(source.id);
-  });
-
-  ipcMain.handle("source:preview", (_event, url: string) => sources.preview(url));
-  ipcMain.handle("source:confirm", (_event, token: string) => sources.confirm(token));
-  ipcMain.handle("source:import-opml", async (event): Promise<OpmlImportResult> => {
-    const options = {
-      title: "导入 OPML 订阅",
-      properties: ["openFile"] as Array<"openFile">,
-      filters: [{ name: "OPML 订阅", extensions: ["opml", "xml"] }]
-    };
-    const parent = BrowserWindow.fromWebContents(event.sender);
-    const selection = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
-    if (selection.canceled || !selection.filePaths[0]) return { cancelled: true, imported: 0, existing: 0, skipped: 0 };
-    const filePath = selection.filePaths[0];
-    const file = await lstat(filePath);
-    if (!file.isFile() || file.size > 2_000_000) throw new Error("OPML 文件必须是小于 2 MB 的普通文件。");
-    const text = await readFile(filePath, "utf8");
-    return { cancelled: false, ...sources.importOpml(text) };
-  });
-  ipcMain.handle("source:list", () => database.listSources());
-  ipcMain.handle("source:delete", (_event, id: string) => sources.delete(id));
-  ipcMain.handle("source:refresh", async (_event, id: string) => sync.syncSource(id));
-  ipcMain.handle("source:update-settings", (_event, id: string, settings: SourceSettings) => sources.updateSettings(id, settings));
-  ipcMain.handle("source:update-rule", (_event, id: string, rule: ExtractionRule) => database.updateRule(id, rule));
-  ipcMain.handle("source:calibration", (_event, id: string) => sources.calibrate(id));
-  ipcMain.handle("entry:list", (_event, query?: EntryListQuery) => database.listEntries(query));
-  ipcMain.handle("entry:counts", () => database.getLibraryCounts());
-  ipcMain.handle("entry:read-content", async (_event, entryId: string) => {
-    const entry = database.getEntry(entryId);
-    if (!entry) throw new Error("这篇内容已不存在。请刷新列表后重试。");
-    try {
-      return { kind: "article", article: await articles.read(entry, database.getSource(entry.sourceId)) };
-    } catch (error) {
-      if (!(error instanceof RobotsDisallowedError)) throw error;
-      await inAppArticleViewer.open(entry.url, entry.title);
-      return { kind: "embedded" };
-    }
-  });
-  ipcMain.handle("entry:open-embedded", async (_event, entryId: string) => {
-    const entry = database.getEntry(entryId);
-    if (!entry) throw new Error("这篇内容已不存在。请刷新列表后重试。");
-    await inAppArticleViewer.open(entry.url, entry.title);
-  });
-  ipcMain.handle("entry:load-image", async (_event, entryId: string, imageUrl: string) => {
-    const entry = database.getEntry(entryId);
-    if (!entry) throw new Error("这篇内容已不存在。请刷新列表后重试。");
-    return http.getImageDataUrl(imageUrl, entry.url);
-  });
-  ipcMain.handle("source:load-icon", async (_event, sourceId: string) => {
-    const source = database.getSource(sourceId);
-    if (!source) return undefined;
-    const iconUrl = sourceFaviconCandidate(source);
-    if (!iconUrl) return undefined;
-    try {
-      return await http.getImageDataUrl(iconUrl, source.url);
-    } catch {
-      // A favicon is decorative. It must never make a source appear broken,
-      // and the renderer will use its local platform/type icon instead.
-      return undefined;
-    }
-  });
-  ipcMain.handle("entry:read", (_event, id: string, read: boolean) => database.markRead(id, read));
-  ipcMain.handle("entry:favorite", (_event, id: string, favorite: boolean) => database.markFavorite(id, favorite));
-  ipcMain.handle("entry:dismiss", (_event, id: string) => database.dismissEntry(id));
-  ipcMain.handle("ai:list-providers", () => learningAssistant.listProviders());
-  ipcMain.handle("ai:configure", (_event, configuration: AiProviderConfiguration) => learningAssistant.configure(configuration));
-  ipcMain.handle("ai:clear-provider", (_event, provider: AiProviderConfiguration["provider"]) => learningAssistant.clear(provider));
-  ipcMain.handle("ai:ask-stream", (event, payload: AiStreamRequest) => {
-    if (!isAiStreamRequest(payload)) throw new Error("AI 流式请求无效，请重新发送问题。");
-    const emit = (update: AiStreamEvent) => {
-      if (!event.sender.isDestroyed()) event.sender.send("ai:stream", update);
-    };
-    // Start only after the invoke handler returns. The renderer has already
-    // registered its supplied id, so its first token can never be lost.
-    queueMicrotask(() => {
-      void learningAssistant.askStream(payload.request, (text) => emit({ type: "delta", requestId: payload.requestId, text }))
-        .then((answer) => emit({ type: "complete", requestId: payload.requestId, answer }))
-        .catch((error: unknown) => emit({
-          type: "error",
-          requestId: payload.requestId,
-          message: error instanceof Error && error.message ? error.message : "AI 学习助手暂时无法完成回答，请稍后重试。"
-        }));
-    });
-    return { requestId: payload.requestId };
-  });
-  ipcMain.handle("window:is-fullscreen", (event) => BrowserWindow.fromWebContents(event.sender)?.isFullScreen() ?? false);
-  ipcMain.handle("app:open-external", (_event, url: string) => shell.openExternal(assertPublicUrl(url).toString()));
-  ipcMain.handle("zhihu:connect", async (_event, accessSecret: string) => {
-    await secrets.setZhihuAccessSecret(accessSecret);
-    const source = sources.connectZhihu();
-    return sync.syncSource(source.id);
-  });
-  ipcMain.handle("zhihu:follow-login", () => sources.beginZhihuFollowLogin());
-  ipcMain.handle("x:connect", async (_event, clientId: string) => {
-    const account = await x.authorizeWithClientId(clientId);
-    const source = sources.ensureXSource(account);
-    return sync.syncSource(source.id);
-  });
-  ipcMain.handle("xiaohongshu:subscribe-profile", async (_event, input: unknown) => {
-    if (!isProfileSubscriptionInput(input)) throw new Error("小红书博主主页参数无效，请重新填写。");
-    const source = sources.createXiaohongshuProfileSource(input);
-    return (await sync.syncSource(source.id)).source;
-  });
-  ipcMain.handle("academic:search", (_event, query: string) => academic.discover(query));
-  ipcMain.handle("academic:subscribe", async (_event, draft: { title: string; targetId?: string; config?: Record<string, unknown> }) => {
-    const source = sources.createAcademicSource(draft);
-    return sync.syncSource(source.id);
-  });
-
+  services = await createApplicationServices(path.join(app.getPath("userData"), "reading-hub.sqlite"));
+  registerIpcHandlers(services);
   createTray();
   showWindow();
-  sync.start();
+  services.sync.start();
 
   app.on("activate", showWindow);
   app.on("before-quit", () => {
     quitting = true;
-    sync.stop();
-    database.close();
+    services?.close();
+    services = undefined;
   });
 }
 
@@ -384,13 +148,49 @@ async function runReaderAudit(): Promise<void> {
   await configureChromiumNetwork();
   const databasePath = process.env.READING_HUB_DB_PATH || path.join(persistentUserDataPath, "reading-hub.sqlite");
   const reportPath = process.env.READING_HUB_AUDIT_REPORT;
-  if (reportPath) await writeFile(`${reportPath}.starting`, `${new Date().toISOString()}\n`, "utf8");
+  const progress = {
+    startedAt: new Date().toISOString(),
+    completed: 0,
+    total: 0,
+    current: undefined as ReaderAuditProgress | undefined,
+    results: [] as ReaderAuditResult[]
+  };
+  let pendingProgressWrite = Promise.resolve();
+  const writeProgress = async () => {
+    if (!reportPath) return;
+    // Heartbeats are intentionally fire-and-forget so a slow report disk does
+    // not hold up cancellation. Serialize their snapshots here so an older
+    // heartbeat can never overwrite a later finished result.
+    const snapshot = JSON.stringify({
+      ...progress,
+      current: progress.current ? { ...progress.current } : undefined,
+      results: [...progress.results],
+      updatedAt: new Date().toISOString()
+    }, null, 2);
+    pendingProgressWrite = pendingProgressWrite.catch(() => undefined).then(() => writeFile(`${reportPath}.progress.json`, snapshot, "utf8"));
+    await pendingProgressWrite;
+  };
+  if (reportPath) {
+    await writeFile(`${reportPath}.starting`, `${progress.startedAt}\n`, "utf8");
+    await writeProgress();
+  }
   // Keep Electron's event loop alive between isolated page windows. Without a
   // persistent host window macOS may terminate this headless audit after the
   // first renderer window closes, before the report is flushed.
   const auditHost = new BrowserWindow({ show: false });
   try {
-    const report = JSON.stringify(await auditLocalReader(databasePath), null, 2);
+    const report = JSON.stringify(await auditLocalReader(databasePath, {
+      onProgress: async (event) => {
+        progress.completed = event.completed;
+        progress.total = event.total;
+        progress.current = event;
+        await writeProgress();
+      },
+      onResult: async (result) => {
+        progress.results.push(result);
+        await writeProgress();
+      }
+    }), null, 2);
     if (reportPath) await writeFile(reportPath, report, "utf8");
     console.log(report);
   } catch (error) {
@@ -421,9 +221,8 @@ if (!ownsReaderInstance) {
       // `app.exit()` terminates native I/O immediately on macOS. Let the shared
       // audit-mode finalizer close the process after the diagnostic has flushed.
       return;
-    } else {
-      dialog.showErrorBox("Reading Hub 无法启动", `${message}\n\n请运行 npm run rebuild:electron 后重试。`);
     }
+    dialog.showErrorBox("Reading Hub 无法启动", `${message}\n\n请运行 npm run rebuild:electron 后重试。`);
     app.exit(1);
   }).finally(() => {
     if (readerAuditMode) app.quit();

@@ -34,4 +34,20 @@ describe("Xiaohongshu public profile connector", () => {
     const connector = new XiaohongshuConnector({ getText: async () => ({ url: source.url, status: 200, contentType: "text/html", text: "<html></html>" }) } as never);
     await expect(connector.sync({ source, subscription: { id: source.id, sourceId: source.id, connectorId: "xiaohongshu", config: {}, createdAt: 1, updatedAt: 1 } })).rejects.toThrow("不会使用 Cookie、登录态或反爬绕过");
   });
+
+  it("uses the shared normalizer while preserving the note's provider identity", () => {
+    const connector = new XiaohongshuConnector({} as never);
+    const entry = connector.normalize({
+      url: "https://www.xiaohongshu.com/explore/note_12345678?utm_source=feed",
+      title: "公开笔记标题",
+      externalId: "note_12345678",
+      canonicalIdentity: "xiaohongshu:note_12345678"
+    }, source);
+    expect(entry).toMatchObject({
+      canonicalUrl: "https://www.xiaohongshu.com/explore/note_12345678",
+      canonicalIdentity: "xiaohongshu:note_12345678",
+      providerId: "xiaohongshu",
+      providerLabel: "小红书"
+    });
+  });
 });

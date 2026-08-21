@@ -328,6 +328,21 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("preserves a connector identity when only its UI-compatible source settings change", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({
+      url: "https://provider.example/feed", title: "Provider", kind: "generic", connectorId: "provider-test", pollingEnabled: true
+    });
+
+    const updated = db.updateSourceSettings(source.id, {
+      title: "Renamed provider", category: "技术", kind: "generic", pollingEnabled: true, refreshIntervalMinutes: 60
+    });
+
+    expect(updated).toMatchObject({ connectorId: "provider-test", kind: "generic", title: "Renamed provider", category: "技术" });
+    expect(db.getSubscriptionForSource(source.id)).toMatchObject({ connectorId: "provider-test" });
+    db.close();
+  });
+
   it("removes a dismissed card and keeps it hidden when its feed returns it again", () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/dismissed", title: "Example", kind: "rss", pollingEnabled: true });

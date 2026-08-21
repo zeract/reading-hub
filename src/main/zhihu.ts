@@ -1,6 +1,8 @@
 import { compactText } from "../shared/text";
 import { chromiumFetch } from "./network";
-import type { Followee, RawEntry } from "../shared/types";
+import type { ConnectorAdapter, Followee, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
+import { builtInManifest } from "./connector-registry";
+import { contentNormalizer } from "./content-normalizer";
 
 const API_ORIGIN = "https://developer.zhihu.com";
 
@@ -8,8 +10,18 @@ type ApiResponse<T> = { Code?: number; Message?: string; Data?: T };
 type Paged<T> = { Items?: T[]; Paging?: { IsEnd?: boolean; NextOffset?: string } };
 
 /** Official, current-user-only API client. It intentionally has no user-id parameter. */
-export class ZhihuConnector {
+export class ZhihuConnector implements ConnectorAdapter {
+  readonly manifest = builtInManifest("zhihu", "知乎（官方数据）", ["oauth"], ["developer.zhihu.com"]);
+
   constructor(private readonly getAccessSecret: () => Promise<string | null>) {}
+
+  async sync(_context: SyncContext): Promise<SyncResult> {
+    return { entries: await this.fetchEntries(), emptyIsHealthy: true };
+  }
+
+  normalize(item: RawEntry, source: Source) {
+    return contentNormalizer.normalize(item, source, { providerId: "zhihu", providerLabel: "知乎" });
+  }
 
   async fetchEntries(): Promise<RawEntry[]> {
     const contents = await this.get<Paged<any>>("/api/v1/user/contents?ContentType=all&Limit=50");

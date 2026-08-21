@@ -22,23 +22,21 @@ async function run() {
   const { configureChromiumNetwork } = require("../../dist/main/main/network.js");
   const { ReadingDatabase } = require("../../dist/main/main/database.js");
   const { GenericConnector } = require("../../dist/main/main/connectors.js");
-  const { ConnectorRegistry, LegacyConnectorAdapter, builtInManifest } = require("../../dist/main/main/connector-registry.js");
+  const { ConnectorRegistry } = require("../../dist/main/main/connector-registry.js");
   const { PublicHttpClient } = require("../../dist/main/main/http.js");
   const { IsolatedPageRenderer } = require("../../dist/main/main/page-renderer.js");
-  const { SourceProbe } = require("../../dist/main/main/source-probe.js");
   const { SyncManager } = require("../../dist/main/main/sync-manager.js");
 
   await configureChromiumNetwork();
   const database = new ReadingDatabase(sourceDatabasePath());
   const renderer = new IsolatedPageRenderer();
   const http = new PublicHttpClient();
-  const generic = new GenericConnector(http, new SourceProbe(http, renderer), renderer);
+  const generic = new GenericConnector(http, renderer);
   const registry = new ConnectorRegistry();
-  registry.register(new LegacyConnectorAdapter(
-    builtInManifest("generic", "公开网页", ["public-http"], []),
-    (source) => generic.fetchWithMetadata(source),
-    (entry, source) => generic.normalize(entry, source)
-  ));
+  // Use the same direct built-in adapter as the application. The adapter owns
+  // its manifest, host contract and normalisation path, so this maintenance
+  // command cannot silently drift from ordinary UI refresh behaviour.
+  registry.register(generic);
   const sync = new SyncManager(database, registry);
   const sources = database.listSources().filter((source) => (source.connectorId || source.kind) === "generic" && source.pollingEnabled);
   const results = [];

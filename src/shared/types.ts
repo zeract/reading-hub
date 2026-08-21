@@ -5,7 +5,12 @@
  */
 export type SourceKind = "rss" | "generic" | "manual" | "zhihu" | "zhihu_follow" | "x" | "xiaohongshu" | "academic";
 export type SourceStatus = "active" | "needs_review" | "paused" | "error";
-export type ConnectorId = SourceKind;
+/**
+ * Connector IDs are host-owned opaque keys. `SourceKind` remains the compact
+ * UI compatibility category; a future built-in connector need not force a
+ * scheduler or database switch on every source kind.
+ */
+export type ConnectorId = string;
 export type AccountStatus = "active" | "expired" | "revoked" | "error";
 
 export interface ExtractionRule {
@@ -351,12 +356,6 @@ export interface CalibrationResult {
   url: string;
   candidates: CalibrationCandidate[];
   message?: string;
-}
-
-export interface Connector {
-  probe(url: string): Promise<ProbeResult>;
-  fetch(source: Source): Promise<RawEntry[]>;
-  normalize(item: RawEntry, source: Source): Entry;
 }
 
 export interface SourceInput {

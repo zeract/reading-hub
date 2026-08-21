@@ -1,4 +1,5 @@
 import { assertPublicUrl } from "../shared/url";
+import { abortError, throwIfAborted, withRequestTimeout } from "./cancellation";
 import { chromiumFetch } from "./network";
 
 type CacheItem = { expiresAt: number; disallow: string[] };
@@ -15,12 +16,13 @@ export class RobotsDisallowedError extends Error {
 export class RobotsPolicy {
   private readonly cache = new Map<string, CacheItem>();
 
-  async assertAllowed(rawUrl: string): Promise<void> {
+  async assertAllowed(rawUrl: string, options?: { signal?: AbortSignal }): Promise<void> {
+    throwIfAborted(options?.signal);
     const url = assertPublicUrl(rawUrl);
     const origin = url.origin;
     let item = this.cache.get(origin);
     if (!item || item.expiresAt < Date.now()) {
-      item = await this.load(origin);
+      item = await this.load(origin, options?.signal);
       this.cache.set(origin, item);
     }
     if (item.disallow.some((path) => path !== "" && (url.pathname + url.search).startsWith(path))) {
@@ -28,16 +30,22 @@ export class RobotsPolicy {
     }
   }
 
-  private async load(origin: string): Promise<CacheItem> {
+  private async load(origin: string, signal?: AbortSignal): Promise<CacheItem> {
+    const request = withRequestTimeout(signal, 8_000, "robots.txt 请求超时。");
     try {
       const response = await chromiumFetch(`${origin}/robots.txt`, {
         headers: { "User-Agent": "ReadingHub/0.1 (+local reader)" },
-        signal: AbortSignal.timeout(8_000)
+        signal: request.signal
       });
       if (!response.ok) return { expiresAt: Date.now() + 24 * 60 * 60_000, disallow: [] };
       return { expiresAt: Date.now() + 24 * 60 * 60_000, disallow: parseRobots(await response.text()) };
     } catch {
+      // An explicit audit cancellation must not silently become a fail-open
+      // robots result that permits the pending page request to continue.
+      if (signal?.aborted) throw abortError(signal);
       return { expiresAt: Date.now() + 60 * 60_000, disallow: [] };
+    } finally {
+      request.dispose();
     }
   }
 }

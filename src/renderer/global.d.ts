@@ -1,41 +1,8 @@
-import type { AiProviderConfiguration, AiProviderId, AiProviderSettings, AiStreamEvent, AiStreamRequest, ArticleReadResult, CalibrationResult, Entry, EntryListQuery, ExtractionRule, LibraryCounts, OpmlImportResult, ProbeResult, ProfileSubscriptionInput, Source, SourceSettings, SubscriptionDraft } from "../shared/types";
+import type { ReaderApi } from "../shared/ipc";
 
 declare global {
   interface Window {
-    reader: {
-      previewSource(url: string): Promise<{ token: string; probe: ProbeResult }>;
-      confirmSource(token: string): Promise<Source>;
-      importOpml(): Promise<OpmlImportResult>;
-      listSources(): Promise<Source[]>;
-      deleteSource(id: string): Promise<void>;
-      refreshSource(id: string): Promise<unknown>;
-      updateSourceSettings(id: string, settings: SourceSettings): Promise<Source>;
-      updateRule(id: string, rule: ExtractionRule): Promise<void>;
-      calibrateSource(id: string): Promise<CalibrationResult>;
-      subscribeXiaohongshuProfile(input: ProfileSubscriptionInput): Promise<Source>;
-      listEntries(query?: EntryListQuery): Promise<Entry[]>;
-      getLibraryCounts(): Promise<LibraryCounts>;
-      readEntry(id: string): Promise<ArticleReadResult>;
-      openEmbeddedEntry(id: string): Promise<void>;
-      loadArticleImage(id: string, imageUrl: string): Promise<string>;
-      loadSourceIcon(id: string): Promise<string | undefined>;
-      markRead(id: string, read: boolean): Promise<void>;
-      markFavorite(id: string, favorite: boolean): Promise<void>;
-      dismissEntry(id: string): Promise<void>;
-      listAiProviders(): Promise<AiProviderSettings[]>;
-      configureAiProvider(configuration: AiProviderConfiguration): Promise<AiProviderSettings>;
-      clearAiProvider(provider: AiProviderId): Promise<void>;
-      startAiStream(request: AiStreamRequest): Promise<{ requestId: string }>;
-      onAiStream(listener: (event: AiStreamEvent) => void): () => void;
-      isWindowFullscreen(): Promise<boolean>;
-      onWindowFullscreenChange(listener: (fullscreen: boolean) => void): () => void;
-      openExternal(url: string): Promise<void>;
-      connectZhihu(accessSecret: string): Promise<unknown>;
-      connectZhihuFollow(): Promise<void>;
-      connectX(clientId: string): Promise<unknown>;
-      searchAcademicAuthors(query: string): Promise<SubscriptionDraft[]>;
-      subscribeAcademicAuthor(draft: SubscriptionDraft): Promise<unknown>;
-    };
+    reader: ReaderApi;
   }
 }
 

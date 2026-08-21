@@ -1,7 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
 import type { ConnectorAdapter, RawEntry, Source, SubscriptionDraft, SyncContext, SyncResult } from "../shared/types";
 import { compactText } from "../shared/text";
 import { builtInManifest } from "./connector-registry";
+import { contentNormalizer } from "./content-normalizer";
 import { chromiumFetch } from "./network";
 
 const OPENALEX_ROOT = "https://api.openalex.org";
@@ -57,30 +57,7 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
   }
 
   normalize(item: RawEntry, source: Source) {
-    const now = Date.now();
-    const identity = item.canonicalIdentity || canonicalIdentity(item.url, item.externalId);
-    return {
-      id: randomUUID(),
-      sourceId: source.id,
-      // DOI URLs are stable canonical URLs. For non-DOI works this remains the
-      // provider landing page; origin rows retain every provider attribution.
-      canonicalUrl: stableCanonicalUrl(identity, item.url),
-      canonicalIdentity: identity,
-      url: item.url,
-      title: item.title,
-      author: item.author,
-      publishedAt: item.publishedAt,
-      summary: item.summary,
-      imageUrl: item.imageUrl,
-      contentHash: createHash("sha256").update(`${identity}\n${item.title}\n${item.summary || ""}`).digest("hex"),
-      read: false,
-      favorite: false,
-      createdAt: now,
-      observedAt: item.observedAt ?? now,
-      providerId: "academic" as const,
-      providerLabel: item.providerLabel,
-      externalId: item.externalId
-    };
+    return contentNormalizer.normalize(item, source, ACADEMIC_CONTENT_NORMALIZATION);
   }
 
   private async searchOpenAlex(query: string): Promise<SubscriptionDraft[]> {
@@ -212,6 +189,19 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
   }
 }
 
+const ACADEMIC_CONTENT_NORMALIZATION = {
+  // Academic APIs already return their authoritative landing-page URL. The
+  // historic connector intentionally retained that exact URL for non-DOI
+  // papers, so avoid generic URL rewriting here.
+  canonicalizeUrl: (url: string) => url,
+  canonicalIdentity: (item: RawEntry) => item.canonicalIdentity || academicContentIdentity(item.url, item.externalId),
+  // DOI URLs are stable canonical URLs. For non-DOI works this remains the
+  // provider landing page; origin rows retain every provider attribution.
+  canonicalUrl: (item: RawEntry, identity: string) => stableCanonicalUrl(identity, item.url),
+  hashMode: "identity" as const,
+  providerId: "academic" as const
+};
+
 function readAuthorConfig(input: Record<string, unknown>): AuthorConfig {
   return {
     authorName: stringValue(input.authorName) || "",
@@ -270,7 +260,7 @@ function parseOrcidDate(value: any): number | undefined {
   return parseDate(`${year}-${month}-${day}`);
 }
 
-function canonicalIdentity(url: string, externalId?: string): string {
+function academicContentIdentity(url: string, externalId?: string): string {
   const doi = normalDoi(url);
   return doi ? `doi:${doi}` : externalId ? `academic:${externalId}` : `url:${url}`;
 }

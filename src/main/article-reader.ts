@@ -7,7 +7,8 @@ import { inlineDollarMathAt } from "../shared/tex";
 import { assertPublicUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl, toAbsoluteUrl } from "../shared/url";
 import type { Entry, ReaderArticle, ReaderRenderProfile, Source } from "../shared/types";
 import { parseFeed } from "./feed";
-import { PublicHttpClient } from "./http";
+import { abortError, throwIfAborted } from "./cancellation";
+import { PublicHttpClient, type PublicRequestOptions } from "./http";
 import { extractPagePublishedAt } from "./extractor";
 import { ScientificMathRenderer } from "./mathjax-renderer";
 import type { PageRenderer } from "./page-renderer";
@@ -96,7 +97,12 @@ export class ArticleContentUnavailableError extends Error {
   }
 }
 
-type RenderWithSession = (url: string) => Promise<string>;
+export interface ReaderReadOptions {
+  /** Optional audit-only cancellation. Normal renderer IPC requests omit it. */
+  signal?: AbortSignal;
+}
+
+type RenderWithSession = (url: string, options?: ReaderReadOptions) => Promise<string>;
 type ExtractedArticle = { article: ReaderArticle; textLength: number };
 
 function resolveReaderProfile(pageUrl: string): ReaderRenderProfile {
@@ -140,23 +146,29 @@ export class ArticleReader {
     private readonly scientificMath = new ScientificMathRenderer()
   ) {}
 
-  async read(entry: Entry, source?: Source): Promise<ReaderArticle> {
+  async read(entry: Entry, source?: Source, options?: ReaderReadOptions): Promise<ReaderArticle> {
+    throwIfAborted(options?.signal);
     let staticArticle: ExtractedArticle | undefined;
     let staticFailure: unknown;
     const usesZhihuSession = source?.kind === "zhihu_follow" && Boolean(this.renderWithZhihuSession);
     if (resolveReaderProfile(entry.url) === "scientific") await this.scientificMath.ready().catch(() => undefined);
+    throwIfAborted(options?.signal);
     if (!usesZhihuSession) {
       try {
-        const response = await this.http.getText(entry.url, undefined, { maxBytes: 8_000_000 });
+        const response = await this.http.getText(entry.url, undefined, readerHttpOptions({ maxBytes: 8_000_000 }, options?.signal));
         staticArticle = extractReaderArticle(response.text, response.url, entry, this.scientificMath);
         if (staticArticle && staticArticle.textLength >= 220) return staticArticle.article;
       } catch (error) {
+        if (options?.signal?.aborted) throw abortError(options.signal);
         // robots.txt must remain a hard boundary. A feed can nevertheless
         // already contain an explicitly supplied summary, which is local
         // subscription data rather than an extraction of the blocked page.
         // This makes RSSHub/X items readable without trying to fetch X again.
         if (error instanceof RobotsDisallowedError) {
-          const feedBody = await this.readTransientFeedBody(entry, source).catch(() => undefined);
+          const feedBody = await this.readTransientFeedBody(entry, source, options).catch(() => {
+            if (options?.signal?.aborted) throw abortError(options.signal);
+            return undefined;
+          });
           if (feedBody) return feedBody;
           const feedSummary = createFeedSummaryArticle(entry, source);
           if (feedSummary) return feedSummary;
@@ -169,11 +181,13 @@ export class ArticleReader {
     let renderedHtml: string | undefined;
     try {
       renderedHtml = usesZhihuSession && this.renderWithZhihuSession
-        ? await this.renderWithZhihuSession(entry.url)
-        : await this.renderer.render(entry.url);
-    } catch {
+        ? await this.renderWithZhihuSession(entry.url, options)
+        : await this.renderer.render(entry.url, options);
+    } catch (error) {
+      if (options?.signal?.aborted) throw abortError(options.signal);
       // Keep a usable static article when Chromium rendering is unavailable.
     }
+    throwIfAborted(options?.signal);
     const renderedArticle = renderedHtml ? extractReaderArticle(renderedHtml, entry.url, entry, this.scientificMath) : undefined;
     if (renderedArticle && renderedArticle.textLength > (staticArticle?.textLength ?? 0)) return renderedArticle.article;
     if (staticArticle) return staticArticle.article;
@@ -182,7 +196,10 @@ export class ArticleReader {
     // part of the user's subscription, so re-fetch and sanitise it in memory
     // before surfacing an avoidable read error. This never retries a blocked
     // original page and never persists full Feed content.
-    const feedBody = await this.readTransientFeedBody(entry, source).catch(() => undefined);
+    const feedBody = await this.readTransientFeedBody(entry, source, options).catch(() => {
+      if (options?.signal?.aborted) throw abortError(options.signal);
+      return undefined;
+    });
     if (feedBody) return feedBody;
     const feedSummary = createFeedSummaryArticle(entry, source);
     if (feedSummary) return feedSummary;
@@ -196,14 +213,18 @@ export class ArticleReader {
    * blocked item, sanitize it in this process, and discard it with the
    * ReaderArticle. SQLite never receives feedContentHtml.
    */
-  private async readTransientFeedBody(entry: Entry, source?: Source): Promise<ReaderArticle | undefined> {
+  private async readTransientFeedBody(entry: Entry, source?: Source, options?: ReaderReadOptions): Promise<ReaderArticle | undefined> {
+    throwIfAborted(options?.signal);
     if (source?.kind !== "rss") return undefined;
     const allowTrustedLoopbackFeed = source.config?.allowTrustedLoopbackFeed === true && isTrustedLoopbackFeedUrl(source.url);
     const response = await this.http.getText(
       source.url,
       undefined,
-      allowTrustedLoopbackFeed ? { allowTrustedLoopbackFeed: true } : undefined
+      allowTrustedLoopbackFeed
+        ? readerHttpOptions({ allowTrustedLoopbackFeed: true }, options?.signal)
+        : readerHttpOptions(undefined, options?.signal)
     );
+    throwIfAborted(options?.signal);
     const requestedUrls = new Set([entry.canonicalUrl, canonicalizeUrl(entry.url)]);
     const item = (await parseFeed(response.text, response.url)).entries.find((candidate) => {
       try {
@@ -231,6 +252,10 @@ export class ArticleReader {
       contentHtml
     };
   }
+}
+
+function readerHttpOptions(base: Omit<PublicRequestOptions, "signal"> | undefined, signal?: AbortSignal): PublicRequestOptions | undefined {
+  return signal ? { ...base, signal } : base;
 }
 
 /**

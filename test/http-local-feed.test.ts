@@ -38,4 +38,23 @@ describe("PublicHttpClient local-feed boundary", () => {
       allowTrustedLoopbackFeed: true
     })).rejects.toThrow("本机 Feed 不能重定向到其他地址");
   });
+
+  it("aborts an in-flight public request when an audit signal is cancelled", async () => {
+    const robots = { assertAllowed: vi.fn() };
+    let requestSignal: AbortSignal | undefined;
+    chromiumFetch.mockImplementationOnce((_url: string, init?: RequestInit) => new Promise<never>((_resolve, reject) => {
+      requestSignal = init?.signal ?? undefined;
+      requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), { once: true });
+    }));
+    const client = new PublicHttpClient(robots as never);
+    const controller = new AbortController();
+    const request = client.getText("https://example.com/article", undefined, { signal: controller.signal });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requestSignal).toBeDefined();
+    controller.abort(new Error("审计停止"));
+
+    await expect(request).rejects.toThrow("审计停止");
+    expect(requestSignal?.aborted).toBe(true);
+  });
 });

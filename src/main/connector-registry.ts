@@ -1,12 +1,7 @@
 import type {
   ConnectorAdapter,
   ConnectorId,
-  ConnectorManifest,
-  NormalizedEntry,
-  RawEntry,
-  Source,
-  SyncContext,
-  SyncResult
+  ConnectorManifest
 } from "../shared/types";
 
 /**
@@ -37,59 +32,6 @@ export class ConnectorRegistry {
 
   manifests(): ConnectorManifest[] {
     return [...this.adapters.values()].map((adapter) => adapter.manifest);
-  }
-}
-
-export type LegacyFetchOutcome = {
-  entries: RawEntry[];
-  etag?: string;
-  lastModified?: string;
-  notModified?: boolean;
-  extractionRule?: Source["extractionRule"];
-  metadataRevision?: number;
-  iconUrl?: string;
-};
-
-/** Adapts the existing safe RSS/web/manual pipeline to the new host contract. */
-export class LegacyConnectorAdapter implements ConnectorAdapter {
-  constructor(
-    public readonly manifest: ConnectorManifest,
-    private readonly fetcher: (source: Source) => Promise<LegacyFetchOutcome>,
-    private readonly normalizer: (item: RawEntry, source: Source) => NormalizedEntry
-  ) {}
-
-  async sync(context: SyncContext): Promise<SyncResult> {
-    const outcome = await this.fetcher(context.source);
-    return {
-      entries: outcome.entries,
-      etag: outcome.etag,
-      lastModified: outcome.lastModified,
-      notModified: outcome.notModified,
-      extractionRule: outcome.extractionRule,
-      metadataRevision: outcome.metadataRevision,
-      iconUrl: outcome.iconUrl
-    };
-  }
-
-  normalize(item: RawEntry, source: Source): NormalizedEntry {
-    return this.normalizer(item, source);
-  }
-}
-
-/** For first-party providers whose session or API client lives outside Source. */
-export class CallbackConnectorAdapter implements ConnectorAdapter {
-  constructor(
-    public readonly manifest: ConnectorManifest,
-    private readonly synchronizer: (context: SyncContext) => Promise<SyncResult>,
-    private readonly normalizer: (item: RawEntry, source: Source) => NormalizedEntry
-  ) {}
-
-  sync(context: SyncContext): Promise<SyncResult> {
-    return this.synchronizer(context);
-  }
-
-  normalize(item: RawEntry, source: Source): NormalizedEntry {
-    return this.normalizer(item, source);
   }
 }
 

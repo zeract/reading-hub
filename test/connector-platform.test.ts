@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AcademicAuthorConnector } from "../src/main/academic";
 import { builtInManifest, ConnectorRegistry } from "../src/main/connector-registry";
+import { identityContentHash } from "../src/main/content-hash";
 import { ReadingDatabase } from "../src/main/database";
 import { XConnector } from "../src/main/x";
 import type { Source } from "../src/shared/types";
@@ -37,6 +38,17 @@ describe("connector platform", () => {
       providerLabel: "OpenAlex",
       providerId: "academic"
     });
+
+    const doiFallback = connector.normalize({
+      url: "https://doi.org/10.1000/example",
+      title: "Paper"
+    }, academicSource);
+    expect(doiFallback).toMatchObject({
+      canonicalUrl: "https://doi.org/10.1000/example",
+      canonicalIdentity: "doi:10.1000/example",
+      providerId: "academic"
+    });
+    expect(doiFallback.contentHash).toBe(identityContentHash("doi:10.1000/example", { title: "Paper" }));
   });
 
   it("keeps X status URLs as the reader target and stores a provider identity", () => {
@@ -49,6 +61,19 @@ describe("connector platform", () => {
       providerId: "x"
     }, { ...academicSource, id: "x-source", kind: "x", connectorId: "x" });
     expect(entry).toMatchObject({ canonicalUrl: "https://x.com/example/status/42", canonicalIdentity: "x:42", providerId: "x", providerLabel: "X" });
+
+    const fallback = connector.normalize({
+      url: "https://x.com/example/status/43",
+      title: "A second post",
+      externalId: "43"
+    }, { ...academicSource, id: "x-source", kind: "x", connectorId: "x" });
+    expect(fallback).toMatchObject({
+      canonicalUrl: "https://x.com/example/status/43",
+      canonicalIdentity: "x:43",
+      providerId: "x",
+      providerLabel: "X"
+    });
+    expect(fallback.contentHash).toBe(identityContentHash("x:43", { title: "A second post" }));
   });
 
   it("syncs followed users incrementally while excluding replies and reposts", async () => {

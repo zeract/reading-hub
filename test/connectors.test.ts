@@ -6,7 +6,7 @@ import type { Source } from "../src/shared/types";
 
 describe("GenericConnector", () => {
   it("uses a same-site article identity when a legacy rule returns the source homepage", () => {
-    const connector = new GenericConnector({} as any, {} as any);
+    const connector = new GenericConnector({} as any);
     const source: Source = {
       id: "source", url: "http://heavensheep.xyz/", title: "Example", kind: "generic", status: "active",
       pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1
@@ -41,7 +41,7 @@ describe("GenericConnector", () => {
       etag: "old-etag", lastModified: "Fri, 17 Jul 2026 12:20:57 GMT",
       extractionRule: { version: 1, itemRootSelector: "li" }
     };
-    const connector = new GenericConnector(http as any, {} as any);
+    const connector = new GenericConnector(http as any);
 
     const outcome = await connector.fetchWithMetadata(source);
 
@@ -68,7 +68,7 @@ describe("GenericConnector", () => {
       etag: "unchanged", lastModified: "Sat, 16 Aug 2026 12:20:57 GMT",
       extractionRule: { version: 1, publicationDateRevision: 0 }
     };
-    const connector = new GenericConnector(http as any, {} as any);
+    const connector = new GenericConnector(http as any);
 
     const outcome = await connector.fetchWithMetadata(source);
 
@@ -102,7 +102,7 @@ describe("GenericConnector", () => {
       pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1,
       extractionRule: { version: 1, publicationDateRevision: PUBLICATION_DATE_REVISION, feedDiscoveryRevision: FEED_DISCOVERY_REVISION }
     };
-    const connector = new GenericConnector(http as any, {} as any);
+    const connector = new GenericConnector(http as any);
 
     const outcome = await connector.fetchWithMetadata(source);
 
@@ -143,7 +143,7 @@ describe("GenericConnector", () => {
       etag: "home-etag", lastModified: "Mon, 17 Aug 2026 12:00:00 GMT",
       extractionRule: { version: 1, publicationDateRevision: PUBLICATION_DATE_REVISION }
     };
-    const connector = new GenericConnector(http as any, {} as any);
+    const connector = new GenericConnector(http as any);
 
     const outcome = await connector.fetchWithMetadata(source);
 
@@ -184,7 +184,7 @@ describe("GenericConnector", () => {
       metadataRevision: RSS_METADATA_REVISION - 1,
       extractionRule: { version: 1, feedUrl: "https://example.com/feed.xml", publicationDateRevision: PUBLICATION_DATE_REVISION }
     };
-    const connector = new GenericConnector(http as any, {} as any);
+    const connector = new GenericConnector(http as any);
 
     const outcome = await connector.fetchWithMetadata(source);
 
@@ -212,7 +212,7 @@ describe("RssConnector", () => {
       pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1,
       etag: "unchanged", lastModified: "Sun, 04 Feb 2024 23:23:27 GMT", metadataRevision: 0
     };
-    const connector = new RssConnector(http as any, {} as any);
+    const connector = new RssConnector(http as any);
 
     const outcome = await connector.fetchWithMetadata(source);
 

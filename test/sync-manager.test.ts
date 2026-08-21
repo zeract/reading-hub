@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ConnectorRegistry } from "../src/main/connector-registry";
 import { ReadingDatabase } from "../src/main/database";
-import { SyncManager } from "../src/main/sync-manager";
+import { SyncCancelledError, SyncManager } from "../src/main/sync-manager";
 import type { ConnectorAdapter, Entry, RawEntry, Source } from "../src/shared/types";
 
 describe("SyncManager", () => {
@@ -63,6 +63,81 @@ describe("SyncManager", () => {
     await expect(manager.syncSource(sources[0].id)).rejects.toThrow("无法连接到该站点。请检查网络或系统代理设置后重试。");
     db.close();
   });
+
+  it("uses connector-declared empty-result health instead of a source-kind branch", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({
+      url: "https://provider.example/updates", title: "Provider", kind: "generic", connectorId: "provider-test", pollingEnabled: true
+    });
+    const registry = new ConnectorRegistry();
+    registry.register({
+      manifest: { id: "provider-test", version: 1, displayName: "Provider", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      async sync() { return { entries: [], emptyIsHealthy: false }; },
+      normalize(item: RawEntry, currentSource: Source): Entry { return readerEntry(currentSource, item); }
+    });
+    const manager = new SyncManager(db, registry);
+
+    await manager.syncSource(source.id);
+    expect(db.getSource(source.id)).toMatchObject({ consecutiveEmpty: 1, status: "active" });
+    await manager.syncSource(source.id);
+    await manager.syncSource(source.id);
+    expect(db.getSource(source.id)).toMatchObject({ consecutiveEmpty: 3, status: "needs_review" });
+    db.close();
+  });
+
+  it("does not write a delayed refresh after its source is deleted", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+    const registry = new ConnectorRegistry();
+    const gate = deferred();
+    registry.register({
+      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      async sync() {
+        gate.started();
+        await gate.wait;
+        return { entries: [{ url: "https://example.com/new", title: "Delayed" }], emptyIsHealthy: true };
+      },
+      normalize(item: RawEntry, currentSource: Source): Entry { return readerEntry(currentSource, item); }
+    });
+    const refreshing = new SyncManager(db, registry).syncSource(source.id);
+    await gate.startedPromise;
+    db.deleteSource(source.id);
+    gate.release();
+
+    await expect(refreshing).rejects.toBeInstanceOf(SyncCancelledError);
+    expect(db.getSource(source.id)).toBeUndefined();
+    expect(db.listEntries()).toEqual([]);
+    db.close();
+  });
+
+  it("does not overwrite a user-calibrated extraction rule with an older response", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/", title: "Example", kind: "generic", pollingEnabled: true });
+    const registry = new ConnectorRegistry();
+    const gate = deferred();
+    registry.register({
+      manifest: { id: "generic", version: 1, displayName: "Web", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      async sync() {
+        gate.started();
+        await gate.wait;
+        return {
+          entries: [{ url: "https://example.com/old", title: "Old extraction" }],
+          extractionRule: { version: 1, itemRootSelector: ".old-card" },
+          emptyIsHealthy: true
+        };
+      },
+      normalize(item: RawEntry, currentSource: Source): Entry { return readerEntry(currentSource, item); }
+    });
+    const refreshing = new SyncManager(db, registry).syncSource(source.id);
+    await gate.startedPromise;
+    db.updateRule(source.id, { version: 1, itemRootSelector: ".new-card" });
+    gate.release();
+
+    await expect(refreshing).rejects.toBeInstanceOf(SyncCancelledError);
+    expect(db.getSource(source.id)?.extractionRule).toEqual({ version: 1, itemRootSelector: ".new-card" });
+    expect(db.listEntries(source.id)).toEqual([]);
+    db.close();
+  });
 });
 
 function replayAdapter(): ConnectorAdapter {
@@ -93,4 +168,12 @@ function readerEntry(source: Source, item: RawEntry & { createdAt?: number }): E
     favorite: false,
     createdAt
   };
+}
+
+function deferred() {
+  let release!: () => void;
+  let started!: () => void;
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+  return { wait, release, started, startedPromise };
 }

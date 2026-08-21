@@ -5,6 +5,7 @@ import type { Account, ConnectorAdapter, RawEntry, Source, SyncContext, SyncResu
 import { compactText } from "../shared/text";
 import { ReadingDatabase } from "./database";
 import { builtInManifest } from "./connector-registry";
+import { contentNormalizer } from "./content-normalizer";
 import { chromiumFetch } from "./network";
 import { SecretStore } from "./secrets";
 
@@ -200,28 +201,7 @@ export class XConnector implements ConnectorAdapter {
   }
 
   normalize(item: RawEntry, source: Source) {
-    const now = Date.now();
-    const identity = item.canonicalIdentity || `x:${item.externalId || item.url}`;
-    return {
-      id: randomUUID(),
-      sourceId: source.id,
-      canonicalUrl: item.url,
-      canonicalIdentity: identity,
-      url: item.url,
-      title: item.title,
-      author: item.author,
-      publishedAt: item.publishedAt,
-      summary: item.summary,
-      imageUrl: item.imageUrl,
-      contentHash: createHash("sha256").update(`${identity}\n${item.title}\n${item.summary || ""}`).digest("hex"),
-      read: false,
-      favorite: false,
-      createdAt: now,
-      observedAt: item.observedAt ?? now,
-      providerId: "x" as const,
-      providerLabel: "X",
-      externalId: item.externalId
-    };
+    return contentNormalizer.normalize(item, source, X_CONTENT_NORMALIZATION);
   }
 
   private async fetchFollowing(userId: string, accessToken: string): Promise<XUser[]> {
@@ -368,6 +348,17 @@ export class XConnector implements ConnectorAdapter {
     return payload;
   }
 }
+
+const X_CONTENT_NORMALIZATION = {
+  // X status URLs are the reader target and already contain the provider's
+  // stable post ID. Do not rewrite their route or attach generic tracking
+  // canonicalisation rules here.
+  canonicalizeUrl: (url: string) => url,
+  canonicalIdentity: (item: RawEntry) => item.canonicalIdentity || `x:${item.externalId || item.url}`,
+  hashMode: "identity" as const,
+  providerId: "x" as const,
+  providerLabel: "X"
+};
 
 function postToEntry(post: XPost, author: XUser): RawEntry | undefined {
   const text = compactText(post.text, 2_000);

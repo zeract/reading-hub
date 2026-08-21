@@ -1,4 +1,5 @@
 import type { RawEntry, Source, SyncResult } from "../shared/types";
+import { ContentMaintenance } from "./content-maintenance";
 import { ReadingDatabase } from "./database";
 import { ConnectorRegistry } from "./connector-registry";
 
@@ -34,7 +35,8 @@ export class SyncManager {
   constructor(
     private readonly db: ReadingDatabase,
     private readonly registry: ConnectorRegistry,
-    private readonly afterSuccessfulSync?: (source: Source, result: SyncResult) => Promise<void>
+    private readonly afterSuccessfulSync?: (source: Source, result: SyncResult) => Promise<void>,
+    private readonly maintenance?: ContentMaintenance
   ) {}
 
   start(): void {
@@ -59,27 +61,26 @@ export class SyncManager {
   }
 
   async syncSource(sourceId: string): Promise<{ inserted: number; source: Source }> {
-    const source = this.db.getSource(sourceId);
-    if (!source) throw new Error("来源不存在。");
-    return this.gate.run(source.url, async () => {
+    const queuedSource = this.db.getSource(sourceId);
+    if (!queuedSource) throw new Error("来源不存在。");
+    return this.gate.run(queuedSource.url, async () => {
+      const source = this.db.getSource(sourceId);
+      if (!source) throw new SyncCancelledError("来源已被删除，已取消此次同步。");
       try {
-        // Clean known taxonomy URLs from legacy rules even when the server replies
-        // 304 and there is no new body to parse.
+        // Historical content fixes are versioned and marker-gated. They run at
+        // most once per source instead of scanning all old cards on every poll.
+        this.maintenance?.prepareForSync(source);
         const connectorId = source.connectorId ?? source.kind;
-        if (connectorId === "generic") {
-          this.db.deleteTaxonomyEntries(source.id);
-          this.db.repairGenericHomepageEntryUrls(source);
-        }
-        if (connectorId === "rss") this.db.repairScourRedirectEntries(source.id);
         const subscription = this.db.getSubscriptionForSource(source.id);
         if (!subscription) throw new Error("来源订阅状态缺失，请删除后重新添加该来源。");
         const account = subscription.accountId ? this.db.getAccount(subscription.accountId) : undefined;
         const connector = this.registry.get(subscription.connectorId);
         if (connector.manifest.requiresAccount && !account) throw new Error(`${connector.manifest.displayName} 需要重新授权。`);
         const outcome = await connector.sync({ source, subscription, account, checkpoint: this.db.getCheckpoint(subscription.id) });
+        const currentSource = currentSourceForSync(this.db, source, subscription.connectorId);
         let effectiveSource = connectorId === "generic" && outcome.extractionRule
-          ? this.db.replaceAutomaticRule(source.id, outcome.extractionRule)
-          : source;
+          ? this.db.replaceAutomaticRule(currentSource.id, outcome.extractionRule)
+          : currentSource;
         if (outcome.metadataRevision !== undefined) {
           effectiveSource = this.db.updateMetadataRevision(effectiveSource.id, outcome.metadataRevision);
         }
@@ -89,19 +90,25 @@ export class SyncManager {
         // because a paginated Feed no longer returns them.
         if (!outcome.notModified) this.db.deleteNonContentFeedNavigationEntries(effectiveSource, Boolean(effectiveSource.extractionRule?.feedUrl));
         const inserted = outcome.notModified ? 0 : this.saveRawEntries(effectiveSource, outcome.entries);
-        if (connectorId === "rss") this.db.repairScourRedirectEntries(effectiveSource.id);
+        this.maintenance?.afterSuccessfulSync(effectiveSource);
         if (outcome.checkpoint) this.db.saveCheckpoint(subscription.id, outcome.checkpoint);
         const updated = this.db.markSuccess(effectiveSource, {
           etag: outcome.etag,
           lastModified: outcome.lastModified,
-          empty: connectorId === "generic" && !outcome.emptyIsHealthy && !outcome.notModified && outcome.entries.length === 0
+          empty: !outcome.emptyIsHealthy && !outcome.notModified && outcome.entries.length === 0
         });
         this.db.recordSyncEvent(source.id, updated.status === "needs_review" ? "warning" : "success", outcome.entries.length, inserted,
           updated.status === "needs_review" ? "来源需要复核提取规则" : undefined);
         await this.afterSuccessfulSync?.(updated, outcome);
         return { inserted, source: updated };
       } catch (error) {
-        const updated = this.db.markFailure(source, userSafeError(error));
+        if (error instanceof SyncCancelledError) throw error;
+        // Settings may have changed while a network request was in flight.
+        // Record a real transport/parser failure against the newest state,
+        // rather than reviving an older failure count or a deleted source.
+        const currentSource = this.db.getSource(source.id);
+        if (!currentSource) throw new SyncCancelledError("来源已被删除，已取消此次同步。");
+        const updated = this.db.markFailure(currentSource, userSafeError(error));
         throw new SyncFailure(updated.lastError || "同步失败");
       }
     });
@@ -132,6 +139,25 @@ export class SyncManager {
 }
 
 export class SyncFailure extends Error {}
+export class SyncCancelledError extends Error {}
+
+function currentSourceForSync(database: ReadingDatabase, initial: Source, connectorId: string): Source {
+  const current = database.getSource(initial.id);
+  if (!current) throw new SyncCancelledError("来源已被删除，已取消此次同步。");
+  if (current.kind !== initial.kind || (current.connectorId ?? current.kind) !== connectorId) {
+    throw new SyncCancelledError("来源类型已更新，已取消旧的同步结果。");
+  }
+  // A calibration replaces the old cards and is an explicit user decision.
+  // Never reinsert an in-flight extraction based on the previous rule.
+  if (initial.kind === "generic" && !sameRule(current.extractionRule, initial.extractionRule)) {
+    throw new SyncCancelledError("提取规则已更新，已取消旧的同步结果。");
+  }
+  return current;
+}
+
+function sameRule(left: Source["extractionRule"], right: Source["extractionRule"]): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
 
 async function forEachWithConcurrency<T>(items: T[], limit: number, task: (item: T) => Promise<void>): Promise<void> {
   let nextIndex = 0;

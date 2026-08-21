@@ -1,6 +1,9 @@
 import { BrowserWindow, session } from "electron";
 import { assertPublicUrl } from "../shared/url";
-import type { RawEntry } from "../shared/types";
+import type { ConnectorAdapter, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
+import { builtInManifest } from "./connector-registry";
+import { contentNormalizer } from "./content-normalizer";
+import { awaitWithAbort, delayWithAbort, throwIfAborted } from "./cancellation";
 import { extractZhihuFollowPage } from "./zhihu-follow-parser";
 import { configureChromiumSession } from "./network";
 
@@ -11,7 +14,9 @@ const PARTITION = "persist:reading-hub-zhihu-follow";
  * Uses a dedicated Electron session. It never imports the user's browser cookies
  * and never sees a password; Zhihu renders its own user-facing login page.
  */
-export class ZhihuFollowConnector {
+export class ZhihuFollowConnector implements ConnectorAdapter {
+  readonly manifest = builtInManifest("zhihu_follow", "知乎关注动态", ["oauth"], ["www.zhihu.com"]);
+
   private loginWindow?: BrowserWindow;
   private onAuthenticated?: () => Promise<void>;
   private completing?: Promise<void>;
@@ -63,16 +68,39 @@ export class ZhihuFollowConnector {
     }
   }
 
+  async sync(_context: SyncContext): Promise<SyncResult> {
+    return { entries: await this.fetchEntries(), emptyIsHealthy: true };
+  }
+
+  normalize(item: RawEntry, source: Source) {
+    return contentNormalizer.normalize(item, source, { providerId: "zhihu_follow", providerLabel: "知乎" });
+  }
+
   /** Renders a followed Zhihu item in the same dedicated, user-authorized session. */
-  async renderArticle(rawUrl: string): Promise<string> {
+  async renderArticle(rawUrl: string, options?: { signal?: AbortSignal }): Promise<string> {
+    throwIfAborted(options?.signal);
     const url = assertPublicUrl(rawUrl).toString();
     if (!isZhihuUrl(url)) throw new Error("只能在知乎授权会话中打开知乎内容。");
-    const window = await this.createWindow(false);
+    const window = await this.createWindow(false, options?.signal);
+    if (options?.signal?.aborted) {
+      if (!window.isDestroyed()) window.destroy();
+      throwIfAborted(options.signal);
+    }
+    const stopAndDestroy = () => {
+      try {
+        if (!window.isDestroyed()) window.webContents.stop();
+      } catch {
+        // Ignore an already-destroyed offscreen window.
+      }
+      if (!window.isDestroyed()) window.destroy();
+    };
+    options?.signal?.addEventListener("abort", stopAndDestroy, { once: true });
     try {
-      await window.loadURL(url);
-      await new Promise((resolve) => setTimeout(resolve, 900));
-      return await window.webContents.executeJavaScript("document.documentElement.outerHTML", true) as string;
+      await awaitWithAbort(window.loadURL(url), options?.signal);
+      await delayWithAbort(900, options?.signal);
+      return await awaitWithAbort(window.webContents.executeJavaScript("document.documentElement.outerHTML", true) as Promise<string>, options?.signal);
     } finally {
+      options?.signal?.removeEventListener("abort", stopAndDestroy);
       if (!window.isDestroyed()) window.destroy();
     }
   }
@@ -84,11 +112,12 @@ export class ZhihuFollowConnector {
     });
   }
 
-  private async createWindow(show: boolean): Promise<BrowserWindow> {
+  private async createWindow(show: boolean, signal?: AbortSignal): Promise<BrowserWindow> {
     const isolatedSession = session.fromPartition(PARTITION);
     // The authorised session remains separate from Chrome and the app's normal
     // session, while retaining the user's explicit HTTP(S)_PROXY route.
-    await configureChromiumSession(isolatedSession);
+    await awaitWithAbort(configureChromiumSession(isolatedSession), signal);
+    throwIfAborted(signal);
     const window = new BrowserWindow({
       show,
       width: 960,

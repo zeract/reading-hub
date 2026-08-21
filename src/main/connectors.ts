@@ -1,59 +1,32 @@
-import { randomUUID } from "node:crypto";
 import { load } from "cheerio";
-import type { Connector, Entry, ExtractionRule, ProbeResult, RawEntry, Source } from "../shared/types";
+import type { ConnectorAdapter, Entry, ExtractionRule, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
 import { canonicalizeContentUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
-import { contentHash } from "./content-hash";
+import { contentNormalizer } from "./content-normalizer";
 import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage, extractPagePublishedAt, extractPublicationDateFromUrl, withPublicationDateRevision } from "./extractor";
 import { discoverFeedUrls, FEED_DISCOVERY_REVISION, looksLikeFeed, parseFeed, RSS_METADATA_REVISION } from "./feed";
 import { PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
-import { SourceProbe } from "./source-probe";
+import { builtInManifest } from "./connector-registry";
 
-export interface FetchOutcome {
-  entries: RawEntry[];
-  notModified: boolean;
-  etag?: string;
-  lastModified?: string;
-  extractionRule?: ExtractionRule;
-  metadataRevision?: number;
-  iconUrl?: string;
-}
+/** RSS and public-web fetchers return the same host-owned sync contract. */
+export type FetchOutcome = Pick<
+  SyncResult,
+  "entries" | "notModified" | "emptyIsHealthy" | "etag" | "lastModified" | "extractionRule" | "metadataRevision" | "iconUrl"
+>;
 
-abstract class BaseConnector implements Connector {
-  constructor(protected readonly http: PublicHttpClient, protected readonly probeService: SourceProbe) {}
-
-  abstract probe(url: string): Promise<ProbeResult>;
-  abstract fetch(source: Source): Promise<RawEntry[]>;
+abstract class BaseConnector {
+  constructor(protected readonly http: PublicHttpClient) {}
 
   normalize(item: RawEntry, source: Source): Entry {
-    const canonicalUrl = canonicalizeContentUrl(item.url);
-    const now = Date.now();
-    return {
-      ...item,
-      id: randomUUID(),
-      sourceId: source.id,
-      canonicalUrl,
-      canonicalIdentity: item.canonicalIdentity ?? canonicalUrl,
-      contentHash: contentHash(item),
-      read: false,
-      favorite: false,
-      createdAt: now,
-      observedAt: item.observedAt ?? now,
-      providerId: item.providerId ?? source.connectorId ?? source.kind,
-      providerLabel: item.providerLabel
-    };
+    return contentNormalizer.normalize(item, source);
   }
 }
 
-export class RssConnector extends BaseConnector {
-  async probe(url: string): Promise<ProbeResult> {
-    const result = await this.probeService.probe(url);
-    if (result.kind !== "rss") throw new Error("该地址没有发现可用 Feed。");
-    return result;
-  }
+export class RssConnector extends BaseConnector implements ConnectorAdapter {
+  readonly manifest = builtInManifest("rss", "RSS / Atom / JSON Feed", ["public-http"], []);
 
-  async fetch(source: Source): Promise<RawEntry[]> {
-    return (await this.fetchWithMetadata(source)).entries;
+  sync(context: SyncContext): Promise<SyncResult> {
+    return this.fetchWithMetadata(context.source);
   }
 
   async fetchWithMetadata(source: Source): Promise<FetchOutcome> {
@@ -67,11 +40,12 @@ export class RssConnector extends BaseConnector {
       needsMetadataReplay ? undefined : { etag: source.etag, lastModified: source.lastModified },
       allowTrustedLoopbackFeed ? { allowTrustedLoopbackFeed: true } : undefined
     );
-    if (response.status === 304) return { entries: [], notModified: true };
+    if (response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true };
     const feed = await parseFeed(response.text, response.url);
     return {
       entries: feed.entries,
       notModified: false,
+      emptyIsHealthy: true,
       etag: response.etag,
       lastModified: response.lastModified,
       metadataRevision: RSS_METADATA_REVISION,
@@ -80,15 +54,11 @@ export class RssConnector extends BaseConnector {
   }
 }
 
-export class GenericConnector extends BaseConnector {
-  constructor(http: PublicHttpClient, probeService: SourceProbe, private readonly renderer?: PageRenderer) {
-    super(http, probeService);
-  }
+export class GenericConnector extends BaseConnector implements ConnectorAdapter {
+  readonly manifest = builtInManifest("generic", "公开网页", ["public-http"], []);
 
-  async probe(url: string): Promise<ProbeResult> {
-    const result = await this.probeService.probe(url);
-    if (result.kind !== "generic") throw new Error("该地址优先使用 Feed 或手动导入。");
-    return result;
+  constructor(http: PublicHttpClient, private readonly renderer?: PageRenderer) {
+    super(http);
   }
 
   /**
@@ -101,8 +71,8 @@ export class GenericConnector extends BaseConnector {
     return super.normalize(repairedUrl ? { ...item, url: repairedUrl, canonicalIdentity: repairedUrl } : item, source);
   }
 
-  async fetch(source: Source): Promise<RawEntry[]> {
-    return (await this.fetchWithMetadata(source)).entries;
+  sync(context: SyncContext): Promise<SyncResult> {
+    return this.fetchWithMetadata(context.source);
   }
 
   private genericHomepageMismatchTarget(item: RawEntry, source: Source): string | undefined {
@@ -132,7 +102,7 @@ export class GenericConnector extends BaseConnector {
     const response = source.extractionRule?.rendererRequired && this.renderer
       ? { url: source.url, text: await this.renderer.render(source.url) }
       : await this.http.getText(source.url, needsLegacyRuleAudit || needsPublicationDateAudit || needsFeedDiscoveryAudit ? undefined : { etag: source.etag, lastModified: source.lastModified });
-    if ("status" in response && response.status === 304) return { entries: [], notModified: true };
+    if ("status" in response && response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true };
 
     for (const feedUrl of discoverFeedUrls(response.text, response.url)) {
       try {
@@ -143,6 +113,7 @@ export class GenericConnector extends BaseConnector {
         return {
           entries: feed.entries,
           notModified: false,
+          emptyIsHealthy: true,
           etag: feedResponse.etag,
           lastModified: feedResponse.lastModified,
           metadataRevision: RSS_METADATA_REVISION,
@@ -160,6 +131,7 @@ export class GenericConnector extends BaseConnector {
     return {
       entries,
       notModified: false,
+      emptyIsHealthy: entries.length > 0,
       etag: "etag" in response ? response.etag : undefined,
       lastModified: "lastModified" in response ? response.lastModified : undefined,
       // A metadata-only rule is safe: it does not constrain item detection,
@@ -209,12 +181,13 @@ export class GenericConnector extends BaseConnector {
     // untouched indefinitely.
     const needsMetadataReplay = source.metadataRevision !== RSS_METADATA_REVISION;
     const response = await this.http.getText(feedUrl, needsMetadataReplay ? undefined : { etag: source.etag, lastModified: source.lastModified });
-    if (response.status === 304) return { entries: [], notModified: true };
+    if (response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true };
     if (!looksLikeFeed(response.contentType, response.text)) throw new Error("来源声明的 Feed 已不再是有效订阅，请重新校准该来源。");
     const feed = await parseFeed(response.text, response.url);
     return {
       entries: feed.entries,
       notModified: false,
+      emptyIsHealthy: true,
       etag: response.etag,
       lastModified: response.lastModified,
       metadataRevision: RSS_METADATA_REVISION,
@@ -231,8 +204,5 @@ function withFeedDiscoveryRevision(rule?: ExtractionRule): ExtractionRule {
 
 /** Manual sources are fetched only when first saved or when the user explicitly refreshes. */
 export class ManualConnector extends GenericConnector {
-  async probe(url: string): Promise<ProbeResult> {
-    const result = await this.probeService.probe(url);
-    return { ...result, kind: "manual", message: "仅保存此分享链接，不会自动轮询。" };
-  }
+  override readonly manifest = builtInManifest("manual", "分享链接", ["public-http"], []);
 }

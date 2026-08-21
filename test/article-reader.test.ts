@@ -446,6 +446,31 @@ describe("article reader extraction", () => {
     expect(article.contentHtml).toContain('class="katex"');
   });
 
+  it("propagates an audit cancellation to the active fetch and does not enter renderer fallback", async () => {
+    const controller = new AbortController();
+    let requestedSignal: AbortSignal | undefined;
+    let rendererCalled = false;
+    const http = {
+      getText: (_url: string, _cached?: unknown, options?: { signal?: AbortSignal }) => new Promise<never>((_resolve, reject) => {
+        requestedSignal = options?.signal;
+        options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+      })
+    } as unknown as PublicHttpClient;
+    const renderer: PageRenderer = {
+      render: async () => {
+        rendererCalled = true;
+        return "";
+      }
+    };
+
+    const reading = new ArticleReader(http, renderer).read(entry, undefined, { signal: controller.signal });
+    expect(requestedSignal).toBe(controller.signal);
+    controller.abort(new Error("审计已取消"));
+
+    await expect(reading).rejects.toThrow("审计已取消");
+    expect(rendererCalled).toBe(false);
+  });
+
   it("renders a feed-provided X summary locally when the original page is blocked by robots", async () => {
     const http = {
       getText: async () => { throw new RobotsDisallowedError(); }

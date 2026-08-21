@@ -1,50 +1,53 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { AiProviderConfiguration, AiProviderId, AiStreamEvent, AiStreamRequest, EntryListQuery, ExtractionRule, ProfileSubscriptionInput, SourceSettings, SubscriptionDraft } from "../shared/types";
+import { IPC_CHANNELS, type ReaderApi } from "../shared/ipc";
+import type { AiStreamEvent } from "../shared/types";
 
-contextBridge.exposeInMainWorld("reader", {
-  previewSource: (url: string) => ipcRenderer.invoke("source:preview", url),
-  confirmSource: (token: string) => ipcRenderer.invoke("source:confirm", token),
-  importOpml: () => ipcRenderer.invoke("source:import-opml"),
-  listSources: () => ipcRenderer.invoke("source:list"),
-  deleteSource: (id: string) => ipcRenderer.invoke("source:delete", id),
-  refreshSource: (id: string) => ipcRenderer.invoke("source:refresh", id),
-  updateSourceSettings: (id: string, settings: SourceSettings) => ipcRenderer.invoke("source:update-settings", id, settings),
-  updateRule: (id: string, rule: ExtractionRule) => ipcRenderer.invoke("source:update-rule", id, rule),
-  calibrateSource: (id: string) => ipcRenderer.invoke("source:calibration", id),
-  subscribeXiaohongshuProfile: (input: ProfileSubscriptionInput) => ipcRenderer.invoke("xiaohongshu:subscribe-profile", input),
-  listEntries: (query?: EntryListQuery) => ipcRenderer.invoke("entry:list", query),
-  getLibraryCounts: () => ipcRenderer.invoke("entry:counts"),
-  readEntry: (id: string) => ipcRenderer.invoke("entry:read-content", id),
-  openEmbeddedEntry: (id: string) => ipcRenderer.invoke("entry:open-embedded", id),
-  loadArticleImage: (id: string, imageUrl: string) => ipcRenderer.invoke("entry:load-image", id, imageUrl),
-  loadSourceIcon: (id: string) => ipcRenderer.invoke("source:load-icon", id),
-  markRead: (id: string, read: boolean) => ipcRenderer.invoke("entry:read", id, read),
-  markFavorite: (id: string, favorite: boolean) => ipcRenderer.invoke("entry:favorite", id, favorite),
-  dismissEntry: (id: string) => ipcRenderer.invoke("entry:dismiss", id),
-  listAiProviders: () => ipcRenderer.invoke("ai:list-providers"),
-  configureAiProvider: (configuration: AiProviderConfiguration) => ipcRenderer.invoke("ai:configure", configuration),
-  clearAiProvider: (provider: AiProviderId) => ipcRenderer.invoke("ai:clear-provider", provider),
-  startAiStream: (request: AiStreamRequest) => ipcRenderer.invoke("ai:ask-stream", request),
+const readerApi: ReaderApi = {
+  previewSource: (url) => ipcRenderer.invoke(IPC_CHANNELS.source.preview, url),
+  confirmSource: (token) => ipcRenderer.invoke(IPC_CHANNELS.source.confirm, token),
+  importOpml: () => ipcRenderer.invoke(IPC_CHANNELS.source.importOpml),
+  listSources: () => ipcRenderer.invoke(IPC_CHANNELS.source.list),
+  deleteSource: (id) => ipcRenderer.invoke(IPC_CHANNELS.source.remove, id),
+  refreshSource: (id) => ipcRenderer.invoke(IPC_CHANNELS.source.refresh, id),
+  updateSourceSettings: (id, settings) => ipcRenderer.invoke(IPC_CHANNELS.source.updateSettings, id, settings),
+  updateRule: (id, rule) => ipcRenderer.invoke(IPC_CHANNELS.source.updateRule, id, rule),
+  calibrateSource: (id) => ipcRenderer.invoke(IPC_CHANNELS.source.calibration, id),
+  subscribeXiaohongshuProfile: (input) => ipcRenderer.invoke(IPC_CHANNELS.xiaohongshu.subscribeProfile, input),
+  listEntries: (query) => ipcRenderer.invoke(IPC_CHANNELS.entry.list, query),
+  getLibraryCounts: () => ipcRenderer.invoke(IPC_CHANNELS.entry.counts),
+  readEntry: (id) => ipcRenderer.invoke(IPC_CHANNELS.entry.readContent, id),
+  openEmbeddedEntry: (id) => ipcRenderer.invoke(IPC_CHANNELS.entry.openEmbedded, id),
+  loadArticleImage: (id, imageUrl) => ipcRenderer.invoke(IPC_CHANNELS.entry.loadImage, id, imageUrl),
+  loadSourceIcon: (id) => ipcRenderer.invoke(IPC_CHANNELS.source.loadIcon, id),
+  markRead: (id, read) => ipcRenderer.invoke(IPC_CHANNELS.entry.markRead, id, read),
+  markFavorite: (id, favorite) => ipcRenderer.invoke(IPC_CHANNELS.entry.markFavorite, id, favorite),
+  dismissEntry: (id) => ipcRenderer.invoke(IPC_CHANNELS.entry.dismiss, id),
+  listAiProviders: () => ipcRenderer.invoke(IPC_CHANNELS.ai.listProviders),
+  configureAiProvider: (configuration) => ipcRenderer.invoke(IPC_CHANNELS.ai.configure, configuration),
+  clearAiProvider: (provider) => ipcRenderer.invoke(IPC_CHANNELS.ai.clearProvider, provider),
+  startAiStream: (request) => ipcRenderer.invoke(IPC_CHANNELS.ai.askStream, request),
   onAiStream: (listener: (event: AiStreamEvent) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) => {
       if (isAiStreamEvent(value)) listener(value);
     };
-    ipcRenderer.on("ai:stream", receive);
-    return () => ipcRenderer.removeListener("ai:stream", receive);
+    ipcRenderer.on(IPC_CHANNELS.ai.streamEvent, receive);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.ai.streamEvent, receive);
   },
-  isWindowFullscreen: () => ipcRenderer.invoke("window:is-fullscreen"),
+  isWindowFullscreen: () => ipcRenderer.invoke(IPC_CHANNELS.window.isFullscreen),
   onWindowFullscreenChange: (listener: (fullscreen: boolean) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, fullscreen: unknown) => listener(Boolean(fullscreen));
-    ipcRenderer.on("window:fullscreen-changed", receive);
-    return () => ipcRenderer.removeListener("window:fullscreen-changed", receive);
+    ipcRenderer.on(IPC_CHANNELS.window.fullscreenChanged, receive);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.window.fullscreenChanged, receive);
   },
-  openExternal: (url: string) => ipcRenderer.invoke("app:open-external", url),
-  connectZhihu: (accessSecret: string) => ipcRenderer.invoke("zhihu:connect", accessSecret),
-  connectZhihuFollow: () => ipcRenderer.invoke("zhihu:follow-login"),
-  connectX: (clientId: string) => ipcRenderer.invoke("x:connect", clientId),
-  searchAcademicAuthors: (query: string) => ipcRenderer.invoke("academic:search", query),
-  subscribeAcademicAuthor: (draft: SubscriptionDraft) => ipcRenderer.invoke("academic:subscribe", draft)
-});
+  openExternal: (url) => ipcRenderer.invoke(IPC_CHANNELS.app.openExternal, url),
+  connectZhihu: (accessSecret) => ipcRenderer.invoke(IPC_CHANNELS.zhihu.connect, accessSecret),
+  connectZhihuFollow: () => ipcRenderer.invoke(IPC_CHANNELS.zhihu.followLogin),
+  connectX: (clientId) => ipcRenderer.invoke(IPC_CHANNELS.x.connect, clientId),
+  searchAcademicAuthors: (query) => ipcRenderer.invoke(IPC_CHANNELS.academic.search, query),
+  subscribeAcademicAuthor: (draft) => ipcRenderer.invoke(IPC_CHANNELS.academic.subscribe, draft)
+};
+
+contextBridge.exposeInMainWorld("reader", readerApi);
 
 function isAiStreamEvent(value: unknown): value is AiStreamEvent {
   if (!value || typeof value !== "object") return false;

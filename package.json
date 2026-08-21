@@ -6,7 +6,9 @@
   "main": "dist/main/main/index.js",
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "build": "vite build && tsc -p tsconfig.main.json",
+    "typecheck:renderer": "tsc -p tsconfig.json",
+    "typecheck:main": "tsc -p tsconfig.main.json",
+    "build": "npm run typecheck:renderer && npm run typecheck:main && vite build",
     "start": "electron .",
     "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron node_modules/vitest/vitest.mjs run --config vitest.config.ts",
     "audit:reader": "npm run build && cross-env READING_HUB_READER_AUDIT=1 node node_modules/electron/cli.js .",

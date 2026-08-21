@@ -1,7 +1,6 @@
-import { randomUUID } from "node:crypto";
 import { compactText, parsePublishedAt } from "../shared/text";
 import { canonicalizeUrl, toAbsoluteUrl } from "../shared/url";
-import { contentHash } from "./content-hash";
+import { contentNormalizer } from "./content-normalizer";
 import type { ConnectorAdapter, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
 import { builtInManifest } from "./connector-registry";
 import { PublicHttpClient } from "./http";
@@ -44,24 +43,15 @@ export class XiaohongshuConnector implements ConnectorAdapter {
   }
 
   normalize(item: RawEntry, source: Source) {
-    const canonicalUrl = canonicalizeUrl(item.url);
-    const now = Date.now();
-    return {
-      ...item,
-      id: randomUUID(),
-      sourceId: source.id,
-      canonicalUrl,
-      canonicalIdentity: item.canonicalIdentity ?? canonicalUrl,
-      contentHash: contentHash(item),
-      read: false,
-      favorite: false,
-      createdAt: now,
-      observedAt: item.observedAt ?? now,
-      providerId: "xiaohongshu" as const,
-      providerLabel: "小红书"
-    };
+    return contentNormalizer.normalize(item, source, XIAOHONGSHU_CONTENT_NORMALIZATION);
   }
 }
+
+const XIAOHONGSHU_CONTENT_NORMALIZATION = {
+  canonicalizeUrl,
+  providerId: "xiaohongshu" as const,
+  providerLabel: "小红书"
+};
 
 /** Exported for deterministic fixtures; it never executes page JavaScript. */
 export function extractPublicXiaohongshuNotes(html: string, pageUrl: string): RawEntry[] {
