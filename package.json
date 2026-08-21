@@ -13,6 +13,7 @@
     "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron node_modules/vitest/vitest.mjs run --config vitest.config.ts",
     "audit:reader": "npm run build && cross-env READING_HUB_READER_AUDIT=1 node node_modules/electron/cli.js .",
     "audit:sources": "npm run build && node node_modules/electron/cli.js scripts/source-audit-app",
+    "audit:renderer": "npm run build && electron scripts/renderer-smoke-app",
     "refresh:generic": "npm run build && node node_modules/electron/cli.js scripts/source-refresh-app",
     "audit:style": "node scripts/style-contract.mjs",
     "audit:visual": "npm run build && electron scripts/visual-audit-app",

@@ -1,6 +1,53 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { IPC_CHANNELS, type ReaderApi } from "../shared/ipc";
+import type { IPC_CHANNELS as SharedIpcChannels, ReaderApi } from "../shared/ipc";
 import type { AiStreamEvent } from "../shared/types";
+
+// Sandboxed Electron preloads may only require Electron's approved built-ins.
+// In particular, a compiled `require("../shared/ipc")` aborts before this
+// bridge is exposed and leaves the renderer with a blank window. Keep the
+// channel values in this self-contained preload bundle, while `satisfies`
+// makes TypeScript reject any divergence from the shared main/renderer
+// contract at build time. Both imports above are type-only and are erased.
+const IPC_CHANNELS = {
+  source: {
+    preview: "source:preview",
+    confirm: "source:confirm",
+    importOpml: "source:import-opml",
+    list: "source:list",
+    remove: "source:delete",
+    refresh: "source:refresh",
+    updateSettings: "source:update-settings",
+    updateRule: "source:update-rule",
+    calibration: "source:calibration",
+    loadIcon: "source:load-icon"
+  },
+  entry: {
+    list: "entry:list",
+    counts: "entry:counts",
+    readContent: "entry:read-content",
+    openEmbedded: "entry:open-embedded",
+    loadImage: "entry:load-image",
+    markRead: "entry:read",
+    markFavorite: "entry:favorite",
+    dismiss: "entry:dismiss"
+  },
+  ai: {
+    listProviders: "ai:list-providers",
+    configure: "ai:configure",
+    clearProvider: "ai:clear-provider",
+    askStream: "ai:ask-stream",
+    streamEvent: "ai:stream"
+  },
+  window: {
+    isFullscreen: "window:is-fullscreen",
+    fullscreenChanged: "window:fullscreen-changed"
+  },
+  app: { openExternal: "app:open-external" },
+  zhihu: { connect: "zhihu:connect", followLogin: "zhihu:follow-login" },
+  x: { connect: "x:connect" },
+  xiaohongshu: { subscribeProfile: "xiaohongshu:subscribe-profile" },
+  academic: { search: "academic:search", subscribe: "academic:subscribe" }
+} as const satisfies typeof SharedIpcChannels;
 
 const readerApi: ReaderApi = {
   previewSource: (url) => ipcRenderer.invoke(IPC_CHANNELS.source.preview, url),
