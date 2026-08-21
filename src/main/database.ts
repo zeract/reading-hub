@@ -16,6 +16,7 @@ import type {
   Subscription,
   SyncCheckpoint
 } from "../shared/types";
+import { isZhihuBusinessPromotionUrl } from "../shared/url";
 
 type SourceRow = {
   id: string;
@@ -702,6 +703,14 @@ export class ReadingDatabase {
       original_url LIKE 'https://www.zhihu.com/pin/%' OR
       (original_url LIKE 'https://www.zhihu.com/question/%' AND original_url NOT LIKE '%/answer/%')
     )`).all(sourceId) as Array<{ id: string; source_id: string }>;
+    return this.removeEntriesForSourceOrigins(sourceId, matches);
+  }
+
+  /** Removes legacy sponsored Follow cards while retaining authored posts. */
+  deletePromotedZhihuFollowEntries(sourceId: string): number {
+    const candidates = this.db.prepare("SELECT id, source_id, original_url FROM entries WHERE source_id = ?")
+      .all(sourceId) as Array<{ id: string; source_id: string; original_url: string }>;
+    const matches = candidates.filter((entry) => isZhihuBusinessPromotionUrl(entry.original_url));
     return this.removeEntriesForSourceOrigins(sourceId, matches);
   }
 

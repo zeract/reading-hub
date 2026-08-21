@@ -79,4 +79,15 @@ describe("Zhihu Follow feed parser", () => {
     );
     expect(entries[0].publishedAt).toBe(new Date(2026, 7, 7, 11, 43).getTime());
   });
+
+  it("excludes Follow promotions while retaining ordinary authored columns", () => {
+    const entries = extractZhihuFollowPage(
+      `<section class="TopstoryItem"><h2><a href="https://zhuanlan.zhihu.com/p/123?spu=biz%3D0">推广文章</a></h2></section>
+       <section class="TopstoryItem"><h2><a href="https://zhuanlan.zhihu.com/p/456">作者发布的专栏</a></h2><p>足够长的正常文章摘要，用于确认推广过滤不会影响真实内容。</p></section>`,
+      "https://www.zhihu.com/follow"
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0].url).toBe("https://zhuanlan.zhihu.com/p/456");
+  });
+
 });

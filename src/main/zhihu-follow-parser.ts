@@ -1,6 +1,6 @@
 import { load } from "cheerio";
 import { compactText, parsePublishedAt } from "../shared/text";
-import { toAbsoluteUrl } from "../shared/url";
+import { isZhihuBusinessPromotionUrl, toAbsoluteUrl } from "../shared/url";
 import type { RawEntry } from "../shared/types";
 
 // The Follow timeline also contains "想法" (/pin/) and question activity.
@@ -29,7 +29,7 @@ export function extractZhihuFollowPage(html: string, pageUrl = "https://www.zhih
         const href = toAbsoluteUrl($(node).attr("href"), pageUrl);
         return { href, text: compactText($(node).text(), 240) };
       })
-      .filter((link): link is { href: string; text: string | undefined } => Boolean(link.href && isZhihuContentUrl(link.href)));
+      .filter((link): link is { href: string; text: string | undefined } => Boolean(link.href && isZhihuContentUrl(link.href) && !isZhihuBusinessPromotionUrl(link.href)));
     if (!contentLinks.length) continue;
     contentLinks.sort((left, right) => linkScore(right) - linkScore(left));
     const contentLink = contentLinks[0];

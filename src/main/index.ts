@@ -225,6 +225,11 @@ async function bootstrap(): Promise<void> {
   const inAppArticleViewer = new InAppArticleViewer();
   let zhihuSecondarySync: Promise<void> | undefined;
   const afterSync = async (source: Source, _result: SyncResult): Promise<void> => {
+    if (source.kind === "zhihu_follow") {
+      database.deleteUnsupportedZhihuFollowEntries(source.id);
+      database.deletePromotedZhihuFollowEntries(source.id);
+      return;
+    }
     if ((source.connectorId ?? source.kind) !== "zhihu" || zhihuSecondarySync) return;
     zhihuSecondarySync = (async () => {
       const [collections, followees] = await Promise.allSettled([zhihu.fetchRecentCollections(), zhihu.fetchFollowees()]);
@@ -243,7 +248,10 @@ async function bootstrap(): Promise<void> {
   // narrowed to authored posts. Remove only those known legacy activities on
   // startup; ordinary answers and columns stay untouched.
   for (const source of database.listSources()) {
-    if (source.kind === "zhihu_follow") database.deleteUnsupportedZhihuFollowEntries(source.id);
+    if (source.kind === "zhihu_follow") {
+      database.deleteUnsupportedZhihuFollowEntries(source.id);
+      database.deletePromotedZhihuFollowEntries(source.id);
+    }
   }
   zhihuFollow.setOnAuthenticated(async () => {
     const source = sources.ensureZhihuFollowSource();

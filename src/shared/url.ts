@@ -67,6 +67,21 @@ export function canonicalizeUrl(rawUrl: string): string {
   return url.toString();
 }
 
+/**
+ * Zhihu uses `spu=biz=…` on promoted cards in its Follow timeline. Those are
+ * campaign referrals, rather than posts published by a followed author.
+ */
+export function isZhihuBusinessPromotionUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    const host = url.hostname.toLowerCase();
+    if (host !== "www.zhihu.com" && host !== "zhuanlan.zhihu.com") return false;
+    return (url.searchParams.get("spu") ?? "").trim().toLowerCase().startsWith("biz=");
+  } catch {
+    return false;
+  }
+}
+
 export function contentHash(entry: { title: string; summary?: string; publishedAt?: number }): string {
   return createHash("sha256")
     .update(`${entry.title.trim()}\u0000${entry.publishedAt ?? ""}\u0000${entry.summary?.trim() ?? ""}`)

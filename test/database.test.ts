@@ -95,6 +95,19 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("removes legacy sponsored Zhihu Follow cards while retaining authored posts", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://www.zhihu.com/follow", title: "知乎关注动态", kind: "zhihu_follow", pollingEnabled: true });
+    db.saveEntries([
+      entry(source.id, "推广活动", { canonicalUrl: "https://zhuanlan.zhihu.com/p/1?spu=biz%3D0", url: "https://zhuanlan.zhihu.com/p/1?spu=biz%3D0" }),
+      entry(source.id, "作者专栏", { canonicalUrl: "https://zhuanlan.zhihu.com/p/2", url: "https://zhuanlan.zhihu.com/p/2" })
+    ]);
+
+    expect(db.deletePromotedZhihuFollowEntries(source.id)).toBe(1);
+    expect(db.listEntries(source.id).map((item) => item.title)).toEqual(["作者专栏"]);
+    db.close();
+  });
+
   it("pauses a generic source for review after three empty extractions", () => {
     const db = new ReadingDatabase(":memory:");
     let source = db.createSource({ url: "https://example.com/list", title: "Example", kind: "generic", pollingEnabled: true });
