@@ -66,7 +66,11 @@ export class SyncManager {
         // Clean known taxonomy URLs from legacy rules even when the server replies
         // 304 and there is no new body to parse.
         const connectorId = source.connectorId ?? source.kind;
-        if (connectorId === "generic") this.db.deleteTaxonomyEntries(source.id);
+        if (connectorId === "generic") {
+          this.db.deleteTaxonomyEntries(source.id);
+          this.db.repairGenericHomepageEntryUrls(source);
+        }
+        if (connectorId === "rss") this.db.repairScourRedirectEntries(source.id);
         const subscription = this.db.getSubscriptionForSource(source.id);
         if (!subscription) throw new Error("来源订阅状态缺失，请删除后重新添加该来源。");
         const account = subscription.accountId ? this.db.getAccount(subscription.accountId) : undefined;
@@ -84,6 +88,7 @@ export class SyncManager {
         // because a paginated Feed no longer returns them.
         if (!outcome.notModified) this.db.deleteNonContentFeedNavigationEntries(effectiveSource, Boolean(effectiveSource.extractionRule?.feedUrl));
         const inserted = outcome.notModified ? 0 : this.saveRawEntries(effectiveSource, outcome.entries);
+        if (connectorId === "rss") this.db.repairScourRedirectEntries(effectiveSource.id);
         if (outcome.checkpoint) this.db.saveCheckpoint(subscription.id, outcome.checkpoint);
         const updated = this.db.markSuccess(effectiveSource, {
           etag: outcome.etag,

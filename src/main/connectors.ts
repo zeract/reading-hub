@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { load } from "cheerio";
 import type { Connector, Entry, ExtractionRule, ProbeResult, RawEntry, Source } from "../shared/types";
-import { canonicalizeUrl, contentHash, isTrustedLoopbackFeedUrl } from "../shared/url";
+import { canonicalizeContentUrl, contentHash, isTrustedLoopbackFeedUrl } from "../shared/url";
 import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage, extractPagePublishedAt, extractPublicationDateFromUrl, withPublicationDateRevision } from "./extractor";
 import { discoverFeedUrls, FEED_DISCOVERY_REVISION, looksLikeFeed, parseFeed, RSS_METADATA_REVISION } from "./feed";
 import { PublicHttpClient } from "./http";
@@ -24,7 +24,7 @@ abstract class BaseConnector implements Connector {
   abstract fetch(source: Source): Promise<RawEntry[]>;
 
   normalize(item: RawEntry, source: Source): Entry {
-    const canonicalUrl = canonicalizeUrl(item.url);
+    const canonicalUrl = canonicalizeContentUrl(item.url);
     const now = Date.now();
     return {
       ...item,
@@ -87,8 +87,32 @@ export class GenericConnector extends BaseConnector {
     return result;
   }
 
+  /**
+   * A legacy structural rule can retain the source-home link as `url` while
+   * extraction has already recovered the post permalink as a canonical
+   * identity. Prefer that URL only for a generic, same-site homepage mismatch.
+   */
+  override normalize(item: RawEntry, source: Source): Entry {
+    const repairedUrl = this.genericHomepageMismatchTarget(item, source);
+    return super.normalize(repairedUrl ? { ...item, url: repairedUrl, canonicalIdentity: repairedUrl } : item, source);
+  }
+
   async fetch(source: Source): Promise<RawEntry[]> {
     return (await this.fetchWithMetadata(source)).entries;
+  }
+
+  private genericHomepageMismatchTarget(item: RawEntry, source: Source): string | undefined {
+    if (source.kind !== "generic" || !item.canonicalIdentity) return undefined;
+    try {
+      const sourceUrl = new URL(canonicalizeContentUrl(source.url));
+      const itemUrl = new URL(canonicalizeContentUrl(item.url));
+      const identityUrl = new URL(canonicalizeContentUrl(item.canonicalIdentity));
+      if (itemUrl.toString() !== sourceUrl.toString()) return undefined;
+      if (identityUrl.origin !== sourceUrl.origin || identityUrl.toString() === sourceUrl.toString()) return undefined;
+      return identityUrl.toString();
+    } catch {
+      return undefined;
+    }
   }
 
   async fetchWithMetadata(source: Source): Promise<FetchOutcome> {

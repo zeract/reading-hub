@@ -5,6 +5,24 @@ import { FEED_DISCOVERY_REVISION, RSS_METADATA_REVISION } from "../src/main/feed
 import type { Source } from "../src/shared/types";
 
 describe("GenericConnector", () => {
+  it("uses a same-site article identity when a legacy rule returns the source homepage", () => {
+    const connector = new GenericConnector({} as any, {} as any);
+    const source: Source = {
+      id: "source", url: "http://heavensheep.xyz/", title: "Example", kind: "generic", status: "active",
+      pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1
+    };
+    const normalised = connector.normalize({
+      url: source.url,
+      canonicalIdentity: "http://heavensheep.xyz/?p=577",
+      title: "Actual post"
+    }, source);
+    expect(normalised).toMatchObject({
+      url: "http://heavensheep.xyz/?p=577",
+      canonicalUrl: "http://heavensheep.xyz/?p=577",
+      canonicalIdentity: "http://heavensheep.xyz/?p=577"
+    });
+  });
+
   it("performs one unconditional refresh for a legacy automatic rule, then stamps its repair revision", async () => {
     let receivedOptions: unknown = "not-called";
     const http = {

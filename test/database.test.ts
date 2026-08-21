@@ -108,6 +108,66 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("merges legacy Scour redirect variants without losing read or favorite state", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://scour.ing/feed", title: "Scour", kind: "rss", pollingEnabled: true });
+    const base = "https://scour.ing/r/rss/https%3A%2F%2Fexample.com%2Fpost";
+    db.saveEntries([
+      entry(source.id, "Post", { canonicalUrl: `${base}?as=first`, url: `${base}?as=first`, canonicalIdentity: `${base}?as=first`, summary: "Short" }),
+      entry(source.id, "Post", { canonicalUrl: `${base}?ct=second`, url: `${base}?ct=second`, canonicalIdentity: `${base}?ct=second`, summary: "A longer summary retained after merge." })
+    ]);
+    const older = db.listEntries(source.id).find((item) => item.canonicalUrl.includes("as=first"))!;
+    db.markRead(older.id, true);
+    db.markFavorite(older.id, true);
+
+    expect(db.repairScourRedirectEntries(source.id)).toBe(2);
+    expect(db.listEntries(source.id)).toEqual([expect.objectContaining({
+      canonicalUrl: base,
+      canonicalIdentity: base,
+      read: true,
+      favorite: true,
+      summary: "A longer summary retained after merge."
+    })]);
+    db.close();
+  });
+
+  it("retains another source origin when a Scour redirect variant merges into an existing card", () => {
+    const db = new ReadingDatabase(":memory:");
+    const scour = db.createSource({ url: "https://scour.ing/feed", title: "Scour", kind: "rss", pollingEnabled: true });
+    const direct = db.createSource({ url: "https://example.com/feed", title: "Direct", kind: "rss", pollingEnabled: true });
+    const base = "https://scour.ing/r/rss/https%3A%2F%2Fexample.com%2Fpost";
+    db.saveEntries([
+      entry(scour.id, "Post", { canonicalUrl: `${base}?as=first`, url: `${base}?as=first`, canonicalIdentity: `${base}?as=first` }),
+      entry(direct.id, "Post", { canonicalUrl: base, url: base, canonicalIdentity: base })
+    ]);
+
+    db.repairScourRedirectEntries(scour.id);
+    expect(db.listEntries()).toEqual([expect.objectContaining({
+      canonicalUrl: base,
+      origins: expect.arrayContaining([
+        expect.objectContaining({ sourceId: scour.id }),
+        expect.objectContaining({ sourceId: direct.id })
+      ])
+    })]);
+    db.close();
+  });
+
+  it("repairs legacy generic cards whose URLs were saved as source-home variants", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "http://heavensheep.xyz/", title: "Heaven Sheep", kind: "generic", pollingEnabled: true });
+    db.saveEntries([
+      entry(source.id, "Post one", { canonicalUrl: "http://heavensheep.xyz/?legacy=1", url: source.url, canonicalIdentity: "http://heavensheep.xyz/?p=577" }),
+      entry(source.id, "Post two", { canonicalUrl: "http://heavensheep.xyz/?legacy=2", url: source.url, canonicalIdentity: "http://heavensheep.xyz/?p=576" })
+    ]);
+
+    expect(db.repairGenericHomepageEntryUrls(source)).toBe(2);
+    expect(db.listEntries(source.id).map((item) => item.canonicalUrl)).toEqual(expect.arrayContaining([
+      "http://heavensheep.xyz/?p=577",
+      "http://heavensheep.xyz/?p=576"
+    ]));
+    db.close();
+  });
+
   it("pauses a generic source for review after three empty extractions", () => {
     const db = new ReadingDatabase(":memory:");
     let source = db.createSource({ url: "https://example.com/list", title: "Example", kind: "generic", pollingEnabled: true });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { extractCalibrationCandidates, extractGenericPage, extractPagePublishedAt, extractPublicationDateFromUrl } from "../src/main/extractor";
 import { load } from "cheerio";
-import { assertPublicUrl, canonicalizeUrl } from "../src/shared/url";
+import { assertPublicUrl, canonicalizeContentUrl, canonicalizeUrl } from "../src/shared/url";
 
 describe("generic-page extractor", () => {
   it("detects repeated article cards and preserves metadata", () => {
@@ -202,6 +202,11 @@ describe("generic-page extractor", () => {
 describe("canonical URL", () => {
   it("removes tracking parameters but preserves content identity", () => {
     expect(canonicalizeUrl("https://Example.com/post/?utm_source=rss&keep=yes#section")).toBe("https://example.com/post?keep=yes");
+  });
+
+  it("uses the stable Scour RSS wrapper path while ignoring delivery parameters", () => {
+    expect(canonicalizeContentUrl("https://scour.ing/r/rss/https%3A%2F%2Fexample.com%2Fpost?as=delivery-state"))
+      .toBe("https://scour.ing/r/rss/https%3A%2F%2Fexample.com%2Fpost");
   });
 
   it("accepts public HTTP pages while still rejecting private network targets", () => {

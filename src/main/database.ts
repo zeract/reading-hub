@@ -16,7 +16,7 @@ import type {
   Subscription,
   SyncCheckpoint
 } from "../shared/types";
-import { isZhihuBusinessPromotionUrl } from "../shared/url";
+import { canonicalizeContentUrl, isScourRssRedirectUrl, isZhihuBusinessPromotionUrl } from "../shared/url";
 
 type SourceRow = {
   id: string;
@@ -104,6 +104,46 @@ function normaliseSourceCategory(value: string | undefined): string | undefined 
   if (!category) return undefined;
   if (category.length > 60) throw new Error("来源分类最多 60 个字符。");
   return category;
+}
+
+function choosePreferredEntry(entries: EntryRow[]): EntryRow {
+  return [...entries].sort((left, right) => entryQuality(right) - entryQuality(left))[0]!;
+}
+
+function entryQuality(entry: EntryRow): number {
+  return Number(Boolean(entry.is_favorite)) * 1_000_000
+    + Number(Boolean(entry.is_read)) * 100_000
+    + Number(Boolean(entry.published_at)) * 10_000
+    + (entry.summary?.length ?? 0) * 10
+    + Number(Boolean(entry.image_url)) * 100
+    + (entry.observed_at ?? entry.created_at);
+}
+
+function mergeEntryState(entries: EntryRow[], preferred: EntryRow): {
+  read: number;
+  favorite: number;
+  author: string | null;
+  publishedAt: number | null;
+  summary: string | null;
+  imageUrl: string | null;
+  createdAt: number;
+  observedAt: number;
+} {
+  const first = <T>(value: (entry: EntryRow) => T | null | undefined): T | null => entries.map(value).find((item): item is T => item !== null && item !== undefined) ?? null;
+  const longest = (value: (entry: EntryRow) => string | null): string | null => entries
+    .map(value)
+    .filter((item): item is string => Boolean(item))
+    .sort((left, right) => right.length - left.length)[0] ?? null;
+  return {
+    read: Number(entries.some((entry) => Boolean(entry.is_read))),
+    favorite: Number(entries.some((entry) => Boolean(entry.is_favorite))),
+    author: preferred.author ?? first((entry) => entry.author),
+    publishedAt: preferred.published_at ?? first((entry) => entry.published_at),
+    summary: longest((entry) => entry.summary),
+    imageUrl: preferred.image_url ?? first((entry) => entry.image_url),
+    createdAt: Math.min(...entries.map((entry) => entry.created_at)),
+    observedAt: Math.max(...entries.map((entry) => entry.observed_at ?? entry.created_at))
+  };
 }
 
 function sourceFromRow(row: SourceRow): Source {
@@ -712,6 +752,110 @@ export class ReadingDatabase {
       .all(sourceId) as Array<{ id: string; source_id: string; original_url: string }>;
     const matches = candidates.filter((entry) => isZhihuBusinessPromotionUrl(entry.original_url));
     return this.removeEntriesForSourceOrigins(sourceId, matches);
+  }
+
+  /**
+   * Older builds treated per-delivery Scour redirect parameters as part of a
+   * card URL. Merge only rows that resolve to the same RSS redirect wrapper;
+   * read/favorite state and every source origin survive the consolidation.
+   */
+  repairScourRedirectEntries(sourceId: string): number {
+    const sourceRows = this.db.prepare(`SELECT id, source_id, canonical_url, original_url, title, author, published_at, summary, image_url,
+      content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity
+      FROM entries WHERE source_id = ?`).all(sourceId) as EntryRow[];
+    const repairs = sourceRows.flatMap((row) => {
+      try {
+        if (!isScourRssRedirectUrl(row.canonical_url)) return [];
+        const canonicalUrl = canonicalizeContentUrl(row.canonical_url);
+        return canonicalUrl === row.canonical_url ? [] : [{ row, canonicalUrl }];
+      } catch {
+        return [];
+      }
+    });
+    if (!repairs.length) return 0;
+
+    const groups = new Map<string, EntryRow[]>();
+    for (const repair of repairs) {
+      const group = groups.get(repair.canonicalUrl) ?? [];
+      group.push(repair.row);
+      groups.set(repair.canonicalUrl, group);
+    }
+    const findByCanonicalUrl = this.db.prepare(`SELECT id, source_id, canonical_url, original_url, title, author, published_at, summary, image_url,
+      content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity
+      FROM entries WHERE canonical_url = ?`);
+    const originsForEntry = this.db.prepare(`SELECT source_id, provider_id, provider_label, external_id, original_url, observed_at
+      FROM entry_origins WHERE entry_id = ?`);
+    const insertOrigin = this.db.prepare(`INSERT OR IGNORE INTO entry_origins
+      (entry_id, source_id, provider_id, provider_label, external_id, original_url, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    const deleteOrigins = this.db.prepare("DELETE FROM entry_origins WHERE entry_id = ?");
+    const deleteEntry = this.db.prepare("DELETE FROM entries WHERE id = ?");
+    const updateWinner = this.db.prepare(`UPDATE entries SET canonical_url = ?, canonical_identity = ?,
+      is_read = ?, is_favorite = ?, author = ?, published_at = ?, summary = ?, image_url = ?, created_at = ?, observed_at = ? WHERE id = ?`);
+    const originOwner = this.db.prepare("SELECT source_id FROM entry_origins WHERE entry_id = ? ORDER BY observed_at ASC LIMIT 1");
+    const updateOwner = this.db.prepare("UPDATE entries SET source_id = ? WHERE id = ?");
+
+    this.db.transaction(() => {
+      for (const [canonicalUrl, candidates] of groups) {
+        const existing = findByCanonicalUrl.get(canonicalUrl) as EntryRow | undefined;
+        const rows = existing && !candidates.some((candidate) => candidate.id === existing.id)
+          ? [...candidates, existing]
+          : candidates;
+        const winner = choosePreferredEntry(rows);
+        const losers = rows.filter((row) => row.id !== winner.id);
+        for (const loser of losers) {
+          for (const origin of originsForEntry.all(loser.id) as Array<{ source_id: string; provider_id: string; provider_label: string | null; external_id: string; original_url: string; observed_at: number }>) {
+            insertOrigin.run(winner.id, origin.source_id, origin.provider_id, origin.provider_label, origin.external_id, origin.original_url, origin.observed_at);
+          }
+          deleteOrigins.run(loser.id);
+          deleteEntry.run(loser.id);
+        }
+        const state = mergeEntryState(rows, winner);
+        updateWinner.run(canonicalUrl, canonicalUrl, state.read, state.favorite, state.author, state.publishedAt, state.summary, state.imageUrl, state.createdAt, state.observedAt, winner.id);
+        const owner = originOwner.get(winner.id) as { source_id: string } | undefined;
+        if (owner) updateOwner.run(owner.source_id, winner.id);
+      }
+    })();
+    return repairs.length;
+  }
+
+  /** Repairs legacy generic cards whose article link was saved as the source homepage. */
+  repairGenericHomepageEntryUrls(source: Source): number {
+    if (source.kind !== "generic") return 0;
+    let sourceUrl: URL;
+    try {
+      sourceUrl = new URL(canonicalizeContentUrl(source.url));
+    } catch {
+      return 0;
+    }
+    const candidates = this.db.prepare(`SELECT id, canonical_url, canonical_identity FROM entries WHERE source_id = ?`)
+      .all(source.id) as Array<{ id: string; canonical_url: string; canonical_identity: string | null }>;
+    const updateEntry = this.db.prepare("UPDATE entries SET canonical_url = ?, original_url = ?, canonical_identity = ? WHERE id = ?");
+    const updateOrigin = this.db.prepare("UPDATE entry_origins SET original_url = ? WHERE entry_id = ? AND source_id = ?");
+    const exists = this.db.prepare("SELECT 1 FROM entries WHERE canonical_url = ? AND id != ?");
+    const usedCanonicalUrls = new Set<string>();
+    const repairs = candidates.flatMap((entry) => {
+      if (!entry.canonical_identity) return [];
+      try {
+        const cardUrl = new URL(entry.canonical_url);
+        const target = canonicalizeContentUrl(entry.canonical_identity);
+        const targetUrl = new URL(target);
+        const isSourceHomepage = cardUrl.origin === sourceUrl.origin && cardUrl.pathname === sourceUrl.pathname;
+        if (!isSourceHomepage || targetUrl.origin !== sourceUrl.origin || target === sourceUrl.toString() || usedCanonicalUrls.has(target)) return [];
+        if (exists.get(target, entry.id)) return [];
+        usedCanonicalUrls.add(target);
+        return [{ id: entry.id, target }];
+      } catch {
+        return [];
+      }
+    });
+    if (!repairs.length) return 0;
+    this.db.transaction(() => {
+      for (const repair of repairs) {
+        updateEntry.run(repair.target, repair.target, repair.target, repair.id);
+        updateOrigin.run(repair.target, repair.id, source.id);
+      }
+    })();
+    return repairs.length;
   }
 
   /**

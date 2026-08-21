@@ -248,6 +248,8 @@ async function bootstrap(): Promise<void> {
   // narrowed to authored posts. Remove only those known legacy activities on
   // startup; ordinary answers and columns stay untouched.
   for (const source of database.listSources()) {
+    if ((source.connectorId ?? source.kind) === "rss") database.repairScourRedirectEntries(source.id);
+    if ((source.connectorId ?? source.kind) === "generic") database.repairGenericHomepageEntryUrls(source);
     if (source.kind === "zhihu_follow") {
       database.deleteUnsupportedZhihuFollowEntries(source.id);
       database.deletePromotedZhihuFollowEntries(source.id);

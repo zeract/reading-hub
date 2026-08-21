@@ -68,6 +68,27 @@ export function canonicalizeUrl(rawUrl: string): string {
 }
 
 /**
+ * Canonicalises a URL used to identify a collected content item. Most URLs
+ * use the normal tracking-parameter policy. A Scour RSS item's
+ * `/r/rss/<encoded upstream URL>` path is its identity, while query
+ * parameters appended to that wrapper are per-delivery redirect state.
+ */
+export function canonicalizeContentUrl(rawUrl: string): string {
+  const url = new URL(canonicalizeUrl(rawUrl));
+  if (isScourRssRedirectUrl(url)) url.search = "";
+  return url.toString();
+}
+
+export function isScourRssRedirectUrl(rawUrl: URL | string): boolean {
+  try {
+    const url = typeof rawUrl === "string" ? new URL(rawUrl) : rawUrl;
+    return url.hostname.toLowerCase() === "scour.ing" && /^\/r\/rss\//.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Zhihu uses `spu=biz=…` on promoted cards in its Follow timeline. Those are
  * campaign referrals, rather than posts published by a followed author.
  */
