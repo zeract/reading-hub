@@ -67,4 +67,16 @@ describe("Zhihu Follow feed parser", () => {
     );
     expect(entries[0].publishedAt).toBe(1_723_689_000_000);
   });
+
+  it("reads a labelled plain-text publication time without scanning answer-body dates", () => {
+    const entries = extractZhihuFollowPage(
+      `<section class="TopstoryItem">
+        <h2><a href="/question/123/answer/790">带可见发布时间的回答</a></h2>
+        <span>发布于 2026年8月7日 11:43</span>
+        <p>这段正文提到 2025年1月1日，但它不是文章的发布时间。</p>
+      </section>`,
+      "https://www.zhihu.com/follow"
+    );
+    expect(entries[0].publishedAt).toBe(new Date(2026, 7, 7, 11, 43).getTime());
+  });
 });

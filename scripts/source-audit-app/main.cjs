@@ -31,8 +31,8 @@ function parseRule(value) {
   }
 }
 
-async function inspectFeed(http, parseFeed, looksLikeFeed, feedUrl) {
-  const response = await http.getText(feedUrl);
+async function inspectFeed(http, parseFeed, looksLikeFeed, feedUrl, allowTrustedLoopbackFeed = false) {
+  const response = await http.getText(feedUrl, undefined, allowTrustedLoopbackFeed ? { allowTrustedLoopbackFeed: true } : undefined);
   if (!looksLikeFeed(response.contentType, response.text)) throw new Error("候选地址不是有效 Feed");
   const feed = await parseFeed(response.text, response.url);
   const newestPublishedAt = feed.entries.reduce((latest, entry) => Math.max(latest, entry.publishedAt || 0), 0);
@@ -45,14 +45,16 @@ async function inspectFeed(http, parseFeed, looksLikeFeed, feedUrl) {
 
 async function inspectSource(http, dependencies, source) {
   const rule = parseRule(source.extraction_rule);
+  const config = parseRule(source.config_json);
   const configuredFeedUrl = typeof rule?.feedUrl === "string" ? rule.feedUrl : undefined;
+  const allowTrustedLoopbackFeed = config?.allowTrustedLoopbackFeed === true;
   try {
     if (source.kind === "rss") {
       return {
         source: source.title,
         kind: source.kind,
         status: "ok",
-        feed: await inspectFeed(http, dependencies.parseFeed, dependencies.looksLikeFeed, source.url)
+        feed: await inspectFeed(http, dependencies.parseFeed, dependencies.looksLikeFeed, source.url, allowTrustedLoopbackFeed)
       };
     }
 
@@ -61,7 +63,13 @@ async function inspectSource(http, dependencies, source) {
     const candidateErrors = [];
     for (const candidate of candidates) {
       try {
-        const feed = await inspectFeed(http, dependencies.parseFeed, dependencies.looksLikeFeed, candidate);
+        const feed = await inspectFeed(
+          http,
+          dependencies.parseFeed,
+          dependencies.looksLikeFeed,
+          candidate,
+          allowTrustedLoopbackFeed && candidate === configuredFeedUrl
+        );
         return {
           source: source.title,
           kind: source.kind,
@@ -94,7 +102,7 @@ async function run() {
 
   const database = new Database(sourceDatabasePath(), { readonly: true, fileMustExist: true });
   try {
-    const sources = database.prepare(`SELECT title, url, kind, extraction_rule
+    const sources = database.prepare(`SELECT title, url, kind, extraction_rule, config_json
       FROM sources WHERE kind IN ('rss', 'generic') AND polling_enabled = 1 ORDER BY title COLLATE NOCASE`).all();
     const http = new PublicHttpClient();
     const results = [];

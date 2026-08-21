@@ -726,6 +726,63 @@ export class ReadingDatabase {
     })();
   }
 
+  /**
+   * Removes only legacy cards that are demonstrably feed-navigation links:
+   * they have no publication time, body, summary or image and either point
+   * back to the subscription endpoint or carry a social-network label. This
+   * is deliberately narrower than pruning absent feed entries, since feeds
+   * routinely paginate historical articles.
+   */
+  deleteNonContentFeedNavigationEntries(source: Pick<Source, "id" | "url">, removeDeclaredFeedHomepage = false): number {
+    const candidates = this.db.prepare(`SELECT id, source_id, original_url, title, published_at, summary, image_url
+      FROM entries WHERE source_id = ? AND published_at IS NULL`).all(source.id) as Array<{
+      id: string;
+      source_id: string;
+      original_url: string;
+      title: string;
+      published_at: number | null;
+      summary: string | null;
+      image_url: string | null;
+    }>;
+    let sourceUrl: URL | undefined;
+    try {
+      sourceUrl = new URL(source.url);
+    } catch {
+      return 0;
+    }
+    const doomed = candidates.filter((entry) => {
+      try {
+        const url = new URL(entry.original_url);
+        const emptyMetadata = !entry.summary?.trim() && !entry.image_url?.trim();
+        if (url.origin === sourceUrl.origin && url.pathname === sourceUrl.pathname && url.search === sourceUrl.search) {
+          return removeDeclaredFeedHomepage || emptyMetadata;
+        }
+        if (!emptyMetadata) return false;
+        if (!/^(?:www\.)?(?:github|x|twitter|facebook|linkedin|instagram|youtube)\.com$/i.test(url.hostname)) return false;
+        return /^(?:github|x(?:\s*\(@[^)]+\))?|twitter|facebook|linkedin|instagram|youtube)$/i.test(entry.title);
+      } catch {
+        return false;
+      }
+    });
+    if (!doomed.length) return 0;
+    // Content can belong to more than one subscription.  Remove just this
+    // source's origin and promote another origin when needed, mirroring the
+    // source-deletion path rather than deleting shared content outright.
+    const alternate = this.db.prepare("SELECT source_id FROM entry_origins WHERE entry_id = ? AND source_id != ? ORDER BY observed_at ASC LIMIT 1");
+    const assign = this.db.prepare("UPDATE entries SET source_id = ? WHERE id = ?");
+    const removeOrigin = this.db.prepare("DELETE FROM entry_origins WHERE entry_id = ? AND source_id = ?");
+    const removeContent = this.db.prepare("DELETE FROM entries WHERE id = ? AND NOT EXISTS (SELECT 1 FROM entry_origins WHERE entry_origins.entry_id = entries.id)");
+    this.db.transaction((entries: typeof doomed) => {
+      for (const entry of entries) {
+        const fallback = alternate.get(entry.id, source.id) as { source_id: string } | undefined;
+        if (entry.source_id === source.id && fallback) assign.run(fallback.source_id, entry.id);
+        removeOrigin.run(entry.id, source.id);
+        removeContent.run(entry.id);
+      }
+    })(doomed);
+    return doomed.length;
+  }
+
   saveEntries(entries: Entry[]): number {
     const insert = this.db.prepare(`INSERT INTO entries (
       id, source_id, canonical_url, original_url, title, author, published_at, summary, image_url,

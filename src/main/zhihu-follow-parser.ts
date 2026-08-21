@@ -82,6 +82,16 @@ function extractPublishedAt($: ReturnType<typeof load>, root: any): number | und
     const timestamp = parseZhihuTimestamp(compactText($(node).text(), 120));
     if (timestamp) return timestamp;
   }
+
+  // Zhihu has also shipped timeline cards whose date is a plain span labelled
+  // “发布于”, without a time-related class or data attribute. Restrict the
+  // fallback to that explicit label so a date mentioned in the answer body is
+  // never mistaken for the post's publication time.
+  const labelledPublication = root.find("*").toArray().find((node: any) => /(?:发布|发表|创建|更新)(?:于|时间)?\s*20\d{2}[年./-]/.test(compactText($(node).text(), 120) || ""));
+  if (labelledPublication) {
+    const timestamp = parseZhihuTimestamp(compactText($(labelledPublication).text(), 120));
+    if (timestamp) return timestamp;
+  }
   return undefined;
 }
 
@@ -101,6 +111,11 @@ function parseZhihuTimestamp(value?: string): number | undefined {
   if (/^20\d{2}-\d{1,2}-\d{1,2}T/.test(value.trim())) {
     const iso = Date.parse(value);
     if (!Number.isNaN(iso)) return iso;
+  }
+  const chineseDateTime = value.match(/(20\d{2})年(\d{1,2})月(\d{1,2})日?(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (chineseDateTime) {
+    const date = new Date(Number(chineseDateTime[1]), Number(chineseDateTime[2]) - 1, Number(chineseDateTime[3]), Number(chineseDateTime[4] ?? 0), Number(chineseDateTime[5] ?? 0));
+    if (!Number.isNaN(date.getTime())) return date.getTime();
   }
   const direct = parsePublishedAt(value);
   if (direct) return direct;

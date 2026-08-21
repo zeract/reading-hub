@@ -10,4 +10,8 @@ describe("parsePublishedAt", () => {
     expect(parsePublishedAt("Sun, 04 Feb 2024 17:23:27 -0600")).toBe(Date.UTC(2024, 1, 4));
     expect(parsePublishedAt("Ubuntu 12.04")).toBeUndefined();
   });
+
+  it("parses a named list-card date even when markup concatenates the following title", () => {
+    expect(parsePublishedAt("Jul 29, 2026Securing Agents Across Client Endpoints")).toBe(Date.UTC(2026, 6, 29));
+  });
 });

@@ -1,0 +1,5 @@
+{
+  "name": "reading-hub-source-refresh",
+  "private": true,
+  "main": "main.cjs"
+}

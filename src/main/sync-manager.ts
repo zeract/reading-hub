@@ -79,6 +79,10 @@ export class SyncManager {
         if (outcome.metadataRevision !== undefined) {
           effectiveSource = this.db.updateMetadataRevision(effectiveSource.id, outcome.metadataRevision);
         }
+        // Filter a narrow class of legacy RSS navigation cards only after a
+        // successful response. We never delete ordinary entries merely
+        // because a paginated Feed no longer returns them.
+        if (!outcome.notModified) this.db.deleteNonContentFeedNavigationEntries(effectiveSource, Boolean(effectiveSource.extractionRule?.feedUrl));
         const inserted = outcome.notModified ? 0 : this.saveRawEntries(effectiveSource, outcome.entries);
         if (outcome.checkpoint) this.db.saveCheckpoint(subscription.id, outcome.checkpoint);
         const updated = this.db.markSuccess(effectiveSource, {

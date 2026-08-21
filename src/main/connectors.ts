@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { load } from "cheerio";
 import type { Connector, Entry, ExtractionRule, ProbeResult, RawEntry, Source } from "../shared/types";
 import { canonicalizeUrl, contentHash, isTrustedLoopbackFeedUrl } from "../shared/url";
-import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage, withPublicationDateRevision } from "./extractor";
+import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage, extractPagePublishedAt, extractPublicationDateFromUrl, withPublicationDateRevision } from "./extractor";
 import { discoverFeedUrls, FEED_DISCOVERY_REVISION, looksLikeFeed, parseFeed, RSS_METADATA_REVISION } from "./feed";
 import { PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
@@ -116,6 +117,7 @@ export class GenericConnector extends BaseConnector {
           notModified: false,
           etag: feedResponse.etag,
           lastModified: feedResponse.lastModified,
+          metadataRevision: RSS_METADATA_REVISION,
           extractionRule: withFeedDiscoveryRevision({ version: 1, ...source.extractionRule, feedUrl: feedResponse.url })
         };
       } catch {
@@ -125,8 +127,9 @@ export class GenericConnector extends BaseConnector {
     }
 
     const extraction = extractGenericPage(response.text, response.url, source.extractionRule);
+    const entries = await this.enrichPublicationDates(extraction.entries);
     return {
-      entries: extraction.entries,
+      entries,
       notModified: false,
       etag: "etag" in response ? response.etag : undefined,
       lastModified: "lastModified" in response ? response.lastModified : undefined,
@@ -136,8 +139,47 @@ export class GenericConnector extends BaseConnector {
     };
   }
 
+  /**
+   * Homepage cards frequently omit a machine-readable date even though the
+   * linked public article has one. Enrich only missing records, keeping the
+   * normal robots-aware HTTP policy and never persisting fetched page bodies.
+   */
+  private async enrichPublicationDates(entries: RawEntry[]): Promise<RawEntry[]> {
+    const missing = entries.filter((entry) => entry.publishedAt === undefined);
+    const dates = new Map<string, number>();
+    const unresolved: RawEntry[] = [];
+    for (const entry of missing) {
+      const date = extractPublicationDateFromUrl(entry.url);
+      if (date !== undefined) dates.set(entry.url, date);
+      else unresolved.push(entry);
+    }
+
+    // A page normally exposes only the recent archive. The cap bounds a
+    // manual refresh even when a site happens to present a very large list.
+    for (const entry of unresolved.slice(0, 32)) {
+      try {
+        const response = await this.http.getText(entry.url, undefined, { maxBytes: 1_500_000 });
+        const date = extractPagePublishedAt(load(response.text));
+        if (date !== undefined) dates.set(entry.url, date);
+      } catch {
+        // A missing date must not make a healthy source fail. The next normal
+        // refresh can retry while preserving the original entry.
+      }
+    }
+
+    return entries.map((entry) => {
+      const publishedAt = entry.publishedAt ?? dates.get(entry.url);
+      return publishedAt === undefined ? entry : { ...entry, publishedAt };
+    });
+  }
+
   private async fetchDeclaredFeed(source: Source, feedUrl: string): Promise<FetchOutcome> {
-    const response = await this.http.getText(feedUrl, { etag: source.etag, lastModified: source.lastModified });
+    // A generic source that later graduated to a Feed still needs the same
+    // one-time metadata replays as a direct RSS subscription. Otherwise an
+    // ETag 304 would leave legacy card fields (and filtered navigation links)
+    // untouched indefinitely.
+    const needsMetadataReplay = source.metadataRevision !== RSS_METADATA_REVISION;
+    const response = await this.http.getText(feedUrl, needsMetadataReplay ? undefined : { etag: source.etag, lastModified: source.lastModified });
     if (response.status === 304) return { entries: [], notModified: true };
     if (!looksLikeFeed(response.contentType, response.text)) throw new Error("来源声明的 Feed 已不再是有效订阅，请重新校准该来源。");
     const feed = await parseFeed(response.text, response.url);
@@ -146,6 +188,7 @@ export class GenericConnector extends BaseConnector {
       notModified: false,
       etag: response.etag,
       lastModified: response.lastModified,
+      metadataRevision: RSS_METADATA_REVISION,
       extractionRule: withFeedDiscoveryRevision({ version: 1, ...source.extractionRule, feedUrl: response.url })
     };
   }

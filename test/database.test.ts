@@ -39,6 +39,49 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("removes only empty legacy navigation cards from a refreshed Feed source", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://news.example/", title: "News", kind: "rss", pollingEnabled: true });
+    db.saveEntries([
+      entry(source.id, "News", { canonicalUrl: source.url, url: source.url }),
+      entry(source.id, "GitHub", { canonicalUrl: "https://github.com/example", url: "https://github.com/example" }),
+      entry(source.id, "Undated real post", { canonicalUrl: "https://news.example/posts/real", url: "https://news.example/posts/real" })
+    ]);
+
+    expect(db.deleteNonContentFeedNavigationEntries(source)).toBe(2);
+    expect(db.listEntries(source.id).map((item) => item.title)).toEqual(["Undated real post"]);
+    db.close();
+  });
+
+  it("removes a source homepage card with a site description only after the source declares a Feed", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://news.example/", title: "News", kind: "generic", pollingEnabled: true });
+    db.saveEntries([entry(source.id, "News | News", {
+      canonicalUrl: source.url,
+      url: source.url,
+      summary: "A site description rather than an individual article."
+    })]);
+
+    expect(db.deleteNonContentFeedNavigationEntries(source)).toBe(0);
+    expect(db.deleteNonContentFeedNavigationEntries(source, true)).toBe(1);
+    db.close();
+  });
+
+  it("removes only the current source origin when pruning a shared Feed navigation card", () => {
+    const db = new ReadingDatabase(":memory:");
+    const first = db.createSource({ url: "https://news.example/", title: "News", kind: "rss", pollingEnabled: true });
+    const second = db.createSource({ url: "https://mirror.example/feed", title: "Mirror", kind: "rss", pollingEnabled: true });
+    const sharedUrl = "https://news.example/";
+    db.saveEntries([entry(first.id, "News", { canonicalUrl: sharedUrl, url: sharedUrl })]);
+    db.saveEntries([entry(second.id, "News", { canonicalUrl: sharedUrl, url: sharedUrl })]);
+
+    expect(db.deleteNonContentFeedNavigationEntries(first)).toBe(1);
+    expect(db.listEntries(first.id)).toEqual([]);
+    expect(db.listEntries(second.id)).toHaveLength(1);
+    expect(db.listEntries(second.id)[0]).toMatchObject({ sourceId: second.id, canonicalUrl: sharedUrl });
+    db.close();
+  });
+
   it("pauses a generic source for review after three empty extractions", () => {
     const db = new ReadingDatabase(":memory:");
     let source = db.createSource({ url: "https://example.com/list", title: "Example", kind: "generic", pollingEnabled: true });

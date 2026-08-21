@@ -33,6 +33,21 @@ function countMatches(value: string, expression: RegExp): number {
   return [...value.matchAll(expression)].length;
 }
 
+function leakedInlineMath(value: string): string[] {
+  const fragments: string[] = [];
+  const expression = /(?<!\\)\$([^$\r\n]{1,400})\$/g;
+  for (const match of value.matchAll(expression)) {
+    const formula = match[1].trim();
+    // A dollar-delimited fragment is a plausible formula only when it has a
+    // TeX command, a mathematical operator, or a standalone symbolic value.
+    // This avoids falsely flagging prose containing two monetary amounts.
+    if (/\\[A-Za-z]+|[_^=<>±×÷]|^[A-Za-zα-ωΑ-Ω][A-Za-z0-9α-ωΑ-Ω]*$/.test(formula)) {
+      fragments.push(`$${formula}$`);
+    }
+  }
+  return fragments;
+}
+
 function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): ReaderAuditResult {
   const html = article.contentHtml;
   const text = plainText(html);
@@ -40,6 +55,15 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
   const formulaFallbacks = countMatches(html, /class="reader-math-source(?:\s|"|--)/gi);
   const fallbackFormulae = load(html)(".reader-math-source").toArray()
     .map((node) => plainText(load(node).html() || ""))
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((formula) => formula.replace(/\s+/g, " ").slice(0, 220));
+  const formulaDocument = load(html);
+  const formulaErrors = formulaDocument(".katex-error, mjx-merror").toArray()
+    .map((node) => {
+      const element = formulaDocument(node);
+      return element.attr("title") || plainText(element.html() || "");
+    })
     .filter(Boolean)
     .slice(0, 2)
     .map((formula) => formula.replace(/\s+/g, " ").slice(0, 220));
@@ -56,7 +80,7 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
   unrendered("#audit-content .katex, #audit-content mjx-container, #audit-content .reader-math-source, #audit-content pre, #audit-content code").remove();
   const unrenderedHtml = unrendered("#audit-content").html() || "";
   const rawTeXCommands = plainText(unrenderedHtml).match(/\\(?:[A-Za-z]+|[{}\[\]\\])[^\s<]{0,180}/g) || [];
-  const rawInlineTeX = plainText(unrenderedHtml).match(/(?<!\\)\$[^$\r\n]+\$/g) || [];
+  const rawInlineTeX = leakedInlineMath(plainText(unrenderedHtml));
   const rawFormulaDiagnostics = [...rawTeXCommands, ...rawInlineTeX].slice(0, 2);
   const issues: string[] = [];
   // Follow-feed cards can legitimately be a short public status update rather
@@ -69,7 +93,11 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
       || ((name.toLowerCase() === "href" || name.toLowerCase() === "src") && /^\s*javascript:/i.test(String(value))));
   });
   if (executableElement) issues.push("净化失败：发现可执行标记");
-  if (/READING_HUB_MATH|<mjx-merror\b|katex-error/i.test(html)) issues.push("公式渲染失败或残留占位符");
+  // Inspect rendered nodes rather than searching raw HTML. A technical
+  // article can legitimately mention `katex-error` inside a code example.
+  if (formulaDocument(".katex-error, mjx-merror").length || /READING_HUB_MATH/.test(plainText(unrenderedHtml))) {
+    issues.push("公式渲染失败或残留占位符");
+  }
   if (formulaFallbacks) issues.push(`公式降级为原始 TeX 卡片（${formulaFallbacks} 处）`);
   if (renderedMathTeX.length) issues.push("MathJax 公式中残留原始 TeX 命令");
   if (mathJaxSpacerNodes) issues.push(`MathJax CHTML 伸缩符号残留（${mathJaxSpacerNodes} 个 spacer 节点）`);
@@ -97,8 +125,12 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
     katexBlocks: countMatches(html, /class="katex-display"/gi),
     mathJaxBlocks: countMatches(html, /<mjx-container\b[^>]*display="true"/gi),
     mathJaxSpacerNodes: mathJaxSpacerNodes || undefined,
-    formulaDiagnostics: fallbackFormulae.length ? fallbackFormulae : undefined,
-    rawTeXDiagnostics: rawFormulaDiagnostics.length ? rawFormulaDiagnostics : undefined,
+    formulaDiagnostics: [...fallbackFormulae, ...formulaErrors].slice(0, 2).length
+      ? [...fallbackFormulae, ...formulaErrors].slice(0, 2)
+      : undefined,
+    rawTeXDiagnostics: rawFormulaDiagnostics.length
+      ? rawFormulaDiagnostics.map((formula) => formula.replace(/\s+/g, " ").slice(0, 220))
+      : undefined,
     renderedMathDiagnostics: renderedMathTeX.length ? renderedMathTeX : undefined,
     issues
   };

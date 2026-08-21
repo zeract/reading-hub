@@ -21,10 +21,14 @@ export function parsePublishedAt(value?: string): number | undefined {
     return dateAtUtc(year, month, day);
   }
 
-  const namedDayFirst = text.match(/\b(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s*,?\s*(20\d{2})\b/i);
+  // List cards often concatenate their date and title in separate inline
+  // elements (for example `Jul 29, 2026Research note`). A named month plus a
+  // four-digit year is unambiguous enough to accept as long as it is not
+  // followed by another digit; a word boundary would incorrectly reject it.
+  const namedDayFirst = text.match(/\b(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s*,?\s*(20\d{2})(?!\d)/i);
   if (namedDayFirst) return dateAtUtc(namedDayFirst[3], monthNumber(namedDayFirst[2]), namedDayFirst[1]);
 
-  const namedMonthFirst = text.match(/\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(20\d{2})\b/i);
+  const namedMonthFirst = text.match(/\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(20\d{2})(?!\d)/i);
   if (namedMonthFirst) return dateAtUtc(namedMonthFirst[3], monthNumber(namedMonthFirst[1]), namedMonthFirst[2]);
 
   // `Date.parse` interprets arbitrary text such as "Ubuntu 12.04" as a

@@ -26,7 +26,7 @@ const MAX_TRANSIENT_FEED_HTML_LENGTH = 250_000;
  * replayed once so cached cards can receive newly supported fields, then
  * resume normal conditional requests.
  */
-export const RSS_METADATA_REVISION = 1;
+export const RSS_METADATA_REVISION = 3;
 
 /**
  * Older generic sources are rechecked once for a declared Feed. A Feed is
@@ -103,22 +103,53 @@ function isFeedLikeQuery(rawUrl: string | undefined, pageUrl: string): boolean {
 export async function parseFeed(text: string, feedUrl: string): Promise<{ title: string; entries: RawEntry[] }> {
   if (/^\s*\{/.test(text)) return parseJsonFeed(text, feedUrl);
   const feed = await parser.parseString(text);
+  const feedTitle = compactText(feed.title, 180);
   const entries: RawEntry[] = [];
   for (const item of feed.items || []) {
     const url = toAbsoluteUrl(item.link || item.guid, feedUrl);
     const title = compactText(item.title, 240);
     if (!url || !title) continue;
+    const publishedAt = parsePublishedAt(item.isoDate) ?? parsePublishedAt(item.pubDate);
+    const summary = compactText(item.contentSnippet || item.content || item.summary, 500);
+    const feedContentHtml = transientFeedHtml((item as any).contentEncoded || item.content);
+    const imageUrl = toAbsoluteUrl((item as any).mediaContent?.[0]?.$.url || item.enclosure?.url, feedUrl);
+    if (isFeedNavigationLink({ url, title, publishedAt, summary, feedContentHtml, imageUrl }, feedUrl, feedTitle)) continue;
     entries.push({
       url,
       title,
       author: compactText(item.creator || (item as any).author, 120),
-      publishedAt: parsePublishedAt(item.isoDate) ?? parsePublishedAt(item.pubDate),
-      summary: compactText(item.contentSnippet || item.content || item.summary, 500),
-      imageUrl: toAbsoluteUrl((item as any).mediaContent?.[0]?.$.url || item.enclosure?.url, feedUrl),
-      feedContentHtml: transientFeedHtml((item as any).contentEncoded || item.content)
+      publishedAt,
+      summary,
+      imageUrl,
+      feedContentHtml
     });
   }
   return { title: compactText(feed.title, 180) || new URL(feedUrl).hostname, entries };
+}
+
+/**
+ * A few hand-authored RSS documents put footer links such as “GitHub” and
+ * “X” in `<item>` elements. They have no article metadata or body and would
+ * otherwise become undated cards. Keep legitimate sparse feed posts intact;
+ * only reject an exact source-home link or a clearly-labelled social link.
+ */
+function isFeedNavigationLink(
+  entry: Pick<RawEntry, "url" | "title" | "publishedAt" | "summary" | "feedContentHtml" | "imageUrl">,
+  feedUrl: string,
+  feedTitle: string | undefined
+): boolean {
+  if (entry.publishedAt !== undefined || entry.summary || entry.feedContentHtml || entry.imageUrl) return false;
+  try {
+    const entryUrl = new URL(entry.url);
+    const sourceUrl = new URL(feedUrl);
+    if (entryUrl.origin === sourceUrl.origin
+      && (entryUrl.pathname === sourceUrl.pathname && entryUrl.search === sourceUrl.search || Boolean(feedTitle && entry.title === feedTitle))) return true;
+    if (!/^(?:www\.)?(?:github|x|twitter|facebook|linkedin|instagram|youtube)\.com$/i.test(entryUrl.hostname)) return false;
+    return /^(?:github|x(?:\s*\(@[^)]+\))?|twitter|facebook|linkedin|instagram|youtube)$/i.test(entry.title)
+      || Boolean(feedTitle && entry.title === feedTitle);
+  } catch {
+    return false;
+  }
 }
 
 function parseJsonFeed(text: string, feedUrl: string): { title: string; entries: RawEntry[] } {

@@ -45,6 +45,19 @@ describe("feed parser", () => {
     expect(feed.entries[0]?.feedContentHtml).toBe("<p>完整 JSON 正文</p>");
   });
 
+  it("skips metadata-less social and homepage links accidentally encoded as RSS items", async () => {
+    const feed = await parseFeed(
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>AINews</title>
+        <item><title>AINews</title><link>https://news.example/</link></item>
+        <item><title>GitHub</title><link>https://github.com/example</link></item>
+        <item><title>X (@example)</title><link>https://x.com/example</link></item>
+        <item><title>A real sparse post</title><link>https://news.example/posts/real</link></item>
+      </channel></rss>`,
+      "https://news.example/"
+    );
+    expect(feed.entries).toEqual([expect.objectContaining({ title: "A real sparse post", url: "https://news.example/posts/real" })]);
+  });
+
   it("discovers an RSS endpoint linked from a page footer", () => {
     const urls = discoverFeedUrls(
       `<html><body><footer><a href="/rss.xml" aria-label="RSS feed"><svg></svg></a></footer></body></html>`,

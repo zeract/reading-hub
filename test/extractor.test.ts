@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { extractCalibrationCandidates, extractGenericPage } from "../src/main/extractor";
+import { extractCalibrationCandidates, extractGenericPage, extractPagePublishedAt, extractPublicationDateFromUrl } from "../src/main/extractor";
+import { load } from "cheerio";
 import { assertPublicUrl, canonicalizeUrl } from "../src/shared/url";
 
 describe("generic-page extractor", () => {
@@ -68,6 +69,25 @@ describe("generic-page extractor", () => {
       "https://research.perplexity.ai/"
     );
     expect(candidates).toEqual(expect.arrayContaining([expect.objectContaining({ rule: expect.objectContaining({ itemRootSelector: 'a[href*="/articles/"]' }) })]));
+  });
+
+  it("keeps a link-card title separate from its date and excerpt", () => {
+    const result = extractGenericPage(
+      `<a class="research-link" href="/articles/secure-runtimes"><span>Jul 29, 2026</span><h2>Securing agents across client endpoints</h2><p>A concise article summary that must not be appended to the card title.</p></a>
+       <a class="research-link" href="/articles/evaluating-agents"><span>Jul 28, 2026</span><h2>Evaluating agent systems carefully</h2><p>A second concise article summary that establishes a repeated article group.</p></a>`,
+      "https://research.perplexity.ai/"
+    );
+    expect(result.entries[0]).toMatchObject({
+      title: "Securing agents across client endpoints",
+      publishedAt: Date.UTC(2026, 6, 29),
+      summary: "A concise article summary that must not be appended to the card title."
+    });
+  });
+
+  it("uses article JSON-LD and dated URL paths only as safe page-level fallbacks", () => {
+    expect(extractPagePublishedAt(load(`<script type="application/ld+json">{"@type":"BlogPosting","datePublished":"2026-07-22"}</script>`))).toBe(Date.UTC(2026, 6, 22));
+    expect(extractPublicationDateFromUrl("https://vllm.ai/blog/2026-07-22-kimi-k3-preview")).toBe(Date.UTC(2026, 6, 22));
+    expect(extractPublicationDateFromUrl("https://example.com/releases/v2026-07-22-not-a-post")).toBeUndefined();
   });
 
   it("offers a strongly evidenced single post card for user-confirmed calibration", () => {

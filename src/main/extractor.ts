@@ -50,7 +50,7 @@ export const AUTOMATIC_RULE_REVISION = 2;
  * capability. Generic sources then make one unconditional request so entries
  * collected by an older parser can gain their real publication dates.
  */
-export const PUBLICATION_DATE_REVISION = 1;
+export const PUBLICATION_DATE_REVISION = 2;
 
 function withAutomaticRuleRevision(rule: ExtractionRule): ExtractionRule {
   return rule.autoRepairRevision === AUTOMATIC_RULE_REVISION ? rule : { ...rule, autoRepairRevision: AUTOMATIC_RULE_REVISION };
@@ -307,6 +307,9 @@ export function extractPagePublishedAt($: ReturnType<typeof load>): number | und
     if (date !== undefined) return date;
   }
 
+  const structuredArticleDate = extractJsonLdArticleDate($);
+  if (structuredArticleDate !== undefined) return structuredArticleDate;
+
   const title = $("h1").first();
   const titleHeader = title.closest("header");
   const articleHeader = title.closest("article").children("header").first();
@@ -328,6 +331,38 @@ export function extractPagePublishedAt($: ReturnType<typeof load>): number | und
   return undefined;
 }
 
+/**
+ * An article's URL is a useful final metadata source when it carries a full
+ * calendar date. This deliberately accepts only path segments, never loose
+ * query text or a year-like version number in a title.
+ */
+export function extractPublicationDateFromUrl(rawUrl: string): number | undefined {
+  try {
+    const pathname = new URL(rawUrl).pathname;
+    const match = pathname.match(/(?:^|\/)(20\d{2})[./-](\d{1,2})[./-](\d{1,2})(?=$|[\/?#-])/);
+    return match ? parsePublishedAt(`${match[1]}-${match[2]}-${match[3]}`) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function extractJsonLdArticleDate($: ReturnType<typeof load>): number | undefined {
+  const nodes: any[] = [];
+  $("script[type='application/ld+json']").each((_index, node) => {
+    try {
+      visitJsonLd(JSON.parse($(node).contents().text()), nodes);
+    } catch {
+      // Invalid JSON-LD is non-fatal and the header-specific fallbacks below
+      // remain available.
+    }
+  });
+  for (const item of nodes) {
+    const date = parsePublishedAt(item.datePublished || item.dateCreated || item.uploadDate);
+    if (date !== undefined) return date;
+  }
+  return undefined;
+}
+
 function nodeDateValue($: ReturnType<typeof load>, node: any): string | undefined {
   const childText = node.contents().toArray()
     .map((child: any) => compactText($(child).text(), 240))
@@ -341,9 +376,16 @@ function findSelfOrDescendant(root: any, selector: string) {
 }
 
 function preferredTitleNode($: ReturnType<typeof load>, root: any) {
-  if (root.is("h1,h2,h3,h4,a[href]")) return root;
+  if (root.is("h1,h2,h3,h4")) return root;
   const heading = root.find("h1,h2,h3,h4").filter((_index: number, node: any) => Boolean(compactText($(node).text(), 240)?.length)).first();
-  return heading.length ? heading : root.find("a[href]").filter((_index: number, node: any) => Boolean(compactText($(node).text(), 240)?.length)).first();
+  if (heading.length) return heading;
+  const labelledTitle = root.find("[data-title], [class*='title'], [class*='headline']").filter((_index: number, node: any) => {
+    const identity = `${$(node).attr("data-title") || ""} ${$(node).attr("class") || ""}`;
+    return /(?:^|[-_\s])(title|headline)(?:$|[-_\s])/i.test(identity)
+      && Boolean(compactText($(node).text(), 240)?.length);
+  }).first();
+  if (labelledTitle.length) return labelledTitle;
+  return root.is("a[href]") ? root : root.find("a[href]").filter((_index: number, node: any) => Boolean(compactText($(node).text(), 240)?.length)).first();
 }
 
 function isTaxonomyOrNavigation($: ReturnType<typeof load>, element: any): boolean {

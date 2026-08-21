@@ -59,6 +59,43 @@ describe("GenericConnector", () => {
     expect(outcome.extractionRule?.publicationDateRevision).toBe(PUBLICATION_DATE_REVISION);
   });
 
+  it("enriches missing homepage dates from public article metadata without retaining article HTML", async () => {
+    const requests: string[] = [];
+    const http = {
+      getText: async (url: string) => {
+        requests.push(url);
+        if (url.endsWith("/one")) return {
+          url,
+          text: `<article><header><h1>First dated post</h1><time datetime="2026-08-19">August 19, 2026</time></header></article>`,
+          status: 200,
+          contentType: "text/html"
+        };
+        if (url.endsWith("/2026-08-18/two")) return { url, text: "<article><h1>Second dated post</h1></article>", status: 200, contentType: "text/html" };
+        return {
+          url,
+          text: `<main><article><a href="/one">First dated post</a><p>A sufficiently detailed first summary for reliable card extraction.</p></article><article><a href="/2026-08-18/two">Second dated post</a><p>A sufficiently detailed second summary for reliable card extraction.</p></article></main>`,
+          status: 200,
+          contentType: "text/html"
+        };
+      }
+    };
+    const source: Source = {
+      id: "source", url: "https://example.com/", title: "Example", kind: "generic", status: "active",
+      pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1,
+      extractionRule: { version: 1, publicationDateRevision: PUBLICATION_DATE_REVISION, feedDiscoveryRevision: FEED_DISCOVERY_REVISION }
+    };
+    const connector = new GenericConnector(http as any, {} as any);
+
+    const outcome = await connector.fetchWithMetadata(source);
+
+    expect(outcome.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: "https://example.com/one", publishedAt: Date.UTC(2026, 7, 19) }),
+      expect.objectContaining({ url: "https://example.com/2026-08-18/two", publishedAt: Date.UTC(2026, 7, 18) })
+    ]));
+    expect(requests).toContain("https://example.com/one");
+    expect(requests).not.toContain("https://example.com/2026-08-18/two");
+  });
+
   it("upgrades an existing web source to a verified footer Feed", async () => {
     const requests: Array<{ url: string; options: unknown }> = [];
     const http = {
@@ -106,6 +143,36 @@ describe("GenericConnector", () => {
       feedDiscoveryRevision: FEED_DISCOVERY_REVISION
     });
     expect(outcome.etag).toBe("feed-etag");
+    expect(outcome.metadataRevision).toBe(RSS_METADATA_REVISION);
+  });
+
+  it("replays a declared Feed after an RSS metadata parser upgrade", async () => {
+    let receivedOptions: unknown = "not-called";
+    const http = {
+      getText: async (_url: string, options: unknown) => {
+        receivedOptions = options;
+        return {
+          url: "https://example.com/feed.xml",
+          status: 200,
+          contentType: "application/rss+xml",
+          text: `<?xml version="1.0"?><rss version="2.0"><channel><title>Example</title><item><title>Fresh article</title><link>/fresh</link><pubDate>Tue, 18 Aug 2026 05:44:39 GMT</pubDate></item></channel></rss>`
+        };
+      }
+    };
+    const source: Source = {
+      id: "source", url: "https://example.com/", title: "Example", kind: "generic", status: "active",
+      pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1,
+      etag: "stale", lastModified: "Tue, 18 Aug 2026 05:44:39 GMT",
+      metadataRevision: RSS_METADATA_REVISION - 1,
+      extractionRule: { version: 1, feedUrl: "https://example.com/feed.xml", publicationDateRevision: PUBLICATION_DATE_REVISION }
+    };
+    const connector = new GenericConnector(http as any, {} as any);
+
+    const outcome = await connector.fetchWithMetadata(source);
+
+    expect(receivedOptions).toBeUndefined();
+    expect(outcome.metadataRevision).toBe(RSS_METADATA_REVISION);
+    expect(outcome.entries).toEqual([expect.objectContaining({ title: "Fresh article" })]);
   });
 });
 
