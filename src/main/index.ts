@@ -7,6 +7,7 @@ import { createApplicationServices, type ApplicationServices } from "./app-servi
 import { registerIpcHandlers } from "./ipc-handlers";
 import { configureChromiumNetwork } from "./network";
 import { auditLocalReader, type ReaderAuditProgress, type ReaderAuditResult } from "./reader-audit";
+import { ScientificArticleVisualAuditor } from "./scientific-visual-audit";
 import { installDevelopmentSupervisorGuard } from "./dev-supervisor";
 
 let mainWindow: BrowserWindow | undefined;
@@ -17,6 +18,7 @@ let quitting = false;
 const APPLICATION_NAME = "Reading Hub";
 const USER_DATA_DIRECTORY = "reading-hub";
 const readerAuditMode = process.env.READING_HUB_READER_AUDIT === "1";
+const scientificVisualAuditMode = readerAuditMode && process.env.READING_HUB_AUDIT_SCIENTIFIC_VISUAL === "1";
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 
 // A failed public-source request is represented in the source health UI and
@@ -185,6 +187,7 @@ async function runReaderAudit(): Promise<void> {
   // persistent host window macOS may terminate this headless audit after the
   // first renderer window closes, before the report is flushed.
   const auditHost = new BrowserWindow({ show: false });
+  const scientificVisualAuditor = scientificVisualAuditMode ? new ScientificArticleVisualAuditor() : undefined;
   try {
     const report = JSON.stringify(await auditLocalReader(databasePath, {
       onProgress: async (event) => {
@@ -196,7 +199,10 @@ async function runReaderAudit(): Promise<void> {
       onResult: async (result) => {
         progress.results.push(result);
         await writeProgress();
-      }
+      },
+      inspectLayout: scientificVisualAuditor
+        ? (article) => scientificVisualAuditor.inspect(article)
+        : undefined
     }), null, 2);
     if (reportPath) await writeFile(reportPath, report, "utf8");
     console.log(report);
@@ -205,6 +211,7 @@ async function runReaderAudit(): Promise<void> {
     if (reportPath) await writeFile(reportPath, JSON.stringify([{ source: "审计执行", kind: "generic", issues: [message] }], null, 2), "utf8");
     throw error;
   } finally {
+    scientificVisualAuditor?.close();
     if (!auditHost.isDestroyed()) auditHost.destroy();
   }
 }

@@ -30,6 +30,10 @@ const CONTENT_SELECTORS = [
 ];
 
 const SCIENTIFIC_CONTENT_SELECTORS = [
+  // Current Scientific Spaces pages place the article in this PascalCase
+  // container. The surrounding `#content` also contains comments, payment
+  // prompts and site chrome, so it must never win over the actual post root.
+  { selector: "#PostContent, .PostContent", priority: 12 },
   { selector: "#post-body", priority: 10 },
   { selector: ".post-body, .post-content", priority: 9 },
   ...CONTENT_SELECTORS
@@ -77,6 +81,22 @@ const ARTICLE_CHROME_SELECTOR = [
   "[class*='breadcrumb']", "[class*='post-meta']", "[class*='entry-meta']", "[class*='article-meta']",
   ".post-footer", ".entry-footer", ".article-footer", "[class*='post-footer']", "[class*='entry-footer']", "[class*='article-footer']"
 ].join(",");
+
+// Scientific Spaces puts its discussion thread inside the same `#content`
+// wrapper as the article. Its comment components deliberately use PascalCase
+// class names, which are not caught by the generic lower-case comment noise
+// rule. Keep this source-specific and exact so ordinary
+// pages retain any author-provided content that happens to discuss comments.
+const SCIENTIFIC_DISCUSSION_SELECTOR = [
+  "#comments", "#PostComment", "#MobileComments",
+  ".AllComments", ".ComListLi", ".block-comment",
+  "[id^='comment-']", "[id^='respond-post-']"
+].join(", ");
+
+// These are Scientific Spaces' article-adjacent widgets, not author prose.
+// They matter only when an older page shell forces the reader to use the
+// broad `#content` fallback instead of the dedicated post container above.
+const SCIENTIFIC_AUXILIARY_SELECTOR = "#content_tips, #pay, #how_to_cite";
 
 type MathSnippet = { token: string; tex: string; displayMode: boolean };
 type ContentCandidate = {
@@ -368,7 +388,14 @@ function removeDuplicateArticleChrome(
     const text = normalText($(node).text());
     if (/^by\s+.+\|\s*\d{4}-\d{2}-\d{2}\s*\|/i.test(text)) $(node).remove();
   });
-  if (renderProfile === "scientific") removeScientificSpacesChrome($, content, entrySummary);
+  if (renderProfile === "scientific") {
+    // The source's static `#content` tree includes reader comments. Remove
+    // them before formula preservation so a comment's malformed/split TeX
+    // cannot be mistaken for article content or corrupt reader diagnostics.
+    content.find(SCIENTIFIC_DISCUSSION_SELECTOR).remove();
+    content.find(SCIENTIFIC_AUXILIARY_SELECTOR).remove();
+    removeScientificSpacesChrome($, content, entrySummary);
+  }
 }
 
 /**
@@ -736,7 +763,15 @@ function preserveMathScripts($: ReturnType<typeof load>, root: any): MathSnippet
     // MathJax's visual placeholder would otherwise survive as duplicate text.
     const previous = script.prev();
     if (previous.hasClass("MathJax_Preview")) previous.remove();
-    script.replaceWith(addMath(math, tex, type.includes("mode=display")));
+    // Keep a short-lived marker around an author-provided source script. A
+    // browser-rendered MathJax frame often follows it as a sibling; that
+    // frame is only a visual copy, and must not become a second reader
+    // formula. The marker is collapsed back to plain placeholder text after
+    // rendered MathJax has been reconciled below, so it never reaches the
+    // renderer or user-visible HTML.
+    const token = addMath(math, tex, type.includes("mode=display"));
+    const index = math.length - 1;
+    script.replaceWith(`<span data-reader-math-source="${index}">${token}</span>`);
   });
   return math;
 }
@@ -750,13 +785,32 @@ function preserveMathScripts($: ReturnType<typeof load>, root: any): MathSnippet
 function preserveRenderedMathJax($: ReturnType<typeof load>, root: any, math: MathSnippet[]): void {
   root.find(".MathJax_Preview").remove();
   const rendered = root.find("mjx-container, .MathJax, [id^='MathJax-']").toArray()
-    .sort((left: any, right: any) => nodeDepth(right) - nodeDepth(left));
+    // Work from the outer frame inward. A MathJax 2/3 wrapper often contains
+    // several elements which all match this selector. Processing a child
+    // first used to create a second token, then leave that token behind when
+    // its outer frame was reconciled. The outer wrapper can discover a
+    // descendant annotation/script itself, so it is the only node we need.
+    .sort((left: any, right: any) => nodeDepth(left) - nodeDepth(right));
   for (const node of rendered) {
     const element = $(node);
-    if (!element.parent().length) continue;
+    // Cheerio keeps a detached frame's descendant linked to that detached
+    // parent after the frame is replaced. `parent().length` alone therefore
+    // lets an already-consumed nested MathJax node append a ghost formula,
+    // which can shift later equation numbers and macro scope. Only process
+    // nodes still reachable from this reader root.
+    if (!isNodeWithinRoot(root, node)) continue;
     const tex = mathJaxSource(element);
     if (tex) {
-      const displayMode = element.is("[display='true'], .MathJax_Display") || element.parents("[display='true'], .MathJax_Display").length > 0;
+      const displayMode = isRenderedMathDisplay(element);
+      const authored = adjacentAuthoredMath($, element, math);
+      if (authored && sameMathSource(authored.tex, tex)) {
+        // The source script is authoritative. Keep its original position and
+        // display mode, but prefer an explicit rendered block indication when
+        // the source type omitted `mode=display`.
+        authored.displayMode ||= displayMode;
+        element.remove();
+        continue;
+      }
       element.replaceWith(addMath(math, tex, displayMode));
       continue;
     }
@@ -765,6 +819,13 @@ function preserveRenderedMathJax($: ReturnType<typeof load>, root: any, math: Ma
     if (element.text().includes(MATH_TOKEN_PREFIX)) element.replaceWith(element.contents());
     else element.remove();
   }
+  // Remove the temporary relation marker before generic sanitisation. In
+  // particular, do not leave a block KaTeX result nested inside an inline
+  // span, which creates browser-dependent layout/overlap behaviour.
+  root.find("[data-reader-math-source]").each((_index: number, node: any) => {
+    const marker = $(node);
+    marker.replaceWith(marker.text());
+  });
 }
 
 function nodeDepth(node: any): number {
@@ -773,17 +834,78 @@ function nodeDepth(node: any): number {
   return depth;
 }
 
+function isNodeWithinRoot(root: any, node: any): boolean {
+  const rootNode = root.get(0);
+  for (let cursor = node; cursor; cursor = cursor.parent) {
+    if (cursor === rootNode) return true;
+  }
+  return false;
+}
+
 function mathJaxSource(element: any): string | undefined {
-  const direct = ["data-latex", "data-tex", "alttext", "data-mathml"]
+  // `data-mathml` is MathML, not TeX. Treating it as TeX makes the fallback
+  // renderer emit a raw-source card even when the same frame has a valid TeX
+  // annotation. Prefer explicit TeX fields, then the standard annotation or
+  // original MathJax script. If a page retains only MathML, drop its rendered
+  // shell rather than pretending it is parseable TeX.
+  const direct = ["data-latex", "data-tex", "alttext"]
     .map((name) => element.attr(name))
     .find((value) => typeof value === "string" && value.trim());
   if (direct) return String(direct).trim();
-  const annotation = element.find("annotation[encoding='application/x-tex'], annotation[encoding='application/x-tex; mode=display']").first();
+  // MathJax 3 serialises its source as `<mjx-annotation>`, while MathJax 2
+  // uses a standard MathML `<annotation>`. Support both explicitly: treating
+  // only the latter as source silently removed every already-rendered MathJax
+  // 3 equation when the static source script was unavailable.
+  const annotation = element.find([
+    "annotation[encoding='application/x-tex']",
+    "annotation[encoding='application/x-tex; mode=display']",
+    "mjx-annotation[encoding='application/x-tex']",
+    "mjx-annotation[encoding='application/x-tex; mode=display']"
+  ].join(", ")).first();
   const tex = annotation.text() || annotation.html() || "";
   if (tex.trim()) return tex.trim();
   const script = element.find("script[type^='math/tex']").first();
   const scriptTex = script.html() || script.text() || "";
   return scriptTex.trim() || undefined;
+}
+
+function isRenderedMathDisplay(element: any): boolean {
+  return element.is("[display='true'], .MathJax_Display")
+    || element.parents("[display='true'], .MathJax_Display").length > 0
+    || element.find("[display='true'], .MathJax_Display").length > 0;
+}
+
+/** Finds a source-script marker immediately beside a MathJax visual frame. */
+function adjacentAuthoredMath($: ReturnType<typeof load>, element: any, math: MathSnippet[]): MathSnippet | undefined {
+  // MathJax 2 pages usually leave the source script before the rendered
+  // frame, but some renderer paths emit it after the frame. Both are the same
+  // authored source once their TeX agrees, so inspect immediate non-whitespace
+  // siblings on either side rather than relying on one DOM ordering.
+  for (const direction of ["prev", "next"] as const) {
+    let sibling = element.get(0)?.[direction];
+    while (sibling?.type === "text" && !String(sibling.data || "").trim()) sibling = sibling[direction];
+    if (sibling?.type !== "tag") continue;
+    const marker = $(sibling);
+    if (!marker.is("[data-reader-math-source]")) continue;
+    const index = Number.parseInt(marker.attr("data-reader-math-source") || "", 10);
+    if (Number.isSafeInteger(index) && index >= 0) return math[index];
+  }
+  return undefined;
+}
+
+/** Ignores source-format whitespace and top-level display wrappers only. */
+function sameMathSource(left: string, right: string): boolean {
+  return normaliseMathSourceForComparison(left) === normaliseMathSourceForComparison(right);
+}
+
+function normaliseMathSourceForComparison(value: string): string {
+  let tex = value.trim();
+  tex = tex.replace(/^\$\$([\s\S]*?)\$\$$/, "$1");
+  tex = tex.replace(/^\\\[([\s\S]*?)\\\]$/, "$1");
+  const environment = "equation\\*?|displaymath|align\\*?|gather\\*?|multline\\*?|array|cases|matrix|pmatrix|bmatrix|vmatrix|Vmatrix|smallmatrix|aligned";
+  const wrappedEnvironment = new RegExp(`^\\\\begin\\{(${environment})\\}([\\s\\S]*?)\\\\end\\{\\1\\}$`);
+  tex = tex.replace(wrappedEnvironment, "$2");
+  return tex.replace(/\s+/g, " ").trim();
 }
 
 function isMathScript(element: any): boolean {

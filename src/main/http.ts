@@ -28,6 +28,18 @@ export class NetworkRequestError extends Error {
   }
 }
 
+/**
+ * The failed-image fallback intentionally converts only raster images to data
+ * URLs. SVG can carry active/external content, so it remains a direct browser
+ * image and is never proxied until a dedicated SVG sanitiser exists.
+ */
+export class UnsupportedReaderImageTypeError extends Error {
+  constructor(readonly contentType: string) {
+    super("远程资源不是可安全由本地代理显示的图片。");
+    this.name = "UnsupportedReaderImageTypeError";
+  }
+}
+
 function networkFailureMessage(cause: unknown): string {
   const details = cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause || "");
   if (/ERR_(?:PROXY|TUNNEL|SOCKS)_|proxy/i.test(details)) return "无法连接到配置的代理服务器。请确认代理正在运行，或检查系统/环境代理设置后重试。";
@@ -152,7 +164,9 @@ export class PublicHttpClient {
         }
         if (!response.ok) throw new Error(`图片请求失败（HTTP ${response.status}）`);
         const contentType = response.headers.get("content-type")?.split(";", 1)[0].toLowerCase() || "";
-        if (!/^(image\/(?:avif|gif|jpe?g|png|webp|x-icon|vnd\.microsoft\.icon))$/.test(contentType)) throw new Error("远程资源不是可安全显示的图片。");
+        if (!/^(image\/(?:avif|gif|jpe?g|png|webp|x-icon|vnd\.microsoft\.icon))$/.test(contentType)) {
+          throw new UnsupportedReaderImageTypeError(contentType);
+        }
         const maxBytes = 8_000_000;
         const size = Number(response.headers.get("content-length") ?? 0);
         if (size > maxBytes) throw new Error("图片响应超过 8 MB，已跳过加载。");

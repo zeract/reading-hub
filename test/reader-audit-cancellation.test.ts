@@ -1,9 +1,64 @@
 import { describe, expect, it } from "vitest";
-import { findLeakedInlineMath, ReaderAuditTimeoutError, runReaderAuditOperation } from "../src/main/reader-audit";
+import { expectedImageProxyDiagnostic, findLeakedInlineMath, ReaderAuditTimeoutError, runReaderAuditOperation, selectReaderAuditSamples } from "../src/main/reader-audit";
+import { UnsupportedReaderImageTypeError } from "../src/main/http";
+import { RobotsDisallowedError } from "../src/main/robots";
+import type { Entry, Source } from "../src/shared/types";
+
+const auditSource: Source = {
+  id: "science-source",
+  url: "https://kexue.fm/feed",
+  title: "科学空间",
+  kind: "rss",
+  status: "active",
+  pollingEnabled: true,
+  consecutiveEmpty: 0,
+  failureCount: 0,
+  createdAt: 1,
+  updatedAt: 1
+};
+
+function auditEntry(id: string): Entry {
+  return {
+    id,
+    sourceId: auditSource.id,
+    canonicalUrl: `https://kexue.fm/archives/${id}`,
+    url: `https://kexue.fm/archives/${id}`,
+    title: `文章 ${id}`,
+    contentHash: id,
+    read: false,
+    favorite: false,
+    createdAt: 1
+  };
+}
 
 describe("reader audit cancellation", () => {
+  it("uses every entry only when a full source audit is explicitly requested", () => {
+    const entries = [auditEntry("newest"), auditEntry("middle"), auditEntry("oldest")];
+
+    expect(selectReaderAuditSamples(auditSource, entries).map((sample) => [sample.entry.id, sample.sample])).toEqual([
+      ["newest", "newest"],
+      ["middle", "historical"]
+    ]);
+    expect(selectReaderAuditSamples(auditSource, entries, true).map((sample) => [sample.entry.id, sample.sample])).toEqual([
+      ["newest", "all"],
+      ["middle", "all"],
+      ["oldest", "all"]
+    ]);
+  });
+
+  it("records an SVG proxy exclusion as safe reader metadata instead of an image failure", () => {
+    expect(expectedImageProxyDiagnostic(new UnsupportedReaderImageTypeError("image/svg+xml")))
+      .toContain("SVG");
+    expect(expectedImageProxyDiagnostic(new UnsupportedReaderImageTypeError("text/html"))).toBeUndefined();
+    expect(expectedImageProxyDiagnostic(new RobotsDisallowedError("https://example.com/image.jpg")))
+      .toContain("robots.txt");
+    expect(expectedImageProxyDiagnostic(new Error("图片请求失败（HTTP 403）"))).toBeUndefined();
+  });
+
   it("distinguishes escaped inline TeX from currency prose and account handles", () => {
     expect(findLeakedInlineMath("The plan costs $3.65/M. Separately, @ZixuanLi_ shared an update; another price is $12.")).toEqual([]);
+    expect(findLeakedInlineMath("$19,200/mo Mid 2× i4i.8xlarge (32 vCPU) 2× NVMe RAID0 446,667 24,000 44ms 109ms ~$"))
+      .toEqual([]);
     expect(findLeakedInlineMath("The reader leaked $q_i = q^2$ and $\\frac{a}{b}$.")).toEqual(["$q_i = q^2$", "$\\frac{a}{b}$"]);
   });
 

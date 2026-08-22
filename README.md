@@ -44,12 +44,24 @@ npm run audit:visual # Electron 实际布局：公式编号、图片和溢出
 npm run audit:reader # 只读审计已保存来源的最新与一篇历史文章
 ```
 
-`audit:reader` 会访问当前本机数据库中的公开来源，遵守 robots，不保存正文或凭证。`audit:visual` 可设置 `READING_HUB_VISUAL_OUTPUT=/tmp/reading-hub-visual` 输出三个视口的诊断截图。
+`audit:reader` 会访问当前本机数据库中的公开来源，遵守 robots，不保存正文或凭证。默认抽查每个来源的最新文章和一篇确定性历史文章；`audit:visual` 可设置 `READING_HUB_VISUAL_OUTPUT=/tmp/reading-hub-visual` 输出三个视口的诊断截图。
 
 如需针对单个来源排查，可在本机执行：
 
 ```bash
-READING_HUB_AUDIT_SOURCE='科学空间|Scientific Spaces' npm run audit:reader
+READING_HUB_AUDIT_SOURCE='苏剑林博客' npm run audit:reader
+```
+
+对一个来源做逐篇阅读器回归（会按来源限速，适合修复公式或提取问题后执行）：
+
+```bash
+READING_HUB_AUDIT_SOURCE='苏剑林博客' READING_HUB_AUDIT_ALL=1 npm run audit:reader
+```
+
+逐篇检查科学空间的真实 KaTeX/MathJax 成品在窄窗口、默认窗口和 125% 字号下的公式编号、横向滚动、图片列宽及页面溢出（仅输出诊断，不写入文章 HTML）：
+
+```bash
+READING_HUB_AUDIT_SOURCE='苏剑林博客' READING_HUB_AUDIT_ALL=1 npm run audit:scientific-visual
 ```
 
 ## 连接器扩展

@@ -87,6 +87,118 @@ describe("article reader extraction", () => {
     expect(result?.article.contentHtml).not.toContain("旧公式渲染副本");
   });
 
+  it("keeps one formula when MathJax retains both the authored script and its visual frame", () => {
+    const tex = "\\begin{equation}\\newcommand{\\rcos}{\\mathop{\\text{rcos}}}\\rcos(\\boldsymbol{x},\\boldsymbol{y})=\\frac{\\boldsymbol{x}\\cdot\\boldsymbol{y}}{\\Vert\\boldsymbol{x}\\Vert\\,\\Vert\\boldsymbol{y}\\Vert}\\end{equation}";
+    const result = extractReaderArticle(
+      `<article><p>${"用于保证正文提取稳定的说明文字。 ".repeat(26)}</p>
+        <span class="MathJax_Preview">不应显示的旧预览</span><script type="math/tex; mode=display">${tex}</script>
+        <span id="MathJax-Element-4-Frame" class="MathJax MathJax_Display" alttext="${tex}"><span class="MathJax" data-mathml="&lt;math&gt;不是 TeX&lt;/math&gt;">旧渲染副本</span></span>
+      </article>`,
+      "https://kexue.fm/archives/11818",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(load(content)(".katex-display")).toHaveLength(1);
+    expect(content).toContain("rcos");
+    expect(content).not.toContain("不应显示的旧预览");
+    expect(content).not.toContain("旧渲染副本");
+    expect(content).not.toContain("reader-math-source");
+    expect(content).not.toContain("READING_HUB_MATH");
+  });
+
+  it("deduplicates a MathJax visual frame when its authored source script follows it", () => {
+    const tex = "\\begin{equation}q_i=\\frac{x_i}{y_i}\\end{equation}";
+    const result = extractReaderArticle(
+      `<article><p>${"用于保证正文提取稳定的说明文字。 ".repeat(26)}</p>
+        <span class="MathJax_Display" alttext="${tex}"><span class="MathJax">旧渲染副本</span></span><script type="math/tex; mode=display">${tex}</script>
+      </article>`,
+      "https://kexue.fm/archives/11818",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(load(content)(".katex-display")).toHaveLength(1);
+    expect(content).not.toContain("旧渲染副本");
+  });
+
+  it("deduplicates an authored align environment from its MathJax display frame", () => {
+    const tex = "\\begin{align}\\text{MoE:}&\\quad d\\to D\\to d\\\\\\text{LatentMoE:}&\\quad d\\to d/2\\to D\\end{align}";
+    const result = extractReaderArticle(
+      `<article><p>${"用于保证正文提取稳定的说明文字。 ".repeat(26)}</p>
+        <script type="math/tex; mode=display">${tex}</script><span class="MathJax_Display" alttext="${tex}"><span class="MathJax">旧渲染副本</span></span>
+      </article>`,
+      "https://kexue.fm/archives/11818",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(load(content)(".katex-display")).toHaveLength(1);
+    expect(content).toContain("LatentMoE");
+    expect(content).not.toContain("旧渲染副本");
+  });
+
+  it("does not process detached nested MathJax frames a second time", () => {
+    const first = "\\begin{equation}a=b\\label{first}\\end{equation}";
+    const second = "\\begin{equation}c=d\\label{second}\\end{equation}";
+    const result = extractReaderArticle(
+      `<article><p>${"用于保证正文提取稳定的说明文字。 ".repeat(26)}</p>
+        <span class="MathJax_Display" alttext="${first}"><span class="MathJax" alttext="${first}">嵌套的旧渲染副本</span></span>
+        <p>${second}</p>
+      </article>`,
+      "https://kexue.fm/archives/11818",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(load(content)(".katex-display")).toHaveLength(2);
+    expect(content).toContain("(2)");
+    expect(content).not.toContain("(3)");
+    expect(content).not.toContain("嵌套的旧渲染副本");
+  });
+
+  it("prefers an embedded TeX annotation over a MathML metadata attribute", () => {
+    const result = extractReaderArticle(
+      `<article><p>${"用于保证正文提取稳定的说明文字。 ".repeat(26)}</p>
+        <mjx-container display="true" data-mathml="&lt;math&gt;&lt;mi&gt;q&lt;/mi&gt;&lt;/math&gt;"><mjx-math><mjx-annotation encoding="application/x-tex">\\boldsymbol{q}=\\frac{\\boldsymbol{x}}{\\Vert\\boldsymbol{x}\\Vert}</mjx-annotation></mjx-math></mjx-container>
+      </article>`,
+      "https://kexue.fm/archives/11818",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(load(content)(".katex-display")).toHaveLength(1);
+    expect(content).toContain('class="katex"');
+    expect(content).not.toContain("reader-math-source");
+    expect(content).not.toContain("data-mathml");
+  });
+
+  it("renders the ranking-similarity Scientific Spaces formula family through one shared macro scope", () => {
+    const result = extractReaderArticle(
+      `<article><p>${"用于保证正文提取稳定的说明文字。 ".repeat(26)}</p>
+        <p>对于两个向量$\\boldsymbol{x},\\boldsymbol{y}\\in\\mathbb{R}^d$，定义：</p>
+        <p>\\begin{equation}\\cos(\\boldsymbol{x},\\boldsymbol{y}) = \\frac{\\boldsymbol{x}\\cdot\\boldsymbol{y}}{\\Vert\\boldsymbol{x}\\Vert\\,\\Vert\\boldsymbol{y}\\Vert} \\in [-1,1]\\end{equation}</p>
+        <p>\\begin{equation}-\\Vert\\boldsymbol{x}\\Vert\\,\\Vert\\boldsymbol{y}\\Vert\\leq\\boldsymbol{x}\\cdot\\boldsymbol{y}\\leq\\Vert\\boldsymbol{x}\\Vert\\,\\Vert\\boldsymbol{y}\\Vert\\end{equation}</p>
+        <p>\\begin{equation}\\newcommand{\\rcos}{\\mathop{\\text{rcos}}}\\rcos(\\boldsymbol{x},\\boldsymbol{y}) = \\frac{2\\cdot\\boldsymbol{x}\\cdot\\boldsymbol{y}-\\boldsymbol{x}^{\\uparrow}\\cdot\\boldsymbol{y}^{\\downarrow}-\\boldsymbol{x}^{\\uparrow}\\cdot\\boldsymbol{y}^{\\uparrow}}{\\boldsymbol{x}^{\\uparrow}\\cdot\\boldsymbol{y}^{\\uparrow}-\\boldsymbol{x}^{\\uparrow}\\cdot\\boldsymbol{y}^{\\downarrow}}\\end{equation}</p>
+        <p>那么$\\rcos(\\boldsymbol{x},\\boldsymbol{y})=1$，并且</p>
+        <p>\\begin{equation}\\rcos(a\\boldsymbol{x}+b\\boldsymbol{1},c\\boldsymbol{y}+d\\boldsymbol{1})=\\rcos(\\boldsymbol{x},\\boldsymbol{y})\\end{equation}</p>
+        <p>\\begin{equation}\\mathop{\\text{pearson}}(\\boldsymbol{x},\\boldsymbol{y})=\\cos(\\boldsymbol{x}-\\bar{\\boldsymbol{x}},\\boldsymbol{y}-\\bar{\\boldsymbol{y}})\\end{equation}</p>
+        <p>\\begin{equation}\\mathop{\\text{spearman}}(\\boldsymbol{x},\\boldsymbol{y})=\\rcos(\\boldsymbol{r}_x,\\boldsymbol{r}_y)\\end{equation}</p>
+      </article>`,
+      "https://kexue.fm/archives/11818",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    const visible = load(`<article>${content}</article>`);
+    visible(".katex, mjx-container, .reader-math-source").remove();
+    expect(load(content)(".katex-display")).toHaveLength(6);
+    expect(content).not.toContain("katex-error");
+    expect(content).not.toContain("reader-math-source");
+    expect(visible.text()).not.toMatch(/\\(?:begin|end|newcommand|rcos|boldsymbol|Vert)/);
+    expect(content).not.toContain("$\\rcos");
+  });
+
   it("renders every explicitly delimited inline formula used by technical blogs", () => {
     const result = extractReaderArticle(
       `<article><p>对第 $t$ 个 query，序列长度记为 $L$，head 维度为 $d$，每个 block 的大小为 $B$；VAE 的压缩率是 $(4,16,16)$，复杂度为 $\mathcal{O}(L^2)$。${"这段正文用于保证内容提取稳定。 ".repeat(32)}</p></article>`,
@@ -293,6 +405,52 @@ describe("article reader extraction", () => {
     expect(content).not.toContain("Norm #");
     expect(content).not.toContain("首页 数学研究 信息时代");
     expect(content).not.toContain("By 苏剑林");
+  });
+
+  it("removes Scientific Spaces discussion markup before a split comment formula reaches the reader", () => {
+    const result = extractReaderArticle(
+      `<html><body><div id="content">
+        <h1>基于排序不等式的相似度指标</h1>
+        <p>文章的真实第一段正文，应该被阅读器完整保留。${"后续正文。".repeat(58)}</p>
+        <section id="comments"><div class="AllComments"><article class="ComListLi">
+          <p>评论中的拆分公式：$\\tilde{rcos}\\to\\dfrac{2S_{xy}}{D_{xy}}=\\dfrac{cov(x,y<span>}{\\mathrm{cov}(x^\\uparrow,y^\\uparrow)}</span>$</p>
+        </article></div></section>
+        <section id="PostComment"><div class="block-comment"><p>渲染页中的评论也不应进入正文。</p></div></section>
+      </div></body></html>`,
+      "https://kexue.fm/archives/11818",
+      { ...entry, summary: "文章的真实第一段正文，应该被阅读器完整保留。" }
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(content).toContain("文章的真实第一段正文");
+    expect(content).not.toContain("评论中的拆分公式");
+    expect(content).not.toContain("渲染页中的评论");
+    expect(content).not.toContain("tilde{rcos}");
+    expect(content).not.toContain("reader-math-source");
+    expect(content).not.toContain("READING_HUB_MATH");
+  });
+
+  it("prefers Scientific Spaces' dedicated post container over the page-wide content shell", () => {
+    const result = extractReaderArticle(
+      `<html><body><div id="content">
+        <nav>首页 / 数学研究</nav>
+        <article id="PostContent" class="PostContent">
+          <h1>基于排序不等式的相似度指标</h1>
+          <p>文章的真实第一段正文，应该被阅读器完整保留。${"后续正文。".repeat(58)}</p>
+          <p>设 $q_i = x_i / y_i$，这是正文中的行内公式。</p>
+        </article>
+        <section id="comments"><p>评论区与 $\\tilde{rcos}$ 不应进入正文。</p></section>
+        <section id="pay"><p>付款二维码不应进入正文。</p></section>
+        <section id="how_to_cite"><p>引用小工具不应进入正文。</p></section>
+      </div></body></html>`,
+      "https://kexue.fm/archives/11818",
+      { ...entry, summary: "文章的真实第一段正文，应该被阅读器完整保留。" }
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(content).toContain("文章的真实第一段正文");
+    expect(load(content)(".katex")).toHaveLength(1);
+    expect(content).not.toMatch(/首页|评论区|付款二维码|引用小工具|tilde\{rcos\}/);
   });
 
   it("removes Scientific Spaces chrome when the first article paragraph is nested", async () => {

@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { app, BrowserWindow } from "electron";
+import katex from "katex";
 
 console.log("Reading Hub visual audit: starting Electron layout checks");
 
@@ -11,6 +12,11 @@ const root = path.resolve(import.meta.dirname, "..");
 // profile's SingletonLock.
 app.setPath("userData", path.join(tmpdir(), `reading-hub-visual-audit-${process.pid}`));
 const css = await readFile(path.join(root, "src/renderer/styles.css"), "utf8");
+// The renderer loads KaTeX's own stylesheet before our reader overrides.
+// Include both here and render formulas with KaTeX itself so geometry checks
+// exercise the same DOM/CSS contract that users see, rather than a hand-made
+// approximation of `.base` and `.tag` nodes.
+const katexCss = await readFile(path.join(root, "node_modules/katex/dist/katex.min.css"), "utf8");
 const outputDirectory = process.env.READING_HUB_VISUAL_OUTPUT;
 const viewports = [
   { name: "compact", width: 1024, height: 768, zoom: 1 },
@@ -21,14 +27,25 @@ const viewports = [
 
 function page() {
   const largeImage = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='900'><rect width='100%' height='100%' fill='#d6cec0'/><text x='70' y='160' fill='#1b1b17' font-size='96'>Reading Hub visual fixture</text></svg>");
-  return `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>
+  const formula = (id, tex) => katex.renderToString(tex, { displayMode: true, throwOnError: true, strict: "ignore" })
+    .replace(/^<span class="katex-display">/, `<span class="katex-display" id="${id}">`);
+  const normalFormula = formula("formula-normal", String.raw`\begin{aligned}
+    q_i &= \frac{x_i}{y_i}\\
+    z_i &= q_i + 1
+  \end{aligned}\tag{13}`);
+  const wideFormula = formula("formula-wide", String.raw`\begin{aligned}
+    W_3\bigl(\operatorname{SiTU}(W_1x;\beta_1)\odot\operatorname{softcap}(W_2x;\beta_2)\bigr)
+      &+ \sum_{i=1}^{n}\frac{\alpha_i\,\underbrace{x_i}_{\text{long scientific expression}}}{\sqrt{1+\lambda_i^2}}\\
+      &+ \frac{\prod_{j=1}^{m}(a_j+b_j+c_j+d_j+e_j+f_j+g_j+h_j)}{\sum_{k=1}^{m}(u_k+v_k+w_k)}
+  \end{aligned}\tag{14}`);
+  return `<!doctype html><html><head><meta charset="utf-8"><style>${katexCss}\n${css}</style></head><body>
     <main class="shell" id="shell"><header class="app-titlebar" id="app-titlebar"><div class="app-titlebar-actions"><button class="app-titlebar-button" aria-label="收起来源"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16M12.5 9h4"/></svg></button><button class="app-titlebar-button" aria-label="刷新"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0 1.1 4M20 5v6h-6"/></svg></button><button class="app-titlebar-button app-titlebar-add" aria-label="添加来源"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div></header><aside class="sidebar" id="source-sidebar"><nav class="library-nav" id="library-nav"><div class="section-title" id="library-heading">阅读</div><button class="library-filter selected"><span><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/></svg>今日</span></button><button class="library-filter"><span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></svg>未读</span><em>12</em></button><button class="library-filter"><span><svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.8-5.4 2.8 1-6.1-4.4-4.3 6.1-.9Z"/></svg>收藏</span><em>6</em></button></nav><section class="source-section"><div class="section-title" id="source-heading">来源 <span>12</span></div><div class="source-list"><section class="source-group"><button class="source-group-heading"><span class="source-group-label"><svg viewBox="0 0 24 24"><path d="m7 9 5 5 5-5"/></svg><svg class="folder-icon" viewBox="0 0 24 24"><path d="M3.5 7.5h6l1.7 2H20.5v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></svg><span>网页与订阅</span></span><em>2</em></button><button class="source-filter selected"><span class="source-icon source-icon--rss"><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="1"/><path d="M5 11a8 8 0 0 1 8 8M5 5a14 14 0 0 1 14 14"/></svg></span><span class="source-title">测试来源名称应仅显示一行</span></button></section></div></section><footer class="sidebar-footer"><button class="sidebar-settings-button"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/></svg><span>设置</span></button></footer></aside><section class="timeline" id="entry-timeline"><header><div><p class="eyebrow">阅读收件箱</p><h1>今日更新</h1></div><span class="count">12 篇更新</span></header><div class="entry-list"><article class="entry-card selected"><button class="entry-main"><div class="entry-copy"><p class="entry-source">科学空间 · 今天</p><h2>这是一个在窄窗口和大字号下仍必须限制为两行显示的非常长的文章标题测试样例</h2><p class="summary">这是用于验证文章摘要在时间线卡片内会随可用列宽安全截断的长文本；它不能越过卡片边界，也不能无限增高，而应在两行之后明确以省略效果收束，保持列表浏览时的视觉节奏和可读性。</p></div></button></article><article class="entry-card"><button class="entry-main"><div class="entry-copy"><p class="entry-source">测试来源 · 昨天</p><h2>另一篇待读文章</h2></div></button></article></div></section>
     <section class="reader-view reader--scientific" data-reader-preset="reading" style="--reader-font-scale: 1">
       <header class="reader-toolbar"><div class="reader-toolbar-spacer"></div><div class="reader-toolbar-center"><p>科学空间</p><div class="reader-controls"><button>阅读</button></div></div><div class="reader-toolbar-actions"><button class="toolbar-icon-button favorite-button is-favorite">★</button><button class="toolbar-icon-button ai-toggle">✦</button><button class="toolbar-icon-button reader-focus-toggle" aria-pressed="false">⛶</button><button class="toolbar-icon-button external-button">↗</button></div></header>
       <div class="reader-workspace reader-workspace--assistant"><div class="reader-scroll"><article class="reader-article"><header><p class="eyebrow">视觉回归夹具</p><h1>中文长标题与数学公式布局</h1></header><aside class="reader-content-notice" id="feed-summary-notice">正在显示订阅 Feed 提供的内容摘要。原页受 robots 限制，完整原文可在浏览器中打开。</aside><div class="article-body">
         <p>这段内容用于检查文字、图片、表格和公式编号在不同窗口与字号下不会错误重叠或撑破阅读列。</p>
-        <span class="katex-display" id="formula-normal"><span class="katex"><span class="katex-html"><span class="tag">(13)</span><span class="base">∇<sub>z</sub>S(q, i)</span><span class="base"> = q</span><span class="base"> − e<sub>i</sub></span></span></span></span>
-        <span class="katex-display" id="formula-wide"><span class="katex"><span class="katex-html"><span class="tag">(14)</span><span class="base">W₃(SiTU(W₁x;β₁) ⊙ softcap(W₂x;β₂))</span><span class="base"> + ∑ᵢ αᵢ·underbrace{xᵢ}_{long scientific expression}</span></span></span></span>
+        ${normalFormula}
+        ${wideFormula}
         <mjx-container id="formula-mathjax" display="true"><mjx-math><svg width="1040" height="48" aria-label="Scientific Spaces fallback formula"><text x="0" y="28">qᵢ = [(α − 1) / α · (zᵢ − λ)]₊¹⁄⁽ᵅ⁻¹⁾</text></svg></mjx-math></mjx-container>
         <img id="fixture-image" src="${largeImage}" alt="large fixture" />
         <table><thead><tr><th>来源</th><th>状态</th></tr></thead><tbody><tr><td>OpenAlex</td><td>正常</td></tr></tbody></table>

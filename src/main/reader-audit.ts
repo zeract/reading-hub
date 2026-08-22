@@ -1,7 +1,7 @@
 import { load } from "cheerio";
 import { ArticleReader } from "./article-reader";
 import { ReadingDatabase } from "./database";
-import { PublicHttpClient } from "./http";
+import { PublicHttpClient, UnsupportedReaderImageTypeError } from "./http";
 import { IsolatedPageRenderer } from "./page-renderer";
 import { RobotsDisallowedError } from "./robots";
 import { ZhihuFollowConnector } from "./zhihu-follow";
@@ -19,6 +19,10 @@ export type ReaderAuditResult = {
   profile?: ReaderArticle["renderProfile"];
   textLength?: number;
   images?: number;
+  /** Safe metadata about expected image fallback exclusions, never image data. */
+  imageDiagnostics?: string[];
+  /** Safe per-viewport layout diagnostics; article HTML is never reported. */
+  visualDiagnostics?: string[];
   katexBlocks?: number;
   mathJaxBlocks?: number;
   mathJaxSpacerNodes?: number;
@@ -26,7 +30,7 @@ export type ReaderAuditResult = {
   rawTeXDiagnostics?: string[];
   renderedMathDiagnostics?: string[];
   mode?: "article" | "feed_body" | "feed_summary" | "embedded";
-  sample?: "newest" | "historical";
+  sample?: ReaderAuditSampleKind;
   status?: "passed" | "issues" | "skipped" | "failed" | "timed_out";
   durationMs?: number;
   issues: string[];
@@ -39,8 +43,8 @@ export type ReaderAuditProgress = {
   source: string;
   kind: Source["kind"];
   entry?: string;
-  sample?: "newest" | "historical";
-  stage?: "read" | "image";
+  sample?: ReaderAuditSampleKind;
+  stage?: "read" | "image" | "layout";
   elapsedMs?: number;
   status?: ReaderAuditResult["status"];
   issueCount?: number;
@@ -48,13 +52,26 @@ export type ReaderAuditProgress = {
 
 export interface ReaderAuditOptions {
   sourceFilter?: string;
+  /**
+   * Audit every saved entry for the selected source(s). This is intentionally
+   * opt-in: the default release check remains a polite newest-plus-history
+   * sample, while source-specific investigations can establish full coverage.
+   */
+  allEntries?: boolean;
   readTimeoutMs?: number;
   imageTimeoutMs?: number;
+  layoutTimeoutMs?: number;
   sampleDelayMs?: number;
   heartbeatMs?: number;
   /** Receives safe metadata only; article HTML and credentials are never reported. */
   onProgress?: (progress: ReaderAuditProgress) => void | Promise<void>;
   onResult?: (result: ReaderAuditResult) => void | Promise<void>;
+  /**
+   * Optional in-memory layout inspection. The callback must return diagnostics
+   * only and must not retain article HTML; it is used by the explicit
+   * Scientific Spaces visual audit mode.
+   */
+  inspectLayout?: (article: ReaderArticle, source: Source, entry: Entry) => Promise<string[] | undefined> | string[] | undefined;
 }
 
 export class ReaderAuditTimeoutError extends Error {
@@ -89,7 +106,11 @@ export function findLeakedInlineMath(value: string): string[] {
     // A lone underscore at the end of an account name (for example
     // `@someone_`) is ordinary prose, not mathematical syntax.
     const hasScript = /[A-Za-zα-ωΑ-Ω0-9)}\]]\s*[_^]\s*(?:\{[^}\r\n]+\}|[A-Za-zα-ωΑ-Ω0-9])/.test(formula);
-    const hasOperator = /[=<>±×÷]/.test(formula);
+    // A multiplication glyph alone is common in price/specification prose
+    // (for example "$19,200/mo … 2× NVMe … ~$") and is not enough evidence
+    // of a leaked formula. Real multiplication is normally accompanied by a
+    // TeX command, script or equation relation, all handled above.
+    const hasOperator = /[=<>±÷]/.test(formula);
     const standaloneSymbol = /^[A-Za-zα-ωΑ-Ω][A-Za-z0-9α-ωΑ-Ω]*$/.test(formula);
     const sentenceLike = /(?:^|[.!?])\s+(?:@|https?:\/\/|[A-Z])/.test(formula);
     // A valid TeX expression may contain prose through `\\text{…}`, so only
@@ -138,7 +159,7 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
   const issues: string[] = [];
   // Follow-feed cards can legitimately be a short public status update rather
   // than a long-form article. Their in-app display is still valid.
-  if (text.length < 180 && source.kind !== "zhihu_follow" && article.contentMode !== "feed_body" && article.contentMode !== "feed_summary") issues.push("正文过短");
+  if (text.length < 180 && source.kind !== "zhihu_follow" && source.kind !== "academic" && article.contentMode !== "feed_body" && article.contentMode !== "feed_summary") issues.push("正文过短");
   const sanitised = load(`<article id="audit-sanitised">${html}</article>`);
   const executableElement = sanitised("script, iframe, object, embed").length > 0 || sanitised("#audit-sanitised *").toArray().some((node: any) => {
     const attributes = node.attribs || {};
@@ -189,6 +210,16 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
   };
 }
 
+export function expectedImageProxyDiagnostic(error: unknown): string | undefined {
+  if (error instanceof UnsupportedReaderImageTypeError && error.contentType === "image/svg+xml") {
+    return "首图为 SVG；正文保留直接图片显示，加载失败时不会绕过安全代理限制。";
+  }
+  if (error instanceof RobotsDisallowedError) {
+    return "首图的本地失败回退受 robots.txt 限制；正文保留原始图片地址与安全原文入口。";
+  }
+  return undefined;
+}
+
 async function inspectFirstImage(http: PublicHttpClient, entry: Entry, article: ReaderArticle, result: ReaderAuditResult, signal?: AbortSignal): Promise<void> {
   const imageUrl = load(article.contentHtml)("img").first().attr("src");
   if (!imageUrl) return;
@@ -198,6 +229,14 @@ async function inspectFirstImage(http: PublicHttpClient, entry: Entry, article: 
     await http.getImageDataUrl(imageUrl, entry.url, { signal });
   } catch (error) {
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : error;
+    // The renderer can safely use a remote SVG as an <img>, but the main
+    // process deliberately refuses to turn un-sanitised SVG into a data URL.
+    // That is an expected proxy exclusion rather than a broken article image.
+    const diagnostic = expectedImageProxyDiagnostic(error);
+    if (diagnostic) {
+      result.imageDiagnostics = [...(result.imageDiagnostics || []), diagnostic];
+      return;
+    }
     result.issues.push(`首图本地代理失败：${error instanceof Error ? error.message : "未知错误"}`);
   }
 }
@@ -250,11 +289,13 @@ export async function runReaderAuditOperation<T>(
   });
 }
 
-type SourceSample = { source: Source; entry: Entry; sample: "newest" | "historical" };
+export type ReaderAuditSampleKind = "newest" | "historical" | "all";
 
-function sourceSamples(database: ReadingDatabase, source: Source): SourceSample[] {
-  const available = database.listEntries(source.id, 200);
+type SourceSample = { source: Source; entry: Entry; sample: ReaderAuditSampleKind };
+
+export function selectReaderAuditSamples(source: Source, available: Entry[], allEntries = false): SourceSample[] {
   if (!available.length) return [];
+  if (allEntries) return available.map((entry) => ({ source, entry, sample: "all" }));
   const samples: SourceSample[] = [{ source, entry: available[0], sample: "newest" }];
   if (available.length > 1) {
     const index = Math.min(available.length - 1, 1 + source.id.split("").reduce((sum, character) => sum + character.charCodeAt(0), 0) % (available.length - 1));
@@ -263,9 +304,14 @@ function sourceSamples(database: ReadingDatabase, source: Source): SourceSample[
   return samples;
 }
 
+function sourceSamples(database: ReadingDatabase, source: Source, allEntries = false): SourceSample[] {
+  const available = database.listEntries({ sourceId: source.id, limit: allEntries ? 10_000 : 200 });
+  return selectReaderAuditSamples(source, available, allEntries);
+}
+
 async function reportProgress(options: ReaderAuditOptions, progress: ReaderAuditProgress): Promise<void> {
   const target = progress.entry ? `「${progress.source}」/「${progress.entry}」` : `「${progress.source}」`;
-  const stage = progress.stage === "read" ? "读取正文" : progress.stage === "image" ? "检查首图" : "";
+  const stage = progress.stage === "read" ? "读取正文" : progress.stage === "image" ? "检查首图" : progress.stage === "layout" ? "检查排版" : "";
   const elapsed = progress.elapsedMs === undefined ? "" : `，已用 ${Math.ceil(progress.elapsedMs / 1_000)} 秒`;
   const status = progress.status ? `，${progress.status}` : "";
   console.log(`[reader-audit] ${progress.completed}/${progress.total} ${progress.phase} ${target}${stage ? `，${stage}` : ""}${elapsed}${status}`);
@@ -311,10 +357,12 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
       await reportProgress(options, { phase: "source_skipped", completed: 0, total: 0, source: result.source, kind: result.kind, status: result.status, issueCount: result.issues.length });
       return [result];
     }
-    const planned = sources.map((source) => ({ source, samples: sourceSamples(database, source) }));
+    const allEntries = options.allEntries ?? process.env.READING_HUB_AUDIT_ALL === "1";
+    const planned = sources.map((source) => ({ source, samples: sourceSamples(database, source, allEntries) }));
     const total = planned.reduce((count, item) => count + item.samples.length, 0);
     const readTimeoutMs = options.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
     const imageTimeoutMs = options.imageTimeoutMs ?? DEFAULT_IMAGE_TIMEOUT_MS;
+    const layoutTimeoutMs = options.layoutTimeoutMs ?? DEFAULT_IMAGE_TIMEOUT_MS;
     const sampleDelayMs = options.sampleDelayMs ?? DEFAULT_SAMPLE_DELAY_MS;
     const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
     let completed = 0;
@@ -348,6 +396,20 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
             (elapsedMs) => void reportProgress(options, { phase: "waiting", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "image", elapsedMs }),
             heartbeatMs
           );
+          if (options.inspectLayout && article.renderProfile === "scientific") {
+            await reportProgress(options, { phase: "started", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "layout" });
+            const visualDiagnostics = await runReaderAuditOperation(
+              () => Promise.resolve(options.inspectLayout?.(article, source, entry)),
+              layoutTimeoutMs,
+              "排版检查",
+              (elapsedMs) => void reportProgress(options, { phase: "waiting", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "layout", elapsedMs }),
+              heartbeatMs
+            );
+            if (visualDiagnostics?.length) {
+              result.visualDiagnostics = visualDiagnostics.slice(0, 6);
+              result.issues.push(`科学空间排版异常：${visualDiagnostics[0]}`);
+            }
+          }
           result.status = result.issues.length ? "issues" : "passed";
           result.durationMs = Date.now() - startedAt;
           results.push(result);
