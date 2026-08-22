@@ -64,6 +64,20 @@ function quitApplication(): void {
   app.quit();
 }
 
+/**
+ * SQLite must outlive every renderer IPC request that Electron drains while a
+ * window is closing. `before-quit` runs before that drain has finished; in
+ * development a main-process rebuild therefore used to close the database
+ * while the outgoing renderer was still requesting its initial source list.
+ * `will-quit` is emitted only after windows have been closed, so it is the
+ * safe final boundary for releasing main-process services.
+ */
+function closeApplicationServices(): void {
+  const activeServices = services;
+  services = undefined;
+  activeServices?.close();
+}
+
 // `scripts/dev.mjs` terminates Electron when the compiled main process changes.
 // On macOS, window close normally hides this menu-bar app, so translate terminal
 // signals into an explicit app quit instead of leaving a hidden lock owner.
@@ -74,6 +88,14 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, quitAppl
 // Keep this strictly development-only: production apps are intentionally
 // allowed to remain resident in the macOS menu bar after their window closes.
 if (isDevelopment) installDevelopmentSupervisorGuard(process, quitApplication);
+
+// Mark shutdown at the earliest lifecycle signal, but defer resource release
+// until Electron has finished closing every renderer. Keeping these listeners
+// outside bootstrap also covers a quit request that races startup.
+app.on("before-quit", () => {
+  quitting = true;
+});
+app.once("will-quit", closeApplicationServices);
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -146,11 +168,6 @@ async function bootstrap(): Promise<void> {
   services.sync.start();
 
   app.on("activate", showWindow);
-  app.on("before-quit", () => {
-    quitting = true;
-    services?.close();
-    services = undefined;
-  });
 }
 
 async function runReaderAudit(): Promise<void> {

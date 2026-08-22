@@ -26,6 +26,14 @@ describe("main-process boundaries", () => {
     expect(handlers).toContain("isAiStreamRequest");
   });
 
+  it("keeps services alive through the renderer shutdown drain before closing SQLite", () => {
+    const index = mainFile("index.ts");
+
+    expect(index).toMatch(/app\.on\("before-quit", \(\) => \{\s+quitting = true;\s+\}\);/);
+    expect(index).toContain('app.once("will-quit", closeApplicationServices);');
+    expect(index).not.toMatch(/app\.on\("before-quit", \(\) => \{[\s\S]*?services\?\.close\(\)/);
+  });
+
   it("uses direct built-in connector adapters and a marker-gated maintenance path", () => {
     const registry = mainFile("connector-registry.ts");
     const services = mainFile("app-services.ts");
