@@ -756,6 +756,41 @@ describe("article reader extraction", () => {
     expect(article.contentHtml).toContain("授权会话正文");
   });
 
+  it("keeps annotated Zhihu RichContent text while excluding its page-level discussion thread", () => {
+    const result = extractReaderArticle(
+      `<article class="QuestionAnswer-content">
+        <div class="RichContent-inner">
+          <p>${"知乎正文内容 ".repeat(24)}</p>
+          <p>这段<span class="RichContent-commented-inline">被评论标注的文字</span>仍是作者正文，必须保留。</p>
+          <a class="CommentLink" href="#comments">3 条评论</a>
+          <section class="CommentList"><article class="CommentItem"><p>底部评论区不应进入正文。</p></article></section>
+        </div>
+      </article>`,
+      "https://www.zhihu.com/question/123/answer/456",
+      entry
+    );
+
+    expect(result?.article.contentHtml).toContain("被评论标注的文字");
+    expect(result?.article.contentHtml).not.toContain("3 条评论");
+    expect(result?.article.contentHtml).not.toContain("底部评论区");
+  });
+
+  it("continues excluding lower-case and PascalCase discussion containers for ordinary articles", () => {
+    const result = extractReaderArticle(
+      `<article>
+        <p>${"通用文章正文 ".repeat(30)}</p>
+        <section class="comment-section"><p>普通站点的评论区不应进入正文。</p></section>
+        <section class="CommentList"><article class="CommentItem"><p>PascalCase 评论区不应进入正文。</p></article></section>
+      </article>`,
+      entry.url,
+      entry
+    );
+
+    expect(result?.article.contentHtml).toContain("通用文章正文");
+    expect(result?.article.contentHtml).not.toContain("普通站点的评论区");
+    expect(result?.article.contentHtml).not.toContain("PascalCase 评论区");
+  });
+
   it("prefers the semantic article over a page container with navigation and comments", () => {
     const result = extractReaderArticle(
       `<main>

@@ -29,6 +29,15 @@ const CONTENT_SELECTORS = [
   { selector: "main", priority: 0 }
 ];
 
+// Zhihu answer/article pages often wrap their full page card in an `article`,
+// while the actual authored prose lives in RichContent. Prefer the latter so
+// response metadata and the discussion thread cannot outrank the body merely
+// because `article` has a higher generic semantic priority.
+const ZHIHU_CONTENT_SELECTORS = [
+  { selector: ".RichContent-inner, .RichText", priority: 12 },
+  ...CONTENT_SELECTORS
+];
+
 const SCIENTIFIC_CONTENT_SELECTORS = [
   // Current Scientific Spaces pages place the article in this PascalCase
   // container. The surrounding `#content` also contains comments, payment
@@ -39,7 +48,7 @@ const SCIENTIFIC_CONTENT_SELECTORS = [
   ...CONTENT_SELECTORS
 ];
 
-const NOISE_SELECTOR = [
+const BASE_NOISE_SELECTOR = [
   "script",
   "style",
   "noscript",
@@ -58,7 +67,6 @@ const NOISE_SELECTOR = [
   "textarea",
   "[role='navigation']",
   "[role='banner']",
-  "[class*='comment']",
   "[class*='related']",
   "[class*='recommend']",
   "[class*='share']",
@@ -69,6 +77,22 @@ const NOISE_SELECTOR = [
   "[class*='advert']",
   "[class*='ad-']"
 ].join(",");
+
+// Some providers use PascalCase discussion components, which are not matched
+// by the generic lower-case class selector below. Keep these explicit so an
+// answer's CommentList/CommentItem cannot leak into a selected article root.
+const COMMENT_THREAD_SELECTOR = [
+  "#comment", "#comments", "#comment-list", "#commentlist",
+  ".comments", ".comment-list", ".commentlist", ".comment-thread", ".comments-area", ".comment-section",
+  "[class*='CommentList']", "[class*='CommentItem']", "[class*='CommentContent']", "[class*='CommentLink']", "[class*='CommentsV2']",
+  "[class$='-comments']", "[class$='_comments']", "[class*='comment-list']", "[class*='comment-thread']", "[class*='comments-area']"
+].join(",");
+
+const NOISE_SELECTOR = [BASE_NOISE_SELECTOR, "[class*='comment']", COMMENT_THREAD_SELECTOR].join(",");
+
+const ZHIHU_INLINE_ANNOTATION_TAGS = new Set([
+  "a", "b", "del", "em", "i", "ins", "mark", "s", "small", "span", "strong", "sub", "sup"
+]);
 
 const ALLOWED_TAGS = new Set([
   "a", "abbr", "b", "blockquote", "br", "caption", "cite", "code", "dd", "del", "details", "div", "dl", "dt", "em", "figcaption", "figure",
@@ -307,7 +331,7 @@ function createFeedSummaryArticle(entry: Entry, source?: Source): ReaderArticle 
 export function extractReaderArticle(html: string, pageUrl: string, entry: Entry, scientificMath?: ScientificMathRenderer): ExtractedArticle | undefined {
   const $ = load(html);
   const renderProfile = resolveReaderProfile(pageUrl);
-  const content = chooseContentCandidate(pickContentRoot($, renderProfile), extractReadabilityContent(html, pageUrl));
+  const content = chooseContentCandidate(pickContentRoot($, renderProfile, pageUrl), extractReadabilityContent(html, pageUrl));
   if (!content) return undefined;
   const contentDocument = load(`<article id="reader-selected-content">${content.html}</article>`);
   const selectedContent = contentDocument("#reader-selected-content");
@@ -318,7 +342,7 @@ export function extractReaderArticle(html: string, pageUrl: string, entry: Entry
       $("h1").first().text() ||
       entry.title
   ) || entry.title;
-  removeNoiseExceptMathScripts(contentDocument, selectedContent);
+  removeNoiseExceptMathScripts(contentDocument, selectedContent, pageUrl);
   selectedContent.find("header").remove();
   removeDuplicateArticleChrome(contentDocument, selectedContent, title, renderProfile, entry.summary);
 
@@ -358,7 +382,8 @@ export function extractReaderArticle(html: string, pageUrl: string, entry: Entry
   };
 }
 
-function removeNoiseExceptMathScripts($: ReturnType<typeof load>, content: any): void {
+function removeNoiseExceptMathScripts($: ReturnType<typeof load>, content: any, pageUrl: string): void {
+  preserveZhihuInlineAnnotations($, content, pageUrl);
   content.find(NOISE_SELECTOR).each((_index: number, node: any) => {
     const element = $(node);
     if (isMathScript(element) || isImageNoscript(element)) return;
@@ -424,9 +449,15 @@ function removeScientificSpacesChrome($: ReturnType<typeof load>, content: any, 
   }
 }
 
-function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfile): ContentCandidate | undefined {
+function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfile, pageUrl: string): ContentCandidate | undefined {
+  const prefersZhihuRichContent = isZhihuContentUrl(pageUrl);
   const candidates = new Map<any, number>();
-  for (const { selector, priority } of profile === "scientific" ? SCIENTIFIC_CONTENT_SELECTORS : CONTENT_SELECTORS) {
+  const selectors = profile === "scientific"
+    ? SCIENTIFIC_CONTENT_SELECTORS
+    : prefersZhihuRichContent
+      ? ZHIHU_CONTENT_SELECTORS
+      : CONTENT_SELECTORS;
+  for (const { selector, priority } of selectors) {
     $(selector).each((_index, node) => {
       candidates.set(node, Math.max(candidates.get(node) || 0, priority));
     });
@@ -437,6 +468,7 @@ function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfil
   for (const [node, priority] of candidates) {
     if (!node) continue;
     const candidate = $(node).clone();
+    preserveZhihuInlineAnnotations($, candidate, pageUrl);
     candidate.find(NOISE_SELECTOR).remove();
     const text = normalText(candidate.text());
     if (text.length < 40) continue;
@@ -453,6 +485,39 @@ function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfil
   if (!best) return undefined;
   const root = $(best.node).clone();
   return { html: root.html() || "", quality: readerContentQuality(root), priority: best.priority };
+}
+
+function isZhihuContentUrl(rawUrl: string): boolean {
+  try {
+    const host = new URL(rawUrl).hostname.toLowerCase();
+    return host === "zhihu.com" || host.endsWith(".zhihu.com");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Zhihu may wrap selected authored text in an inline marker when readers have
+ * commented on that passage. The generic noise rule deliberately removes
+ * comment *threads*, so normalize only inline wording wrappers before it runs.
+ *
+ * Removing the class rather than the element retains normal text semantics and
+ * links, while the sanitizer still strips all remote presentation classes.
+ * Block-level CommentList/CommentItem ancestors are deliberately left intact
+ * here and removed by COMMENT_THREAD_SELECTOR.
+ */
+function preserveZhihuInlineAnnotations($: ReturnType<typeof load>, content: any, pageUrl: string): void {
+  if (!isZhihuContentUrl(pageUrl)) return;
+  content.find("[class]").each((_index: number, node: any) => {
+    const element = $(node);
+    const tagName = element.get(0)?.tagName?.toLowerCase();
+    const className = element.attr("class") || "";
+    // `commented` is a passage annotation; labels such as CommentLink and
+    // comment-link are interaction controls and must remain removable noise.
+    if (!tagName || !ZHIHU_INLINE_ANNOTATION_TAGS.has(tagName) || !/(?:commented|annotation)/i.test(className)) return;
+    if (element.is(COMMENT_THREAD_SELECTOR) || element.parents(COMMENT_THREAD_SELECTOR).length) return;
+    element.removeAttr("class");
+  });
 }
 
 /**
@@ -519,6 +584,7 @@ function sanitizeContent(
   const $ = load(`<div id="reader-content">${rawHtml}</div>`);
   const root = $("#reader-content");
   hydrateLazyImages($, root, pageUrl);
+  preserveZhihuInlineAnnotations($, root, pageUrl);
   const math = preserveMathScripts($, root);
   preserveRenderedMathJax($, root, math);
   root.find(NOISE_SELECTOR).remove();
