@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { IPC_CHANNELS } from "../src/shared/ipc";
 import {
-  isAiStreamRequest,
+  parseAiStreamRequest,
   parseAiProviderConfiguration,
   parseAiProviderId,
   parseEntryListQuery,
@@ -11,6 +11,7 @@ import {
   requireEntityId,
   requireText
 } from "../src/main/ipc-validation";
+import { MAX_AI_ARTICLE_TEXT_LENGTH } from "../src/shared/ai-input";
 
 describe("IPC input validation", () => {
   it("keeps every renderer channel unique", () => {
@@ -53,7 +54,9 @@ describe("IPC input validation", () => {
         selection: { text: "一段话", intent: "explain" }
       }
     };
-    expect(isAiStreamRequest(request)).toBe(true);
-    expect(isAiStreamRequest({ ...request, request: { ...request.request, question: "x".repeat(3_001) } })).toBe(false);
+    expect(parseAiStreamRequest(request)).toEqual(request);
+    expect(() => parseAiStreamRequest({ ...request, request: { ...request.request, question: "x".repeat(3_001) } })).toThrow("问题过长");
+    const longArticle = { ...request, request: { ...request.request, article: { ...request.request.article, text: "x".repeat(MAX_AI_ARTICLE_TEXT_LENGTH + 1) } } };
+    expect(() => parseAiStreamRequest(longArticle)).toThrow("文章上下文超过 18,000 个字符");
   });
 });

@@ -23,7 +23,7 @@ describe("main-process boundaries", () => {
     expect(services).toContain("createConnectorRegistry");
     expect(handlers).toContain("IPC_CHANNELS");
     expect(handlers).toContain("parseSourceSettings");
-    expect(handlers).toContain("isAiStreamRequest");
+    expect(handlers).toContain("parseAiStreamRequest");
   });
 
   it("keeps services alive through the renderer shutdown drain before closing SQLite", () => {

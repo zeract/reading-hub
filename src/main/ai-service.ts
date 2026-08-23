@@ -1,4 +1,12 @@
 import { assertPublicUrl } from "../shared/url";
+import {
+  MAX_AI_ARTICLE_TITLE_LENGTH,
+  MAX_AI_QUESTION_LENGTH,
+  MAX_AI_SELECTION_TEXT_LENGTH,
+  MAX_AI_SOURCE_TITLE_LENGTH,
+  normaliseAiArticleText,
+  normaliseAiText
+} from "../shared/ai-input";
 import { CodexCliError, LocalCodexCli, type CodexCliRunner } from "./codex-cli";
 import { CODEX_CLI_MODEL_OPTIONS } from "../shared/types";
 import type {
@@ -12,9 +20,6 @@ import type {
   AiReasoningEffort
 } from "../shared/types";
 
-const MAX_QUESTION_LENGTH = 3_000;
-const MAX_ARTICLE_LENGTH = 18_000;
-const MAX_SELECTION_LENGTH = 2_000;
 const REQUEST_TIMEOUT_MS = 45_000;
 
 type ProviderDefinition = { label: string; defaultModel: string; requiresApiKey: boolean; endpoint?: string };
@@ -292,17 +297,19 @@ function describeCodexSelection(configuration: StoredCodexConfiguration): string
 function normaliseQuestion(value: string): string {
   const question = value.replace(/\s+/g, " ").trim();
   if (!question) throw new AiServiceError("请输入想问的问题。");
-  if (question.length > MAX_QUESTION_LENGTH) throw new AiServiceError("问题过长，请控制在 3,000 个字符以内。");
+  if (question.length > MAX_AI_QUESTION_LENGTH) throw new AiServiceError("问题过长，请控制在 3,000 个字符以内。");
   return question;
 }
 
 function normaliseArticle(article: AiArticleContext): AiArticleContext {
-  const title = article.title.replace(/\s+/g, " ").trim().slice(0, 600);
+  const title = normaliseAiText(article.title, MAX_AI_ARTICLE_TITLE_LENGTH);
   const url = assertPublicUrl(article.url).toString();
-  const sourceTitle = article.sourceTitle?.replace(/\s+/g, " ").trim().slice(0, 200);
+  const sourceTitle = article.sourceTitle === undefined
+    ? undefined
+    : normaliseAiText(article.sourceTitle, MAX_AI_SOURCE_TITLE_LENGTH);
   // The renderer normally supplies textContent. Strip accidental markup again
   // at this boundary so page HTML, scripts, and event attributes never travel.
-  const text = article.text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_ARTICLE_LENGTH);
+  const text = normaliseAiArticleText(article.text.replace(/<[^>]*>/g, " "));
   if (!title || !text) throw new AiServiceError("当前文章没有可供学习助手分析的正文。");
   return { title, url, sourceTitle, text };
 }
@@ -314,7 +321,7 @@ function normaliseSelection(value: AiSelectionContext | undefined): AiSelectionC
   }
   const text = value.text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
   if (!text) throw new AiServiceError("没有可供分析的所选文字。");
-  if (text.length > MAX_SELECTION_LENGTH) throw new AiServiceError("所选文字过长，请控制在 2,000 个字符以内。");
+  if (text.length > MAX_AI_SELECTION_TEXT_LENGTH) throw new AiServiceError("所选文字过长，请控制在 2,000 个字符以内。");
   return { intent: value.intent, text };
 }
 

@@ -1,6 +1,5 @@
+import { MAX_AI_SELECTION_TEXT_LENGTH, normaliseAiText } from "../shared/ai-input";
 import type { AiSelectionContext, AiSelectionIntent } from "../shared/types";
-
-export const MAX_SELECTED_ARTICLE_TEXT = 2_000;
 
 export type SelectionRect = { left: number; top: number; right: number; bottom: number };
 export type SelectionUnderline = { left: number; top: number; width: number };
@@ -67,9 +66,9 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 export function normaliseSelectedArticleText(value: string): string | undefined {
-  const text = value.replace(/\s+/g, " ").trim();
+  const text = normaliseAiText(value, MAX_AI_SELECTION_TEXT_LENGTH);
   if (!text) return undefined;
-  return text.slice(0, MAX_SELECTED_ARTICLE_TEXT);
+  return text;
 }
 
 export function selectionActionQuestion(intent: AiSelectionIntent, customQuestion?: string): string | undefined {

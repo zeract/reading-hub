@@ -1,7 +1,8 @@
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AiProviderId, AiProviderSettings, AiSelectionContext, AiSelectionIntent, Entry, ReaderArticle, Source } from "../shared/types";
+import type { AiArticleContext, AiProviderId, AiProviderSettings, AiSelectionContext, AiSelectionIntent, Entry, ReaderArticle, Source } from "../shared/types";
 import { AiMarkdownContent } from "./ai-markdown";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
+import { buildAiArticleContext, collectAiArticleText } from "./ai-request";
 import { errorMessage } from "./errors";
 import { adjustReaderFontScale, loadReaderPreferences, saveReaderPreferences, type ReaderPreferences, type ReaderPreset } from "./reader-preferences";
 import { normaliseSelectedArticleText, selectedTextLabel, selectionActionQuestion, selectionContext, selectionOverlay, type SelectionOverlay, type SelectionRect } from "./selection-actions";
@@ -23,9 +24,26 @@ function toSelectionRect(rect: DOMRect): SelectionRect {
   return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
 }
 
-function toArticleText(html: string): string {
-  const document = new DOMParser().parseFromString(html, "text/html");
-  return (document.body.textContent || "").replace(/\s+/g, " ").trim();
+function toAiArticleContext(article: ReaderArticle, sourceTitle?: string): AiArticleContext {
+  const document = new DOMParser().parseFromString(article.contentHtml, "text/html");
+  // Both the side panel and selection helper call this shared path. Capping
+  // here keeps their IPC payload within the same bounded contract that the
+  // main process enforces before a provider or Codex CLI sees the article.
+  return buildAiArticleContext({
+    title: article.title,
+    url: article.url,
+    sourceTitle,
+    plainText: collectAiArticleText(textNodeValues(document.body))
+  });
+}
+
+function* textNodeValues(root: Node): Generator<string> {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    if (node.nodeValue) yield node.nodeValue;
+    node = walker.nextNode();
+  }
 }
 
 export function ReaderPlaceholder() {
@@ -363,7 +381,7 @@ function SelectionAssistantCard({ request, overlay, article, sourceTitle, prefer
         provider: provider.id,
         question: request.question,
         selection: request.selection,
-        article: { title: article.title, url: article.url, sourceTitle, text: toArticleText(article.contentHtml) }
+        article: toAiArticleContext(article, sourceTitle)
       }
     }).catch((reason) => {
       if (activeRequestId.current !== requestId) return;
@@ -470,7 +488,6 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
       onOpenSettings();
       return;
     }
-    const prompt = toArticleText(article.contentHtml);
     setQuestion(""); setBusy(true); setError(undefined);
     const requestId = newAiRequestId();
     const assistantMessageId = newAiRequestId();
@@ -486,7 +503,7 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
           provider: providerId,
           question: text,
           selection,
-          article: { title: article.title, url: article.url, sourceTitle, text: prompt }
+          article: toAiArticleContext(article, sourceTitle)
         }
       });
     } catch (reason) {

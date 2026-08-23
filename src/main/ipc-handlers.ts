@@ -6,7 +6,7 @@ import type { AiStreamEvent, AiStreamRequest, OpmlImportResult } from "../shared
 import { sourceFaviconCandidate } from "../shared/source-icon";
 import type { ApplicationServices } from "./app-services";
 import {
-  isAiStreamRequest,
+  parseAiStreamRequest,
   parseAcademicDraft,
   parseAiProviderConfiguration,
   parseAiProviderId,
@@ -105,9 +105,9 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   handle(IPC_CHANNELS.ai.clearProvider, (_event, provider: unknown) =>
     learningAssistant.clear(parseAiProviderId(provider)));
   handle(IPC_CHANNELS.ai.askStream, (event, payload: unknown) => {
-    if (!isAiStreamRequest(payload)) throw new Error("AI 流式请求无效，请重新发送问题。");
-    startAiStream(event.sender, learningAssistant, payload);
-    return { requestId: payload.requestId };
+    const request = parseAiStreamRequest(payload);
+    startAiStream(event.sender, learningAssistant, request);
+    return { requestId: request.requestId };
   });
 
   handle(IPC_CHANNELS.window.isFullscreen, (event) => BrowserWindow.fromWebContents(event.sender)?.isFullScreen() ?? false);

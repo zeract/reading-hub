@@ -1,6 +1,9 @@
 import type {
+  AiArticleContext,
   AiProviderConfiguration,
   AiProviderId,
+  AiQuestionRequest,
+  AiSelectionContext,
   AiStreamRequest,
   EntryListQuery,
   ExtractionRule,
@@ -9,6 +12,15 @@ import type {
   SourceSettings,
   SubscriptionDraft
 } from "../shared/types";
+import {
+  AI_STREAM_REQUEST_ID_PATTERN,
+  MAX_AI_ARTICLE_TEXT_LENGTH,
+  MAX_AI_ARTICLE_TITLE_LENGTH,
+  MAX_AI_ARTICLE_URL_LENGTH,
+  MAX_AI_QUESTION_LENGTH,
+  MAX_AI_SELECTION_TEXT_LENGTH,
+  MAX_AI_SOURCE_TITLE_LENGTH
+} from "../shared/ai-input";
 
 const SOURCE_KINDS: SourceKind[] = ["rss", "generic", "manual", "zhihu", "zhihu_follow", "x", "xiaohongshu", "academic"];
 const AI_PROVIDERS = ["openai", "deepseek", "codex-cli"] as const;
@@ -119,25 +131,46 @@ export function parseAiProviderId(value: unknown): AiProviderId {
   return value as AiProviderId;
 }
 
-export function isAiStreamRequest(value: unknown): value is AiStreamRequest {
-  if (!isRecord(value) || typeof value.requestId !== "string" || !/^[A-Za-z0-9_-]{8,80}$/.test(value.requestId) || !isRecord(value.request)) return false;
+export function parseAiStreamRequest(value: unknown): AiStreamRequest {
+  if (!isRecord(value)) throw new Error("AI 流式请求结构无效，请刷新后重试。");
+  if (typeof value.requestId !== "string" || !AI_STREAM_REQUEST_ID_PATTERN.test(value.requestId)) throw new Error("AI 请求标识无效，请重试。");
+  if (!isRecord(value.request)) throw new Error("AI 学习请求无效，请重新发送问题。");
   const request = value.request;
   const article = request.article;
   const selection = request.selection;
-  return AI_PROVIDERS.includes(request.provider as typeof AI_PROVIDERS[number])
-    && typeof request.question === "string"
-    && request.question.length <= 3_000
-    && isRecord(article)
-    && typeof article.title === "string"
-    && article.title.length <= 500
-    && typeof article.url === "string"
-    && article.url.length <= 2_000
-    && typeof article.text === "string"
-    && article.text.length <= 18_000
-    && (selection === undefined || isRecord(selection)
-      && typeof selection.text === "string"
-      && selection.text.length <= 2_000
-      && ["translate", "explain", "ask"].includes(selection.intent as string));
+  if (!AI_PROVIDERS.includes(request.provider as typeof AI_PROVIDERS[number])) throw new Error("AI 服务无效，请重新选择。");
+  if (typeof request.question !== "string") throw new Error("AI 问题无效，请重新输入。");
+  if (request.question.length > MAX_AI_QUESTION_LENGTH) throw new Error("问题过长，请控制在 3,000 个字符以内。");
+  if (!isRecord(article)) throw new Error("AI 文章上下文无效，请刷新文章后重试。");
+  if (typeof article.title !== "string" || article.title.length > MAX_AI_ARTICLE_TITLE_LENGTH) throw new Error("AI 文章标题无效，请刷新文章后重试。");
+  if (typeof article.url !== "string" || article.url.length > MAX_AI_ARTICLE_URL_LENGTH) throw new Error("AI 文章链接无效，请刷新文章后重试。");
+  if (typeof article.text !== "string") throw new Error("AI 文章正文无效，请刷新文章后重试。");
+  if (article.text.length > MAX_AI_ARTICLE_TEXT_LENGTH) throw new Error("文章上下文超过 18,000 个字符。请刷新页面后重试。");
+  if (article.sourceTitle !== undefined && (typeof article.sourceTitle !== "string" || article.sourceTitle.length > MAX_AI_SOURCE_TITLE_LENGTH)) {
+    throw new Error("AI 文章来源无效，请刷新文章后重试。");
+  }
+  if (selection !== undefined) {
+    if (!isRecord(selection) || typeof selection.text !== "string" || selection.text.length > MAX_AI_SELECTION_TEXT_LENGTH
+      || !["translate", "explain", "ask"].includes(selection.intent as string)) {
+      throw new Error("所选文字请求无效，请重新选择文章内容。");
+    }
+  }
+  const parsedArticle: AiArticleContext = {
+    title: article.title as string,
+    url: article.url as string,
+    text: article.text as string,
+    ...(article.sourceTitle === undefined ? {} : { sourceTitle: article.sourceTitle as string })
+  };
+  const parsedSelection: AiSelectionContext | undefined = selection === undefined
+    ? undefined
+    : { text: selection.text as string, intent: selection.intent as AiSelectionContext["intent"] };
+  const parsedRequest: AiQuestionRequest = {
+    provider: request.provider as AiProviderId,
+    question: request.question as string,
+    article: parsedArticle,
+    ...(parsedSelection ? { selection: parsedSelection } : {})
+  };
+  return { requestId: value.requestId, request: parsedRequest };
 }
 
 function numericTimestamp(value: unknown, message: string): number | undefined {
