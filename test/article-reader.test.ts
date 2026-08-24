@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { load } from "cheerio";
-import { ArticleReader, extractReaderArticle } from "../src/main/article-reader";
+import { ArticleReader, extractReaderArticle, extractReaderArticleAsync } from "../src/main/article-reader";
 import type { PublicHttpClient } from "../src/main/http";
-import { ScientificMathRenderer } from "../src/main/mathjax-renderer";
+import { ScientificMathRenderer, sanitizeMathJaxSvg } from "../src/main/mathjax-renderer";
 import type { PageRenderer } from "../src/main/page-renderer";
 import type { Entry } from "../src/shared/types";
 import type { Source } from "../src/shared/types";
@@ -258,7 +258,7 @@ describe("article reader extraction", () => {
       `<html><body><article><div class="Post-RichTextContainer">
         <p>${"知乎专栏的正文用于保证文章根选择与公式语义提取都走真实路径。 ".repeat(24)}</p>
         <span class="ztext-math RichContent-commented-inline" data-tex="\\newcommand{\\rcos}{\\mathop{\\mathrm{rcos}}}\\rcos(\\boldsymbol{x},\\boldsymbol{y})"><span>旧视觉预览</span><span class="MathJax_SVG" id="MathJax-Element-7-Frame"><svg><text>视觉副本</text></svg></span></span>
-        <span class="ztext-math ztext-math-block RichContent-commented-inline" data-eeimg="1" data-tex="\\rcos(\\boldsymbol{x},\\boldsymbol{y})=\\frac{\\boldsymbol{x}\\cdot\\boldsymbol{y}}{\\lVert\\boldsymbol{x}\\rVert\\,\\lVert\\boldsymbol{y}\\rVert}"><span class="MathJax_SVG" id="MathJax-Element-8-Frame"><svg><text>第二个视觉副本</text></svg></span></span>
+        <span class="ztext-math RichContent-commented-inline" data-eeimg="2" data-tex="\\rcos(\\boldsymbol{x},\\boldsymbol{y})=\\frac{\\boldsymbol{x}\\cdot\\boldsymbol{y}}{\\lVert\\boldsymbol{x}\\rVert\\,\\lVert\\boldsymbol{y}\\rVert}"><span class="MathJax_SVG" id="MathJax-Element-8-Frame"><svg><text>第二个视觉副本</text></svg></span></span>
         <p>${"后续正文必须在公式后保留，不能被视觉副本或净化流程吞掉。 ".repeat(22)}</p>
       </div></article></body></html>`,
       "https://zhuanlan.zhihu.com/p/2073205832964220804",
@@ -268,12 +268,67 @@ describe("article reader extraction", () => {
     const content = result?.article.contentHtml || "";
     expect(load(content)(".katex")).toHaveLength(2);
     expect(load(content)("[data-reader-equation]")).toHaveLength(1);
-    expect(result?.article.formulaDiagnostics).toMatchObject({ total: 2, semantic: 2, rendered: 2, fallback: 0, dropped: 0 });
+    expect(result?.article.formulaDiagnostics).toMatchObject({ total: 2, semantic: 2, display: 1, displayRendered: 1, rendered: 2, fallback: 0, dropped: 0 });
     expect(content).toContain("rcos");
     expect(content).not.toContain("ztext-math");
     expect(content).not.toContain("MathJax_SVG");
     expect(content).not.toContain(">视觉副本<");
     expect(content).not.toContain("reader-math-source");
+  });
+
+  it("replays the real Zhihu rcos carrier family in document-order MathJax scope", async () => {
+    const math = new ScientificMathRenderer();
+    await math.ready();
+    const result = await extractReaderArticleAsync(
+      `<html><body><article><div class="Post-RichTextContainer">
+        <p>${"知乎转载的科学文章正文用于验证真实公式结构。 ".repeat(28)}</p>
+        <p>定义 <span class="ztext-math" data-eeimg="1" data-tex="\\newcommand{rcos}{\\mathop{\\mathrm{rcos}}}\\newcommand{dcos}[2]{\\frac{#1\\cdot#2}{\\lVert#1\\rVert\\lVert#2\\rVert}}\\rcos(\\boldsymbol{x},\\boldsymbol{y})"><span class="MathJax_SVG">旧视觉副本</span></span>。</p>
+        <span class="ztext-math" data-eeimg="2" data-tex="\\begin{aligned}\\dcos{\\boldsymbol{x}}{\\boldsymbol{y}}&=\\frac{\\boldsymbol{x}\\cdot\\boldsymbol{y}}{\\lVert\\boldsymbol{x}\\rVert\\lVert\\boldsymbol{y}\\rVert}\\\\\\rcos(\\boldsymbol{x},\\boldsymbol{y})&=\\dcos{\\boldsymbol{x}^{\\updownarrow}}{\\boldsymbol{y}}\\end{aligned}"><span class="MathJax_SVG">重复的块公式视觉副本</span></span>
+        <p>后续行内公式 <span class="ztext-math" data-eeimg="1" data-tex="\\rcos(\\boldsymbol{x},\\boldsymbol{y})=1"><span>旧预览</span></span> 必须沿用前面的宏。</p>
+        <span class="ztext-math" data-eeimg="2" data-tex="\\begin{cases}\\rcos(\\boldsymbol{x},\\boldsymbol{y}),&\\lVert\\boldsymbol{x}\\rVert>0\\\\0,&\\text{otherwise}\\end{cases}"></span>
+        <p>${"公式后的作者正文必须完整保留。 ".repeat(24)}</p>
+      </div></article></body></html>`,
+      "https://zhuanlan.zhihu.com/p/2073205832964220804",
+      entry,
+      math
+    );
+
+    const content = result?.article.contentHtml || "";
+    const visible = load(`<article>${content}</article>`);
+    visible("mjx-container, .katex, .reader-math-source").remove();
+    expect(load(content)("[data-reader-equation]")).toHaveLength(2);
+    expect(content).toContain("reader-equation--mathjax");
+    expect(content).not.toContain("mjx-merror");
+    expect(content).not.toContain("READING_HUB_MATH");
+    expect(content).not.toContain("旧视觉副本");
+    expect(visible.text()).not.toMatch(/\\(?:newcommand|dcos|rcos|begin|end)/);
+    expect(result?.article.formulaDiagnostics).toMatchObject({
+      total: 4,
+      semantic: 4,
+      display: 2,
+      displayRendered: 2,
+      rendered: 4,
+      fallback: 0,
+      dropped: 0,
+      requiresMathJax: true
+    });
+  });
+
+  it("keeps macro declarations ordered instead of applying a later redefinition retroactively", () => {
+    const render = vi.fn(() => `<mjx-container><svg></svg></mjx-container>`);
+    const math = { isReady: () => true, render } as unknown as ScientificMathRenderer;
+    extractReaderArticle(
+      `<article><div class="Post-RichTextContainer"><p>${"正文。".repeat(80)}</p>
+        <span class="ztext-math" data-eeimg="1" data-tex="\\newcommand{rcos}{\\mathrm{first}}\\rcos"></span>
+        <span class="ztext-math" data-eeimg="1" data-tex="\\renewcommand{rcos}{\\mathrm{second}}\\rcos"></span>
+      </div></article>`,
+      "https://zhuanlan.zhihu.com/p/2073205832964220804",
+      entry,
+      math
+    );
+
+    expect(render).toHaveBeenNthCalledWith(1, "\\rcos", false, expect.objectContaining({ rcos: expect.objectContaining({ body: "\\mathrm{first}" }) }));
+    expect(render).toHaveBeenNthCalledWith(2, "\\rcos", false, expect.objectContaining({ rcos: expect.objectContaining({ body: "\\mathrm{second}" }) }));
   });
 
   it("parses nested MathJax config macros without executing page JavaScript", () => {
@@ -469,6 +524,60 @@ describe("article reader extraction", () => {
     expect(rendered).not.toContain("\\left");
   });
 
+  it("removes unsafe MathJax links from remote TeX and macro output", async () => {
+    const math = new ScientificMathRenderer();
+    await math.ready();
+    const rendered = await Promise.all([
+      math.renderAsync("\\href{javascript:alert(1)}{x}", false, {}),
+      math.renderAsync("\\unsafe{y}", false, {
+        unsafe: { body: "\\href{javascript:alert(1)}{#1}", argumentCount: 1 }
+      })
+    ]);
+
+    for (const svg of rendered) {
+      expect(svg).toContain("<mjx-container");
+      // Links in MathJax SVG are deliberately flattened to glyphs. Only
+      // fragment references required by <use> may remain in the SVG graph.
+      expect(svg).not.toMatch(/<a\b|(?:javascript|data):/i);
+      expect(svg).not.toMatch(/(?:href|xlink:href)="(?:https?:|javascript:|data:)/i);
+      expect(svg).not.toMatch(/\s(?:on\w+|data-[\w-]+)=/i);
+      for (const [, style] of svg.matchAll(/\sstyle="([^"]*)"/g)) {
+        expect(style).toMatch(/^vertical-align: -?(?:\d+(?:\.\d+)?|\.\d+)(?:ex|em|px);$/);
+      }
+      expect(svg).toMatch(/xlink:href="#MJX-/);
+    }
+  });
+
+  it("keeps only local MathJax SVG glyph references and rejects active SVG nodes", () => {
+    const safe = sanitizeMathJaxSvg(`
+      <mjx-container class="MathJax" jax="SVG" overflow="overflow"><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1ex" height="1ex" viewBox="0 0 10 10" role="img" focusable="false" style="vertical-align:-0.02ex">
+        <defs><path id="MJX-safe" d="M0 0L10 10" style="stroke-width:.06ex"/></defs><g fill="currentColor"><use xlink:href="#MJX-safe"/></g>
+      </svg></mjx-container>
+    `) || "";
+    expect(safe).toContain('xlink:href="#MJX-safe"');
+    expect(safe).toContain('style="vertical-align: -0.02ex;"');
+    expect(safe).toContain('style="stroke-width: .06ex;"');
+
+    const stripped = sanitizeMathJaxSvg(`
+      <mjx-container class="MathJax" jax="SVG" overflow="overflow"><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1ex" height="1ex" viewBox="0 0 10 10" role="img" focusable="false" onload="alert(1)" style="position:fixed">
+        <defs><path id="MJX-safe" d="M0 0L10 10" onclick="alert(1)"/></defs><g><use xlink:href="#MJX-safe"/></g>
+      </svg></mjx-container>
+    `) || "";
+    expect(stripped).not.toMatch(/(?:javascript:|onload=|onclick=|style=)/i);
+
+    expect(sanitizeMathJaxSvg(`
+      <mjx-container class="MathJax" jax="SVG" overflow="overflow"><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1ex" height="1ex" viewBox="0 0 10 10">
+        <defs><path id="MJX-safe" d="M0 0L10 10"/></defs><use xlink:href="javascript:alert(1)"/><use xlink:href="#MJX-missing"/>
+      </svg></mjx-container>
+    `)).toBeUndefined();
+
+    expect(sanitizeMathJaxSvg(`
+      <mjx-container class="MathJax" jax="SVG" overflow="overflow"><svg xmlns="http://www.w3.org/2000/svg" width="1ex" height="1ex" viewBox="0 0 10 10">
+        <foreignObject><script>alert(1)</script></foreignObject>
+      </svg></mjx-container>
+    `)).toBeUndefined();
+  });
+
   it("renders Scientific Spaces formulas that require the cancel extension", async () => {
     const math = new ScientificMathRenderer();
     await math.ready();
@@ -523,7 +632,7 @@ describe("article reader extraction", () => {
     const visible = load(`<article>${content}</article>`);
     visible(".katex, mjx-container, .reader-math-source").remove();
     expect(result?.article.renderProfile).toBe("scientific");
-    expect(content).toContain('class="katex"');
+    expect(content).toContain("reader-equation--mathjax");
     expect(content).not.toContain("预览副本");
     expect(content).not.toContain("READING_HUB_MATH");
     expect(visible.text()).not.toContain("\\begin{align}");
@@ -900,6 +1009,50 @@ describe("article reader extraction", () => {
     expect(result?.article.contentHtml).toContain("被评论标注的文字");
     expect(result?.article.contentHtml).not.toContain("3 条评论");
     expect(result?.article.contentHtml).not.toContain("底部评论区");
+  });
+
+  it("retains authored text wrapped by Zhihu's line-comment control without keeping the control itself", () => {
+    const result = extractReaderArticle(
+      `<article class="QuestionAnswer-content">
+        <div class="RichContent-inner">
+          <p>${"知乎正文内容 ".repeat(24)}</p>
+          <p>前文<a class="CommentLink" href="#comments">被评论的<strong>作者原句</strong></a>后文。</p>
+          <div class="RichContent-commented">另一段被实验标记的作者正文仍应完整显示。</div>
+          <a class="CommentLink" href="#comments">查看 8 条评论</a>
+          <section class="CommentsV2"><article class="CommentItem"><p><span class="RichContent-commented-inline">评论者文字绝不能混入正文。</span></p></article></section>
+        </div>
+      </article>`,
+      "https://www.zhihu.com/question/123/answer/456",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(load(content).text().replace(/\s+/g, "")).toContain("前文被评论的作者原句后文");
+    expect(content).toContain("另一段被实验标记的作者正文仍应完整显示");
+    expect(content).not.toContain("查看 8 条评论");
+    expect(content).not.toContain("评论者文字绝不能混入正文");
+    expect(content).not.toContain('href="https://www.zhihu.com/question/123/answer/456#comments"');
+    expect(content).not.toMatch(/RichContent-commented|CommentLink/);
+  });
+
+  it("uses the authorised Zhihu reading path for line-comment annotations", async () => {
+    const http = {
+      getText: async () => { throw new Error("公开 HTTP 不应被调用"); }
+    } as unknown as PublicHttpClient;
+    const source: Source = {
+      id: "zhihu-source", url: "https://www.zhihu.com/follow", title: "知乎关注动态", kind: "zhihu_follow", status: "active",
+      pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1
+    };
+    const reader = new ArticleReader(http, { render: async () => "" }, async () => `<div class="RichContent-inner">
+      <p>${"授权会话正文 ".repeat(80)}</p>
+      <p><a class="CommentLink" href="#comments">授权会话中的被评论作者文字</a></p>
+      <a class="CommentLink" href="#comments">3 条评论</a>
+    </div>`);
+
+    const article = await reader.read({ ...entry, url: "https://www.zhihu.com/question/123/answer/456" }, source);
+
+    expect(article.contentHtml).toContain("授权会话中的被评论作者文字");
+    expect(article.contentHtml).not.toContain("3 条评论");
   });
 
   it("continues excluding lower-case and PascalCase discussion containers for ordinary articles", () => {

@@ -10,7 +10,7 @@ import { parseFeed } from "./feed";
 import { abortError, throwIfAborted } from "./cancellation";
 import { PublicHttpClient, type PublicRequestOptions } from "./http";
 import { extractPagePublishedAt } from "./extractor";
-import { ScientificMathRenderer } from "./mathjax-renderer";
+import { ScientificMathRenderer, type MathMacroDefinition } from "./mathjax-renderer";
 import type { PageRenderer } from "./page-renderer";
 import { RobotsDisallowedError } from "./robots";
 
@@ -82,19 +82,30 @@ const BASE_NOISE_SELECTOR = [
 ].join(",");
 
 // Some providers use PascalCase discussion components, which are not matched
-// by the generic lower-case class selector below. Keep these explicit so an
-// answer's CommentList/CommentItem cannot leak into a selected article root.
+// by the generic lower-case class selector below. Keep true discussion
+// *containers* separate from their inline controls: a Zhihu line-comment
+// marker can use the same `CommentLink` namespace while still wrapping the
+// author's own prose.
 const COMMENT_THREAD_SELECTOR = [
   "#comment", "#comments", "#comment-list", "#commentlist",
   ".comments", ".comment-list", ".commentlist", ".comment-thread", ".comments-area", ".comment-section",
-  "[class*='CommentList']", "[class*='CommentItem']", "[class*='CommentContent']", "[class*='CommentLink']", "[class*='CommentsV2']",
+  "[class*='CommentList']", "[class*='CommentItem']", "[class*='CommentContent']", "[class*='CommentsV2']",
   "[class$='-comments']", "[class$='_comments']", "[class*='comment-list']", "[class*='comment-thread']", "[class*='comments-area']"
 ].join(",");
 
-const NOISE_SELECTOR = [BASE_NOISE_SELECTOR, "[class*='comment']", COMMENT_THREAD_SELECTOR].join(",");
+const COMMENT_CONTROL_SELECTOR = [
+  "[class*='CommentLink']", "[class*='CommentButton']", "[class*='CommentAction']", "[class*='CommentCount']",
+  "[class*='comment-link']", "[class*='comment-button']", "[class*='comment-action']", "[class*='comment-count']"
+].join(",");
+
+const NOISE_SELECTOR = [BASE_NOISE_SELECTOR, "[class*='comment']", COMMENT_THREAD_SELECTOR, COMMENT_CONTROL_SELECTOR].join(",");
 
 const ZHIHU_INLINE_ANNOTATION_TAGS = new Set([
-  "a", "b", "del", "em", "i", "ins", "mark", "s", "small", "span", "strong", "sub", "sup"
+  // Zhihu currently uses inline spans, but older and experiment variants can
+  // attach the line-comment marker to a paragraph or a transparent wrapper.
+  // Those are safe to normalize after the surrounding discussion thread has
+  // been ruled out; the sanitizer later keeps only allowed reader semantics.
+  "a", "b", "del", "div", "em", "i", "ins", "mark", "p", "s", "small", "span", "strong", "sub", "sup", "u"
 ]);
 
 const ALLOWED_TAGS = new Set([
@@ -126,8 +137,10 @@ const SCIENTIFIC_DISCUSSION_SELECTOR = [
 const SCIENTIFIC_AUXILIARY_SELECTOR = "#content_tips, #pay, #how_to_cite";
 
 type FormulaOrigin = "semantic" | "mathjax-script" | "mathjax-frame" | "text";
-type FormulaRecord = { token: string; tex: string; displayMode: boolean; origin: FormulaOrigin };
+type FormulaRecord = { id: number; token: string; tex: string; displayMode: boolean; origin: FormulaOrigin };
+type MathMacroScope = Map<string, MathMacroDefinition>;
 type SanitizedContent = { html: string; formulaDiagnostics: ReaderFormulaDiagnostics };
+type PreparedSanitizedContent = { $: ReturnType<typeof load>; root: any; formulas: FormulaDocument };
 
 /**
  * FormulaDocument is the single semantic boundary between an untrusted page
@@ -136,10 +149,12 @@ type SanitizedContent = { html: string; formulaDiagnostics: ReaderFormulaDiagnos
  */
 class FormulaDocument {
   readonly records: FormulaRecord[] = [];
+  private readonly tokenNamespace = ++formulaDocumentSequence;
 
   add(tex: string, displayMode: boolean, origin: FormulaOrigin): string {
-    const token = `${MATH_TOKEN_PREFIX}${this.records.length}${MATH_TOKEN_SUFFIX}`;
-    this.records.push({ token, tex: tex.trim(), displayMode, origin });
+    const id = this.records.length;
+    const token = `${MATH_TOKEN_PREFIX}${this.tokenNamespace}_${id}${MATH_TOKEN_SUFFIX}`;
+    this.records.push({ id, token, tex: tex.trim(), displayMode, origin });
     return token;
   }
 
@@ -147,17 +162,29 @@ class FormulaDocument {
     return this.records[index];
   }
 
-  diagnostics(rendered: number, fallback: number, dropped: number): ReaderFormulaDiagnostics {
+  tokenPattern(): RegExp {
+    return new RegExp(`${escapeRegExp(MATH_TOKEN_PREFIX)}${this.tokenNamespace}_(\\d+)${escapeRegExp(MATH_TOKEN_SUFFIX)}`, "g");
+  }
+
+  diagnostics(rendered: Set<number>, fallback: Set<number>, dropped: Set<number>, requiresMathJax: boolean): ReaderFormulaDiagnostics {
     const count = (origin: FormulaOrigin) => this.records.filter((record) => record.origin === origin).length;
+    const display = (records: Iterable<number>) => [...records]
+      .map((id) => this.get(id))
+      .filter((record): record is FormulaRecord => Boolean(record?.displayMode)).length;
     return {
       total: this.records.length,
       semantic: count("semantic"),
       mathJaxScript: count("mathjax-script"),
       mathJaxFrame: count("mathjax-frame"),
       text: count("text"),
-      rendered,
-      fallback,
-      dropped
+      display: this.records.filter((record) => record.displayMode).length,
+      rendered: rendered.size,
+      fallback: fallback.size,
+      dropped: dropped.size,
+      displayRendered: display(rendered),
+      displayFallback: display(fallback),
+      displayDropped: display(dropped),
+      requiresMathJax
     };
   }
 }
@@ -171,6 +198,11 @@ type ContentCandidate = {
 };
 const MATH_TOKEN_PREFIX = "[[READING_HUB_MATH_";
 const MATH_TOKEN_SUFFIX = "]]";
+let formulaDocumentSequence = 0;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 export class ArticleContentUnavailableError extends Error {
   constructor() {
@@ -186,6 +218,17 @@ export interface ReaderReadOptions {
 
 type RenderWithSession = (url: string, options?: ReaderReadOptions) => Promise<string>;
 type ExtractedArticle = { article: ReaderArticle; textLength: number };
+type PreparedReaderArticle = {
+  rawContentHtml: string;
+  pageUrl: string;
+  entry: Entry;
+  title: string;
+  author?: string;
+  publishedAt?: number;
+  coverCandidate?: string;
+  renderProfile: ReaderRenderProfile;
+  globalMathMacros: MathMacroScope;
+};
 
 function resolveReaderProfile(pageUrl: string): ReaderRenderProfile {
   try {
@@ -197,22 +240,27 @@ function resolveReaderProfile(pageUrl: string): ReaderRenderProfile {
 }
 
 /**
- * MathJax configuration is normally placed in the page head, outside the
- * article wrapper. Read only its TeX declarations before sanitisation; the
- * script itself never reaches the renderer and is never executed.
+ * MathJax configuration normally lives in the page head, outside the chosen
+ * article root. Read only explicit MathJax configuration scripts; scanning
+ * every page script lets recommendation widgets or unrelated site chrome
+ * redefine article macros. The script is parsed as inert text and never run.
  */
-function collectGlobalMathDeclarations($: ReturnType<typeof load>): string {
-  const declarations: string[] = [];
-  $("script").each((_index: number, node: any) => {
+function collectGlobalMathMacros($: ReturnType<typeof load>): MathMacroScope {
+  const macros: MathMacroScope = new Map();
+  const seen = new Set<any>();
+  $("head script, script[type*='mathjax-config'], script[id*='MathJax'][type*='config']").each((_index: number, node: any) => {
+    if (seen.has(node)) return;
+    seen.add(node);
     const script = $(node);
     const type = (script.attr("type") || "").toLowerCase();
     const text = script.html() || script.text() || "";
-    if (!text.trim()) return;
-    if (type.includes("mathjax") || /\\(?:newcommand|renewcommand|providecommand|DeclareMathOperator|(?:g|e|x)?def)\b|(?:TeX|tex)\s*:\s*\{|(?:Macros|macros)\s*:\s*\{/i.test(text)) {
-      declarations.push(text);
-    }
+    const isMathJaxConfig = type.includes("mathjax-config")
+      || /(?:MathJax(?:\.Hub)?\.Config\s*\(|(?:window\.)?MathJax\s*=)/.test(text);
+    if (!isMathJaxConfig || !text.trim()) return;
+    mergeMathMacros(macros, extractMacroDeclarations(text).macros);
+    mergeMathMacros(macros, extractMathJaxConfigMacros(text));
   });
-  return declarations.join("\n");
+  return macros;
 }
 
 /**
@@ -318,10 +366,10 @@ export class ArticleReader {
     if (!item?.feedContentHtml) return undefined;
 
     const renderProfile = resolveReaderProfile(entry.url);
-    let sanitised = sanitizeContent(item.feedContentHtml, response.url, this.scientificMath, "");
+    let sanitised = await sanitizeContentAsync(item.feedContentHtml, response.url, this.scientificMath, new Map());
     if (needsMathJaxFallback(sanitised) && !this.scientificMath.isReady()) {
       await this.scientificMath.ready().catch(() => undefined);
-      if (this.scientificMath.isReady()) sanitised = sanitizeContent(item.feedContentHtml, response.url, this.scientificMath, "");
+      if (this.scientificMath.isReady()) sanitised = await sanitizeContentAsync(item.feedContentHtml, response.url, this.scientificMath, new Map());
     }
     const contentHtml = sanitised.html;
     const content = load(contentHtml);
@@ -350,10 +398,10 @@ export class ArticleReader {
    * MathJax for ordinary articles.
    */
   private async extractWithMathFallback(html: string, pageUrl: string, entry: Entry): Promise<ExtractedArticle | undefined> {
-    let extracted = extractReaderArticle(html, pageUrl, entry, this.scientificMath);
+    let extracted = await extractReaderArticleAsync(html, pageUrl, entry, this.scientificMath);
     if (!extracted || !needsMathJaxFallback(extracted.article) || this.scientificMath.isReady()) return extracted;
     await this.scientificMath.ready().catch(() => undefined);
-    if (this.scientificMath.isReady()) extracted = extractReaderArticle(html, pageUrl, entry, this.scientificMath);
+    if (this.scientificMath.isReady()) extracted = await extractReaderArticleAsync(html, pageUrl, entry, this.scientificMath);
     return extracted;
   }
 }
@@ -387,8 +435,13 @@ function createFeedSummaryArticle(entry: Entry, source?: Source): ReaderArticle 
   };
 }
 
-/** Exported for deterministic extraction tests; it does not perform network requests. */
-export function extractReaderArticle(html: string, pageUrl: string, entry: Entry, scientificMath?: ScientificMathRenderer): ExtractedArticle | undefined {
+/**
+ * Builds the source-independent portion of a reader article exactly once.
+ * The sync test helper and production async MathJax path both start from this
+ * inert prepared document, so they cannot diverge in root selection, noise
+ * removal, metadata, or image handling.
+ */
+function prepareReaderArticle(html: string, pageUrl: string, entry: Entry): PreparedReaderArticle | undefined {
   const $ = load(html);
   const renderProfile = resolveReaderProfile(pageUrl);
   const content = chooseContentCandidate(pickContentRoot($, renderProfile, pageUrl), extractReadabilityContent(html, pageUrl));
@@ -406,11 +459,6 @@ export function extractReaderArticle(html: string, pageUrl: string, entry: Entry
   selectedContent.find("header").remove();
   removeDuplicateArticleChrome(contentDocument, selectedContent, title, renderProfile, entry.summary);
 
-  const sanitised = sanitizeContent(selectedContent.html() || "", pageUrl, scientificMath, collectGlobalMathDeclarations($));
-  const contentHtml = sanitised.html;
-  const textLength = normalText(load(contentHtml).text()).length;
-  if (!textLength) return undefined;
-
   const author = compactText(
     $("meta[name='author']").attr("content") ||
       $("[rel='author'], [class*='author']").first().text() ||
@@ -423,25 +471,62 @@ export function extractReaderArticle(html: string, pageUrl: string, entry: Entry
     $("meta[property='og:image'], meta[name='twitter:image']").first().attr("content") || entry.imageUrl,
     pageUrl
   );
+  return {
+    rawContentHtml: selectedContent.html() || "",
+    pageUrl,
+    entry,
+    title,
+    author,
+    publishedAt,
+    coverCandidate,
+    renderProfile,
+    globalMathMacros: collectGlobalMathMacros($)
+  };
+}
+
+function finishReaderArticle(prepared: PreparedReaderArticle, sanitised: SanitizedContent): ExtractedArticle | undefined {
+  const contentHtml = sanitised.html;
+  const textLength = normalText(load(contentHtml).text()).length;
+  if (!textLength) return undefined;
   // An Open Graph image is often also the article's first figure. Rendering it
   // once as a cover and once in the preserved body creates an artificial
   // duplicate, so the body remains the single source of truth in that case.
-  const coverImageUrl = coverCandidate && !containsImage(contentHtml, coverCandidate) ? coverCandidate : undefined;
+  const coverImageUrl = prepared.coverCandidate && !containsImage(contentHtml, prepared.coverCandidate) ? prepared.coverCandidate : undefined;
 
   return {
     article: {
-      entryId: entry.id,
-      url: entry.url,
-      title,
-      author,
-      publishedAt,
+      entryId: prepared.entry.id,
+      url: prepared.entry.url,
+      title: prepared.title,
+      author: prepared.author,
+      publishedAt: prepared.publishedAt,
       coverImageUrl,
-      renderProfile,
+      renderProfile: prepared.renderProfile,
       formulaDiagnostics: sanitised.formulaDiagnostics,
       contentHtml
     },
     textLength
   };
+}
+
+/** Exported for deterministic extraction tests; it does not perform network requests. */
+export function extractReaderArticle(html: string, pageUrl: string, entry: Entry, scientificMath?: ScientificMathRenderer): ExtractedArticle | undefined {
+  const prepared = prepareReaderArticle(html, pageUrl, entry);
+  return prepared
+    ? finishReaderArticle(prepared, sanitizeContent(prepared.rawContentHtml, pageUrl, scientificMath, prepared.globalMathMacros))
+    : undefined;
+}
+
+/**
+ * Production reader path. MathJax 4 may load a required TeX extension or
+ * process a custom macro asynchronously, so user-visible extraction must use
+ * its promise-based renderer instead of degrading a valid formula to raw TeX.
+ */
+export async function extractReaderArticleAsync(html: string, pageUrl: string, entry: Entry, scientificMath?: ScientificMathRenderer): Promise<ExtractedArticle | undefined> {
+  const prepared = prepareReaderArticle(html, pageUrl, entry);
+  return prepared
+    ? finishReaderArticle(prepared, await sanitizeContentAsync(prepared.rawContentHtml, pageUrl, scientificMath, prepared.globalMathMacros))
+    : undefined;
 }
 
 function removeNoiseExceptMathScripts($: ReturnType<typeof load>, content: any, pageUrl: string): void {
@@ -561,10 +646,10 @@ function isZhihuContentUrl(rawUrl: string): boolean {
 /**
  * Zhihu may wrap selected authored text in an inline marker when readers have
  * commented on that passage. The generic noise rule deliberately removes
- * comment *threads*, so normalize only inline wording wrappers before it runs.
+ * comment *threads*, so normalize authored annotation wrappers before it runs.
  *
- * Remove only the comment/annotation class token rather than the element or
- * its entire class list. This retains normal text semantics and essential
+ * Remove comment-bearing class tokens rather than the element or its entire
+ * class list. This retains normal text semantics and essential
  * semantic carriers such as Zhihu's `ztext-math` / `ztext-math-block`, while
  * the sanitizer still strips all remote presentation classes later.
  * Block-level CommentList/CommentItem ancestors are deliberately left intact
@@ -572,20 +657,55 @@ function isZhihuContentUrl(rawUrl: string): boolean {
  */
 function preserveZhihuInlineAnnotations($: ReturnType<typeof load>, content: any, pageUrl: string): void {
   if (!isZhihuContentUrl(pageUrl)) return;
-  content.find("[class]").each((_index: number, node: any) => {
+  const nodes = content.find("[class]").toArray();
+  if (content.is("[class]")) nodes.unshift(content.get(0));
+  for (const node of nodes) {
+    if (!isNodeWithinRoot(content, node)) continue;
     const element = $(node);
     const tagName = element.get(0)?.tagName?.toLowerCase();
     const className = element.attr("class") || "";
-    // `commented` is a passage annotation; labels such as CommentLink and
-    // comment-link are interaction controls and must remain removable noise.
-    if (!tagName || !ZHIHU_INLINE_ANNOTATION_TAGS.has(tagName) || !/(?:commented|annotation)/i.test(className)) return;
-    if (element.is(COMMENT_THREAD_SELECTOR) || element.parents(COMMENT_THREAD_SELECTOR).length) return;
+    if (!tagName || !ZHIHU_INLINE_ANNOTATION_TAGS.has(tagName)) continue;
+    if (element.is(COMMENT_THREAD_SELECTOR) || element.parents(COMMENT_THREAD_SELECTOR).length) continue;
+
+    const isCommentControl = element.is(COMMENT_CONTROL_SELECTOR);
+    const explicitlyAnnotated = /(?:commented|annotation)/i.test(className);
+    // A current Zhihu line-comment experiment wraps the quoted author text in
+    // `CommentLink`. Treat it as authored prose only when it is not a normal
+    // comment-count/action label. The controlled wrapper is unwrapped below;
+    // we never preserve a live comment interaction in the reader.
+    // The selected reader root can itself be `.RichContent-inner` or
+    // `.Post-RichTextContainer`; at that point its class is intentionally
+    // not retained in the cloned fragment.  Rely on the already-selected
+    // Zhihu article root plus the explicit thread/control checks above,
+    // rather than requiring a class-bearing ancestor that may no longer be
+    // present after root selection.
+    const isAnnotatedCommentLink = isCommentControl && !isZhihuCommentControlLabel(element);
+    if (!explicitlyAnnotated && !isAnnotatedCommentLink) continue;
+
+    // A labelled control remains UI even when an experiment happens to put a
+    // generic annotation class on it. Leave it for the regular noise pass.
+    if (isCommentControl && isZhihuCommentControlLabel(element)) continue;
+
     const retainedClasses = className
       .split(/\s+/)
-      .filter((classToken) => classToken && !/(?:commented|annotation)/i.test(classToken));
+      .filter((classToken) => classToken && !/(?:comment|annotation)/i.test(classToken));
     if (retainedClasses.length) element.attr("class", retainedClasses.join(" "));
     else element.removeAttr("class");
-  });
+    if (isCommentControl) element.replaceWith(element.contents());
+  }
+}
+
+/**
+ * Zhihu's visible comment controls are short, purpose-specific labels. This
+ * is deliberately narrower than a general prose heuristic: it lets us retain
+ * a `CommentLink` wrapper around an authored quotation without accidentally
+ * retaining standalone “3 条评论” / “写评论” controls.
+ */
+function isZhihuCommentControlLabel(element: any): boolean {
+  const text = normalText(element.text()).replace(/\s+/g, "");
+  if (!text) return true;
+  return /^(?:(?:查看(?:全部)?|展开|收起|写|添加|参与)?(?:\d[\d,.]*)?(?:条)?)?评论(?:\d[\d,.]*)?$/i.test(text)
+    || /^(?:(?:view|show|hide|write|add|all)?\d*)?comments?$/i.test(text);
 }
 
 /**
@@ -642,12 +762,7 @@ function readerContentQuality(root: any): number {
   return Math.min(text.length, 18_000) + blocks * 120 + headings * 90 + media * 70 - Math.round(linkDensity * Math.min(text.length, 12_000) * 0.7);
 }
 
-function sanitizeContent(
-  rawHtml: string,
-  pageUrl: string,
-  scientificMath: ScientificMathRenderer | undefined,
-  globalMathDeclarations: string
-): SanitizedContent {
+function prepareSanitizedContent(rawHtml: string, pageUrl: string): PreparedSanitizedContent {
   const $ = load(`<div id="reader-content">${rawHtml}</div>`);
   const root = $("#reader-content");
   hydrateLazyImages($, root, pageUrl);
@@ -721,7 +836,28 @@ function sanitizeContent(
   }
   preserveTextMath($, root, formulas);
   normaliseTeXCitationLinks($, root, pageUrl);
-  return renderMath(root.html() || "", formulas, scientificMath, globalMathDeclarations);
+  materializeFormulaAnchors($, root, formulas);
+  return { $, root, formulas };
+}
+
+function sanitizeContent(
+  rawHtml: string,
+  pageUrl: string,
+  scientificMath: ScientificMathRenderer | undefined,
+  globalMathMacros: MathMacroScope
+): SanitizedContent {
+  const prepared = prepareSanitizedContent(rawHtml, pageUrl);
+  return renderMath(prepared.$, prepared.root, prepared.formulas, scientificMath, globalMathMacros);
+}
+
+async function sanitizeContentAsync(
+  rawHtml: string,
+  pageUrl: string,
+  scientificMath: ScientificMathRenderer | undefined,
+  globalMathMacros: MathMacroScope
+): Promise<SanitizedContent> {
+  const prepared = prepareSanitizedContent(rawHtml, pageUrl);
+  return renderMathAsync(prepared.$, prepared.root, prepared.formulas, scientificMath, globalMathMacros);
 }
 
 /**
@@ -896,11 +1032,7 @@ function preserveSemanticFormulaCarriers($: ReturnType<typeof load>, root: any, 
     if (isLiteralMathContext(element)) continue;
     const tex = String(element.attr("data-tex") || element.attr("data-reader-tex") || "").trim();
     if (!tex) continue;
-    const displayMode = element.hasClass("ztext-math-block")
-      || element.is("[data-display='true']")
-      // Zhihu serialises some display equations without its block class and
-      // leaves a final line break as its only display marker.
-      || /\\\\\s*$/.test(tex);
+    const displayMode = semanticFormulaDisplayMode(element, tex);
     const normalised = displayMode ? tex.replace(/\\\\\s*$/, "").trim() : tex;
     if (!normalised) {
       element.remove();
@@ -908,6 +1040,23 @@ function preserveSemanticFormulaCarriers($: ReturnType<typeof load>, root: any, 
     }
     element.replaceWith(formulas.add(normalised, displayMode, "semantic"));
   }
+}
+
+/**
+ * Keep authored layout semantics with the formula IR instead of inferring
+ * display mode from the final KaTeX markup. Zhihu's public semantic carrier
+ * uses `data-eeimg="2"` for a block equation and `"1"` for inline math;
+ * this is an explicit source contract even when its optional block class is
+ * absent. The check remains carrier-local, so unrelated page attributes never
+ * influence ordinary text.
+ */
+function semanticFormulaDisplayMode(element: any, tex: string): boolean {
+  return element.hasClass("ztext-math-block")
+    || element.is("[data-display='true']")
+    || element.is("[data-eeimg='2']")
+    // Some older Zhihu payloads omit both display attributes and leave a
+    // final line break as their only structural marker.
+    || /\\\\\s*$/.test(tex);
 }
 
 function isLiteralMathContext(element: any): boolean {
@@ -1182,53 +1331,187 @@ function addMath(formulas: FormulaDocument, tex: string, displayMode: boolean): 
   return formulas.add(tex, displayMode, "text");
 }
 
+/**
+ * Formula extraction uses private text markers while Cheerio is still
+ * reshaping untrusted HTML. Turn them into generated DOM anchors only after
+ * sanitisation is complete, so final rendering can replace exact nodes rather
+ * than running a fragile first-occurrence string replacement over HTML.
+ */
+function materializeFormulaAnchors($: ReturnType<typeof load>, root: any, formulas: FormulaDocument): void {
+  const marker = formulas.tokenPattern();
+  const textNodes: any[] = [];
+  const visit = (node: any): void => {
+    for (const child of node?.children || []) {
+      if (child.type === "text" && String(child.data || "").includes(MATH_TOKEN_PREFIX)) textNodes.push(child);
+      else if (child.type === "tag") visit(child);
+    }
+  };
+  visit(root.get(0));
+  for (const node of textNodes) {
+    const value = String(node.data || "");
+    marker.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    let cursor = 0;
+    let replacement = "";
+    while ((match = marker.exec(value))) {
+      replacement += escapeHtml(value.slice(cursor, match.index));
+      const record = formulas.get(Number.parseInt(match[1], 10));
+      replacement += record
+        ? `<span data-reader-formula-anchor="${record.id}"></span>`
+        : escapeHtml(match[0]);
+      cursor = marker.lastIndex;
+    }
+    if (!cursor) continue;
+    replacement += escapeHtml(value.slice(cursor));
+    $(node).replaceWith(replacement);
+  }
+}
+
 type EquationMetadata = { tag?: string; label?: string };
 type EquationIndex = { labels: Map<string, string>; byToken: Map<string, EquationMetadata> };
+type PreparedFormula = {
+  record: FormulaRecord;
+  macros: MathMacroScope;
+  hasDeclarations: boolean;
+};
+type FormulaRenderPlan = {
+  formulas: PreparedFormula[];
+  equations: EquationIndex;
+  requiresMathJax: boolean;
+};
 
-function renderMath(
-  html: string,
-  formulas: FormulaDocument,
-  scientificMath: ScientificMathRenderer | undefined,
-  globalMathDeclarations: string
-): SanitizedContent {
-  const prepared = formulas.records.map((record) => {
+function createFormulaRenderPlan(formulas: FormulaDocument, globalMathMacros: MathMacroScope): FormulaRenderPlan {
+  const activeMacros: MathMacroScope = new Map(globalMathMacros);
+  const prepared = formulas.records.map((record): PreparedFormula => {
     // MathJax's package loader directives are not mathematical content. The
     // local SVG renderer loads its supported extensions explicitly, while
     // KaTeX needs the directive removed before its safe path runs.
     const declaration = extractMacroDeclarations(record.tex.replace(/\\require\{(?:cancel)\}/g, ""));
-    return { record: { ...record, tex: declaration.tex }, macros: declaration.macros };
+    // Macro state is intentionally snapshotted in document order. A later
+    // declaration must never rewrite a formula which appeared earlier in the
+    // article, and an unrelated page script must not enter this scope.
+    mergeMathMacros(activeMacros, declaration.macros);
+    return {
+      record: { ...record, tex: declaration.tex },
+      macros: new Map(activeMacros),
+      hasDeclarations: declaration.macros.size > 0
+    };
   });
-  const equations = collectEquationMetadata(prepared.map((item) => item.record));
-  const globalMacros = new Map<string, string>([
-    ...extractMacroDeclarations(globalMathDeclarations).macros,
-    ...extractMathJaxConfigMacros(globalMathDeclarations)
-  ]);
-  const macros = collectMathMacros([globalMacros, ...prepared.map((item) => item.macros)]);
-  let rendered = 0;
-  let fallback = 0;
-  let result = html;
+  return {
+    formulas: prepared,
+    equations: collectEquationMetadata(prepared.map((item) => item.record)),
+    requiresMathJax: globalMathMacros.size > 0
+      || prepared.some((item) => item.hasDeclarations || item.record.origin !== "text")
+  };
+}
 
-  for (const item of prepared) {
-    const metadata = equations.byToken.get(item.record.token);
-    // KaTeX emits self-contained HTML for common TeX, including complex
-    // Scientific Spaces equations. SVG MathJax remains a safe secondary path
-    // for source-specific TeX that KaTeX cannot parse; it never runs page JS.
-    const katexHtml = tryRenderTeX(item.record, equations.labels, metadata, macros);
-    const mathJaxHtml = katexHtml === undefined && scientificMath?.isReady()
-      ? tryRenderScientificMath(scientificMath, item.record, equations.labels, metadata, macros)
-      : undefined;
-    const renderedHtml = katexHtml ?? mathJaxHtml;
-    if (renderedHtml !== undefined) rendered += 1;
-    else fallback += 1;
-    result = result.replace(item.record.token, renderedHtml ?? renderMathFallback(item.record));
+function renderMath(
+  $: ReturnType<typeof load>,
+  root: any,
+  formulas: FormulaDocument,
+  scientificMath: ScientificMathRenderer | undefined,
+  globalMathMacros: MathMacroScope
+): SanitizedContent {
+  const plan = createFormulaRenderPlan(formulas, globalMathMacros);
+  const useMathJax = plan.requiresMathJax && Boolean(scientificMath?.isReady());
+  const output = new Map<number, string | undefined>();
+  for (const item of plan.formulas) {
+    output.set(item.record.id, renderFormulaSynchronously(item, plan.equations, scientificMath, useMathJax));
+  }
+  return installFormulaOutput($, root, formulas, plan, output);
+}
+
+/**
+ * MathJax 4 loads some TeX packages only through its promise API. Keep the
+ * structural extraction and generated anchor handling identical to the sync
+ * helper, but await actual formula rendering for the production reader.
+ */
+async function renderMathAsync(
+  $: ReturnType<typeof load>,
+  root: any,
+  formulas: FormulaDocument,
+  scientificMath: ScientificMathRenderer | undefined,
+  globalMathMacros: MathMacroScope
+): Promise<SanitizedContent> {
+  const plan = createFormulaRenderPlan(formulas, globalMathMacros);
+  const useMathJax = plan.requiresMathJax && Boolean(scientificMath?.isReady());
+  const output = new Map<number, string | undefined>();
+  for (const item of plan.formulas) {
+    output.set(item.record.id, await renderFormulaAsynchronously(item, plan.equations, scientificMath, useMathJax));
+  }
+  return installFormulaOutput($, root, formulas, plan, output);
+}
+
+function renderFormulaSynchronously(
+  item: PreparedFormula,
+  equations: EquationIndex,
+  scientificMath: ScientificMathRenderer | undefined,
+  useMathJax: boolean
+): string | undefined {
+  if (!item.record.tex.trim()) return "";
+  const metadata = equations.byToken.get(item.record.token);
+  if (useMathJax) {
+    return tryRenderScientificMath(scientificMath, item.record, equations.labels, metadata, item.macros)
+      ?? tryRenderTeX(item.record, equations.labels, metadata, item.macros);
+  }
+  return tryRenderTeX(item.record, equations.labels, metadata, item.macros)
+    ?? (scientificMath?.isReady() ? tryRenderScientificMath(scientificMath, item.record, equations.labels, metadata, item.macros) : undefined);
+}
+
+async function renderFormulaAsynchronously(
+  item: PreparedFormula,
+  equations: EquationIndex,
+  scientificMath: ScientificMathRenderer | undefined,
+  useMathJax: boolean
+): Promise<string | undefined> {
+  if (!item.record.tex.trim()) return "";
+  const metadata = equations.byToken.get(item.record.token);
+  if (useMathJax) {
+    return await tryRenderScientificMathAsync(scientificMath, item.record, equations.labels, metadata, item.macros)
+      ?? tryRenderTeX(item.record, equations.labels, metadata, item.macros);
+  }
+  return tryRenderTeX(item.record, equations.labels, metadata, item.macros)
+    ?? (scientificMath?.isReady() ? await tryRenderScientificMathAsync(scientificMath, item.record, equations.labels, metadata, item.macros) : undefined);
+}
+
+function installFormulaOutput(
+  $: ReturnType<typeof load>,
+  root: any,
+  formulas: FormulaDocument,
+  plan: FormulaRenderPlan,
+  output: Map<number, string | undefined>
+): SanitizedContent {
+  const rendered = new Set<number>();
+  const fallback = new Set<number>();
+  const dropped = new Set<number>();
+
+  for (const item of plan.formulas) {
+    const anchors = root.find(`[data-reader-formula-anchor="${item.record.id}"]`).toArray();
+    if (!anchors.length) {
+      dropped.add(item.record.id);
+      continue;
+    }
+    const renderedHtml = output.get(item.record.id);
+    if (renderedHtml === undefined) fallback.add(item.record.id);
+    else rendered.add(item.record.id);
+    for (const anchor of anchors) $(anchor).replaceWith(renderedHtml ?? renderMathFallback(item.record));
   }
 
-  const dropped = formulas.records.filter((record) => result.includes(record.token)).length;
-  return { html: result, formulaDiagnostics: formulas.diagnostics(rendered, fallback, dropped) };
+  // An unknown or duplicated generated anchor is never trusted as source
+  // content. Remove it and expose the accounting mismatch to the local audit.
+  root.find("[data-reader-formula-anchor]").each((_index: number, node: any) => {
+    const id = Number.parseInt($(node).attr("data-reader-formula-anchor") || "", 10);
+    if (Number.isSafeInteger(id)) dropped.add(id);
+    $(node).remove();
+  });
+  return {
+    html: root.html() || "",
+    formulaDiagnostics: formulas.diagnostics(rendered, fallback, dropped, plan.requiresMathJax)
+  };
 }
 
 function needsMathJaxFallback(value: SanitizedContent | ReaderArticle): boolean {
-  return (value.formulaDiagnostics?.fallback ?? 0) > 0;
+  return (value.formulaDiagnostics?.fallback ?? 0) > 0 || value.formulaDiagnostics?.requiresMathJax === true;
 }
 
 function collectEquationMetadata(records: FormulaRecord[]): EquationIndex {
@@ -1251,7 +1534,7 @@ function tryRenderTeX(
   record: FormulaRecord,
   labels: Map<string, string>,
   metadata: EquationMetadata | undefined,
-  macros: Record<string, string>
+  macros: MathMacroScope
 ): string | undefined {
   const tex = prepareEquationTeX(record.tex, labels);
   if (!tex.trim()) return "";
@@ -1264,7 +1547,7 @@ function tryRenderTeX(
       throwOnError: true,
       strict: "ignore",
       trust: false,
-      macros,
+      macros: katexMacros(macros),
       maxSize: 24,
       maxExpand: 1_000
     });
@@ -1279,10 +1562,34 @@ function tryRenderScientificMath(
   record: FormulaRecord,
   labels: Map<string, string>,
   metadata: EquationMetadata | undefined,
-  macros: Record<string, string>
+  macros: MathMacroScope
 ): string | undefined {
   if (!scientificMath) return undefined;
-  const html = scientificMath.render(prepareEquationTeX(record.tex, labels), record.displayMode, macros);
+  const html = scientificMath.render(prepareEquationTeX(record.tex, labels), record.displayMode, Object.fromEntries(macros));
+  if (!html) return undefined;
+  return record.displayMode ? wrapDisplayEquation(html, metadata?.tag, "mathjax") : html;
+}
+
+async function tryRenderScientificMathAsync(
+  scientificMath: ScientificMathRenderer | undefined,
+  record: FormulaRecord,
+  labels: Map<string, string>,
+  metadata: EquationMetadata | undefined,
+  macros: MathMacroScope
+): Promise<string | undefined> {
+  if (!scientificMath) return undefined;
+  // Test doubles and older local helper instances may only expose the
+  // synchronous compatibility method. Production ScientificMathRenderer
+  // always provides renderAsync(), but retaining this fallback keeps the
+  // safe extraction contract backwards-compatible.
+  if (typeof scientificMath.renderAsync !== "function") {
+    return tryRenderScientificMath(scientificMath, record, labels, metadata, macros);
+  }
+  const html = await scientificMath.renderAsync(
+    prepareEquationTeX(record.tex, labels),
+    record.displayMode,
+    Object.fromEntries(macros)
+  );
   if (!html) return undefined;
   return record.displayMode ? wrapDisplayEquation(html, metadata?.tag, "mathjax") : html;
 }
@@ -1339,27 +1646,54 @@ function stripTeXCommandGroups(input: string, command: string): string {
   return output;
 }
 
+const MAX_MATH_MACROS = 128;
+const MAX_MATH_MACRO_BODY_LENGTH = 12_000;
+
+function normaliseMacroName(name: string): string | undefined {
+  const normalised = name.replace(/^\\/, "").trim();
+  return /^[A-Za-z]+$/.test(normalised) ? normalised : undefined;
+}
+
+function isSafeMacroDefinition(definition: MathMacroDefinition): boolean {
+  return definition.body.length > 0
+    && definition.body.length <= MAX_MATH_MACRO_BODY_LENGTH
+    && (definition.argumentCount === undefined || (Number.isInteger(definition.argumentCount) && definition.argumentCount >= 0 && definition.argumentCount <= 9))
+    && (definition.defaultValue === undefined || definition.defaultValue.length <= MAX_MATH_MACRO_BODY_LENGTH);
+}
+
+function mergeMathMacros(target: MathMacroScope, additions: MathMacroScope): void {
+  for (const [name, definition] of additions) {
+    if (target.size >= MAX_MATH_MACROS && !target.has(name)) break;
+    if (normaliseMacroName(name) && isSafeMacroDefinition(definition)) target.set(normaliseMacroName(name)!, definition);
+  }
+}
+
+/** KaTeX safely infers ordinary `#1` arity from a macro body. */
+function katexMacros(macros: MathMacroScope): Record<string, string> {
+  return Object.fromEntries([...macros].map(([name, definition]) => [`\\${name}`, definition.body]));
+}
+
 /**
  * Parses MathJax's object syntax with an inert, brace- and quote-aware
- * scanner. A regex cannot safely read `Macros: { rcos: ["\\\\mathop{…}"] }`
+ * scanner. A regex cannot safely read `Macros: { rcos: ["\\\\mathop{…}", 1] }`
  * because the macro definition itself contains nested braces.
  */
-function extractMathJaxConfigMacros(input: string): Map<string, string> {
-  const macros = new Map<string, string>();
+function extractMathJaxConfigMacros(input: string): MathMacroScope {
+  const macros: MathMacroScope = new Map();
   const marker = /(?:Macros|macros)\s*:\s*\{/g;
   let match: RegExpExecArray | null;
   while ((match = marker.exec(input))) {
     const opening = input.indexOf("{", match.index);
     const object = readJavaScriptBalanced(input, opening, "{", "}");
     if (!object) continue;
-    for (const [name, definition] of parseMathJaxMacroObject(object.content)) macros.set(name, definition);
+    mergeMathMacros(macros, parseMathJaxMacroObject(object.content));
     marker.lastIndex = object.next;
   }
   return macros;
 }
 
-function parseMathJaxMacroObject(input: string): Map<string, string> {
-  const macros = new Map<string, string>();
+function parseMathJaxMacroObject(input: string): MathMacroScope {
+  const macros: MathMacroScope = new Map();
   let cursor = 0;
   while (cursor < input.length) {
     cursor = skipJavaScriptSeparators(input, cursor);
@@ -1372,8 +1706,8 @@ function parseMathJaxMacroObject(input: string): Map<string, string> {
     }
     const value = readJavaScriptMacroValue(input, cursor + 1);
     if (!value) break;
-    const name = key.value.replace(/^\\/, "").trim();
-    if (/^[A-Za-z]+$/.test(name) && value.definition) macros.set(name, value.definition);
+    const name = normaliseMacroName(key.value);
+    if (name && value.definition && isSafeMacroDefinition(value.definition)) macros.set(name, value.definition);
     cursor = value.next;
   }
   return macros;
@@ -1392,18 +1726,23 @@ function readJavaScriptPropertyKey(input: string, start: number): { value: strin
   return match ? { value: match[1], next: start + match[1].length } : undefined;
 }
 
-function readJavaScriptMacroValue(input: string, start: number): { definition?: string; next: number } | undefined {
+function readJavaScriptMacroValue(input: string, start: number): { definition?: MathMacroDefinition; next: number } | undefined {
   let cursor = skipJavaScriptSeparators(input, start);
   const quote = input[cursor];
   if (quote === "'" || quote === '"') {
     const value = readJavaScriptString(input, cursor);
-    return value && { definition: value.value, next: value.next };
+    return value && { definition: { body: value.value }, next: value.next };
   }
   if (input[cursor] === "[") {
     const array = readJavaScriptBalanced(input, cursor, "[", "]");
     if (!array) return undefined;
-    const first = readJavaScriptFirstString(array.content);
-    return { definition: first, next: array.next };
+    const values = readJavaScriptArrayValues(array.content);
+    const body = typeof values[0] === "string" ? values[0] : undefined;
+    const argumentCount = typeof values[1] === "number" && Number.isInteger(values[1]) && values[1] >= 0 && values[1] <= 9
+      ? values[1]
+      : undefined;
+    const defaultValue = argumentCount !== undefined && argumentCount > 0 && typeof values[2] === "string" ? values[2] : undefined;
+    return { definition: body ? { body, argumentCount, defaultValue } : undefined, next: array.next };
   }
   if (input[cursor] === "{") {
     const object = readJavaScriptBalanced(input, cursor, "{", "}");
@@ -1413,12 +1752,38 @@ function readJavaScriptMacroValue(input: string, start: number): { definition?: 
   return { next: cursor };
 }
 
-function readJavaScriptFirstString(input: string): string | undefined {
-  for (let cursor = 0; cursor < input.length; cursor += 1) {
-    if (input[cursor] !== "'" && input[cursor] !== '"') continue;
-    return readJavaScriptString(input, cursor)?.value;
+function readJavaScriptArrayValues(input: string): Array<string | number | undefined> {
+  const values: Array<string | number | undefined> = [];
+  let cursor = 0;
+  while (cursor < input.length) {
+    cursor = skipJavaScriptSeparators(input, cursor);
+    if (cursor >= input.length) break;
+    const quote = input[cursor];
+    if (quote === "'" || quote === '"') {
+      const value = readJavaScriptString(input, cursor);
+      if (!value) break;
+      values.push(value.value);
+      cursor = value.next;
+      continue;
+    }
+    const number = input.slice(cursor).match(/^-?\d+/);
+    if (number) {
+      values.push(Number.parseInt(number[0], 10));
+      cursor += number[0].length;
+      continue;
+    }
+    const opener = input[cursor];
+    if (opener === "[" || opener === "{") {
+      const nested = readJavaScriptBalanced(input, cursor, opener, opener === "[" ? "]" : "}");
+      if (!nested) break;
+      values.push(undefined);
+      cursor = nested.next;
+      continue;
+    }
+    while (cursor < input.length && input[cursor] !== ",") cursor += 1;
+    values.push(undefined);
   }
-  return undefined;
+  return values;
 }
 
 function readJavaScriptString(input: string, start: number): { value: string; next: number } | undefined {
@@ -1475,11 +1840,11 @@ function readJavaScriptBalanced(input: string, start: number, opening: string, c
 
 /**
  * MathJax pages may declare aliases in one equation and use them much later in
- * the article. Keep the declarations out of the rendered TeX and pass their
- * definitions to KaTeX for every equation in the article.
+ * the article. Preserve enough declaration structure to replay the scope with
+ * the exact argument count in the local MathJax renderer.
  */
-function extractMacroDeclarations(input: string): { tex: string; macros: Map<string, string> } {
-  const macros = new Map<string, string>();
+function extractMacroDeclarations(input: string): { tex: string; macros: MathMacroScope } {
+  const macros: MathMacroScope = new Map();
   let output = "";
   let cursor = 0;
   const declaration = /\\(newcommand\*?|renewcommand\*?|providecommand\*?|DeclareMathOperator\*?|(?:g|e|x)?def)(?![A-Za-z])\s*/g;
@@ -1492,7 +1857,7 @@ function extractMacroDeclarations(input: string): { tex: string; macros: Map<str
       cursor = declaration.lastIndex;
       continue;
     }
-    macros.set(parsed.name, parsed.definition);
+    if (isSafeMacroDefinition(parsed.definition)) macros.set(parsed.name, parsed.definition);
     cursor = parsed.next;
     declaration.lastIndex = cursor;
   }
@@ -1500,41 +1865,32 @@ function extractMacroDeclarations(input: string): { tex: string; macros: Map<str
   return { tex: output, macros };
 }
 
-function collectMathMacros(groups: Map<string, string>[]): Record<string, string> {
-  // Do not smuggle site-specific aliases into the reader. Every macro must be
-  // declared by the page's safe TeX/MathJax metadata, then shared consistently
-  // across its formula document.
-  const macros = new Map<string, string>();
-  for (const group of groups) {
-    for (const [name, definition] of group) macros.set(name, definition);
-  }
-  return Object.fromEntries([...macros].map(([name, definition]) => [`\\${name}`, definition]));
-}
-
-function parseMacroDeclaration(input: string, start: number, kind: string): { name: string; definition: string; next: number } | undefined {
+function parseMacroDeclaration(input: string, start: number, kind: string): { name: string; definition: MathMacroDefinition; next: number } | undefined {
   let cursor = skipTeXWhitespace(input, start);
   if (kind.endsWith("def")) {
     const nameMatch = input.slice(cursor).match(/^\\([A-Za-z]+)/);
     if (!nameMatch) return undefined;
     const name = nameMatch[1];
     cursor += nameMatch[0].length;
-    // KaTeX supports parameterised macros in its `macros` option, so retain
-    // any #1…#9 markers before the replacement group.
-    while (/\s|#[1-9]/.test(input.slice(cursor, cursor + 2))) {
-      if (/\s/.test(input[cursor] || "")) cursor += 1;
-      else cursor += 2;
+    let argumentCount = 0;
+    while (true) {
+      cursor = skipTeXWhitespace(input, cursor);
+      const parameter = input.slice(cursor).match(/^#([1-9])/);
+      if (!parameter) break;
+      argumentCount = Math.max(argumentCount, Number.parseInt(parameter[1], 10));
+      cursor += parameter[0].length;
     }
     const definition = readTeXGroup(input, cursor);
-    return definition ? { name, definition: definition.content, next: definition.next } : undefined;
+    return definition ? { name, definition: { body: definition.content, argumentCount: argumentCount || undefined }, next: definition.next } : undefined;
   }
 
   if (kind.startsWith("DeclareMathOperator")) {
     const nameGroup = readTeXGroup(input, cursor);
     if (!nameGroup) return undefined;
     const definitionGroup = readTeXGroup(input, skipTeXWhitespace(input, nameGroup.next));
-    const name = nameGroup.content.replace(/^\\/, "").trim();
-    if (!definitionGroup || !/^[A-Za-z]+$/.test(name)) return undefined;
-    return { name, definition: `\\operatorname{${definitionGroup.content}}`, next: definitionGroup.next };
+    const name = normaliseMacroName(nameGroup.content);
+    if (!definitionGroup || !name) return undefined;
+    return { name, definition: { body: `\\operatorname{${definitionGroup.content}}` }, next: definitionGroup.next };
   }
 
   const nameGroup = readTeXGroup(input, cursor);
@@ -1543,12 +1899,27 @@ function parseMacroDeclaration(input: string, start: number, kind: string): { na
   // \newcommand may include a parameter count and a default argument.
   // KaTeX can apply #1…#9 replacements, so retain the body and discard only
   // these declaration wrappers.
+  const optionalGroups: string[] = [];
   let optional: { content: string; next: number } | undefined;
-  while ((optional = readTeXOptionalGroup(input, cursor))) cursor = skipTeXWhitespace(input, optional.next);
+  while ((optional = readTeXOptionalGroup(input, cursor))) {
+    optionalGroups.push(optional.content);
+    cursor = skipTeXWhitespace(input, optional.next);
+  }
   const definitionGroup = readTeXGroup(input, cursor);
-  const name = nameGroup.content.replace(/^\\/, "").trim();
-  if (!definitionGroup || !/^[A-Za-z]+$/.test(name)) return undefined;
-  return { name, definition: definitionGroup.content, next: definitionGroup.next };
+  const name = normaliseMacroName(nameGroup.content);
+  if (!definitionGroup || !name) return undefined;
+  const parsedArgumentCount = optionalGroups[0] && /^\d+$/.test(optionalGroups[0])
+    ? Number.parseInt(optionalGroups[0], 10)
+    : undefined;
+  const argumentCount = parsedArgumentCount !== undefined && parsedArgumentCount >= 0 && parsedArgumentCount <= 9
+    ? parsedArgumentCount
+    : undefined;
+  const defaultValue = argumentCount !== undefined && argumentCount > 0 && optionalGroups[1] !== undefined ? optionalGroups[1] : undefined;
+  return {
+    name,
+    definition: { body: definitionGroup.content, argumentCount, defaultValue },
+    next: definitionGroup.next
+  };
 }
 
 function skipTeXWhitespace(input: string, start: number): number {

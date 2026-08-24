@@ -1,5 +1,7 @@
 import path from "node:path";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import { BrowserWindow, app } from "electron";
 import { load } from "cheerio";
 import type { ReaderArticle } from "../shared/types";
@@ -38,17 +40,28 @@ const AUDIT_IMAGE = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http
 export class ScientificArticleVisualAuditor {
   private window?: BrowserWindow;
   private styles?: Promise<string>;
+  private auditPagePath?: Promise<string>;
 
   async inspect(article: ReaderArticle): Promise<string[]> {
     const articleDom = load(`<div id="reader-audit-math">${article.contentHtml}</div>`);
-    if (!articleDom("#reader-audit-math [data-reader-equation], #reader-audit-math .katex-display, #reader-audit-math mjx-container[display='true']").length) return [];
+    const renderedBlocks = articleDom("#reader-audit-math [data-reader-equation], #reader-audit-math .katex-display, #reader-audit-math mjx-container[display='true']").length;
+    const expectedBlocks = article.formulaDiagnostics?.displayRendered ?? 0;
+    if (!renderedBlocks && !expectedBlocks) return [];
+    if (!renderedBlocks && expectedBlocks) return [`块公式语义丢失：期望 ${expectedBlocks} 个块公式，实际为 0`];
     const visualWindow = this.getWindow();
     const diagnostics: string[] = [];
     const page = await this.page(article.contentHtml);
+    const auditPagePath = await this.getAuditPagePath();
+    // Full KaTeX CSS plus an extracted article can exceed Chromium's accepted
+    // data: URL size. A local, per-audit temporary file also gives KaTeX font
+    // URLs a stable origin, so this check exercises the same geometry users
+    // see instead of silently falling back to a system font.
+    await writeFile(auditPagePath, page, "utf8");
     for (const viewport of VISUAL_VIEWPORTS) {
       visualWindow.setSize(viewport.width, viewport.height);
       visualWindow.webContents.setZoomFactor(viewport.zoom);
-      await visualWindow.loadURL(`data:text/html;base64,${Buffer.from(page).toString("base64")}`);
+      await visualWindow.loadFile(auditPagePath);
+      await visualWindow.webContents.executeJavaScript("document.fonts?.ready || Promise.resolve()");
       const geometry = await visualWindow.webContents.executeJavaScript(`(() => {
         const body = document.querySelector(".article-body");
         if (!body) return { pageOverflow: true, formulas: [], imagesEscapeBody: true };
@@ -101,9 +114,12 @@ export class ScientificArticleVisualAuditor {
     return [...new Set(diagnostics)];
   }
 
-  close(): void {
+  async close(): Promise<void> {
     if (this.window && !this.window.isDestroyed()) this.window.destroy();
     this.window = undefined;
+    const auditPagePath = this.auditPagePath ? await this.auditPagePath : undefined;
+    this.auditPagePath = undefined;
+    if (auditPagePath) await rm(path.dirname(auditPagePath), { recursive: true, force: true });
   }
 
   private getWindow(): BrowserWindow {
@@ -135,8 +151,20 @@ export class ScientificArticleVisualAuditor {
       this.styles = Promise.all([
         readFile(path.join(root, "node_modules", "katex", "dist", "katex.min.css"), "utf8"),
         readFile(path.join(root, "src", "renderer", "styles.css"), "utf8")
-      ]).then(([katex, reader]) => `${katex}\n${reader}`);
+      ]).then(([katex, reader]) => {
+        const katexFontsUrl = pathToFileURL(path.join(root, "node_modules", "katex", "dist", "fonts")).href.replace(/\/$/, "");
+        const resolvedKatex = katex.replace(/url\((['"]?)fonts\//g, (_match, quote: string) => `url(${quote}${katexFontsUrl}/`);
+        return `${resolvedKatex}\n${reader}`;
+      });
     }
     return this.styles;
+  }
+
+  private async getAuditPagePath(): Promise<string> {
+    if (!this.auditPagePath) {
+      this.auditPagePath = mkdtemp(path.join(tmpdir(), "reading-hub-scientific-audit-"))
+        .then((directory) => path.join(directory, "reader-audit.html"));
+    }
+    return this.auditPagePath;
   }
 }

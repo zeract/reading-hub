@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { Source } from "../../shared/types";
-import { canonicalizeContentUrl, isScourRssRedirectUrl, isZhihuBusinessPromotionUrl } from "../../shared/url";
+import { canonicalizeContentUrl, isScourRssRedirectUrl, isTaxonomyUrl, isZhihuBusinessPromotionUrl } from "../../shared/url";
 
 type SqliteDatabase = Database.Database;
 
@@ -50,13 +50,15 @@ export function removeEntriesForSourceOrigins(database: SqliteDatabase, sourceId
 }
 
 export function deleteTaxonomyEntries(database: SqliteDatabase, sourceId: string): number {
-  const matches = database
-    .prepare(`SELECT id, source_id FROM entries WHERE source_id = ? AND (
-      original_url LIKE '%/tag/%' OR original_url LIKE '%/tags/%' OR
-      original_url LIKE '%/category/%' OR original_url LIKE '%/categories/%' OR
-      original_url LIKE '%/taxonomy/%' OR original_url LIKE '%/archive/%' OR original_url LIKE '%/archives/%'
-    )`)
-    .all(sourceId) as SourceEntryRow[];
+  // Do not encode taxonomy detection as broad SQL `LIKE '%/archives/%'`.
+  // Scientific Spaces uses `/archives/<article-id>` for real posts, so that
+  // legacy heuristic could erase valid content during a one-time cleanup.
+  // This scan is deliberately source-scoped and runs only during migration;
+  // use the same URL classifier as live generic extraction.
+  const matches = (database
+    .prepare("SELECT id, source_id, original_url FROM entries WHERE source_id = ?")
+    .all(sourceId) as Array<SourceEntryRow & { original_url: string }>)
+    .filter((entry) => isTaxonomyUrl(entry.original_url));
   return removeEntriesForSourceOrigins(database, sourceId, matches);
 }
 

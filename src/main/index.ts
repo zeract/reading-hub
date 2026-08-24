@@ -228,7 +228,7 @@ async function runReaderAudit(): Promise<void> {
     if (reportPath) await writeFile(reportPath, JSON.stringify([{ source: "审计执行", kind: "generic", issues: [message] }], null, 2), "utf8");
     throw error;
   } finally {
-    scientificVisualAuditor?.close();
+    await scientificVisualAuditor?.close();
     if (!auditHost.isDestroyed()) auditHost.destroy();
   }
 }

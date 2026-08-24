@@ -153,6 +153,24 @@ describe("generic-page extractor", () => {
     expect(result.entries.every((item) => item.url.includes("/posts/"))).toBe(true);
   });
 
+  it("does not calibrate Scientific Spaces comment lists as article cards", () => {
+    const comments = ["one", "two", "three"].map((slug) => `<article class="ComListLi">
+      <h2><a href="/archives/comment-${slug}">A detailed reader comment that looks like a post ${slug}</a></h2>
+      <time datetime="2026-08-14">2026-08-14</time><p>评论里的长段落可能包含公式和链接，但绝不是应订阅的文章。</p>
+    </article>`).join("");
+    const posts = ["article-one", "article-two", "article-three"].map((slug, index) => `<article class="post-card">
+      <h2><a href="/archives/${slug}">The actual Scientific Spaces article ${index + 1} with a useful technical title</a></h2>
+      <time datetime="2026-08-${15 + index}">2026-08-${15 + index}</time><p>这是文章摘要，应该作为可订阅条目保留，并且正文长度足够支持自动识别。</p>
+    </article>`).join("");
+    const result = extractGenericPage(`<main>
+      ${posts}
+      <section id="comments"><div class="AllComments">${comments}</div></section>
+    </main>`, "https://kexue.fm/");
+
+    expect(result.entries.map((item) => item.url)).toEqual(expect.arrayContaining(["https://kexue.fm/archives/article-one", "https://kexue.fm/archives/article-two", "https://kexue.fm/archives/article-three"]));
+    expect(result.entries.every((item) => !item.url.includes("comment-"))).toBe(true);
+  });
+
   it("keeps a complete long-form blog archive such as accelazh.github.io", () => {
     const posts = Array.from({ length: 131 }, (_, index) => `<li>${String(index + 1).padStart(2, "0")} Jul 2026 » <a href="/posts/${index + 1}.html">A complete technical blog post title number ${index + 1}</a></li>`).join("");
     const html = `<main><ul>${posts}</ul></main>`;

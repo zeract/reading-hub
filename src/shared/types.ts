@@ -236,9 +236,17 @@ export interface ReaderFormulaDiagnostics {
   mathJaxScript: number;
   mathJaxFrame: number;
   text: number;
+  /** Formula records whose source semantics require block-level layout. */
+  display: number;
   rendered: number;
   fallback: number;
   dropped: number;
+  /** Display-specific accounting lets audits catch an inline/block semantic loss. */
+  displayRendered: number;
+  displayFallback: number;
+  displayDropped: number;
+  /** A MathJax-authored or macro-bearing document is replayed through local MathJax. */
+  requiresMathJax: boolean;
 }
 
 /** A transient, sanitised article document shown only inside the local reader. */

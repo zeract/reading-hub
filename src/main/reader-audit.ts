@@ -89,6 +89,10 @@ function plainText(html: string): string {
 
 function hasDisplayFormula(article: ReaderArticle): boolean {
   if (article.formulaDiagnostics && article.formulaDiagnostics.total === 0) return false;
+  // Source semantics are authoritative. If the rendered document has no
+  // block wrapper despite a semantic block formula, still run the layout audit
+  // so this becomes an actionable failure rather than a false pass.
+  if ((article.formulaDiagnostics?.display ?? 0) > 0) return true;
   const document = load(article.contentHtml);
   return document("[data-reader-equation], .katex-display, mjx-container[display='true']").length > 0;
 }
@@ -197,6 +201,17 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
   if (formulaCounts && formulaCounts.dropped > 0) issues.push(`公式语义提取丢失（${formulaCounts.dropped} 处）`);
   if (formulaCounts && formulaCounts.total !== formulaCounts.rendered + formulaCounts.fallback + formulaCounts.dropped) {
     issues.push("公式语义提取计数不一致");
+  }
+  const renderedDisplayBlocks = formulaDocument("[data-reader-equation]").length;
+  const fallbackDisplayBlocks = formulaDocument(".reader-math-source--block").length;
+  if (formulaCounts && formulaCounts.display !== formulaCounts.displayRendered + formulaCounts.displayFallback + formulaCounts.displayDropped) {
+    issues.push("块公式语义提取计数不一致");
+  }
+  if (formulaCounts && formulaCounts.displayRendered !== renderedDisplayBlocks) {
+    issues.push(`块公式语义丢失或重复（期望 ${formulaCounts.displayRendered}，实际 ${renderedDisplayBlocks}）`);
+  }
+  if (formulaCounts && formulaCounts.displayFallback !== fallbackDisplayBlocks) {
+    issues.push(`块公式降级状态不一致（期望 ${formulaCounts.displayFallback}，实际 ${fallbackDisplayBlocks}）`);
   }
   if (renderedMathTeX.length) issues.push("MathJax 公式中残留原始 TeX 命令");
   if (mathJaxSpacerNodes) issues.push(`MathJax CHTML 伸缩符号残留（${mathJaxSpacerNodes} 个 spacer 节点）`);

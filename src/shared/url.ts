@@ -101,6 +101,31 @@ export function isZhihuBusinessPromotionUrl(rawUrl: string): boolean {
   }
 }
 
+/**
+ * Returns whether a URL is a navigation/taxonomy destination rather than an
+ * individual content URL.  Most taxonomy namespaces remain taxonomy below
+ * their root (for example `/tags/llm`), but `archive`/`archives` are an
+ * important exception: some publishers, including Scientific Spaces, use
+ * `/archives/<article-id>` as their canonical article URL.  Treat only the
+ * archive landing path itself as navigation so a source detector or one-time
+ * cleanup cannot silently discard those real articles.
+ */
+export function isTaxonomyUrl(rawUrl: string): boolean {
+  try {
+    const segments = new URL(rawUrl).pathname
+      .split("/")
+      .filter(Boolean)
+      .map((segment) => segment.toLowerCase());
+    const taxonomyIndex = segments.findIndex((segment) => /^(?:tag|tags|category|categories|taxonomy|archive|archives)$/.test(segment));
+    if (taxonomyIndex < 0) return false;
+    const taxonomy = segments[taxonomyIndex];
+    if (taxonomy === "archive" || taxonomy === "archives") return taxonomyIndex === segments.length - 1;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function toAbsoluteUrl(value: string | undefined, pageUrl: string): string | undefined {
   if (!value) return undefined;
   try {

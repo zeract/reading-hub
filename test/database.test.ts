@@ -370,6 +370,19 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("does not remove Scientific Spaces articles that use an archives article URL", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://kexue.fm/", title: "科学空间", kind: "generic", pollingEnabled: true });
+    db.saveEntries([
+      entry(source.id, "归档页", { canonicalUrl: "https://kexue.fm/archives", url: "https://kexue.fm/archives" }),
+      entry(source.id, "真实文章", { canonicalUrl: "https://kexue.fm/archives/11854", url: "https://kexue.fm/archives/11854" })
+    ]);
+
+    expect(db.deleteTaxonomyEntries(source.id)).toBe(1);
+    expect(db.listEntries(source.id).map((item) => item.canonicalUrl)).toEqual(["https://kexue.fm/archives/11854"]);
+    db.close();
+  });
+
   it("persists an automatic rule repair without discarding entries or read state", () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({

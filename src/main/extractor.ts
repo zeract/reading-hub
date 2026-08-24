@@ -1,6 +1,6 @@
 import { load } from "cheerio";
 import { compactText, parsePublishedAt } from "../shared/text";
-import { toAbsoluteUrl } from "../shared/url";
+import { isTaxonomyUrl, toAbsoluteUrl } from "../shared/url";
 import type { CalibrationCandidate, ExtractionRule, RawEntry } from "../shared/types";
 
 export interface ExtractionResult {
@@ -412,16 +412,27 @@ function preferredSummaryNode($: ReturnType<typeof load>, root: any, title: stri
 function isTaxonomyOrNavigation($: ReturnType<typeof load>, element: any): boolean {
   const root = $(element);
   if (root.is("nav, footer, aside, [role='navigation']") || root.parents("nav, footer, aside, [role='navigation']").length) return true;
+  if (isCommentThreadContext($, root)) return true;
   const context = root.add(root.parents().slice(0, 3));
   return context.toArray().some((node: any) => /(?:^|[-_\s])(tag|tags|category|categories|taxonomy|menu|nav|breadcrumb|pagination|pager|footer|sidebar)(?:$|[-_\s])/i.test(`${$(node).attr("id") || ""} ${$(node).attr("class") || ""}`));
 }
 
-function isTaxonomyUrl(rawUrl: string): boolean {
-  try {
-    return /\/(?:tag|tags|category|categories|taxonomy|archive|archives)(?:\/|$)/i.test(new URL(rawUrl).pathname);
-  } catch {
-    return false;
-  }
+/**
+ * Repeated-list discovery must not mistake a discussion thread for an article
+ * archive. Normalise PascalCase component names first, so Scientific Spaces'
+ * `ComListLi` and modern `CommentItem` containers receive the same treatment
+ * as ordinary `.comment-list` markup without rejecting prose that merely
+ * mentions the word “comment”.
+ */
+function isCommentThreadContext($: ReturnType<typeof load>, root: any): boolean {
+  const context = root.add(root.parents());
+  return context.toArray().some((node: any) => {
+    const identity = `${$(node).attr("id") || ""} ${$(node).attr("class") || ""}`
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/[^A-Za-z0-9]+/g, " ")
+      .toLowerCase();
+    return /(?:^|\s)(?:comment(?:s|list|thread|item|content)?|com\s+list(?:\s+li)?|discussion|repl(?:y|ies))(?:$|\s)/.test(identity);
+  });
 }
 
 function openGraphFallback($: ReturnType<typeof load>, pageUrl: string, title: string): RawEntry | undefined {
