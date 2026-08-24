@@ -1035,6 +1035,33 @@ describe("article reader extraction", () => {
     expect(content).not.toMatch(/RichContent-commented|CommentLink/);
   });
 
+  it("keeps lower-camel Zhihu line-comment markup without relying on a class-name whitelist", () => {
+    const result = extractReaderArticle(
+      `<article class="QuestionAnswer-content">
+        <div class="RichContent-inner">
+          <p>${"知乎正文内容 ".repeat(24)}</p>
+          <p>开头<a class="RichContent-commentLink" href="#comment-123">被读者评论的作者原句</a>结尾。</p>
+          <p>另一处<span class="ContentItem-commentHighlight">带新实验类名的作者正文</span>也必须保留。</p>
+          <p>还有<button class="CommentContent-highlight" type="button">可点击批注中的作者原句</button>。</p>
+          <button class="ContentItem-commentHighlight" type="button">写评论</button>
+          <a class="RichContent-commentLink" href="#comments">查看 12 条评论</a>
+          <section class="CommentList"><article class="CommentItem"><p>底部讨论区绝不能进入正文。</p></article></section>
+        </div>
+      </article>`,
+      "https://zhuanlan.zhihu.com/p/123456",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(load(content).text().replace(/\s+/g, "")).toContain("开头被读者评论的作者原句结尾");
+    expect(content).toContain("带新实验类名的作者正文");
+    expect(content).toContain("可点击批注中的作者原句");
+    expect(content).not.toContain("写评论");
+    expect(content).not.toContain("查看 12 条评论");
+    expect(content).not.toContain("底部讨论区绝不能进入正文");
+    expect(content).not.toMatch(/commentLink|commentHighlight|CommentList|CommentItem/);
+  });
+
   it("uses the authorised Zhihu reading path for line-comment annotations", async () => {
     const http = {
       getText: async () => { throw new Error("公开 HTTP 不应被调用"); }

@@ -89,23 +89,35 @@ const BASE_NOISE_SELECTOR = [
 const COMMENT_THREAD_SELECTOR = [
   "#comment", "#comments", "#comment-list", "#commentlist",
   ".comments", ".comment-list", ".commentlist", ".comment-thread", ".comments-area", ".comment-section",
-  "[class*='CommentList']", "[class*='CommentItem']", "[class*='CommentContent']", "[class*='CommentsV2']",
+  // List/item wrappers establish a discussion subtree. `CommentContent` on
+  // its own does not: it can also be an inline marker in a RichContent
+  // experiment, so it must be classified through its thread ancestor.
+  "[class*='CommentList']", "[class*='CommentItem']", "[class*='CommentsV2']",
   "[class$='-comments']", "[class$='_comments']", "[class*='comment-list']", "[class*='comment-thread']", "[class*='comments-area']"
 ].join(",");
 
 const COMMENT_CONTROL_SELECTOR = [
   "[class*='CommentLink']", "[class*='CommentButton']", "[class*='CommentAction']", "[class*='CommentCount']",
+  // Zhihu has used both kebab-case and lower-camel-case variants while
+  // experimenting with line comments. Keep these as *controls* only; the
+  // authored text inside a non-label control is normalized before removal.
+  "[class*='commentLink']", "[class*='commentButton']", "[class*='commentAction']", "[class*='commentCount']",
   "[class*='comment-link']", "[class*='comment-button']", "[class*='comment-action']", "[class*='comment-count']"
 ].join(",");
 
-const NOISE_SELECTOR = [BASE_NOISE_SELECTOR, "[class*='comment']", COMMENT_THREAD_SELECTOR, COMMENT_CONTROL_SELECTOR].join(",");
+// Do not use a broad `[class*='comment']` noise rule here. Zhihu marks an
+// author's quoted passage with several line-comment class variants, so a
+// substring match silently deletes real prose whenever its markup changes.
+// Comment *threads* and standalone controls have stable structural roles and
+// are the only comment-related nodes that belong in the generic noise set.
+const NOISE_SELECTOR = [BASE_NOISE_SELECTOR, COMMENT_THREAD_SELECTOR, COMMENT_CONTROL_SELECTOR].join(",");
 
 const ZHIHU_INLINE_ANNOTATION_TAGS = new Set([
   // Zhihu currently uses inline spans, but older and experiment variants can
   // attach the line-comment marker to a paragraph or a transparent wrapper.
   // Those are safe to normalize after the surrounding discussion thread has
   // been ruled out; the sanitizer later keeps only allowed reader semantics.
-  "a", "b", "del", "div", "em", "i", "ins", "mark", "p", "s", "small", "span", "strong", "sub", "sup", "u"
+  "a", "b", "button", "del", "div", "em", "i", "ins", "mark", "p", "s", "small", "span", "strong", "sub", "sup", "u"
 ]);
 
 const ALLOWED_TAGS = new Set([
@@ -648,8 +660,8 @@ function isZhihuContentUrl(rawUrl: string): boolean {
  * commented on that passage. The generic noise rule deliberately removes
  * comment *threads*, so normalize authored annotation wrappers before it runs.
  *
- * Remove comment-bearing class tokens rather than the element or its entire
- * class list. This retains normal text semantics and essential
+ * Normalize comment-bearing class tokens rather than the element or its
+ * entire class list. This retains normal text semantics and essential
  * semantic carriers such as Zhihu's `ztext-math` / `ztext-math-block`, while
  * the sanitizer still strips all remote presentation classes later.
  * Block-level CommentList/CommentItem ancestors are deliberately left intact
@@ -668,30 +680,33 @@ function preserveZhihuInlineAnnotations($: ReturnType<typeof load>, content: any
     if (element.is(COMMENT_THREAD_SELECTOR) || element.parents(COMMENT_THREAD_SELECTOR).length) continue;
 
     const isCommentControl = element.is(COMMENT_CONTROL_SELECTOR);
-    const explicitlyAnnotated = /(?:commented|annotation)/i.test(className);
-    // A current Zhihu line-comment experiment wraps the quoted author text in
-    // `CommentLink`. Treat it as authored prose only when it is not a normal
-    // comment-count/action label. The controlled wrapper is unwrapped below;
-    // we never preserve a live comment interaction in the reader.
+    // Do not tie authored prose to a particular Zhihu experiment class such
+    // as `RichContent-commented-inline`. Any inline wrapper carrying a
+    // comment/annotation marker inside the selected RichContent root can be
+    // author text. Actual thread containers were excluded above, and a
+    // standalone control label is filtered below.
+    const carriesLineCommentMarker = /(?:comment|annotation)/i.test(className);
     // The selected reader root can itself be `.RichContent-inner` or
     // `.Post-RichTextContainer`; at that point its class is intentionally
-    // not retained in the cloned fragment.  Rely on the already-selected
+    // not retained in the cloned fragment. Rely on the already-selected
     // Zhihu article root plus the explicit thread/control checks above,
     // rather than requiring a class-bearing ancestor that may no longer be
     // present after root selection.
-    const isAnnotatedCommentLink = isCommentControl && !isZhihuCommentControlLabel(element);
-    if (!explicitlyAnnotated && !isAnnotatedCommentLink) continue;
+    if (!carriesLineCommentMarker) continue;
 
     // A labelled control remains UI even when an experiment happens to put a
-    // generic annotation class on it. Leave it for the regular noise pass.
-    if (isCommentControl && isZhihuCommentControlLabel(element)) continue;
+    // generic annotation class on it. Buttons are handled too: a line-comment
+    // experiment can make the quoted author passage clickable with a button,
+    // but ordinary button controls must still disappear with the page chrome.
+    const isButton = tagName === "button";
+    if ((isCommentControl || isButton) && isZhihuCommentControlLabel(element)) continue;
 
     const retainedClasses = className
       .split(/\s+/)
       .filter((classToken) => classToken && !/(?:comment|annotation)/i.test(classToken));
     if (retainedClasses.length) element.attr("class", retainedClasses.join(" "));
     else element.removeAttr("class");
-    if (isCommentControl) element.replaceWith(element.contents());
+    if (isCommentControl || isButton) element.replaceWith(element.contents());
   }
 }
 
