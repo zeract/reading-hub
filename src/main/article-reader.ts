@@ -87,15 +87,18 @@ const BASE_NOISE_SELECTOR = [
 // *containers* separate from their inline controls: a Zhihu line-comment
 // marker can use the same `CommentLink` namespace while still wrapping the
 // author's own prose.
-const COMMENT_THREAD_SELECTOR = [
+const COMMENT_THREAD_CONTAINER_SELECTOR = [
   "#comment", "#comments", "#comment-list", "#commentlist",
   ".comments", ".comment-list", ".commentlist", ".comment-thread", ".comments-area", ".comment-section",
-  // List/item wrappers establish a discussion subtree. `CommentContent` on
-  // its own does not: it can also be an inline marker in a RichContent
-  // experiment, so it must be classified through its thread ancestor.
-  "[class*='CommentList']", "[class*='CommentItem']", "[class*='CommentsV2']",
+  // A list/root wrapper establishes a discussion subtree. `CommentContent`
+  // on its own does not: Zhihu can reuse it for an annotation attached to
+  // authored content, so its role is determined by its ancestor rather than
+  // a class-name substring.
+  "[class*='CommentList']", "[class*='CommentsV2']",
   "[class$='-comments']", "[class$='_comments']", "[class*='comment-list']", "[class*='comment-thread']", "[class*='comments-area']"
 ].join(",");
+
+const COMMENT_THREAD_ITEM_SELECTOR = "[class*='CommentItem']";
 
 const COMMENT_CONTROL_SELECTOR = [
   "[class*='CommentLink']", "[class*='CommentButton']", "[class*='CommentAction']", "[class*='CommentCount']",
@@ -111,8 +114,6 @@ const COMMENT_CONTROL_SELECTOR = [
 // substring match silently deletes real prose whenever its markup changes.
 // Comment *threads* and standalone controls have stable structural roles and
 // are the only comment-related nodes that belong in the generic noise set.
-const NOISE_SELECTOR = [BASE_NOISE_SELECTOR, COMMENT_THREAD_SELECTOR, COMMENT_CONTROL_SELECTOR].join(",");
-
 const ZHIHU_INLINE_ANNOTATION_TAGS = new Set([
   // Zhihu currently uses inline spans, but older and experiment variants can
   // attach the line-comment marker to a paragraph or a transparent wrapper.
@@ -120,6 +121,16 @@ const ZHIHU_INLINE_ANNOTATION_TAGS = new Set([
   // been ruled out; the sanitizer later keeps only allowed reader semantics.
   "a", "b", "button", "del", "div", "em", "i", "ins", "mark", "p", "s", "small", "span", "strong", "sub", "sup", "u"
 ]);
+
+// Zhihu reuses comment-component classes for inline annotations attached to
+// authored prose. Keep the role decision structural: real discussion records
+// are block-level containers, while inline nodes remain part of the selected
+// RichContent and are unwrapped by `preserveZhihuInlineAnnotations` below.
+const INLINE_COMMENT_CARRIER_TAGS = new Set([
+  "a", "abbr", "b", "button", "cite", "code", "del", "em", "i", "ins", "kbd", "mark", "s", "small", "span", "strong", "sub", "sup", "u"
+]);
+
+const ZHIHU_AUTHORED_PROSE_ROOT_SELECTOR = ".Post-RichTextContainer, .RichContent-inner, .RichText";
 
 const ALLOWED_TAGS = new Set([
   "a", "abbr", "b", "blockquote", "br", "caption", "cite", "code", "dd", "del", "details", "div", "dl", "dt", "em", "figcaption", "figure",
@@ -189,6 +200,10 @@ class FormulaDocument {
 
   anchorSelector(id: number): string {
     return `[data-reader-formula-document="${this.tokenNamespace}"][data-reader-formula-anchor="${id}"]`;
+  }
+
+  allAnchorsSelector(): string {
+    return `[data-reader-formula-document="${this.tokenNamespace}"][data-reader-formula-anchor]`;
   }
 
   diagnostics(rendered: Set<number>, fallback: Set<number>, dropped: Set<number>): ReaderFormulaDiagnostics {
@@ -586,11 +601,43 @@ export async function extractReaderArticleAsync(html: string, pageUrl: string, e
 }
 
 function removeNoiseExceptMathScripts($: ReturnType<typeof load>, content: any, pageUrl: string): void {
+  removeReaderNoise($, content, pageUrl, { preserveFormulaAssets: true });
+}
+
+/**
+ * Remove non-article chrome after a source-specific body root has been chosen.
+ *
+ * Comment markup cannot be expressed as one CSS selector safely: the same
+ * provider class can mean a block-level discussion record or a span around
+ * authors' text that happens to have received a line comment. Classify the
+ * former structurally and let the Zhihu normalizer unwrap the latter before
+ * controls are removed. Every extraction stage uses this shared boundary so
+ * candidate scoring and final sanitisation cannot disagree about which prose
+ * belongs to the article.
+ */
+function removeReaderNoise(
+  $: ReturnType<typeof load>,
+  content: any,
+  pageUrl: string,
+  options: { preserveFormulaAssets?: boolean } = {}
+): void {
   preserveZhihuInlineAnnotations($, content, pageUrl);
-  content.find(NOISE_SELECTOR).each((_index: number, node: any) => {
+  content.find(BASE_NOISE_SELECTOR).each((_index: number, node: any) => {
     const element = $(node);
-    if (isMathScript(element) || isImageNoscript(element)) return;
+    if (options.preserveFormulaAssets && (isMathScript(element) || isImageNoscript(element))) return;
     element.remove();
+  });
+  content.find("*").each((_index: number, node: any) => {
+    if (!isNodeWithinRoot(content, node)) return;
+    const element = $(node);
+    if (isCommentThreadElement(element, content, pageUrl)) {
+      element.remove();
+      return;
+    }
+    // `preserveZhihuInlineAnnotations` has already removed comment classes
+    // from author text and unwrapped an interactive quotation. Any remaining
+    // matching node is therefore a standalone control, not body prose.
+    if (element.is(COMMENT_CONTROL_SELECTOR)) element.remove();
   });
 }
 
@@ -667,12 +714,15 @@ function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfil
   }
   if (!candidates.size) candidates.set($("body").get(0), -1);
 
-  let best: { node: any; score: number; priority: number } | undefined;
+  let best: { html: string; score: number; priority: number } | undefined;
   for (const [node, priority] of candidates) {
     if (!node) continue;
     const candidate = $(node).clone();
-    preserveZhihuInlineAnnotations($, candidate, pageUrl);
-    candidate.find(NOISE_SELECTOR).remove();
+    // Keep semantic Math source and image noscript fallbacks while scoring;
+    // the final extraction will consume them. All other chrome is removed
+    // here and the cleaned fragment is returned below, avoiding a second
+    // clone that could reintroduce the comments used during scoring.
+    removeReaderNoise($, candidate, pageUrl, { preserveFormulaAssets: true });
     const text = normalText(candidate.text());
     if (text.length < 40) continue;
     const paragraphCount = candidate.find("p, li, blockquote, pre").length;
@@ -682,12 +732,12 @@ function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfil
     // A coherent semantic article must beat a page-sized main container even
     // when the latter contains much more sidebar and comment text.
     if (!best || priority > best.priority || (priority === best.priority && score > best.score)) {
-      best = { node, score, priority };
+      best = { html: candidate.html() || "", score, priority };
     }
   }
   if (!best) return undefined;
-  const root = $(best.node).clone();
-  return { html: root.html() || "", quality: readerContentQuality(root), priority: best.priority };
+  const root = load(`<article id="reader-clean-content">${best.html}</article>`)("#reader-clean-content");
+  return { html: best.html, quality: readerContentQuality(root), priority: best.priority };
 }
 
 function isZhihuContentUrl(rawUrl: string): boolean {
@@ -697,6 +747,38 @@ function isZhihuContentUrl(rawUrl: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isCommentThreadElement(element: any, content?: any, pageUrl?: string): boolean {
+  if (!element.is(COMMENT_THREAD_CONTAINER_SELECTOR) && !element.is(COMMENT_THREAD_ITEM_SELECTOR)) return false;
+  if (element.is(COMMENT_THREAD_CONTAINER_SELECTOR)) return true;
+  // A discussion item can appear inside the selected RichContent shell on
+  // older page layouts. Its explicit discussion-root ancestor always wins
+  // over the local annotation exception below.
+  if (element.parents(COMMENT_THREAD_CONTAINER_SELECTOR).length) return true;
+  const tagName = element.get(0)?.tagName?.toLowerCase();
+  if (!tagName || INLINE_COMMENT_CARRIER_TAGS.has(tagName)) return false;
+  // A few Zhihu RichContent variants use a block wrapper for a line-comment
+  // annotation. Keep only an explicitly marked annotation in an authored
+  // prose root. A bare block CommentItem remains a discussion record even
+  // when a page omits its outer CommentList container.
+  return !isZhihuBlockAnnotationCarrier(element, content, pageUrl);
+}
+
+function isZhihuBlockAnnotationCarrier(element: any, content: any, pageUrl?: string): boolean {
+  if (!content?.length || !pageUrl || !isZhihuContentUrl(pageUrl)) return false;
+  const hasExplicitAnnotationMarker = (element.attr("class") || "")
+    .split(/\s+/)
+    .some((className: string) => /(?:^|[-_])(?:commented|commenthighlight|annotation|highlight)(?:$|[-_])/i.test(className));
+  return hasExplicitAnnotationMarker && (content.is(ZHIHU_AUTHORED_PROSE_ROOT_SELECTOR)
+    || element.parents(ZHIHU_AUTHORED_PROSE_ROOT_SELECTOR).length > 0);
+}
+
+function hasCommentThreadAncestor(element: any, content?: any, pageUrl?: string): boolean {
+  for (let parent = element.parent(); parent.length; parent = parent.parent()) {
+    if (isCommentThreadElement(parent, content, pageUrl)) return true;
+  }
+  return false;
 }
 
 /**
@@ -709,7 +791,7 @@ function isZhihuContentUrl(rawUrl: string): boolean {
  * semantic carriers such as Zhihu's `ztext-math` / `ztext-math-block`, while
  * the sanitizer still strips all remote presentation classes later.
  * Block-level CommentList/CommentItem ancestors are deliberately left intact
- * here and removed by COMMENT_THREAD_SELECTOR.
+ * here and removed by the structural discussion-thread classifier.
  */
 function preserveZhihuInlineAnnotations($: ReturnType<typeof load>, content: any, pageUrl: string): void {
   if (!isZhihuContentUrl(pageUrl)) return;
@@ -721,7 +803,7 @@ function preserveZhihuInlineAnnotations($: ReturnType<typeof load>, content: any
     const tagName = element.get(0)?.tagName?.toLowerCase();
     const className = element.attr("class") || "";
     if (!tagName || !ZHIHU_INLINE_ANNOTATION_TAGS.has(tagName)) continue;
-    if (element.is(COMMENT_THREAD_SELECTOR) || element.parents(COMMENT_THREAD_SELECTOR).length) continue;
+    if (isCommentThreadElement(element, content, pageUrl) || hasCommentThreadAncestor(element, content, pageUrl)) continue;
 
     const isCommentControl = element.is(COMMENT_CONTROL_SELECTOR);
     // Do not tie authored prose to a particular Zhihu experiment class such
@@ -825,7 +907,10 @@ function prepareSanitizedContent(rawHtml: string, pageUrl: string): PreparedSani
   const $ = load(`<div id="reader-content">${rawHtml}</div>`);
   const root = $("#reader-content");
   hydrateLazyImages($, root, pageUrl);
-  preserveZhihuInlineAnnotations($, root, pageUrl);
+  // Drop thread containers before their nested TeX/image markup can enter
+  // the formula or media pipeline. Preserve Math source assets at this point;
+  // they are consumed and removed by the following formula pass.
+  removeReaderNoise($, root, pageUrl, { preserveFormulaAssets: true });
   const formulas = new FormulaDocument();
   // Semantic containers must be consumed first. In particular, Zhihu wraps
   // `data-tex` around a MathJax SVG visual copy; looking at the child frame
@@ -833,7 +918,7 @@ function prepareSanitizedContent(rawHtml: string, pageUrl: string): PreparedSani
   preserveSemanticFormulaCarriers($, root, formulas);
   preserveMathScripts($, root, formulas);
   preserveRenderedMathJax($, root, formulas);
-  root.find(NOISE_SELECTOR).remove();
+  removeReaderNoise($, root, pageUrl);
   for (const node of root.find("*").toArray()) {
     const element = $(node);
     const tag = (node as any).tagName?.toLowerCase();
@@ -1444,9 +1529,14 @@ type FormulaRenderPlan = {
   equations: EquationIndex;
 };
 
-function createFormulaRenderPlan(formulas: FormulaDocument, globalMathMacros: MathMacroScope): FormulaRenderPlan {
+function createFormulaRenderPlan(
+  $: ReturnType<typeof load>,
+  root: any,
+  formulas: FormulaDocument,
+  globalMathMacros: MathMacroScope
+): FormulaRenderPlan {
   const activeMacros: MathMacroScope = new Map(globalMathMacros);
-  const prepared = formulas.records.map((record): PreparedFormula => {
+  const prepared = formulaRecordsInDocumentOrder($, root, formulas).map((record): PreparedFormula => {
     // MathJax's package loader directives are not mathematical content. The
     // local SVG renderer loads its supported extensions explicitly, while
     // KaTeX needs the directive removed before its safe path runs.
@@ -1466,6 +1556,34 @@ function createFormulaRenderPlan(formulas: FormulaDocument, globalMathMacros: Ma
   };
 }
 
+/**
+ * Formula carriers are extracted by semantic type for safety (data-tex,
+ * source script, rendered MathJax, then plaintext), which is not necessarily
+ * their authored order. The generated anchors are the canonical final DOM
+ * order. Build macro snapshots and equation labels from that order so a
+ * declaration in an earlier script can affect a later semantic carrier, but
+ * never retroactively alter an earlier equation.
+ */
+function formulaRecordsInDocumentOrder($: ReturnType<typeof load>, root: any, formulas: FormulaDocument): FormulaRecord[] {
+  const ordered: FormulaRecord[] = [];
+  const seen = new Set<number>();
+  root.find(formulas.allAnchorsSelector()).each((_index: number, node: any) => {
+    const id = Number.parseInt($(node).attr("data-reader-formula-anchor") || "", 10);
+    const record = Number.isSafeInteger(id) ? formulas.get(id) : undefined;
+    if (record && !seen.has(record.id)) {
+      ordered.push(record);
+      seen.add(record.id);
+    }
+  });
+  // Malformed or missing anchors are handled as integrity drops in
+  // installFormulaOutput. Keep them at the tail only so they cannot change the
+  // macro scope of any formula that is still visible in the document.
+  for (const record of formulas.records) {
+    if (!seen.has(record.id)) ordered.push(record);
+  }
+  return ordered;
+}
+
 function renderMath(
   $: ReturnType<typeof load>,
   root: any,
@@ -1473,7 +1591,7 @@ function renderMath(
   scientificMath: ScientificMathRenderer | undefined,
   globalMathMacros: MathMacroScope
 ): SanitizedContent {
-  const plan = createFormulaRenderPlan(formulas, globalMathMacros);
+  const plan = createFormulaRenderPlan($, root, formulas, globalMathMacros);
   const output = new Map<number, string | undefined>();
   for (const item of plan.formulas) {
     output.set(item.record.id, renderFormulaSynchronously(item, plan.equations, scientificMath));
@@ -1493,7 +1611,7 @@ async function renderMathAsync(
   scientificMath: ScientificMathRenderer | undefined,
   globalMathMacros: MathMacroScope
 ): Promise<SanitizedContent> {
-  const plan = createFormulaRenderPlan(formulas, globalMathMacros);
+  const plan = createFormulaRenderPlan($, root, formulas, globalMathMacros);
   const output = new Map<number, string | undefined>();
   for (const item of plan.formulas) {
     output.set(item.record.id, await renderFormulaAsynchronously(item, plan.equations, scientificMath));
@@ -1603,23 +1721,54 @@ function tryRenderTeX(
 ): string | undefined {
   const tex = prepareEquationTeX(record.tex, labels);
   if (!tex.trim()) return "";
+  const katexOptions = {
+    displayMode: false,
+    throwOnError: true,
+    strict: "ignore" as const,
+    trust: false,
+    macros: katexMacros(macros),
+    maxSize: 24,
+    maxExpand: 1_000
+  };
+  let html: string;
   try {
     // The app owns all display layout and equation tags. Rendering the KaTeX
     // core in inline mode prevents its internal `.base/.tag` implementation
     // from becoming a second, version-sensitive layout system.
-    const html = katex.renderToString(tex, {
-      displayMode: false,
-      throwOnError: true,
-      strict: "ignore",
-      trust: false,
-      macros: katexMacros(macros),
-      maxSize: 24,
-      maxExpand: 1_000
-    });
-    return record.displayMode ? wrapDisplayEquation(html, metadata?.tag, "katex") : html;
-  } catch {
-    return undefined;
+    html = katex.renderToString(tex, katexOptions);
+  } catch (error) {
+    // Post-typeset DOM snapshots can retain a use of a site-local custom
+    // operator while the original `\\newcommand` node is gone. Recover only
+    // the narrow, unambiguous case: KaTeX reports one undefined alphabetic
+    // control word and it is used as a zero-argument function call. Mapping
+    // it to `\\operatorname` preserves the mathematical operator semantics
+    // without guessing argument macros or hard-coding a provider name.
+    const recovered = recoverUndefinedOperatorFunction(tex, error, macros);
+    if (!recovered) return undefined;
+    try {
+      html = katex.renderToString(recovered, katexOptions);
+    } catch {
+      return undefined;
+    }
   }
+  return record.displayMode ? wrapDisplayEquation(html, metadata?.tag, "katex") : html;
+}
+
+function recoverUndefinedOperatorFunction(tex: string, error: unknown, macros: MathMacroScope): string | undefined {
+  const message = error instanceof Error ? error.message : String(error || "");
+  const match = message.match(/Undefined control sequence:\s*\\([A-Za-z]+)(?![A-Za-z])/i);
+  const name = match?.[1];
+  if (!name || macros.has(name)) return undefined;
+  // Only recover a command that is visibly used as a zero-arity operator;
+  // parameters, delimiters, and arbitrary unknown TeX continue to the local
+  // MathJax path (or the explicit safe TeX fallback) instead of being guessed.
+  const invocation = new RegExp(`\\\\${escapeRegExp(name)}(?![A-Za-z])\\s*(?=(?:\\\\left\\s*)?\\()`, "g");
+  let replacements = 0;
+  const recovered = tex.replace(invocation, () => {
+    replacements += 1;
+    return `\\operatorname{${name}}`;
+  });
+  return replacements ? recovered : undefined;
 }
 
 function tryRenderScientificMath(

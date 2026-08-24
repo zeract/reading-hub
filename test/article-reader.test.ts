@@ -455,6 +455,56 @@ describe("article reader extraction", () => {
     expect(content).not.toContain("reader-math-source");
   });
 
+  it("replays lost zero-arity custom operators from a post-typeset Scientific Spaces snapshot", () => {
+    const result = extractReaderArticle(
+      `<article><p>${"用于保证正文提取稳定的说明文字。 ".repeat(26)}</p>
+        <p>后渲染页面只保留 $\\recos(\\boldsymbol{x},\\boldsymbol{y}) = \\frac{\\boldsymbol{x}\\cdot\\boldsymbol{y}}{\\Vert\\boldsymbol{x}\\Vert\\,\\Vert\\boldsymbol{y}\\Vert}$，但原始的 newcommand 声明已经不存在。</p>
+        <p>${"该公式应继续作为正常的数学运算符显示。 ".repeat(26)}</p>
+      </article>`,
+      "https://kexue.fm/archives/11818",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    const visible = load(`<article>${content}</article>`);
+    visible(".katex, mjx-container, .reader-math-source").remove();
+    expect(visible.text()).not.toContain("\\recos");
+    expect(content).toContain('class="katex"');
+    expect(content).not.toContain("reader-math-source");
+    expect(result?.article.formulaDiagnostics).toMatchObject({ total: 1, rendered: 1, fallback: 0, dropped: 0 });
+  });
+
+  it("does not guess an unknown command with arguments as a lost operator", () => {
+    const result = extractReaderArticle(
+      `<article><p>${"用于保证正文提取稳定的说明文字。 ".repeat(26)}</p>
+        <p>无法确认语义的公式是 $\\unknownoperator{\\boldsymbol{x}}$。</p>
+        <p>${"这段后续正文用于保持文章提取质量。 ".repeat(26)}</p>
+      </article>`,
+      "https://kexue.fm/archives/11818",
+      entry
+    );
+
+    expect(result?.article.contentHtml).toContain("reader-math-source");
+    expect(result?.article.formulaDiagnostics).toMatchObject({ total: 1, rendered: 0, fallback: 1, dropped: 0 });
+  });
+
+  it("applies macro declarations in final DOM order when source carriers are extracted in separate passes", () => {
+    const result = extractReaderArticle(
+      `<article><p>${"用于保证正文提取稳定的说明文字。 ".repeat(26)}</p>
+        <script type="math/tex">\\newcommand{\\recos}{\\operatorname{recos}}</script>
+        <p>随后出现的语义公式是 <span data-reader-tex="\\recos(\\boldsymbol{x})"></span>。</p>
+        <p>${"该声明必须先于实际公式生效。 ".repeat(26)}</p>
+      </article>`,
+      "https://kexue.fm/archives/11818",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(load(content)(".katex")).toHaveLength(1);
+    expect(content).not.toContain("reader-math-source");
+    expect(result?.article.formulaDiagnostics).toMatchObject({ total: 2, rendered: 2, fallback: 0, dropped: 0 });
+  });
+
   it("renders an align environment split across HTML line breaks", () => {
     const result = extractReaderArticle(
       `<article><p>LatentMoE与MoE的区别是：
@@ -614,6 +664,31 @@ describe("article reader extraction", () => {
         <foreignObject><script>alert(1)</script></foreignObject>
       </svg></mjx-container>
     `)).toBeUndefined();
+
+    // An older MathJax `noundefined` result is syntactically safe SVG but is
+    // semantically an error: the red mtext represents a bare unknown command.
+    expect(sanitizeMathJaxSvg(`
+      <mjx-container class="MathJax" jax="SVG" overflow="overflow"><svg xmlns="http://www.w3.org/2000/svg" width="1ex" height="1ex" viewBox="0 0 10 10">
+        <g data-mml-node="mtext" data-latex="\\recos" fill="red" stroke="red"><text>recos</text></g>
+      </svg></mjx-container>
+    `)).toBeUndefined();
+
+    // Red is a valid author-selected math colour. It must not be rejected
+    // unless it carries the exact noundefined mtext signature above.
+    expect(sanitizeMathJaxSvg(`
+      <mjx-container class="MathJax" jax="SVG" overflow="overflow"><svg xmlns="http://www.w3.org/2000/svg" width="1ex" height="1ex" viewBox="0 0 10 10">
+        <g data-mml-node="mstyle" fill="red" stroke="red"><text>x</text></g>
+      </svg></mjx-container>
+    `)).toContain("<text>x</text>");
+  });
+
+  it("rejects MathJax's unknown-command output instead of returning red error glyphs", async () => {
+    const math = new ScientificMathRenderer();
+    await math.ready();
+
+    await expect(math.renderAsync("\\unknowncommand{x}", false, {})).resolves.toBeUndefined();
+    await expect(math.renderAsync("\\recos(\\boldsymbol{x},\\boldsymbol{y})", false, {})).resolves.toBeUndefined();
+    await expect(math.renderAsync("\\begin{notanenvironment}x\\end{notanenvironment}", true, {})).resolves.toBeUndefined();
   });
 
   it("renders Scientific Spaces formulas that require the cancel extension", async () => {
@@ -1101,6 +1176,46 @@ describe("article reader extraction", () => {
     expect(content).not.toMatch(/commentLink|commentHighlight|CommentList|CommentItem/);
   });
 
+  it("distinguishes an inline Zhihu CommentItem annotation from a block discussion record", () => {
+    const result = extractReaderArticle(
+      `<article class="QuestionAnswer-content">
+        <div class="RichContent-inner">
+          <p>${"知乎正文内容 ".repeat(24)}</p>
+          <p>前文<span class="CommentItem CommentItemV2">被读者评论但仍属于作者的原句</span>后文。</p>
+          <section class="CommentList"><article class="CommentItem"><p>真正的评论区文字绝不能混入正文。</p></article></section>
+        </div>
+      </article>`,
+      "https://www.zhihu.com/question/123/answer/456",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(load(content).text().replace(/\s+/g, "")).toContain("前文被读者评论但仍属于作者的原句后文");
+    expect(content).not.toContain("真正的评论区文字绝不能混入正文");
+    expect(content).not.toMatch(/CommentItem/);
+  });
+
+  it("keeps a block-wrapped Zhihu line annotation inside RichContent while excluding its discussion tree", () => {
+    const result = extractReaderArticle(
+      `<article class="QuestionAnswer-content">
+        <div class="RichContent-inner">
+          <p>${"知乎正文内容 ".repeat(24)}</p>
+          <div class="CommentItem RichContent-commented">这个块级包装的被评论作者段落仍然必须显示。</div>
+          <article class="CommentItem"><p>没有列表容器的真实评论记录仍然不能进入正文。</p></article>
+          <section class="CommentList"><article class="CommentItem"><p>真正的讨论记录绝不能进入正文。</p></article></section>
+        </div>
+      </article>`,
+      "https://www.zhihu.com/question/123/answer/456",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(content).toContain("这个块级包装的被评论作者段落仍然必须显示");
+    expect(content).not.toContain("没有列表容器的真实评论记录");
+    expect(content).not.toContain("真正的讨论记录绝不能进入正文");
+    expect(content).not.toMatch(/CommentItem|RichContent-commented/);
+  });
+
   it("uses the authorised Zhihu reading path for line-comment annotations", async () => {
     const http = {
       getText: async () => { throw new Error("公开 HTTP 不应被调用"); }
@@ -1126,6 +1241,7 @@ describe("article reader extraction", () => {
       `<article>
         <p>${"通用文章正文 ".repeat(30)}</p>
         <section class="comment-section"><p>普通站点的评论区不应进入正文。</p></section>
+        <div class="RichContent-inner"><article class="CommentItem"><p>非知乎页面的直接评论也不应进入正文。</p></article></div>
         <section class="CommentList"><article class="CommentItem"><p>PascalCase 评论区不应进入正文。</p></article></section>
       </article>`,
       entry.url,
@@ -1134,6 +1250,7 @@ describe("article reader extraction", () => {
 
     expect(result?.article.contentHtml).toContain("通用文章正文");
     expect(result?.article.contentHtml).not.toContain("普通站点的评论区");
+    expect(result?.article.contentHtml).not.toContain("非知乎页面的直接评论");
     expect(result?.article.contentHtml).not.toContain("PascalCase 评论区");
   });
 

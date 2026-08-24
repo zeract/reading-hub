@@ -77,20 +77,11 @@ export class ScientificMathRenderer {
 
   private serializeRenderedNode(node: unknown): string | undefined {
     if (!this.runtime) return undefined;
-    // MathJax annotates most SVG groups with the source TeX for debugging.
-    // The attributes are not needed after local rendering and can expose raw
-    // commands through selection or inspection, so retain paths only.
-    const html = sanitizeMathJaxSvg(this.runtime.startup.adaptor.outerHTML(node));
-    if (!html) return undefined;
-    // MathJax represents parse failures in this explicit node. Keep the
-    // caller's safe TeX fallback rather than exposing a red MathJax error.
-    // A few malformed, browser-mutated source fragments do not produce an
-    // merror: MathJax can leave a literal TeX tail next to a partly rendered
-    // expression. Let KaTeX's strict fallback handle those as one block
-    // instead of showing the user a visually plausible but corrupted formula.
-    const renderedText = html.replace(/<[^>]*>/g, "");
-    if (/<mjx-merror\b|<mjx-spacer\b/i.test(html)) return undefined;
-    return /\\(?:[A-Za-z]+|[{}\[\]\\])/i.test(renderedText) ? undefined : html;
+    // MathJax annotates its SVG with source TeX and, on failure, with error
+    // nodes. `sanitizeMathJaxSvg()` validates those signals *before* removing
+    // data attributes, so an unknown command can never become a visually
+    // plausible red SVG in Reader View.
+    return sanitizeMathJaxSvg(this.runtime.startup.adaptor.outerHTML(node));
   }
 
   private async start(): Promise<void> {
@@ -101,7 +92,18 @@ export class ScientificMathRenderer {
     if (!runtime) throw new Error("MathJax 未能加载。");
     await runtime.init({
       loader: { load: ["input/tex", "output/svg"] },
-      tex: { packages: { "[+]": ["base", "ams", "newcommand", "configmacros"] } }
+      tex: {
+        packages: {
+          "[+]": ["base", "ams", "newcommand", "configmacros"],
+          // MathJax's default `noundefined` extension turns an unknown TeX
+          // command into a red text glyph rather than a render failure. That
+          // is useful in a browser authoring page, but unsafe for a reader:
+          // it can look like a successfully rendered equation. Disable it so
+          // unknown commands become explicit MathJax errors and fall back to
+          // the reader's formatted TeX card when no safe recovery exists.
+          "[-]": ["noundefined"]
+        }
+      }
     });
     this.runtime = runtime;
   }
@@ -148,6 +150,12 @@ export function sanitizeMathJaxSvg(rawHtml: string): string | undefined {
   const containerNode = container.get(0);
   if (!containerNode) return undefined;
 
+  // This has to happen before the structural sanitizer drops `data-*`
+  // attributes. MathJax 4 reports ordinary parse failures through merror
+  // nodes, while older/default `noundefined` output can be a red mtext glyph
+  // carrying only the original unknown control word in `data-latex`.
+  if (hasMathJaxSvgRenderFailure($, container)) return undefined;
+
   // MathJax uses `<a>` for `\href`. It is not needed in Reader View, so unwrap
   // it before validating the remaining graph. This retains the glyphs but
   // prevents TeX from creating a second link/URL execution surface.
@@ -193,6 +201,31 @@ export function sanitizeMathJaxSvg(rawHtml: string): string | undefined {
 
   const output = root.html() || "";
   return /<mjx-container\b[^>]*><svg\b/i.test(output) ? output : undefined;
+}
+
+/**
+ * MathJax error output is still inert SVG, but it is not a valid rendering of
+ * the article's mathematics. Reject it at the renderer boundary rather than
+ * making later CSS or text heuristics guess whether a red glyph is an error.
+ */
+function hasMathJaxSvgRenderFailure($: ReturnType<typeof load>, container: any): boolean {
+  if (container.find("mjx-merror, merror, [data-mml-node='merror'], [data-mjx-error]").length) return true;
+
+  // Defensive compatibility for output produced before `noundefined` was
+  // disabled above. Legitimate red math is represented by an mstyle node or
+  // normal glyph path; only the extension's bare unknown command mtext is an
+  // error signature.
+  return container.find("[data-mml-node='mtext'][data-latex]").toArray().some((node: any) => {
+    const element = $(node);
+    const source = (element.attr("data-latex") || "").trim();
+    return /^\\[A-Za-z]+$/.test(source)
+      && isMathJaxErrorPaint(element.attr("fill"))
+      && isMathJaxErrorPaint(element.attr("stroke"));
+  });
+}
+
+function isMathJaxErrorPaint(value: string | undefined): boolean {
+  return /^(?:red|#f00(?:000)?|rgb\(255\s*,\s*0\s*,\s*0\))$/i.test((value || "").trim());
 }
 
 function isSafeMathJaxSvgAttribute(tag: string, name: string, value: string, definedGlyphIds: Set<string>): boolean {
