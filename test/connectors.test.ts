@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GenericConnector, RssConnector } from "../src/main/connectors";
 import { PUBLICATION_DATE_REVISION } from "../src/main/extractor";
 import { FEED_DISCOVERY_REVISION, RSS_METADATA_REVISION } from "../src/main/feed";
+import { ResponseTooLargeError } from "../src/main/http";
 import type { Source } from "../src/shared/types";
 
 describe("GenericConnector", () => {
@@ -191,6 +192,32 @@ describe("GenericConnector", () => {
     expect(receivedOptions).toBeUndefined();
     expect(outcome.metadataRevision).toBe(RSS_METADATA_REVISION);
     expect(outcome.entries).toEqual([expect.objectContaining({ title: "Fresh article" })]);
+  });
+
+  it("uses and persists isolated rendering when a generic page exceeds the static response budget", async () => {
+    const http = {
+      getText: async () => {
+        throw new ResponseTooLargeError(3_000_000, "text/html", "https://example.com/", 3_000_001);
+      }
+    };
+    const renderer = {
+      render: vi.fn().mockResolvedValue(`<main><ul>
+        <li><a href="/one">A sufficiently descriptive first post</a><time datetime="2026-08-20">20 Aug 2026</time></li>
+        <li><a href="/two">A sufficiently descriptive second post</a><time datetime="2026-08-19">19 Aug 2026</time></li>
+      </ul></main>`)
+    };
+    const source: Source = {
+      id: "source", url: "https://example.com/", title: "Example", kind: "generic", status: "active",
+      pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1,
+      extractionRule: { version: 1, publicationDateRevision: PUBLICATION_DATE_REVISION, feedDiscoveryRevision: FEED_DISCOVERY_REVISION }
+    };
+    const connector = new GenericConnector(http as any, renderer as any);
+
+    const outcome = await connector.fetchWithMetadata(source);
+
+    expect(outcome.entries).toHaveLength(2);
+    expect(outcome.extractionRule).toMatchObject({ rendererRequired: true });
+    expect(renderer.render).toHaveBeenCalledWith("https://example.com/", undefined);
   });
 });
 

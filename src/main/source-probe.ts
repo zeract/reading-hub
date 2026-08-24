@@ -1,10 +1,10 @@
-import { extractGenericPage } from "./extractor";
+import { extractCalibrationCandidates, extractGenericPage } from "./extractor";
 import { discoverFeedUrls, parseFeed, looksLikeFeed } from "./feed";
-import { NetworkRequestError, PublicHttpClient } from "./http";
+import { loadGenericPage } from "./generic-page-loader";
+import { PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
 import type { CalibrationResult, ProbeResult, RawEntry } from "../shared/types";
 import { assertFeedSubscriptionUrl, assertPublicUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
-import { extractCalibrationCandidates } from "./extractor";
 
 export class SourceProbe {
   constructor(private readonly http: PublicHttpClient, private readonly renderer?: PageRenderer) {}
@@ -13,35 +13,15 @@ export class SourceProbe {
     const localFeed = isTrustedLoopbackFeedUrl(rawUrl);
     const input = localFeed ? assertFeedSubscriptionUrl(rawUrl, true).toString() : assertPublicUrl(rawUrl).toString();
     assertSupportedPublicProbeUrl(input);
-    let response;
-    try {
-      response = await this.http.getText(input, undefined, localFeed ? { allowTrustedLoopbackFeed: true } : undefined);
-    } catch (error) {
-      if (localFeed) throw error;
-      if (!(error instanceof NetworkRequestError) || !this.renderer) throw error;
-      try {
-        const rendered = await this.renderer.render(input);
-        const extraction = extractGenericPage(rendered, input);
-        return {
-          kind: "generic",
-          title: extraction.title,
-          url: input,
-          confidence: extraction.confidence,
-          extractionRule: extraction.rule ? { ...extraction.rule, rendererRequired: true } : undefined,
-          preview: extraction.entries.slice(0, 10),
-          requiresReview: extraction.fallback || extraction.confidence < 0.75,
-          message: "已使用浏览器渲染模式识别该公开网页。"
-        };
-      } catch {
-        throw error;
-      }
-    }
-    if (looksLikeFeed(response.contentType, response.text)) {
-      const feed = await parseFeed(response.text, response.url);
+    const page = localFeed
+      ? await this.localFeedPage(input)
+      : await loadGenericPage(this.http, this.renderer, input);
+    if (looksLikeFeed(page.contentType, page.text)) {
+      const feed = await parseFeed(page.text, page.url);
       return {
         kind: "rss",
         title: feed.title,
-        url: response.url,
+        url: page.url,
         confidence: 1,
         preview: feed.entries.slice(0, 10),
         requiresReview: false,
@@ -51,7 +31,7 @@ export class SourceProbe {
 
     if (localFeed) throw new Error("本机地址只支持 RSS、Atom 或 JSON Feed，不能用于网页结构提取。");
 
-    for (const feedUrl of discoverFeedUrls(response.text, response.url)) {
+    for (const feedUrl of discoverFeedUrls(page.text, page.url)) {
       try {
         const feedResponse = await this.http.getText(feedUrl);
         if (!looksLikeFeed(feedResponse.contentType, feedResponse.text)) continue;
@@ -62,16 +42,18 @@ export class SourceProbe {
       }
     }
 
-    let extraction = extractGenericPage(response.text, response.url);
-    if (extraction.entries.length < 2 && this.renderer) {
+    let extraction = extractGenericPage(page.text, page.url);
+    let usedRenderer = page.fromRenderer;
+    if (!usedRenderer && extraction.entries.length < 2 && this.renderer) {
       try {
-        const rendered = await this.renderer.render(response.url);
-        const renderedExtraction = extractGenericPage(rendered, response.url);
+        const rendered = await this.renderer.render(page.url);
+        const renderedExtraction = extractGenericPage(rendered, page.url);
         if (renderedExtraction.entries.length > extraction.entries.length) {
           extraction = {
             ...renderedExtraction,
             rule: renderedExtraction.rule ? { ...renderedExtraction.rule, rendererRequired: true } : undefined
           };
+          usedRenderer = true;
         }
       } catch {
         // Rendering is best-effort and never grants access to an authenticated browser session.
@@ -80,35 +62,31 @@ export class SourceProbe {
     return {
       kind: "generic",
       title: extraction.title,
-      url: response.url,
+      url: page.url,
       confidence: extraction.confidence,
-      extractionRule: extraction.rule,
+      extractionRule: withRendererRequirement(extraction.rule, usedRenderer),
       preview: extraction.entries.slice(0, 10),
       requiresReview: extraction.fallback || extraction.confidence < 0.75,
-      message: extraction.fallback ? "未找到稳定的列表结构，已降级为页面预览。" : undefined
+      message: page.fromRenderer
+        ? "已使用浏览器渲染模式识别该公开网页。"
+        : extraction.fallback ? "未找到稳定的列表结构，已降级为页面预览。" : undefined
     };
   }
 
   async calibrate(rawUrl: string): Promise<CalibrationResult> {
     const input = assertPublicUrl(rawUrl).toString();
     assertSupportedPublicProbeUrl(input);
-    let html: string;
-    let pageUrl: string;
-    try {
-      const response = await this.http.getText(input);
-      html = response.text;
-      pageUrl = response.url;
-    } catch (error) {
-      if (!(error instanceof NetworkRequestError) || !this.renderer) throw error;
-      try {
-        html = await this.renderer.render(input);
-        pageUrl = input;
-      } catch {
-        throw error;
-      }
-    }
+    const page = await loadGenericPage(this.http, this.renderer, input);
+    const html = page.text;
+    const pageUrl = page.url;
     let candidates = extractCalibrationCandidates(html, pageUrl);
-    if (candidates.length < 2 && this.renderer) {
+    if (page.fromRenderer) {
+      candidates = candidates.map((candidate) => ({
+        ...candidate,
+        rule: { ...candidate.rule, rendererRequired: true }
+      }));
+    }
+    if (!page.fromRenderer && candidates.length < 2 && this.renderer) {
       try {
         const rendered = await this.renderer.render(pageUrl);
         const renderedCandidates = extractCalibrationCandidates(rendered, pageUrl).map((candidate) => ({
@@ -128,6 +106,16 @@ export class SourceProbe {
       message: candidates.length ? undefined : "还没有找到可稳定重复的内容卡片；请稍后重试，或等待网站加载后再校准。"
     };
   }
+
+  private async localFeedPage(input: string) {
+    const response = await this.http.getText(input, undefined, { allowTrustedLoopbackFeed: true });
+    return { url: response.url, text: response.text, contentType: response.contentType, fromRenderer: false };
+  }
+}
+
+function withRendererRequirement(rule: ProbeResult["extractionRule"], required: boolean): ProbeResult["extractionRule"] {
+  if (!required) return rule;
+  return { version: 1, ...rule, rendererRequired: true };
 }
 
 export function isXiaohongshuUrl(url: string): boolean {

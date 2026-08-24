@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ResponseTooLargeError } from "../src/main/http";
 import { SourceProbe } from "../src/main/source-probe";
 
 describe("SourceProbe platform boundaries", () => {
@@ -57,5 +58,41 @@ describe("SourceProbe platform boundaries", () => {
       undefined,
       { allowTrustedLoopbackFeed: true }
     );
+  });
+
+  it("uses the isolated renderer for an oversized HTML page and records that choice", async () => {
+    const http = {
+      getText: vi.fn().mockRejectedValue(new ResponseTooLargeError(
+        3_000_000,
+        "text/html; charset=utf-8",
+        "https://example.com/archive",
+        3_000_001
+      ))
+    };
+    const renderer = {
+      render: vi.fn().mockResolvedValue(`<main><ul>
+        <li><a href="/one">A sufficiently descriptive first post</a><time datetime="2026-08-20">20 Aug 2026</time></li>
+        <li><a href="/two">A sufficiently descriptive second post</a><time datetime="2026-08-19">19 Aug 2026</time></li>
+      </ul></main>`)
+    };
+    const probe = new SourceProbe(http as any, renderer as any);
+
+    await expect(probe.probe("https://example.com/archive")).resolves.toMatchObject({
+      kind: "generic",
+      extractionRule: expect.objectContaining({ rendererRequired: true }),
+      preview: expect.arrayContaining([expect.objectContaining({ title: "A sufficiently descriptive first post" })]),
+      message: "已使用浏览器渲染模式识别该公开网页。"
+    });
+    expect(renderer.render).toHaveBeenCalledWith("https://example.com/archive", undefined);
+  });
+
+  it("does not treat an oversized Feed as an HTML page", async () => {
+    const error = new ResponseTooLargeError(3_000_000, "application/rss+xml", "https://example.com/feed.xml", 3_000_001);
+    const http = { getText: vi.fn().mockRejectedValue(error) };
+    const renderer = { render: vi.fn() };
+    const probe = new SourceProbe(http as any, renderer as any);
+
+    await expect(probe.probe("https://example.com/feed.xml")).rejects.toBe(error);
+    expect(renderer.render).not.toHaveBeenCalled();
   });
 });

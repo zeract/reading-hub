@@ -4,6 +4,7 @@ import { canonicalizeContentUrl, isTrustedLoopbackFeedUrl } from "../shared/url"
 import { contentNormalizer } from "./content-normalizer";
 import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage, extractPagePublishedAt, extractPublicationDateFromUrl, withPublicationDateRevision } from "./extractor";
 import { discoverFeedUrls, FEED_DISCOVERY_REVISION, looksLikeFeed, parseFeed, RSS_METADATA_REVISION } from "./feed";
+import { loadGenericPage } from "./generic-page-loader";
 import { PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
 import { builtInManifest } from "./connector-registry";
@@ -99,12 +100,15 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
     // available. Replay each once even when the homepage validator says 304,
     // then persist either the verified Feed URL or the audit revision.
     const needsFeedDiscoveryAudit = source.extractionRule?.feedDiscoveryRevision !== FEED_DISCOVERY_REVISION;
-    const response = source.extractionRule?.rendererRequired && this.renderer
-      ? { url: source.url, text: await this.renderer.render(source.url) }
-      : await this.http.getText(source.url, needsLegacyRuleAudit || needsPublicationDateAudit || needsFeedDiscoveryAudit ? undefined : { etag: source.etag, lastModified: source.lastModified });
-    if ("status" in response && response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true };
+    const page = await loadGenericPage(this.http, this.renderer, source.url, {
+      cached: needsLegacyRuleAudit || needsPublicationDateAudit || needsFeedDiscoveryAudit
+        ? undefined
+        : { etag: source.etag, lastModified: source.lastModified },
+      preferRenderer: source.extractionRule?.rendererRequired === true
+    });
+    if (page.response?.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true };
 
-    for (const feedUrl of discoverFeedUrls(response.text, response.url)) {
+    for (const feedUrl of discoverFeedUrls(page.text, page.url)) {
       try {
         const feedResponse = await this.http.getText(feedUrl);
         if (!looksLikeFeed(feedResponse.contentType, feedResponse.text)) continue;
@@ -126,17 +130,20 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
       }
     }
 
-    const extraction = extractGenericPage(response.text, response.url, source.extractionRule);
+    const extraction = extractGenericPage(page.text, page.url, source.extractionRule);
     const entries = await this.enrichPublicationDates(extraction.entries);
     return {
       entries,
       notModified: false,
       emptyIsHealthy: entries.length > 0,
-      etag: "etag" in response ? response.etag : undefined,
-      lastModified: "lastModified" in response ? response.lastModified : undefined,
+      etag: page.response?.etag,
+      lastModified: page.response?.lastModified,
       // A metadata-only rule is safe: it does not constrain item detection,
       // but records that existing entries have been replayed by this parser.
-      extractionRule: withFeedDiscoveryRevision(withPublicationDateRevision(extraction.rule ?? source.extractionRule))
+      extractionRule: withFeedDiscoveryRevision(withPublicationDateRevision(withRendererRequirement(
+        extraction.rule ?? source.extractionRule,
+        page.fromRenderer
+      )))
     };
   }
 
@@ -200,6 +207,11 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
 function withFeedDiscoveryRevision(rule?: ExtractionRule): ExtractionRule {
   const base = rule ?? { version: 1 };
   return base.feedDiscoveryRevision === FEED_DISCOVERY_REVISION ? base : { ...base, feedDiscoveryRevision: FEED_DISCOVERY_REVISION };
+}
+
+function withRendererRequirement(rule: ExtractionRule | undefined, required: boolean): ExtractionRule | undefined {
+  if (!required) return rule;
+  return { version: 1, ...rule, rendererRequired: true };
 }
 
 /** Manual sources are fetched only when first saved or when the user explicitly refreshes. */

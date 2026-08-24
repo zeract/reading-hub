@@ -4,7 +4,7 @@ const chromiumFetch = vi.hoisted(() => vi.fn());
 
 vi.mock("../src/main/network", () => ({ chromiumFetch }));
 
-import { PublicHttpClient } from "../src/main/http";
+import { PublicHttpClient, ResponseTooLargeError } from "../src/main/http";
 
 describe("PublicHttpClient local-feed boundary", () => {
   it("reads only an explicitly enabled loopback Feed without consulting remote robots", async () => {
@@ -56,5 +56,49 @@ describe("PublicHttpClient local-feed boundary", () => {
 
     await expect(request).rejects.toThrow("审计停止");
     expect(requestSignal?.aborted).toBe(true);
+  });
+
+  it("reports an oversized declared HTML response as a typed bounded-read error", async () => {
+    const robots = { assertAllowed: vi.fn() };
+    chromiumFetch.mockResolvedValueOnce(new Response("<html></html>", {
+      status: 200,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "content-length": "3000001"
+      }
+    }));
+    const client = new PublicHttpClient(robots as never);
+
+    await expect(client.getText("https://example.com/large-page")).rejects.toMatchObject({
+      name: "ResponseTooLargeError",
+      maxBytes: 3_000_000,
+      contentType: "text/html; charset=utf-8",
+      url: "https://example.com/large-page",
+      receivedBytes: 3_000_001
+    } satisfies Partial<ResponseTooLargeError>);
+  });
+
+  it("counts streamed UTF-8 response bytes instead of JavaScript string length", async () => {
+    const robots = { assertAllowed: vi.fn() };
+    const cancellation = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("你"));
+        controller.enqueue(new TextEncoder().encode("好"));
+      },
+      cancel: cancellation
+    });
+    chromiumFetch.mockResolvedValueOnce(new Response(body, {
+      status: 200,
+      headers: { "content-type": "text/html" }
+    }));
+    const client = new PublicHttpClient(robots as never);
+
+    await expect(client.getText("https://example.com/utf8", undefined, { maxBytes: 5 })).rejects.toMatchObject({
+      name: "ResponseTooLargeError",
+      maxBytes: 5,
+      receivedBytes: 6
+    } satisfies Partial<ResponseTooLargeError>);
+    expect(cancellation).toHaveBeenCalledTimes(1);
   });
 });

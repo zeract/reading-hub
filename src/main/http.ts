@@ -1,5 +1,6 @@
 import { assertFeedSubscriptionUrl, assertPublicUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 import { abortError, throwIfAborted, withRequestTimeout } from "./cancellation";
+import { formatByteLimit } from "./byte-limit";
 import { chromiumFetch } from "./network";
 import { RobotsPolicy } from "./robots";
 
@@ -17,6 +18,26 @@ export interface PublicRequestOptions {
   allowTrustedLoopbackFeed?: boolean;
   /** Optional caller-owned cancellation. Normal app requests do not use it. */
   signal?: AbortSignal;
+}
+
+/**
+ * Normal source pages are deliberately kept smaller than full reader
+ * documents. A source only needs enough HTML to discover a Feed or extract a
+ * list of cards; the reader has its own, larger per-article budget.
+ */
+export const DEFAULT_SOURCE_DOCUMENT_MAX_BYTES = 3_000_000;
+
+/** A bounded response exceeded its documented byte budget. */
+export class ResponseTooLargeError extends Error {
+  constructor(
+    readonly maxBytes: number,
+    readonly contentType: string,
+    readonly url: string,
+    readonly receivedBytes?: number
+  ) {
+    super(`页面响应超过 ${formatByteLimit(maxBytes)}，已拒绝读取。`);
+    this.name = "ResponseTooLargeError";
+  }
 }
 
 /** A transport failure after robots policy has already allowed the request. */
@@ -40,6 +61,12 @@ export class UnsupportedReaderImageTypeError extends Error {
   }
 }
 
+/** Only HTML can safely benefit from the isolated-browser extraction path. */
+export function isHtmlDocumentContentType(contentType: string): boolean {
+  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase();
+  return mediaType === "text/html" || mediaType === "application/xhtml+xml";
+}
+
 function networkFailureMessage(cause: unknown): string {
   const details = cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause || "");
   if (/ERR_(?:PROXY|TUNNEL|SOCKS)_|proxy/i.test(details)) return "无法连接到配置的代理服务器。请确认代理正在运行，或检查系统/环境代理设置后重试。";
@@ -54,7 +81,7 @@ export class PublicHttpClient {
   private readonly imageCache = new Map<string, string>();
 
   async getText(rawUrl: string, cached?: { etag?: string; lastModified?: string }, options?: PublicRequestOptions): Promise<TextResponse> {
-    const maxBytes = options?.maxBytes ?? 3_000_000;
+    const maxBytes = options?.maxBytes ?? DEFAULT_SOURCE_DOCUMENT_MAX_BYTES;
     const localFeed = options?.allowTrustedLoopbackFeed === true && isTrustedLoopbackFeedUrl(rawUrl);
     const localFeedOrigin = localFeed ? assertFeedSubscriptionUrl(rawUrl, true).origin : undefined;
     let targetUrl = localFeed ? assertFeedSubscriptionUrl(rawUrl, true).toString() : assertPublicUrl(rawUrl).toString();
@@ -96,21 +123,27 @@ export class PublicHttpClient {
           return { url: targetUrl, status: 304, contentType: response.headers.get("content-type") ?? "", text: "" };
         }
         if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
-        const size = Number(response.headers.get("content-length") ?? 0);
-        if (size > maxBytes) throw new Error(`页面响应超过 ${Math.floor(maxBytes / 1_000_000)} MB，已拒绝读取。`);
+        const contentType = response.headers.get("content-type") ?? "";
+        const declaredSize = Number(response.headers.get("content-length") ?? 0);
+        if (Number.isFinite(declaredSize) && declaredSize > maxBytes) {
+          // A declared size lets us reject before creating a body reader. Tell
+          // Chromium to stop consuming the response so a preview cannot keep
+          // an unnecessarily large transfer alive in the background.
+          void response.body?.cancel().catch(() => undefined);
+          throw new ResponseTooLargeError(maxBytes, contentType, targetUrl, declaredSize);
+        }
         try {
-          const text = await response.text();
-          if (text.length > maxBytes) throw new Error(`页面响应超过 ${Math.floor(maxBytes / 1_000_000)} MB，已拒绝读取。`);
+          const text = await readTextWithinLimit(response, maxBytes, contentType, targetUrl);
           return {
             url: targetUrl,
             status: response.status,
-            contentType: response.headers.get("content-type") ?? "",
+            contentType,
             text,
             etag: response.headers.get("etag") ?? undefined,
             lastModified: response.headers.get("last-modified") ?? undefined
           };
         } catch (error) {
-          if (error instanceof Error && error.message.startsWith("页面响应超过 ")) throw error;
+          if (error instanceof ResponseTooLargeError) throw error;
           if (options?.signal?.aborted) throw abortError(options.signal);
           throw new NetworkRequestError(error);
         }
@@ -182,4 +215,38 @@ export class PublicHttpClient {
     }
     throw new Error("图片重定向次数过多，已停止请求。");
   }
+}
+
+/**
+ * `Response.text()` first buffers an entire body and counts UTF-16 code units,
+ * neither of which implements an actual network-byte limit. Read chunks as
+ * bytes instead, cancelling as soon as the caller's budget is exceeded.
+ */
+async function readTextWithinLimit(response: Response, maxBytes: number, contentType: string, url: string): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let receivedBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      receivedBytes += value.byteLength;
+      if (receivedBytes > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new ResponseTooLargeError(maxBytes, contentType, url, receivedBytes);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(receivedBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
