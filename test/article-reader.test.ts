@@ -276,16 +276,16 @@ describe("article reader extraction", () => {
     expect(content).not.toContain("reader-math-source");
   });
 
-  it("replays the real Zhihu rcos carrier family in document-order MathJax scope", async () => {
-    const math = new ScientificMathRenderer();
-    await math.ready();
+  it("keeps the real Zhihu rcos carrier family on KaTeX when its TeX is supported", async () => {
+    const renderAsync = vi.fn(async () => `<mjx-container display="true"><svg viewBox="0 0 12 12"><path d="M0 0h12v12H0z"/></svg></mjx-container>`);
+    const math = { isReady: () => true, renderAsync } as unknown as ScientificMathRenderer;
     const result = await extractReaderArticleAsync(
       `<html><body><article><div class="Post-RichTextContainer">
         <p>${"知乎转载的科学文章正文用于验证真实公式结构。 ".repeat(28)}</p>
-        <p>定义 <span class="ztext-math" data-eeimg="1" data-tex="\\newcommand{rcos}{\\mathop{\\mathrm{rcos}}}\\newcommand{dcos}[2]{\\frac{#1\\cdot#2}{\\lVert#1\\rVert\\lVert#2\\rVert}}\\rcos(\\boldsymbol{x},\\boldsymbol{y})"><span class="MathJax_SVG">旧视觉副本</span></span>。</p>
-        <span class="ztext-math" data-eeimg="2" data-tex="\\begin{aligned}\\dcos{\\boldsymbol{x}}{\\boldsymbol{y}}&=\\frac{\\boldsymbol{x}\\cdot\\boldsymbol{y}}{\\lVert\\boldsymbol{x}\\rVert\\lVert\\boldsymbol{y}\\rVert}\\\\\\rcos(\\boldsymbol{x},\\boldsymbol{y})&=\\dcos{\\boldsymbol{x}^{\\updownarrow}}{\\boldsymbol{y}}\\end{aligned}"><span class="MathJax_SVG">重复的块公式视觉副本</span></span>
-        <p>后续行内公式 <span class="ztext-math" data-eeimg="1" data-tex="\\rcos(\\boldsymbol{x},\\boldsymbol{y})=1"><span>旧预览</span></span> 必须沿用前面的宏。</p>
-        <span class="ztext-math" data-eeimg="2" data-tex="\\begin{cases}\\rcos(\\boldsymbol{x},\\boldsymbol{y}),&\\lVert\\boldsymbol{x}\\rVert>0\\\\0,&\\text{otherwise}\\end{cases}"></span>
+        <p>定义 <span class="ztext-math" data-eeimg="1" data-tex="\\tilde{rcos}(x,y)"><span class="MathJax_SVG">旧视觉副本</span></span>。</p>
+        <span class="ztext-math" data-eeimg="2" data-tex="\\boxed{rcos(x,y) \\approx \\dfrac{\\mathrm{cov}(x,y)}{\\mathrm{cov}(x^\\uparrow,y^\\uparrow)}}"><span class="MathJax_SVG">重复的块公式视觉副本</span></span>
+        <p>后续行内公式 <span class="ztext-math" data-eeimg="1" data-tex="\\mathrm{cov}(x^\\uparrow,y^\\uparrow)"><span>旧预览</span></span> 必须保持原本语义。</p>
+        <span class="ztext-math" data-eeimg="2" data-tex="\\begin{aligned}x^\\uparrow_i &\\approx Q(p)=F^{-1}(p)\\\\Q(p) &\\approx \\mu + \\sigma\\xi_p\\end{aligned}"></span>
         <p>${"公式后的作者正文必须完整保留。 ".repeat(24)}</p>
       </div></article></body></html>`,
       "https://zhuanlan.zhihu.com/p/2073205832964220804",
@@ -297,11 +297,12 @@ describe("article reader extraction", () => {
     const visible = load(`<article>${content}</article>`);
     visible("mjx-container, .katex, .reader-math-source").remove();
     expect(load(content)("[data-reader-equation]")).toHaveLength(2);
-    expect(content).toContain("reader-equation--mathjax");
+    expect(load(content)(".katex")).toHaveLength(4);
+    expect(content).not.toContain("reader-equation--mathjax");
     expect(content).not.toContain("mjx-merror");
     expect(content).not.toContain("READING_HUB_MATH");
     expect(content).not.toContain("旧视觉副本");
-    expect(visible.text()).not.toMatch(/\\(?:newcommand|dcos|rcos|begin|end)/);
+    expect(visible.text()).not.toMatch(/\\(?:tilde|mathrm|dfrac|begin|end)/);
     expect(result?.article.formulaDiagnostics).toMatchObject({
       total: 4,
       semantic: 4,
@@ -309,9 +310,9 @@ describe("article reader extraction", () => {
       displayRendered: 2,
       rendered: 4,
       fallback: 0,
-      dropped: 0,
-      requiresMathJax: true
+      dropped: 0
     });
+    expect(renderAsync).not.toHaveBeenCalled();
   });
 
   it("keeps macro declarations ordered instead of applying a later redefinition retroactively", () => {
@@ -319,16 +320,16 @@ describe("article reader extraction", () => {
     const math = { isReady: () => true, render } as unknown as ScientificMathRenderer;
     extractReaderArticle(
       `<article><div class="Post-RichTextContainer"><p>${"正文。".repeat(80)}</p>
-        <span class="ztext-math" data-eeimg="1" data-tex="\\newcommand{rcos}{\\mathrm{first}}\\rcos"></span>
-        <span class="ztext-math" data-eeimg="1" data-tex="\\renewcommand{rcos}{\\mathrm{second}}\\rcos"></span>
+        <span class="ztext-math" data-eeimg="1" data-tex="\\newcommand{rcos}{\\mathrm{first}}\\mathjaxOnlyCommand{\\rcos}"></span>
+        <span class="ztext-math" data-eeimg="1" data-tex="\\renewcommand{rcos}{\\mathrm{second}}\\mathjaxOnlyCommand{\\rcos}"></span>
       </div></article>`,
       "https://zhuanlan.zhihu.com/p/2073205832964220804",
       entry,
       math
     );
 
-    expect(render).toHaveBeenNthCalledWith(1, "\\rcos", false, expect.objectContaining({ rcos: expect.objectContaining({ body: "\\mathrm{first}" }) }));
-    expect(render).toHaveBeenNthCalledWith(2, "\\rcos", false, expect.objectContaining({ rcos: expect.objectContaining({ body: "\\mathrm{second}" }) }));
+    expect(render).toHaveBeenNthCalledWith(1, "\\mathjaxOnlyCommand{\\rcos}", false, expect.objectContaining({ rcos: expect.objectContaining({ body: "\\mathrm{first}" }) }));
+    expect(render).toHaveBeenNthCalledWith(2, "\\mathjaxOnlyCommand{\\rcos}", false, expect.objectContaining({ rcos: expect.objectContaining({ body: "\\mathrm{second}" }) }));
   });
 
   it("parses nested MathJax config macros without executing page JavaScript", () => {
@@ -395,6 +396,43 @@ describe("article reader extraction", () => {
     expect(render).toHaveBeenCalledWith("\\mathjaxOnlyCommand{\\boldsymbol{x}}", true, expect.any(Object));
     expect(article.contentHtml).toContain("reader-equation--mathjax");
     expect(article.formulaDiagnostics).toMatchObject({ total: 1, rendered: 1, fallback: 0, dropped: 0 });
+  });
+
+  it("does not start MathJax merely because a Zhihu carrier supplies semantic TeX", async () => {
+    let ready = false;
+    const render = vi.fn(() => `<mjx-container><svg viewBox="0 0 12 12"><path d="M0 0h12v12H0z"/></svg></mjx-container>`);
+    const math = {
+      isReady: () => ready,
+      ready: vi.fn(async () => { ready = true; }),
+      render
+    } as unknown as ScientificMathRenderer;
+    const http = {
+      getText: vi.fn(async () => ({
+        url: "https://zhuanlan.zhihu.com/p/2073205832964220804",
+        contentType: "text/html",
+        text: `<article><div class="Post-RichTextContainer"><p>${"知乎正文。 ".repeat(48)}</p><span class="ztext-math" data-eeimg="2" data-tex="\\boxed{rcos(x,y)=\\frac{\\mathrm{cov}(x,y)}{\\mathrm{cov}(x^\\uparrow,y^\\uparrow)}}"></span><p>${"公式后的正文。 ".repeat(34)}</p></div></article>`
+      }))
+    } as unknown as PublicHttpClient;
+    const reader = new ArticleReader(http, { render: async () => "" }, undefined, math);
+
+    const article = await reader.read({ ...entry, url: "https://zhuanlan.zhihu.com/p/2073205832964220804" });
+
+    expect(math.ready).not.toHaveBeenCalled();
+    expect(render).not.toHaveBeenCalled();
+    expect(article.contentHtml).toContain('class="katex"');
+    expect(article.contentHtml).not.toContain("reader-equation--mathjax");
+    expect(article.formulaDiagnostics).toMatchObject({ total: 1, semantic: 1, rendered: 1, fallback: 0, dropped: 0 });
+  });
+
+  it("does not let a predictable-looking remote token duplicate a generated formula anchor", () => {
+    const result = extractReaderArticle(
+      `<article><p>[[READING_HUB_MATH_1_0]] 与 $x^\\uparrow$ 都是正文的一部分。${"额外正文。 ".repeat(42)}</p></article>`,
+      entry.url,
+      entry
+    );
+
+    expect(load(result?.article.contentHtml || "")(".katex")).toHaveLength(1);
+    expect(result?.article.formulaDiagnostics).toMatchObject({ total: 1, rendered: 1, fallback: 0, dropped: 0 });
   });
 
   it("keeps explicit equation tags authoritative and resolves references through the same equation index", () => {
@@ -609,7 +647,7 @@ describe("article reader extraction", () => {
     expect(content).not.toContain("\\url{");
   });
 
-  it("uses the scientific MathJax profile for Scientific Spaces without duplicate previews or title anchors", async () => {
+  it("keeps Scientific Spaces formulas on the primary renderer without duplicate previews or title anchors", async () => {
     const math = new ScientificMathRenderer();
     await math.ready();
     const result = extractReaderArticle(
@@ -632,7 +670,8 @@ describe("article reader extraction", () => {
     const visible = load(`<article>${content}</article>`);
     visible(".katex, mjx-container, .reader-math-source").remove();
     expect(result?.article.renderProfile).toBe("scientific");
-    expect(content).toContain("reader-equation--mathjax");
+    expect(content).not.toContain("reader-equation--mathjax");
+    expect(content).toContain('class="katex"');
     expect(content).not.toContain("预览副本");
     expect(content).not.toContain("READING_HUB_MATH");
     expect(visible.text()).not.toContain("\\begin{align}");

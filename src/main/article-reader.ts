@@ -2,6 +2,7 @@ import { Readability } from "@mozilla/readability";
 import { load } from "cheerio";
 import { JSDOM, VirtualConsole } from "jsdom";
 import katex from "katex";
+import { randomUUID } from "node:crypto";
 import { compactText, parsePublishedAt } from "../shared/text";
 import { inlineDollarMathAt } from "../shared/tex";
 import { assertPublicUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl, toAbsoluteUrl } from "../shared/url";
@@ -152,7 +153,7 @@ type FormulaOrigin = "semantic" | "mathjax-script" | "mathjax-frame" | "text";
 type FormulaRecord = { id: number; token: string; tex: string; displayMode: boolean; origin: FormulaOrigin };
 type MathMacroScope = Map<string, MathMacroDefinition>;
 type SanitizedContent = { html: string; formulaDiagnostics: ReaderFormulaDiagnostics };
-type PreparedSanitizedContent = { $: ReturnType<typeof load>; root: any; formulas: FormulaDocument };
+type PreparedSanitizedContent = { html: string; formulas: FormulaDocument };
 
 /**
  * FormulaDocument is the single semantic boundary between an untrusted page
@@ -161,7 +162,11 @@ type PreparedSanitizedContent = { $: ReturnType<typeof load>; root: any; formula
  */
 class FormulaDocument {
   readonly records: FormulaRecord[] = [];
-  private readonly tokenNamespace = ++formulaDocumentSequence;
+  // A generated anchor must not be forgeable by remote article text. A
+  // predictable sequence lets an article inject a lookalike token which the
+  // renderer could otherwise turn into a second formula. This nonce exists
+  // only in memory for one extraction and is never persisted.
+  private readonly tokenNamespace = randomUUID();
 
   add(tex: string, displayMode: boolean, origin: FormulaOrigin): string {
     const id = this.records.length;
@@ -178,7 +183,15 @@ class FormulaDocument {
     return new RegExp(`${escapeRegExp(MATH_TOKEN_PREFIX)}${this.tokenNamespace}_(\\d+)${escapeRegExp(MATH_TOKEN_SUFFIX)}`, "g");
   }
 
-  diagnostics(rendered: Set<number>, fallback: Set<number>, dropped: Set<number>, requiresMathJax: boolean): ReaderFormulaDiagnostics {
+  anchorMarkup(record: FormulaRecord): string {
+    return `<span data-reader-formula-document="${this.tokenNamespace}" data-reader-formula-anchor="${record.id}"></span>`;
+  }
+
+  anchorSelector(id: number): string {
+    return `[data-reader-formula-document="${this.tokenNamespace}"][data-reader-formula-anchor="${id}"]`;
+  }
+
+  diagnostics(rendered: Set<number>, fallback: Set<number>, dropped: Set<number>): ReaderFormulaDiagnostics {
     const count = (origin: FormulaOrigin) => this.records.filter((record) => record.origin === origin).length;
     const display = (records: Iterable<number>) => [...records]
       .map((id) => this.get(id))
@@ -195,8 +208,7 @@ class FormulaDocument {
       dropped: dropped.size,
       displayRendered: display(rendered),
       displayFallback: display(fallback),
-      displayDropped: display(dropped),
-      requiresMathJax
+      displayDropped: display(dropped)
     };
   }
 }
@@ -210,7 +222,6 @@ type ContentCandidate = {
 };
 const MATH_TOKEN_PREFIX = "[[READING_HUB_MATH_";
 const MATH_TOKEN_SUFFIX = "]]";
-let formulaDocumentSequence = 0;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -240,6 +251,10 @@ type PreparedReaderArticle = {
   coverCandidate?: string;
   renderProfile: ReaderRenderProfile;
   globalMathMacros: MathMacroScope;
+};
+type PreparedReaderExtraction = {
+  article: PreparedReaderArticle;
+  content: PreparedSanitizedContent;
 };
 
 function resolveReaderProfile(pageUrl: string): ReaderRenderProfile {
@@ -378,10 +393,11 @@ export class ArticleReader {
     if (!item?.feedContentHtml) return undefined;
 
     const renderProfile = resolveReaderProfile(entry.url);
-    let sanitised = await sanitizeContentAsync(item.feedContentHtml, response.url, this.scientificMath, new Map());
+    const preparedContent = prepareSanitizedContent(item.feedContentHtml, response.url);
+    let sanitised = await renderPreparedContentAsync(preparedContent, this.scientificMath, new Map());
     if (needsMathJaxFallback(sanitised) && !this.scientificMath.isReady()) {
       await this.scientificMath.ready().catch(() => undefined);
-      if (this.scientificMath.isReady()) sanitised = await sanitizeContentAsync(item.feedContentHtml, response.url, this.scientificMath, new Map());
+      if (this.scientificMath.isReady()) sanitised = await renderPreparedContentAsync(preparedContent, this.scientificMath, new Map());
     }
     const contentHtml = sanitised.html;
     const content = load(contentHtml);
@@ -402,18 +418,18 @@ export class ArticleReader {
   }
 
   /**
-   * Formula compatibility follows the document's semantic payload, not the
-   * host name. KaTeX remains the fast first pass; only an actual fallback
-   * record starts the local MathJax SVG runtime and replays the same inert
-   * extraction. This lets a Zhihu reprint of a scientific article use the
-   * exact same safe fallback as its original site without eagerly loading
-   * MathJax for ordinary articles.
+   * KaTeX remains the primary renderer for every FormulaDocument record.
+   * Only an observed per-formula fallback starts the local MathJax SVG
+   * runtime. The retry reuses the same selected article and sanitised formula
+   * template, rather than extracting untrusted page HTML again.
    */
   private async extractWithMathFallback(html: string, pageUrl: string, entry: Entry): Promise<ExtractedArticle | undefined> {
-    let extracted = await extractReaderArticleAsync(html, pageUrl, entry, this.scientificMath);
+    const prepared = prepareReaderExtraction(html, pageUrl, entry);
+    if (!prepared) return undefined;
+    let extracted = await renderPreparedReaderArticleAsync(prepared, this.scientificMath);
     if (!extracted || !needsMathJaxFallback(extracted.article) || this.scientificMath.isReady()) return extracted;
     await this.scientificMath.ready().catch(() => undefined);
-    if (this.scientificMath.isReady()) extracted = await extractReaderArticleAsync(html, pageUrl, entry, this.scientificMath);
+    if (this.scientificMath.isReady()) extracted = await renderPreparedReaderArticleAsync(prepared, this.scientificMath);
     return extracted;
   }
 }
@@ -521,12 +537,42 @@ function finishReaderArticle(prepared: PreparedReaderArticle, sanitised: Sanitiz
   };
 }
 
+/**
+ * Select and sanitise the remote DOM once. The resulting template contains
+ * only inert reader markup plus internally generated formula anchors, which
+ * makes a later MathJax retry deterministic and safe.
+ */
+function prepareReaderExtraction(html: string, pageUrl: string, entry: Entry): PreparedReaderExtraction | undefined {
+  const article = prepareReaderArticle(html, pageUrl, entry);
+  return article
+    ? { article, content: prepareSanitizedContent(article.rawContentHtml, pageUrl) }
+    : undefined;
+}
+
+function renderPreparedReaderArticle(
+  prepared: PreparedReaderExtraction,
+  scientificMath?: ScientificMathRenderer
+): ExtractedArticle | undefined {
+  return finishReaderArticle(
+    prepared.article,
+    renderPreparedContent(prepared.content, scientificMath, prepared.article.globalMathMacros)
+  );
+}
+
+async function renderPreparedReaderArticleAsync(
+  prepared: PreparedReaderExtraction,
+  scientificMath?: ScientificMathRenderer
+): Promise<ExtractedArticle | undefined> {
+  return finishReaderArticle(
+    prepared.article,
+    await renderPreparedContentAsync(prepared.content, scientificMath, prepared.article.globalMathMacros)
+  );
+}
+
 /** Exported for deterministic extraction tests; it does not perform network requests. */
 export function extractReaderArticle(html: string, pageUrl: string, entry: Entry, scientificMath?: ScientificMathRenderer): ExtractedArticle | undefined {
-  const prepared = prepareReaderArticle(html, pageUrl, entry);
-  return prepared
-    ? finishReaderArticle(prepared, sanitizeContent(prepared.rawContentHtml, pageUrl, scientificMath, prepared.globalMathMacros))
-    : undefined;
+  const prepared = prepareReaderExtraction(html, pageUrl, entry);
+  return prepared ? renderPreparedReaderArticle(prepared, scientificMath) : undefined;
 }
 
 /**
@@ -535,10 +581,8 @@ export function extractReaderArticle(html: string, pageUrl: string, entry: Entry
  * its promise-based renderer instead of degrading a valid formula to raw TeX.
  */
 export async function extractReaderArticleAsync(html: string, pageUrl: string, entry: Entry, scientificMath?: ScientificMathRenderer): Promise<ExtractedArticle | undefined> {
-  const prepared = prepareReaderArticle(html, pageUrl, entry);
-  return prepared
-    ? finishReaderArticle(prepared, await sanitizeContentAsync(prepared.rawContentHtml, pageUrl, scientificMath, prepared.globalMathMacros))
-    : undefined;
+  const prepared = prepareReaderExtraction(html, pageUrl, entry);
+  return prepared ? renderPreparedReaderArticleAsync(prepared, scientificMath) : undefined;
 }
 
 function removeNoiseExceptMathScripts($: ReturnType<typeof load>, content: any, pageUrl: string): void {
@@ -852,27 +896,34 @@ function prepareSanitizedContent(rawHtml: string, pageUrl: string): PreparedSani
   preserveTextMath($, root, formulas);
   normaliseTeXCitationLinks($, root, pageUrl);
   materializeFormulaAnchors($, root, formulas);
-  return { $, root, formulas };
+  // Preserve only our already-sanitised template and formula IR. Retry paths
+  // re-instantiate this inert DOM rather than selecting/extracting remote
+  // HTML a second time, so fallback rendering cannot change content roots,
+  // formula order, or macro scope between passes.
+  return { html: root.html() || "", formulas };
 }
 
-function sanitizeContent(
-  rawHtml: string,
-  pageUrl: string,
+function instantiateSanitizedContent(prepared: PreparedSanitizedContent): { $: ReturnType<typeof load>; root: any } {
+  const $ = load(`<div id="reader-content">${prepared.html}</div>`);
+  return { $, root: $("#reader-content") };
+}
+
+function renderPreparedContent(
+  prepared: PreparedSanitizedContent,
   scientificMath: ScientificMathRenderer | undefined,
   globalMathMacros: MathMacroScope
 ): SanitizedContent {
-  const prepared = prepareSanitizedContent(rawHtml, pageUrl);
-  return renderMath(prepared.$, prepared.root, prepared.formulas, scientificMath, globalMathMacros);
+  const { $, root } = instantiateSanitizedContent(prepared);
+  return renderMath($, root, prepared.formulas, scientificMath, globalMathMacros);
 }
 
-async function sanitizeContentAsync(
-  rawHtml: string,
-  pageUrl: string,
+async function renderPreparedContentAsync(
+  prepared: PreparedSanitizedContent,
   scientificMath: ScientificMathRenderer | undefined,
   globalMathMacros: MathMacroScope
 ): Promise<SanitizedContent> {
-  const prepared = prepareSanitizedContent(rawHtml, pageUrl);
-  return renderMathAsync(prepared.$, prepared.root, prepared.formulas, scientificMath, globalMathMacros);
+  const { $, root } = instantiateSanitizedContent(prepared);
+  return renderMathAsync($, root, prepared.formulas, scientificMath, globalMathMacros);
 }
 
 /**
@@ -1372,7 +1423,7 @@ function materializeFormulaAnchors($: ReturnType<typeof load>, root: any, formul
       replacement += escapeHtml(value.slice(cursor, match.index));
       const record = formulas.get(Number.parseInt(match[1], 10));
       replacement += record
-        ? `<span data-reader-formula-anchor="${record.id}"></span>`
+        ? formulas.anchorMarkup(record)
         : escapeHtml(match[0]);
       cursor = marker.lastIndex;
     }
@@ -1387,12 +1438,10 @@ type EquationIndex = { labels: Map<string, string>; byToken: Map<string, Equatio
 type PreparedFormula = {
   record: FormulaRecord;
   macros: MathMacroScope;
-  hasDeclarations: boolean;
 };
 type FormulaRenderPlan = {
   formulas: PreparedFormula[];
   equations: EquationIndex;
-  requiresMathJax: boolean;
 };
 
 function createFormulaRenderPlan(formulas: FormulaDocument, globalMathMacros: MathMacroScope): FormulaRenderPlan {
@@ -1408,15 +1457,12 @@ function createFormulaRenderPlan(formulas: FormulaDocument, globalMathMacros: Ma
     mergeMathMacros(activeMacros, declaration.macros);
     return {
       record: { ...record, tex: declaration.tex },
-      macros: new Map(activeMacros),
-      hasDeclarations: declaration.macros.size > 0
+      macros: new Map(activeMacros)
     };
   });
   return {
     formulas: prepared,
-    equations: collectEquationMetadata(prepared.map((item) => item.record)),
-    requiresMathJax: globalMathMacros.size > 0
-      || prepared.some((item) => item.hasDeclarations || item.record.origin !== "text")
+    equations: collectEquationMetadata(prepared.map((item) => item.record))
   };
 }
 
@@ -1428,10 +1474,9 @@ function renderMath(
   globalMathMacros: MathMacroScope
 ): SanitizedContent {
   const plan = createFormulaRenderPlan(formulas, globalMathMacros);
-  const useMathJax = plan.requiresMathJax && Boolean(scientificMath?.isReady());
   const output = new Map<number, string | undefined>();
   for (const item of plan.formulas) {
-    output.set(item.record.id, renderFormulaSynchronously(item, plan.equations, scientificMath, useMathJax));
+    output.set(item.record.id, renderFormulaSynchronously(item, plan.equations, scientificMath));
   }
   return installFormulaOutput($, root, formulas, plan, output);
 }
@@ -1449,10 +1494,9 @@ async function renderMathAsync(
   globalMathMacros: MathMacroScope
 ): Promise<SanitizedContent> {
   const plan = createFormulaRenderPlan(formulas, globalMathMacros);
-  const useMathJax = plan.requiresMathJax && Boolean(scientificMath?.isReady());
   const output = new Map<number, string | undefined>();
   for (const item of plan.formulas) {
-    output.set(item.record.id, await renderFormulaAsynchronously(item, plan.equations, scientificMath, useMathJax));
+    output.set(item.record.id, await renderFormulaAsynchronously(item, plan.equations, scientificMath));
   }
   return installFormulaOutput($, root, formulas, plan, output);
 }
@@ -1460,15 +1504,16 @@ async function renderMathAsync(
 function renderFormulaSynchronously(
   item: PreparedFormula,
   equations: EquationIndex,
-  scientificMath: ScientificMathRenderer | undefined,
-  useMathJax: boolean
+  scientificMath: ScientificMathRenderer | undefined
 ): string | undefined {
   if (!item.record.tex.trim()) return "";
   const metadata = equations.byToken.get(item.record.token);
-  if (useMathJax) {
-    return tryRenderScientificMath(scientificMath, item.record, equations.labels, metadata, item.macros)
-      ?? tryRenderTeX(item.record, equations.labels, metadata, item.macros);
-  }
+  // Formula provenance is not renderer provenance. A semantic `data-tex`
+  // carrier (for example Zhihu's MathJax visual wrapper) merely gives us a
+  // trustworthy source expression; it does not mean that the reader must
+  // replace a successful KaTeX render with SVG. Keep one fast, stable primary
+  // renderer and use the local MathJax runtime only for this exact formula
+  // when KaTeX cannot render it.
   return tryRenderTeX(item.record, equations.labels, metadata, item.macros)
     ?? (scientificMath?.isReady() ? tryRenderScientificMath(scientificMath, item.record, equations.labels, metadata, item.macros) : undefined);
 }
@@ -1476,15 +1521,10 @@ function renderFormulaSynchronously(
 async function renderFormulaAsynchronously(
   item: PreparedFormula,
   equations: EquationIndex,
-  scientificMath: ScientificMathRenderer | undefined,
-  useMathJax: boolean
+  scientificMath: ScientificMathRenderer | undefined
 ): Promise<string | undefined> {
   if (!item.record.tex.trim()) return "";
   const metadata = equations.byToken.get(item.record.token);
-  if (useMathJax) {
-    return await tryRenderScientificMathAsync(scientificMath, item.record, equations.labels, metadata, item.macros)
-      ?? tryRenderTeX(item.record, equations.labels, metadata, item.macros);
-  }
   return tryRenderTeX(item.record, equations.labels, metadata, item.macros)
     ?? (scientificMath?.isReady() ? await tryRenderScientificMathAsync(scientificMath, item.record, equations.labels, metadata, item.macros) : undefined);
 }
@@ -1501,19 +1541,25 @@ function installFormulaOutput(
   const dropped = new Set<number>();
 
   for (const item of plan.formulas) {
-    const anchors = root.find(`[data-reader-formula-anchor="${item.record.id}"]`).toArray();
-    if (!anchors.length) {
+    const anchors = root.find(formulas.anchorSelector(item.record.id)).toArray();
+    // Formula tokens are an internal integrity boundary, not an instruction
+    // supplied by remote text. A record must map to exactly one generated
+    // anchor; replacing multiple anchors would duplicate a formula and move
+    // later labels/diagnostics out of sync.
+    if (anchors.length !== 1) {
       dropped.add(item.record.id);
+      for (const anchor of anchors) $(anchor).remove();
       continue;
     }
     const renderedHtml = output.get(item.record.id);
     if (renderedHtml === undefined) fallback.add(item.record.id);
     else rendered.add(item.record.id);
-    for (const anchor of anchors) $(anchor).replaceWith(renderedHtml ?? renderMathFallback(item.record));
+    $(anchors[0]).replaceWith(renderedHtml ?? renderMathFallback(item.record));
   }
 
-  // An unknown or duplicated generated anchor is never trusted as source
-  // content. Remove it and expose the accounting mismatch to the local audit.
+  // Unknown generated-anchor markup cannot be source content. Remove it and
+  // expose any matching record as dropped so the local audit reports the
+  // integrity mismatch instead of silently duplicating output.
   root.find("[data-reader-formula-anchor]").each((_index: number, node: any) => {
     const id = Number.parseInt($(node).attr("data-reader-formula-anchor") || "", 10);
     if (Number.isSafeInteger(id)) dropped.add(id);
@@ -1521,12 +1567,16 @@ function installFormulaOutput(
   });
   return {
     html: root.html() || "",
-    formulaDiagnostics: formulas.diagnostics(rendered, fallback, dropped, plan.requiresMathJax)
+    formulaDiagnostics: formulas.diagnostics(rendered, fallback, dropped)
   };
 }
 
 function needsMathJaxFallback(value: SanitizedContent | ReaderArticle): boolean {
-  return (value.formulaDiagnostics?.fallback ?? 0) > 0 || value.formulaDiagnostics?.requiresMathJax === true;
+  // Booting MathJax is intentionally a retry of an observed KaTeX failure,
+  // never a guess based on where a formula came from. This keeps normal Zhihu
+  // and RSS equations on the same renderer and prevents a whole article from
+  // being re-laid out solely because its source happened to use MathJax.
+  return (value.formulaDiagnostics?.fallback ?? 0) > 0;
 }
 
 function collectEquationMetadata(records: FormulaRecord[]): EquationIndex {

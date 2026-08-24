@@ -20,7 +20,15 @@ export class ScientificMathRenderer {
   private startup?: Promise<void>;
 
   async ready(): Promise<void> {
-    if (!this.startup) this.startup = this.start();
+    if (!this.startup) {
+      this.startup = this.start().catch((error) => {
+        // A temporary module/package load failure must not poison this local
+        // renderer forever. Keep the failure isolated to the current read and
+        // allow a later user action to start a fresh, safe runtime attempt.
+        this.startup = undefined;
+        throw error;
+      });
+    }
     return this.startup;
   }
 

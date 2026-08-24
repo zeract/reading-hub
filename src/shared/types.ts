@@ -245,8 +245,6 @@ export interface ReaderFormulaDiagnostics {
   displayRendered: number;
   displayFallback: number;
   displayDropped: number;
-  /** A MathJax-authored or macro-bearing document is replayed through local MathJax. */
-  requiresMathJax: boolean;
 }
 
 /** A transient, sanitised article document shown only inside the local reader. */

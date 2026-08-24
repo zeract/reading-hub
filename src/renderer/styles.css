@@ -261,13 +261,20 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
  * wrapper rather than patched through `.katex-html > .base/.tag` selectors.
  */
 .article-body .katex { font-size: 1.02em; }
-.article-body [data-reader-equation], .article-body mjx-container[display="true"] { display: block; max-width: 100%; margin: 1.25em 0; padding: .3em 2px .48em; overflow-x: auto; overflow-y: hidden; text-align: center; }
+/* The generated reader wrapper is the only scroll/margin owner. MathJax SVG
+ * lives inside it, so styling both containers would create nested overflow
+ * boxes and can move an equation tag into the formula's scroll area. */
+.article-body [data-reader-equation] { display: block; max-width: 100%; margin: 1.25em 0; padding: .3em 2px .48em; overflow-x: auto; overflow-y: hidden; text-align: center; }
+/* Compatibility for an old, already-sanitised reader document that contains
+ * a direct display MathJax node. This child selector never matches the SVG
+ * nested in the current generated equation wrapper. */
+.article-body > mjx-container[display="true"] { display: block; max-width: 100%; margin: 1.25em 0; padding: .3em 2px .48em; overflow-x: auto; overflow-y: hidden; text-align: center; }
 .article-body [data-reader-equation] > .reader-equation { display: flex; width: 100%; min-width: max-content; align-items: center; white-space: nowrap; }
 .article-body .reader-equation__content { display: flex; min-width: 0; flex: 1 0 auto; align-items: center; justify-content: center; }
 .article-body .reader-equation__content > .katex, .article-body .reader-equation__content > mjx-container { flex: 0 0 auto; max-width: none; }
 .article-body .reader-equation__tag { flex: 0 0 auto; margin-left: .75em; color: var(--ink-soft); font-family: "SFMono-Regular",Menlo,Consolas,monospace; font-size: .78em; line-height: 1; white-space: nowrap; }
-.article-body .reader-equation--mathjax mjx-container { display: block; }
-.article-body mjx-container[display="true"] > mjx-math { min-width: max-content; }
+.article-body .reader-equation--mathjax .reader-equation__content > mjx-container { display: block; min-width: max-content; margin: 0; padding: 0; overflow: visible; }
+.article-body .reader-equation--mathjax .reader-equation__content > mjx-container > svg { display: block; max-width: none; }
 .reader--scientific .article-body mjx-container { color: var(--ink); }
 .article-body .reader-math-source { display: inline-block; max-width: 100%; padding: .35em .5em; overflow-x: auto; border: 1px solid var(--line-strong); border-radius: 2px; background: var(--paper); color: var(--ink-soft); font-family: "SFMono-Regular",Menlo,Consolas,monospace; font-size: .76em; white-space: pre-wrap; }
 .article-body .reader-math-source--block { display: block; width: max-content; margin: 1.15em 0; }
