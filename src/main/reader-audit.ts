@@ -26,6 +26,8 @@ export type ReaderAuditResult = {
   katexBlocks?: number;
   mathJaxBlocks?: number;
   mathJaxSpacerNodes?: number;
+  /** Count-only formula ingestion telemetry; no TeX or page HTML is reported. */
+  formulaCounts?: ReaderArticle["formulaDiagnostics"];
   formulaDiagnostics?: string[];
   rawTeXDiagnostics?: string[];
   renderedMathDiagnostics?: string[];
@@ -69,7 +71,7 @@ export interface ReaderAuditOptions {
   /**
    * Optional in-memory layout inspection. The callback must return diagnostics
    * only and must not retain article HTML; it is used by the explicit
-   * Scientific Spaces visual audit mode.
+   * display-equation visual audit mode.
    */
   inspectLayout?: (article: ReaderArticle, source: Source, entry: Entry) => Promise<string[] | undefined> | string[] | undefined;
 }
@@ -83,6 +85,24 @@ export class ReaderAuditTimeoutError extends Error {
 
 function plainText(html: string): string {
   return load(html).text().replace(/\s+/g, " ").trim();
+}
+
+function hasDisplayFormula(article: ReaderArticle): boolean {
+  if (article.formulaDiagnostics && article.formulaDiagnostics.total === 0) return false;
+  const document = load(article.contentHtml);
+  return document("[data-reader-equation], .katex-display, mjx-container[display='true']").length > 0;
+}
+
+/**
+ * Card summaries can lead straight into raw TeX while the reader correctly
+ * turns that TeX into a rendered formula. Compare only authored prose before
+ * an explicit math delimiter, otherwise a safe rendering transformation looks
+ * like an incorrect Scientific Spaces extraction root.
+ */
+export function readerAuditSummaryLead(summary: string | undefined): string {
+  const text = plainText(summary || "");
+  const prose = text.split(/(?:\$\$|\\\[|\\\(|\\begin\{)/, 1)[0];
+  return prose.trim().slice(0, 28);
 }
 
 function countMatches(value: string, expression: RegExp): number {
@@ -157,6 +177,7 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
   const rawInlineTeX = findLeakedInlineMath(plainText(unrenderedHtml));
   const rawFormulaDiagnostics = [...rawTeXCommands, ...rawInlineTeX].slice(0, 2);
   const issues: string[] = [];
+  const formulaCounts = article.formulaDiagnostics;
   // Follow-feed cards can legitimately be a short public status update rather
   // than a long-form article. Their in-app display is still valid.
   if (text.length < 180 && source.kind !== "zhihu_follow" && source.kind !== "academic" && article.contentMode !== "feed_body" && article.contentMode !== "feed_summary") issues.push("正文过短");
@@ -173,6 +194,10 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
     issues.push("公式渲染失败或残留占位符");
   }
   if (formulaFallbacks) issues.push(`公式降级为原始 TeX 卡片（${formulaFallbacks} 处）`);
+  if (formulaCounts && formulaCounts.dropped > 0) issues.push(`公式语义提取丢失（${formulaCounts.dropped} 处）`);
+  if (formulaCounts && formulaCounts.total !== formulaCounts.rendered + formulaCounts.fallback + formulaCounts.dropped) {
+    issues.push("公式语义提取计数不一致");
+  }
   if (renderedMathTeX.length) issues.push("MathJax 公式中残留原始 TeX 命令");
   if (mathJaxSpacerNodes) issues.push(`MathJax CHTML 伸缩符号残留（${mathJaxSpacerNodes} 个 spacer 节点）`);
   if (rawTeXCommands.length) issues.push("正文中残留未渲染的 TeX 命令");
@@ -184,7 +209,7 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
   if (article.renderProfile === "scientific" && (/<h[1-6][^>]*>[^<]*#\s*<\/h/i.test(html) || scientificChrome)) {
     issues.push("科学空间页首元信息未清理");
   }
-  const summaryStart = plainText(entry.summary || "").slice(0, 28);
+  const summaryStart = readerAuditSummaryLead(entry.summary);
   if (article.renderProfile === "scientific" && summaryStart.length >= 12 && !firstText.includes(summaryStart)) {
     issues.push("科学空间正文起点与卡片摘要不一致");
   }
@@ -199,6 +224,7 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
     katexBlocks: countMatches(html, /class="katex-display"/gi),
     mathJaxBlocks: countMatches(html, /<mjx-container\b[^>]*display="true"/gi),
     mathJaxSpacerNodes: mathJaxSpacerNodes || undefined,
+    formulaCounts,
     formulaDiagnostics: [...fallbackFormulae, ...formulaErrors].slice(0, 2).length
       ? [...fallbackFormulae, ...formulaErrors].slice(0, 2)
       : undefined,
@@ -396,7 +422,7 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
             (elapsedMs) => void reportProgress(options, { phase: "waiting", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "image", elapsedMs }),
             heartbeatMs
           );
-          if (options.inspectLayout && article.renderProfile === "scientific") {
+          if (options.inspectLayout && hasDisplayFormula(article)) {
             await reportProgress(options, { phase: "started", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "layout" });
             const visualDiagnostics = await runReaderAuditOperation(
               () => Promise.resolve(options.inspectLayout?.(article, source, entry)),
@@ -407,7 +433,7 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
             );
             if (visualDiagnostics?.length) {
               result.visualDiagnostics = visualDiagnostics.slice(0, 6);
-              result.issues.push(`科学空间排版异常：${visualDiagnostics[0]}`);
+              result.issues.push(`阅读器公式排版异常：${visualDiagnostics[0]}`);
             }
           }
           result.status = result.issues.length ? "issues" : "passed";

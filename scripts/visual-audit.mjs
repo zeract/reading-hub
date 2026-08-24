@@ -14,8 +14,7 @@ app.setPath("userData", path.join(tmpdir(), `reading-hub-visual-audit-${process.
 const css = await readFile(path.join(root, "src/renderer/styles.css"), "utf8");
 // The renderer loads KaTeX's own stylesheet before our reader overrides.
 // Include both here and render formulas with KaTeX itself so geometry checks
-// exercise the same DOM/CSS contract that users see, rather than a hand-made
-// approximation of `.base` and `.tag` nodes.
+// exercise the same DOM/CSS contract that users see.
 const katexCss = await readFile(path.join(root, "node_modules/katex/dist/katex.min.css"), "utf8");
 const outputDirectory = process.env.READING_HUB_VISUAL_OUTPUT;
 const viewports = [
@@ -27,17 +26,16 @@ const viewports = [
 
 function page() {
   const largeImage = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='900'><rect width='100%' height='100%' fill='#d6cec0'/><text x='70' y='160' fill='#1b1b17' font-size='96'>Reading Hub visual fixture</text></svg>");
-  const formula = (id, tex) => katex.renderToString(tex, { displayMode: true, throwOnError: true, strict: "ignore" })
-    .replace(/^<span class="katex-display">/, `<span class="katex-display" id="${id}">`);
+  const formula = (id, tex, tag) => `<span class="katex-display" data-reader-equation="true" id="${id}"><span class="reader-equation"><span class="reader-equation__content">${katex.renderToString(tex, { displayMode: false, throwOnError: true, strict: "ignore" })}</span>${tag ? `<span class="reader-equation__tag">(${tag})</span>` : ""}</span></span>`;
   const normalFormula = formula("formula-normal", String.raw`\begin{aligned}
     q_i &= \frac{x_i}{y_i}\\
     z_i &= q_i + 1
-  \end{aligned}\tag{13}`);
+  \end{aligned}`, "13");
   const wideFormula = formula("formula-wide", String.raw`\begin{aligned}
     W_3\bigl(\operatorname{SiTU}(W_1x;\beta_1)\odot\operatorname{softcap}(W_2x;\beta_2)\bigr)
       &+ \sum_{i=1}^{n}\frac{\alpha_i\,\underbrace{x_i}_{\text{long scientific expression}}}{\sqrt{1+\lambda_i^2}}\\
       &+ \frac{\prod_{j=1}^{m}(a_j+b_j+c_j+d_j+e_j+f_j+g_j+h_j)}{\sum_{k=1}^{m}(u_k+v_k+w_k)}
-  \end{aligned}\tag{14}`);
+  \end{aligned}`, "14");
   return `<!doctype html><html><head><meta charset="utf-8"><style>${katexCss}\n${css}</style></head><body>
     <main class="shell" id="shell"><header class="app-titlebar" id="app-titlebar"><div class="app-titlebar-actions"><button class="app-titlebar-button" aria-label="收起来源"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16M12.5 9h4"/></svg></button><button class="app-titlebar-button" aria-label="刷新"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0 1.1 4M20 5v6h-6"/></svg></button><button class="app-titlebar-button app-titlebar-add" aria-label="添加来源"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div></header><aside class="sidebar" id="source-sidebar"><nav class="library-nav" id="library-nav"><div class="section-title" id="library-heading">阅读</div><button class="library-filter selected"><span><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/></svg>今日</span></button><button class="library-filter"><span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></svg>未读</span><em>12</em></button><button class="library-filter"><span><svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.8-5.4 2.8 1-6.1-4.4-4.3 6.1-.9Z"/></svg>收藏</span><em>6</em></button></nav><section class="source-section"><div class="section-title" id="source-heading">来源 <span>12</span></div><div class="source-list"><section class="source-group"><button class="source-group-heading"><span class="source-group-label"><svg viewBox="0 0 24 24"><path d="m7 9 5 5 5-5"/></svg><svg class="folder-icon" viewBox="0 0 24 24"><path d="M3.5 7.5h6l1.7 2H20.5v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></svg><span>网页与订阅</span></span><em>2</em></button><button class="source-filter selected"><span class="source-icon source-icon--rss"><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="1"/><path d="M5 11a8 8 0 0 1 8 8M5 5a14 14 0 0 1 14 14"/></svg></span><span class="source-title">测试来源名称应仅显示一行</span></button></section></div></section><footer class="sidebar-footer"><button class="sidebar-settings-button"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/></svg><span>设置</span></button></footer></aside><section class="timeline" id="entry-timeline"><header><div><p class="eyebrow">阅读收件箱</p><h1>今日更新</h1></div><span class="count">12 篇更新</span></header><div class="entry-list"><article class="entry-card selected"><button class="entry-main"><div class="entry-copy"><p class="entry-source">科学空间 · 今天</p><h2>这是一个在窄窗口和大字号下仍必须限制为两行显示的非常长的文章标题测试样例</h2><p class="summary">这是用于验证文章摘要在时间线卡片内会随可用列宽安全截断的长文本；它不能越过卡片边界，也不能无限增高，而应在两行之后明确以省略效果收束，保持列表浏览时的视觉节奏和可读性。</p></div></button></article><article class="entry-card"><button class="entry-main"><div class="entry-copy"><p class="entry-source">测试来源 · 昨天</p><h2>另一篇待读文章</h2></div></button></article></div></section>
     <section class="reader-view reader--scientific" data-reader-preset="reading" style="--reader-font-scale: 1">
@@ -46,7 +44,7 @@ function page() {
         <p>这段内容用于检查文字、图片、表格和公式编号在不同窗口与字号下不会错误重叠或撑破阅读列。</p>
         ${normalFormula}
         ${wideFormula}
-        <mjx-container id="formula-mathjax" display="true"><mjx-math><svg width="1040" height="48" aria-label="Scientific Spaces fallback formula"><text x="0" y="28">qᵢ = [(α − 1) / α · (zᵢ − λ)]₊¹⁄⁽ᵅ⁻¹⁾</text></svg></mjx-math></mjx-container>
+        <span class="katex-display" data-reader-equation="true" id="formula-mathjax"><span class="reader-equation reader-equation--mathjax"><span class="reader-equation__content"><mjx-container display="true"><mjx-math><svg width="1040" height="48" aria-label="Scientific Spaces fallback formula"><text x="0" y="28">qᵢ = [(α − 1) / α · (zᵢ − λ)]₊¹⁄⁽ᵅ⁻¹⁾</text></svg></mjx-math></mjx-container></span></span></span>
         <img id="fixture-image" src="${largeImage}" alt="large fixture" />
         <table><thead><tr><th>来源</th><th>状态</th></tr></thead><tbody><tr><td>OpenAlex</td><td>正常</td></tr></tbody></table>
       </div></article></div><div class="reader-selection-underlines" aria-hidden="true"><span id="selection-underline" style="left: 58vw; top: 302px; width: 124px"></span></div><section class="reader-selection-toolbar" id="selection-toolbar" style="left: 58vw; top: 308px"><button>翻译</button><button>解释</button><button>提问</button><button>×</button></section><aside class="selection-assistant-card" id="selection-card" data-placement="below" style="left: 56vw; top: 356px; width: min(330px,calc(100vw - 32px)); max-height: 250px"><header><div><p>解释所选文字</p><strong>本机 Codex CLI</strong></div><button>×</button></header><blockquote>“这段选中的文章文字会保留在就地回答旁边。”</blockquote><div class="selection-assistant-answer"><p>这是一个和正文紧邻的流式回答卡片，长内容将在卡片内滚动。</p><pre class="ai-code-block" id="selection-card-code"><code>selection_answer_must_not_expand_the_reading_workspace_0123456789</code></pre></div></aside><aside class="reader-ai-panel" id="assistant-panel"><header><div><strong>AI 学习助手</strong><p>提问时才会发送文章摘录。</p></div><div class="assistant-header-actions"><button class="panel-icon-button">−</button><button class="panel-icon-button">×</button></div></header><div class="ai-messages"><div class="ai-message" id="assistant-markdown"><strong>AI</strong><div class="ai-message-content ai-markdown"><h2 class="ai-markdown-heading">推导摘要</h2><p class="ai-markdown-paragraph">这是一段 <strong>Markdown</strong> 回答。</p><ul class="ai-markdown-list"><li>列表项</li><li><code class="ai-inline-code">inline_code</code></li></ul><pre class="ai-code-block" id="assistant-code"><code>very_long_identifier_that_must_scroll_instead_of_overflowing_the_assistant_sidebar_0123456789</code></pre><div class="ai-table-wrap"><table><thead><tr><th>方法</th><th>复杂度</th></tr></thead><tbody><tr><td>线性</td><td>O(n)</td></tr></tbody></table></div></div></div></div><form class="ai-question"><label>向文章提问</label><textarea>这个公式表达什么？</textarea><button class="primary">发送问题</button></form></aside></div>
@@ -74,8 +72,8 @@ async function auditViewport(window, viewport) {
     };
     const formula = (id) => {
       const root = document.querySelector(id);
-      const tag = root?.querySelector('.tag');
-      const bases = [...(root?.querySelectorAll('.base') || [])].map((base) => {
+      const tag = root?.querySelector('.reader-equation__tag');
+      const bases = [...(root?.querySelectorAll('.reader-equation__content > .katex, .reader-equation__content > mjx-container') || [])].map((base) => {
         const value = base.getBoundingClientRect();
         return { left: value.left, right: value.right, top: value.top, bottom: value.bottom };
       });
@@ -271,6 +269,9 @@ async function auditViewport(window, viewport) {
     if (!formula) failures.push(`${name}: 公式夹具缺失`);
     else if (formula.bases.some((base) => overlaps(formula.tag, base))) failures.push(`${name}: 公式编号与主体重叠`);
     else if (formula.tag.left < Math.max(...formula.bases.map((base) => base.right)) + 4) failures.push(`${name}: 公式编号未保留最小间距`);
+    else if (name === "normal" && (formula.scrollWidth > formula.clientWidth + 1 || formula.tag.left < formula.root.left - 1 || formula.tag.right > formula.root.right + 1)) {
+      failures.push("normal: 非超宽公式的编号被裁切或错误地落入横向滚动区");
+    }
     else if (formula.bases.some((base, index) => formula.bases.slice(index + 1).some((other) => overlaps(base, other)))) {
       failures.push(`${name}: KaTeX 公式分段主体互相重叠`);
     }

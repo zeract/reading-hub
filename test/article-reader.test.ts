@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { load } from "cheerio";
 import { ArticleReader, extractReaderArticle } from "../src/main/article-reader";
 import type { PublicHttpClient } from "../src/main/http";
@@ -219,6 +219,24 @@ describe("article reader extraction", () => {
     expect(visible.text()).not.toContain("$");
   });
 
+  it("processes nested display-math containers once without placeholder cycles", () => {
+    const result = extractReaderArticle(
+      `<article><p>${"这篇文章用于验证嵌套列表中的块公式只会经过一次语义提取。 ".repeat(24)}</p>
+        <ul><li><p>下面两个公式位于同一个嵌套列表项中：</p>
+          \\[(\\begin{aligned}q_i &= x_i / y_i\\\\ z_i &= q_i + 1\\end{aligned})\\]
+          \\[\\boxed{G_{t:t+n} = R_{t+1} + \\gamma R_{t+2}}\\]
+        </li></ul>
+        <p>${"列表后的正文必须继续保留。 ".repeat(24)}</p></article>`,
+      "https://chizkidd.github.io/2026/03/09/rl-sutton-barto-notes-ch010/",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(load(content)("[data-reader-equation]")).toHaveLength(2);
+    expect(content).not.toContain("READING_HUB_MATH_");
+    expect(result?.article.formulaDiagnostics).toMatchObject({ total: 2, text: 2, rendered: 2, fallback: 0, dropped: 0 });
+  });
+
   it("shares MathJax macro declarations across article equations", () => {
     const result = extractReaderArticle(
       `<article>
@@ -233,6 +251,115 @@ describe("article reader extraction", () => {
     expect(result?.article.contentHtml).toContain('mathvariant="normal">SiTU');
     expect(result?.article.contentHtml).toContain('mathvariant="normal">softcap');
     expect(result?.article.contentHtml).not.toContain("katex-error");
+  });
+
+  it("ingests Zhihu semantic TeX carriers before their nested MathJax SVG copies are sanitised", () => {
+    const result = extractReaderArticle(
+      `<html><body><article><div class="Post-RichTextContainer">
+        <p>${"知乎专栏的正文用于保证文章根选择与公式语义提取都走真实路径。 ".repeat(24)}</p>
+        <span class="ztext-math RichContent-commented-inline" data-tex="\\newcommand{\\rcos}{\\mathop{\\mathrm{rcos}}}\\rcos(\\boldsymbol{x},\\boldsymbol{y})"><span>旧视觉预览</span><span class="MathJax_SVG" id="MathJax-Element-7-Frame"><svg><text>视觉副本</text></svg></span></span>
+        <span class="ztext-math ztext-math-block RichContent-commented-inline" data-eeimg="1" data-tex="\\rcos(\\boldsymbol{x},\\boldsymbol{y})=\\frac{\\boldsymbol{x}\\cdot\\boldsymbol{y}}{\\lVert\\boldsymbol{x}\\rVert\\,\\lVert\\boldsymbol{y}\\rVert}"><span class="MathJax_SVG" id="MathJax-Element-8-Frame"><svg><text>第二个视觉副本</text></svg></span></span>
+        <p>${"后续正文必须在公式后保留，不能被视觉副本或净化流程吞掉。 ".repeat(22)}</p>
+      </div></article></body></html>`,
+      "https://zhuanlan.zhihu.com/p/2073205832964220804",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(load(content)(".katex")).toHaveLength(2);
+    expect(load(content)("[data-reader-equation]")).toHaveLength(1);
+    expect(result?.article.formulaDiagnostics).toMatchObject({ total: 2, semantic: 2, rendered: 2, fallback: 0, dropped: 0 });
+    expect(content).toContain("rcos");
+    expect(content).not.toContain("ztext-math");
+    expect(content).not.toContain("MathJax_SVG");
+    expect(content).not.toContain(">视觉副本<");
+    expect(content).not.toContain("reader-math-source");
+  });
+
+  it("parses nested MathJax config macros without executing page JavaScript", () => {
+    const result = extractReaderArticle(
+      `<html><head><script type="text/x-mathjax-config">
+        MathJax.Hub.Config({ TeX: { Macros: {
+          rcos: ["\\\\mathop{\\\\mathrm{rcos}}", 0],
+          rnorm: ["\\\\left\\\\lVert#1\\\\right\\\\rVert", 1]
+        } } });
+      </script></head><body><article><p>函数 $\\rcos(x,y)$ 的范数为 $\\rnorm{\\boldsymbol{x}}$。${"额外正文用于避免短文筛选。 ".repeat(34)}</p></article></body></html>`,
+      "https://zhuanlan.zhihu.com/p/2073205832964220804",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(load(content)(".katex")).toHaveLength(2);
+    expect(content).toContain("rcos");
+    expect(content).not.toContain("reader-math-source");
+    expect(content).not.toContain("$\\rcos");
+    expect(result?.article.formulaDiagnostics).toMatchObject({ total: 2, rendered: 2, fallback: 0, dropped: 0 });
+  });
+
+  it("uses the local MathJax SVG fallback for a Zhihu formula regardless of the page render profile", () => {
+    const render = vi.fn(() => `<mjx-container display="true"><svg viewBox="0 0 12 12"><path d="M0 0h12v12H0z"/></svg></mjx-container>`);
+    const math = { isReady: () => true, render } as unknown as ScientificMathRenderer;
+    const result = extractReaderArticle(
+      `<article><div class="Post-RichTextContainer">
+        <p>${"知乎转载的科学文章正文。 ".repeat(36)}</p>
+        <span class="ztext-math ztext-math-block" data-eeimg="1" data-tex="\\mathjaxOnlyCommand{\\boldsymbol{x}}"><span class="MathJax_SVG"><svg><text>旧视觉副本</text></svg></span></span>
+        <p>${"公式后的正文仍应可读。 ".repeat(30)}</p>
+      </div></article>`,
+      "https://zhuanlan.zhihu.com/p/2073205832964220804",
+      entry,
+      math
+    );
+
+    expect(render).toHaveBeenCalledWith("\\mathjaxOnlyCommand{\\boldsymbol{x}}", true, expect.any(Object));
+    expect(result?.article.contentHtml).toContain("reader-equation--mathjax");
+    expect(result?.article.contentHtml).toContain("mjx-container");
+    expect(result?.article.contentHtml).not.toContain("reader-math-source");
+    expect(result?.article.formulaDiagnostics).toMatchObject({ total: 1, semantic: 1, rendered: 1, fallback: 0, dropped: 0 });
+  });
+
+  it("lazily starts the MathJax fallback after a standard-profile article actually needs it", async () => {
+    let ready = false;
+    const render = vi.fn(() => `<mjx-container display="true"><svg viewBox="0 0 12 12"><path d="M0 0h12v12H0z"/></svg></mjx-container>`);
+    const math = {
+      isReady: () => ready,
+      ready: vi.fn(async () => { ready = true; }),
+      render
+    } as unknown as ScientificMathRenderer;
+    const http = {
+      getText: vi.fn(async () => ({
+        url: entry.url,
+        contentType: "text/html",
+        text: `<article><p>${"标准来源正文。 ".repeat(40)}</p><p>$$\\mathjaxOnlyCommand{\\boldsymbol{x}}$$</p><p>${"后续正文。 ".repeat(36)}</p></article>`
+      }))
+    } as unknown as PublicHttpClient;
+    const reader = new ArticleReader(http, { render: async () => "" }, undefined, math);
+
+    const article = await reader.read(entry);
+
+    expect(math.ready).toHaveBeenCalledTimes(1);
+    expect(render).toHaveBeenCalledWith("\\mathjaxOnlyCommand{\\boldsymbol{x}}", true, expect.any(Object));
+    expect(article.contentHtml).toContain("reader-equation--mathjax");
+    expect(article.formulaDiagnostics).toMatchObject({ total: 1, rendered: 1, fallback: 0, dropped: 0 });
+  });
+
+  it("keeps explicit equation tags authoritative and resolves references through the same equation index", () => {
+    const result = extractReaderArticle(
+      `<article><p>${"用于保证正文提取稳定的说明文字。 ".repeat(24)}</p>
+        <p>\\begin{equation}\\cos(\\boldsymbol{x},\\boldsymbol{y})=1\\tag{13}\\label{eq:rcos}\\end{equation}</p>
+        <p>由公式 $\\eqref{eq:rcos}$ 可知这个相似度的上界。${"后续正文。 ".repeat(36)}</p>
+      </article>`,
+      "https://zhuanlan.zhihu.com/p/2073205832964220804",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    const document = load(content);
+    expect(document("[data-reader-equation] .reader-equation__tag").text()).toBe("(13)");
+    expect(content).toContain("(13)");
+    expect(content).not.toContain("reader-equation__tag\" aria-label=\"公式编号\">(1)");
+    expect(content).not.toContain("\\label{");
+    expect(content).not.toContain("\\tag{");
+    expect(content).not.toContain("reader-math-source");
   });
 
   it("renders an align environment split across HTML line breaks", () => {
@@ -763,7 +890,7 @@ describe("article reader extraction", () => {
           <p>${"知乎正文内容 ".repeat(24)}</p>
           <p>这段<span class="RichContent-commented-inline">被评论标注的文字</span>仍是作者正文，必须保留。</p>
           <a class="CommentLink" href="#comments">3 条评论</a>
-          <section class="CommentList"><article class="CommentItem"><p>底部评论区不应进入正文。</p></article></section>
+          <section class="CommentList"><article class="CommentItem"><p><span class="RichContent-commented-inline">底部评论区不应进入正文。</span></p></article></section>
         </div>
       </article>`,
       "https://www.zhihu.com/question/123/answer/456",

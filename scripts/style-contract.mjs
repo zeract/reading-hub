@@ -20,11 +20,15 @@ if (!/\.reader-scroll\s*\{[^}]*overflow:\s*auto/s.test(css)) failures.push("阅�
 if (!/@media\s*\(min-width:\s*1380px\)\s*\{[\s\S]*?\.reader-workspace--assistant\s*\{[^}]*grid-template-columns:/s.test(css)) {
   failures.push("宽窗口中的 AI 学习面板必须作为右侧停靠栏，而非覆盖正文");
 }
-if (!/\.article-body\s+\.katex-display\s*>\s*\.katex\s*>\s*\.katex-html\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*nowrap/s.test(css)) {
-  failures.push("KaTeX 公式分段必须保持顺序流式布局");
+if (!/\.article-body\s+\[data-reader-equation\]\s*>\s*\.reader-equation\s*\{[^}]*display:\s*flex[^}]*width:\s*100%[^}]*min-width:\s*max-content/s.test(css)) {
+  failures.push("公式容器必须由阅读器自有布局控制，并保持独立横向滚动能力");
 }
-if (!/\.article-body\s+\.katex-display\s*>\s*\.katex\s*>\s*\.katex-html\s*>\s*\.tag\s*\{[^}]*position:\s*static[^}]*order:\s*2[^}]*margin-left:\s*1em/s.test(css)) {
-  failures.push("公式编号必须位于公式主体之后并保留间距");
+if (!/\.article-body\s+\.reader-equation__content\s*\{[^}]*min-width:\s*0[^}]*flex:\s*1\s+0\s+auto/s.test(css)
+  || !/\.article-body\s+\.reader-equation__tag\s*\{[^}]*flex:\s*0\s+0\s+auto[^}]*margin-left:\s*\.75em[^}]*white-space:\s*nowrap/s.test(css)) {
+  failures.push("公式编号必须作为阅读器自有节点位于公式主体之后并保留间距");
+}
+if (/\.article-body\s+\.katex-display\s*>\s*\.katex\s*>\s*\.katex-html\s*>\s*\.(?:base|tag)/s.test(css)) {
+  failures.push("阅读器不得依赖 KaTeX 私有 base/tag DOM 进行公式布局");
 }
 
 if (failures.length) {

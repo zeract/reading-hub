@@ -5,7 +5,14 @@ import { load } from "cheerio";
 import type { ReaderArticle } from "../shared/types";
 
 type VisualViewport = { name: string; width: number; height: number; zoom: number };
-type FormulaGeometry = { hasTag: boolean; collision: boolean; escapesBody: boolean; horizontallyScrollable: boolean };
+type FormulaGeometry = {
+  hasTag: boolean;
+  collision: boolean;
+  escapesBody: boolean;
+  horizontallyScrollable: boolean;
+  /** A normal-width tag must be visible without scrolling its equation row. */
+  tagEscapesVisibleArea: boolean;
+};
 type LayoutGeometry = {
   pageOverflow: boolean;
   formulas: FormulaGeometry[];
@@ -24,16 +31,17 @@ const VISUAL_VIEWPORTS: VisualViewport[] = [
 const AUDIT_IMAGE = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='900'><rect width='100%' height='100%' fill='#d6cec0'/></svg>");
 
 /**
- * Runs only for the explicit source-specific audit mode. It receives already
- * sanitised, in-memory reader HTML, never writes it to disk, and reports only
- * layout diagnostics. Remote image requests are disabled in the fixture.
+ * Runs in the explicit local reader audit mode for any article that contains
+ * display math. It receives already sanitised, in-memory HTML, never writes
+ * it to disk, and reports layout diagnostics only. Remote images are disabled.
  */
 export class ScientificArticleVisualAuditor {
   private window?: BrowserWindow;
   private styles?: Promise<string>;
 
   async inspect(article: ReaderArticle): Promise<string[]> {
-    if (article.renderProfile !== "scientific") return [];
+    const articleDom = load(`<div id="reader-audit-math">${article.contentHtml}</div>`);
+    if (!articleDom("#reader-audit-math [data-reader-equation], #reader-audit-math .katex-display, #reader-audit-math mjx-container[display='true']").length) return [];
     const visualWindow = this.getWindow();
     const diagnostics: string[] = [];
     const page = await this.page(article.contentHtml);
@@ -47,10 +55,13 @@ export class ScientificArticleVisualAuditor {
         const bodyRect = body.getBoundingClientRect();
         const overlaps = (left, right) => Math.max(0, Math.min(left.right, right.right) - Math.max(left.left, right.left)) > .5
           && Math.max(0, Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top)) > .5;
-        const formulas = [...body.querySelectorAll(".katex-display, mjx-container[display='true']")].map((formula) => {
+        const owned = [...body.querySelectorAll("[data-reader-equation]")];
+        const legacyKatex = [...body.querySelectorAll(".katex-display")].filter((formula) => !formula.closest("[data-reader-equation]"));
+        const legacyMathJax = [...body.querySelectorAll("mjx-container[display='true']")].filter((formula) => !formula.closest("[data-reader-equation]"));
+        const formulas = [...owned, ...legacyKatex, ...legacyMathJax].map((formula) => {
           const rect = formula.getBoundingClientRect();
-          const tag = formula.querySelector(".tag");
-          const bases = [...formula.querySelectorAll(":scope > .katex > .katex-html > .base")];
+          const tag = formula.querySelector(".reader-equation__tag");
+          const bases = [...formula.querySelectorAll(".reader-equation__content > .katex, .reader-equation__content > mjx-container, :scope > .katex")];
           const tagRect = tag?.getBoundingClientRect();
           const baseRects = bases.map((base) => base.getBoundingClientRect());
           const collision = Boolean(tagRect && baseRects.some((base) => overlaps(tagRect, base)));
@@ -58,7 +69,8 @@ export class ScientificArticleVisualAuditor {
             hasTag: Boolean(tagRect),
             collision,
             escapesBody: rect.left < bodyRect.left - 1 || rect.right > bodyRect.right + 1,
-            horizontallyScrollable: formula.scrollWidth > formula.clientWidth + 1
+            horizontallyScrollable: formula.scrollWidth > formula.clientWidth + 1,
+            tagEscapesVisibleArea: Boolean(tagRect && (tagRect.left < rect.left - 1 || tagRect.right > rect.right + 1))
           };
         });
         const imagesEscapeBody = [...body.querySelectorAll("img")].some((image) => {
@@ -76,6 +88,9 @@ export class ScientificArticleVisualAuditor {
       geometry.formulas.forEach((formula, index) => {
         if (formula.collision) diagnostics.push(`${viewport.name}：第 ${index + 1} 个公式编号与主体重叠`);
         if (formula.escapesBody) diagnostics.push(`${viewport.name}：第 ${index + 1} 个公式超出正文列宽`);
+        if (formula.hasTag && !formula.horizontallyScrollable && formula.tagEscapesVisibleArea) {
+          diagnostics.push(`${viewport.name}：第 ${index + 1} 个公式编号在非超宽公式中被裁切`);
+        }
         // A formula that is intrinsically wider than the column is valid only
         // when the formula element itself owns the scrollable overflow.
         if (formula.horizontallyScrollable === false && formula.escapesBody) {

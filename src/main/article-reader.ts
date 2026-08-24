@@ -5,7 +5,7 @@ import katex from "katex";
 import { compactText, parsePublishedAt } from "../shared/text";
 import { inlineDollarMathAt } from "../shared/tex";
 import { assertPublicUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl, toAbsoluteUrl } from "../shared/url";
-import type { Entry, ReaderArticle, ReaderRenderProfile, Source } from "../shared/types";
+import type { Entry, ReaderArticle, ReaderFormulaDiagnostics, ReaderRenderProfile, Source } from "../shared/types";
 import { parseFeed } from "./feed";
 import { abortError, throwIfAborted } from "./cancellation";
 import { PublicHttpClient, type PublicRequestOptions } from "./http";
@@ -34,7 +34,10 @@ const CONTENT_SELECTORS = [
 // response metadata and the discussion thread cannot outrank the body merely
 // because `article` has a higher generic semantic priority.
 const ZHIHU_CONTENT_SELECTORS = [
-  { selector: ".RichContent-inner, .RichText", priority: 12 },
+  // Zhihu columns use Post-RichTextContainer, while answers commonly use
+  // RichContent-inner. Both are authored prose roots and must beat the wide
+  // page-level article shell (which includes recommendations and comments).
+  { selector: ".Post-RichTextContainer, .RichContent-inner, .RichText", priority: 12 },
   ...CONTENT_SELECTORS
 ];
 
@@ -122,7 +125,42 @@ const SCIENTIFIC_DISCUSSION_SELECTOR = [
 // broad `#content` fallback instead of the dedicated post container above.
 const SCIENTIFIC_AUXILIARY_SELECTOR = "#content_tips, #pay, #how_to_cite";
 
-type MathSnippet = { token: string; tex: string; displayMode: boolean };
+type FormulaOrigin = "semantic" | "mathjax-script" | "mathjax-frame" | "text";
+type FormulaRecord = { token: string; tex: string; displayMode: boolean; origin: FormulaOrigin };
+type SanitizedContent = { html: string; formulaDiagnostics: ReaderFormulaDiagnostics };
+
+/**
+ * FormulaDocument is the single semantic boundary between an untrusted page
+ * DOM and the reader's renderers. Every supported source form is reduced to
+ * a record before noise removal or attribute sanitisation can erase its TeX.
+ */
+class FormulaDocument {
+  readonly records: FormulaRecord[] = [];
+
+  add(tex: string, displayMode: boolean, origin: FormulaOrigin): string {
+    const token = `${MATH_TOKEN_PREFIX}${this.records.length}${MATH_TOKEN_SUFFIX}`;
+    this.records.push({ token, tex: tex.trim(), displayMode, origin });
+    return token;
+  }
+
+  get(index: number): FormulaRecord | undefined {
+    return this.records[index];
+  }
+
+  diagnostics(rendered: number, fallback: number, dropped: number): ReaderFormulaDiagnostics {
+    const count = (origin: FormulaOrigin) => this.records.filter((record) => record.origin === origin).length;
+    return {
+      total: this.records.length,
+      semantic: count("semantic"),
+      mathJaxScript: count("mathjax-script"),
+      mathJaxFrame: count("mathjax-frame"),
+      text: count("text"),
+      rendered,
+      fallback,
+      dropped
+    };
+  }
+}
 type ContentCandidate = {
   html: string;
   quality: number;
@@ -200,7 +238,7 @@ export class ArticleReader {
     if (!usesZhihuSession) {
       try {
         const response = await this.http.getText(entry.url, undefined, readerHttpOptions({ maxBytes: 8_000_000 }, options?.signal));
-        staticArticle = extractReaderArticle(response.text, response.url, entry, this.scientificMath);
+        staticArticle = await this.extractWithMathFallback(response.text, response.url, entry);
         if (staticArticle && staticArticle.textLength >= 220) return staticArticle.article;
       } catch (error) {
         if (options?.signal?.aborted) throw abortError(options.signal);
@@ -232,7 +270,7 @@ export class ArticleReader {
       // Keep a usable static article when Chromium rendering is unavailable.
     }
     throwIfAborted(options?.signal);
-    const renderedArticle = renderedHtml ? extractReaderArticle(renderedHtml, entry.url, entry, this.scientificMath) : undefined;
+    const renderedArticle = renderedHtml ? await this.extractWithMathFallback(renderedHtml, entry.url, entry) : undefined;
     if (renderedArticle && renderedArticle.textLength > (staticArticle?.textLength ?? 0)) return renderedArticle.article;
     if (staticArticle) return staticArticle.article;
     // A public original can intermittently reject a reader request (or time
@@ -280,7 +318,12 @@ export class ArticleReader {
     if (!item?.feedContentHtml) return undefined;
 
     const renderProfile = resolveReaderProfile(entry.url);
-    const contentHtml = sanitizeContent(item.feedContentHtml, response.url, renderProfile, this.scientificMath, "");
+    let sanitised = sanitizeContent(item.feedContentHtml, response.url, this.scientificMath, "");
+    if (needsMathJaxFallback(sanitised) && !this.scientificMath.isReady()) {
+      await this.scientificMath.ready().catch(() => undefined);
+      if (this.scientificMath.isReady()) sanitised = sanitizeContent(item.feedContentHtml, response.url, this.scientificMath, "");
+    }
+    const contentHtml = sanitised.html;
     const content = load(contentHtml);
     if (normalText(content.text()).length < 24 && !content("img").length) return undefined;
     const coverCandidate = safeUrl(entry.imageUrl, response.url);
@@ -293,8 +336,25 @@ export class ArticleReader {
       coverImageUrl: coverCandidate && !containsImage(contentHtml, coverCandidate) ? coverCandidate : undefined,
       renderProfile,
       contentMode: "feed_body",
+      formulaDiagnostics: sanitised.formulaDiagnostics,
       contentHtml
     };
+  }
+
+  /**
+   * Formula compatibility follows the document's semantic payload, not the
+   * host name. KaTeX remains the fast first pass; only an actual fallback
+   * record starts the local MathJax SVG runtime and replays the same inert
+   * extraction. This lets a Zhihu reprint of a scientific article use the
+   * exact same safe fallback as its original site without eagerly loading
+   * MathJax for ordinary articles.
+   */
+  private async extractWithMathFallback(html: string, pageUrl: string, entry: Entry): Promise<ExtractedArticle | undefined> {
+    let extracted = extractReaderArticle(html, pageUrl, entry, this.scientificMath);
+    if (!extracted || !needsMathJaxFallback(extracted.article) || this.scientificMath.isReady()) return extracted;
+    await this.scientificMath.ready().catch(() => undefined);
+    if (this.scientificMath.isReady()) extracted = extractReaderArticle(html, pageUrl, entry, this.scientificMath);
+    return extracted;
   }
 }
 
@@ -346,7 +406,8 @@ export function extractReaderArticle(html: string, pageUrl: string, entry: Entry
   selectedContent.find("header").remove();
   removeDuplicateArticleChrome(contentDocument, selectedContent, title, renderProfile, entry.summary);
 
-  const contentHtml = sanitizeContent(selectedContent.html() || "", pageUrl, renderProfile, scientificMath, collectGlobalMathDeclarations($));
+  const sanitised = sanitizeContent(selectedContent.html() || "", pageUrl, scientificMath, collectGlobalMathDeclarations($));
+  const contentHtml = sanitised.html;
   const textLength = normalText(load(contentHtml).text()).length;
   if (!textLength) return undefined;
 
@@ -376,6 +437,7 @@ export function extractReaderArticle(html: string, pageUrl: string, entry: Entry
       publishedAt,
       coverImageUrl,
       renderProfile,
+      formulaDiagnostics: sanitised.formulaDiagnostics,
       contentHtml
     },
     textLength
@@ -501,8 +563,10 @@ function isZhihuContentUrl(rawUrl: string): boolean {
  * commented on that passage. The generic noise rule deliberately removes
  * comment *threads*, so normalize only inline wording wrappers before it runs.
  *
- * Removing the class rather than the element retains normal text semantics and
- * links, while the sanitizer still strips all remote presentation classes.
+ * Remove only the comment/annotation class token rather than the element or
+ * its entire class list. This retains normal text semantics and essential
+ * semantic carriers such as Zhihu's `ztext-math` / `ztext-math-block`, while
+ * the sanitizer still strips all remote presentation classes later.
  * Block-level CommentList/CommentItem ancestors are deliberately left intact
  * here and removed by COMMENT_THREAD_SELECTOR.
  */
@@ -516,7 +580,11 @@ function preserveZhihuInlineAnnotations($: ReturnType<typeof load>, content: any
     // comment-link are interaction controls and must remain removable noise.
     if (!tagName || !ZHIHU_INLINE_ANNOTATION_TAGS.has(tagName) || !/(?:commented|annotation)/i.test(className)) return;
     if (element.is(COMMENT_THREAD_SELECTOR) || element.parents(COMMENT_THREAD_SELECTOR).length) return;
-    element.removeAttr("class");
+    const retainedClasses = className
+      .split(/\s+/)
+      .filter((classToken) => classToken && !/(?:commented|annotation)/i.test(classToken));
+    if (retainedClasses.length) element.attr("class", retainedClasses.join(" "));
+    else element.removeAttr("class");
   });
 }
 
@@ -577,16 +645,20 @@ function readerContentQuality(root: any): number {
 function sanitizeContent(
   rawHtml: string,
   pageUrl: string,
-  renderProfile: ReaderRenderProfile,
   scientificMath: ScientificMathRenderer | undefined,
   globalMathDeclarations: string
-): string {
+): SanitizedContent {
   const $ = load(`<div id="reader-content">${rawHtml}</div>`);
   const root = $("#reader-content");
   hydrateLazyImages($, root, pageUrl);
   preserveZhihuInlineAnnotations($, root, pageUrl);
-  const math = preserveMathScripts($, root);
-  preserveRenderedMathJax($, root, math);
+  const formulas = new FormulaDocument();
+  // Semantic containers must be consumed first. In particular, Zhihu wraps
+  // `data-tex` around a MathJax SVG visual copy; looking at the child frame
+  // first loses the only source TeX when generic sanitisation removes data/SVG.
+  preserveSemanticFormulaCarriers($, root, formulas);
+  preserveMathScripts($, root, formulas);
+  preserveRenderedMathJax($, root, formulas);
   root.find(NOISE_SELECTOR).remove();
   for (const node of root.find("*").toArray()) {
     const element = $(node);
@@ -647,9 +719,9 @@ function sanitizeContent(
     }
     removeAllAttributes(element);
   }
-  preserveTextMath($, root, math);
+  preserveTextMath($, root, formulas);
   normaliseTeXCitationLinks($, root, pageUrl);
-  return renderMath(root.html() || "", math, renderProfile, scientificMath, globalMathDeclarations);
+  return renderMath(root.html() || "", formulas, scientificMath, globalMathDeclarations);
 }
 
 /**
@@ -810,12 +882,44 @@ function sameImageAsset(left: string | undefined, right: string | undefined): bo
 }
 
 /**
+ * Captures page-specific *semantic* formula carriers before any visual MathJax
+ * copies or generic attribute stripping are considered. The selector is not
+ * tied to a hostname: Zhihu is simply the current common producer of this
+ * accessible `data-tex` contract, and syndicated content can carry it too.
+ */
+function preserveSemanticFormulaCarriers($: ReturnType<typeof load>, root: any, formulas: FormulaDocument): void {
+  const carriers = root.find(".ztext-math[data-tex], [data-reader-tex], [data-tex][data-eeimg]").toArray()
+    .sort((left: any, right: any) => nodeDepth(left) - nodeDepth(right));
+  for (const node of carriers) {
+    if (!isNodeWithinRoot(root, node)) continue;
+    const element = $(node);
+    if (isLiteralMathContext(element)) continue;
+    const tex = String(element.attr("data-tex") || element.attr("data-reader-tex") || "").trim();
+    if (!tex) continue;
+    const displayMode = element.hasClass("ztext-math-block")
+      || element.is("[data-display='true']")
+      // Zhihu serialises some display equations without its block class and
+      // leaves a final line break as its only display marker.
+      || /\\\\\s*$/.test(tex);
+    const normalised = displayMode ? tex.replace(/\\\\\s*$/, "").trim() : tex;
+    if (!normalised) {
+      element.remove();
+      continue;
+    }
+    element.replaceWith(formulas.add(normalised, displayMode, "semantic"));
+  }
+}
+
+function isLiteralMathContext(element: any): boolean {
+  return element.is("code, pre") || element.parents("code, pre").length > 0;
+}
+
+/**
  * MathJax 2 stores TeX in script elements, which normally belong to the noise
  * list. Convert only explicitly-declared math scripts before the generic
  * sanitizer removes executable markup.
  */
-function preserveMathScripts($: ReturnType<typeof load>, root: any): MathSnippet[] {
-  const math: MathSnippet[] = [];
+function preserveMathScripts($: ReturnType<typeof load>, root: any, formulas: FormulaDocument): void {
   root.find("script").each((_index: number, node: any) => {
     const script = $(node);
     if (!isMathScript(script)) return;
@@ -835,11 +939,10 @@ function preserveMathScripts($: ReturnType<typeof load>, root: any): MathSnippet
     // formula. The marker is collapsed back to plain placeholder text after
     // rendered MathJax has been reconciled below, so it never reaches the
     // renderer or user-visible HTML.
-    const token = addMath(math, tex, type.includes("mode=display"));
-    const index = math.length - 1;
+    const token = formulas.add(tex, type.includes("mode=display"), "mathjax-script");
+    const index = formulas.records.length - 1;
     script.replaceWith(`<span data-reader-math-source="${index}">${token}</span>`);
   });
-  return math;
 }
 
 /**
@@ -848,7 +951,7 @@ function preserveMathScripts($: ReturnType<typeof load>, root: any): MathSnippet
  * data attributes; this avoids both the preview/rendered duplicate and losing
  * formulas when the original script was removed by the site.
  */
-function preserveRenderedMathJax($: ReturnType<typeof load>, root: any, math: MathSnippet[]): void {
+function preserveRenderedMathJax($: ReturnType<typeof load>, root: any, formulas: FormulaDocument): void {
   root.find(".MathJax_Preview").remove();
   const rendered = root.find("mjx-container, .MathJax, [id^='MathJax-']").toArray()
     // Work from the outer frame inward. A MathJax 2/3 wrapper often contains
@@ -868,7 +971,7 @@ function preserveRenderedMathJax($: ReturnType<typeof load>, root: any, math: Ma
     const tex = mathJaxSource(element);
     if (tex) {
       const displayMode = isRenderedMathDisplay(element);
-      const authored = adjacentAuthoredMath($, element, math);
+      const authored = adjacentAuthoredMath($, element, formulas);
       if (authored && sameMathSource(authored.tex, tex)) {
         // The source script is authoritative. Keep its original position and
         // display mode, but prefer an explicit rendered block indication when
@@ -877,7 +980,7 @@ function preserveRenderedMathJax($: ReturnType<typeof load>, root: any, math: Ma
         element.remove();
         continue;
       }
-      element.replaceWith(addMath(math, tex, displayMode));
+      element.replaceWith(formulas.add(tex, displayMode, "mathjax-frame"));
       continue;
     }
     // A child MathJax node may already have been replaced by its placeholder.
@@ -942,7 +1045,7 @@ function isRenderedMathDisplay(element: any): boolean {
 }
 
 /** Finds a source-script marker immediately beside a MathJax visual frame. */
-function adjacentAuthoredMath($: ReturnType<typeof load>, element: any, math: MathSnippet[]): MathSnippet | undefined {
+function adjacentAuthoredMath($: ReturnType<typeof load>, element: any, formulas: FormulaDocument): FormulaRecord | undefined {
   // MathJax 2 pages usually leave the source script before the rendered
   // frame, but some renderer paths emit it after the frame. Both are the same
   // authored source once their TeX agrees, so inspect immediate non-whitespace
@@ -954,7 +1057,7 @@ function adjacentAuthoredMath($: ReturnType<typeof load>, element: any, math: Ma
     const marker = $(sibling);
     if (!marker.is("[data-reader-math-source]")) continue;
     const index = Number.parseInt(marker.attr("data-reader-math-source") || "", 10);
-    if (Number.isSafeInteger(index) && index >= 0) return math[index];
+    if (Number.isSafeInteger(index) && index >= 0) return formulas.get(index);
   }
   return undefined;
 }
@@ -981,14 +1084,14 @@ function isMathScript(element: any): boolean {
 }
 
 /** Converts author-delimited TeX in static HTML into placeholders. */
-function preserveTextMath($: ReturnType<typeof load>, root: any, math: MathSnippet[]): void {
-  preserveMultilineTextMath($, root, math);
+function preserveTextMath($: ReturnType<typeof load>, root: any, formulas: FormulaDocument): void {
+  preserveMultilineTextMath($, root, formulas);
   const visit = (node: any, insideLiteral = false): void => {
     const tag = node.tagName?.toLowerCase();
     const literal = insideLiteral || tag === "code" || tag === "pre";
     for (const child of [...(node.children || [])]) {
       if (child.type === "text" && !literal) {
-        const next = tokenizeMath(child.data || "", math);
+        const next = tokenizeMath(child.data || "", formulas);
         if (next !== child.data) child.data = next;
       } else if (child.type === "tag") {
         visit(child, literal);
@@ -1003,7 +1106,7 @@ function preserveTextMath($: ReturnType<typeof load>, root: any, math: MathSnipp
  * elements. A node-by-node pass cannot see the matching \begin and \end in
  * that form, so first tokenise the smallest enclosing element as one fragment.
  */
-function preserveMultilineTextMath($: ReturnType<typeof load>, root: any, math: MathSnippet[]): void {
+function preserveMultilineTextMath($: ReturnType<typeof load>, root: any, formulas: FormulaDocument): void {
   const environment = "(?:equation\\*?|align\\*?|gather\\*?|multline\\*?|array|cases|matrix|pmatrix|bmatrix|vmatrix|Vmatrix|smallmatrix|aligned)";
   const blockStart = new RegExp(`(?:\\\\begin\\{${environment}\\}|\\$\\$|\\\\\\\[)`);
   const candidates = root.find("*").toArray().filter((node: any) => {
@@ -1011,16 +1114,22 @@ function preserveMultilineTextMath($: ReturnType<typeof load>, root: any, math: 
     const tag = node.tagName?.toLowerCase();
     if (tag === "code" || tag === "pre" || !blockStart.test(element.html() || "")) return false;
     return !element.children().toArray().some((child: any) => blockStart.test($(child).html() || ""));
-  });
-
+  // A display formula can sit inside several nested list/div containers. Work
+  // from the deepest live container outward, then re-check the *current* DOM
+  // before each pass. Otherwise an ancestor can re-tokenise a placeholder
+  // produced by a descendant into a second fake equation such as
+  // `[[READING_HUB_MATH_0]]`, leaving a circular placeholder leak.
+  }).sort((left: any, right: any) => nodeDepth(right) - nodeDepth(left));
   for (const node of candidates) {
+    if (!isNodeWithinRoot(root, node)) continue;
     const element = $(node);
     const html = element.html() || "";
-    let tokenised = html.replace(/\$\$([\s\S]*?)\$\$/g, (_all, body) => addMath(math, htmlToTeXText(body), true));
-    tokenised = tokenised.replace(/\\\\\[([\s\S]*?)\\\\\]/g, (_all, body) => addMath(math, htmlToTeXText(body), true));
+    if (!blockStart.test(html)) continue;
+    let tokenised = html.replace(/\$\$([\s\S]*?)\$\$/g, (_all, body) => addMath(formulas, htmlToTeXText(body), true));
+    tokenised = tokenised.replace(/\\\[([\s\S]*?)\\\]/g, (_all, body) => addMath(formulas, htmlToTeXText(body), true));
     tokenised = tokenised.replace(new RegExp(`\\\\begin\\{(${environment})\\}([\\s\\S]*?)\\\\end\\{\\1\\}`, "g"), (_all, name, body) => {
       const tex = normaliseDisplayEnvironment(name, htmlToTeXText(body));
-      return addMath(math, tex, true);
+      return addMath(formulas, tex, true);
     });
     if (tokenised !== html) element.html(tokenised);
   }
@@ -1031,17 +1140,19 @@ function htmlToTeXText(value: string): string {
   return $("#reader-math-fragment").text().replace(/\u00a0/g, " ");
 }
 
-function tokenizeMath(value: string, math: MathSnippet[]): string {
-  // Display environments must be parsed before $...$ so line breaks and
-  // alignment markers remain part of one equation.
-  let result = value.replace(/\\begin\{(equation\*?|align\*?|gather\*?|multline\*?)\}([\s\S]*?)\\end\{\1\}/g, (_all, environment, body) => {
+function tokenizeMath(value: string, formulas: FormulaDocument): string {
+  // Consume outer author delimiters first. A display formula may contain a
+  // nested valid-looking environment; parsing that inner fragment first
+  // produces a placeholder inside another placeholder and leaves one token
+  // unrendered after the single render pass.
+  let result = value.replace(/\\\[([\s\S]*?)\\\]/g, (_all, tex) => addMath(formulas, tex, true));
+  result = result.replace(/\$\$([\s\S]*?)\$\$/g, (_all, tex) => addMath(formulas, tex, true));
+  result = result.replace(/\\begin\{(equation\*?|align\*?|gather\*?|multline\*?)\}([\s\S]*?)\\end\{\1\}/g, (_all, environment, body) => {
     const tex = normaliseDisplayEnvironment(environment, body);
-    return addMath(math, tex, true);
+    return addMath(formulas, tex, true);
   });
-  result = result.replace(/\\\[([\s\S]*?)\\\]/g, (_all, tex) => addMath(math, tex, true));
-  result = result.replace(/\$\$([\s\S]*?)\$\$/g, (_all, tex) => addMath(math, tex, true));
-  result = result.replace(/\\\(([^]*?)\\\)/g, (_all, tex) => addMath(math, tex, false));
-  return tokenizeInlineDollarMath(result, math);
+  result = result.replace(/\\\(([^]*?)\\\)/g, (_all, tex) => addMath(formulas, tex, false));
+  return tokenizeInlineDollarMath(result, formulas);
 }
 
 function normaliseDisplayEnvironment(environment: string, body: string): string {
@@ -1052,7 +1163,7 @@ function normaliseDisplayEnvironment(environment: string, body: string): string 
   return content;
 }
 
-function tokenizeInlineDollarMath(value: string, math: MathSnippet[]): string {
+function tokenizeInlineDollarMath(value: string, formulas: FormulaDocument): string {
   let output = "";
   for (let index = 0; index < value.length;) {
     const match = inlineDollarMathAt(value, index);
@@ -1061,74 +1172,95 @@ function tokenizeInlineDollarMath(value: string, math: MathSnippet[]): string {
       index += 1;
       continue;
     }
-    output += addMath(math, match.tex, false);
+    output += addMath(formulas, match.tex, false);
     index = match.end;
   }
   return output;
 }
 
-function addMath(math: MathSnippet[], tex: string, displayMode: boolean): string {
-  const token = `${MATH_TOKEN_PREFIX}${math.length}${MATH_TOKEN_SUFFIX}`;
-  math.push({ token, tex: tex.trim(), displayMode });
-  return token;
+function addMath(formulas: FormulaDocument, tex: string, displayMode: boolean): string {
+  return formulas.add(tex, displayMode, "text");
 }
+
+type EquationMetadata = { tag?: string; label?: string };
+type EquationIndex = { labels: Map<string, string>; byToken: Map<string, EquationMetadata> };
 
 function renderMath(
   html: string,
-  math: MathSnippet[],
-  renderProfile: ReaderRenderProfile,
+  formulas: FormulaDocument,
   scientificMath: ScientificMathRenderer | undefined,
   globalMathDeclarations: string
-): string {
-  const labels = collectEquationLabels(math);
-  const prepared = math.map((snippet) => {
+): SanitizedContent {
+  const prepared = formulas.records.map((record) => {
     // MathJax's package loader directives are not mathematical content. The
-    // local scientific renderer loads the supported extensions explicitly,
-    // while KaTeX needs the directive removed before its safe fallback runs.
-    const declaration = extractMacroDeclarations(snippet.tex.replace(/\\require\{(?:cancel)\}/g, ""));
-    return { snippet: { ...snippet, tex: declaration.tex }, macros: declaration.macros };
+    // local SVG renderer loads its supported extensions explicitly, while
+    // KaTeX needs the directive removed before its safe path runs.
+    const declaration = extractMacroDeclarations(record.tex.replace(/\\require\{(?:cancel)\}/g, ""));
+    return { record: { ...record, tex: declaration.tex }, macros: declaration.macros };
   });
+  const equations = collectEquationMetadata(prepared.map((item) => item.record));
   const globalMacros = new Map<string, string>([
     ...extractMacroDeclarations(globalMathDeclarations).macros,
     ...extractMathJaxConfigMacros(globalMathDeclarations)
   ]);
   const macros = collectMathMacros([globalMacros, ...prepared.map((item) => item.macros)]);
-  return prepared.reduce((result, item) => {
-    // KaTeX emits self-contained HTML for common TeX, including Scientific
-    // Spaces' `\\left\\{\\begin{aligned}…` formulas. MathJax CHTML instead
-    // draws stretchy delimiters with hidden text spacer nodes; if its sheet is
-    // not applied perfectly in an embedded reader those nodes become visible
-    // braces. Prefer the stable output and reserve the SVG renderer (which
-    // contains actual glyph paths, not CSS-hidden text) for TeX that KaTeX
-    // genuinely cannot parse.
-    const katexHtml = tryRenderTeX(item.snippet, labels, macros);
-    const mathJaxHtml = !katexHtml && renderProfile === "scientific"
-      ? scientificMath?.render(item.snippet.tex, item.snippet.displayMode, macros)
+  let rendered = 0;
+  let fallback = 0;
+  let result = html;
+
+  for (const item of prepared) {
+    const metadata = equations.byToken.get(item.record.token);
+    // KaTeX emits self-contained HTML for common TeX, including complex
+    // Scientific Spaces equations. SVG MathJax remains a safe secondary path
+    // for source-specific TeX that KaTeX cannot parse; it never runs page JS.
+    const katexHtml = tryRenderTeX(item.record, equations.labels, metadata, macros);
+    const mathJaxHtml = katexHtml === undefined && scientificMath?.isReady()
+      ? tryRenderScientificMath(scientificMath, item.record, equations.labels, metadata, macros)
       : undefined;
-    return result.replace(item.snippet.token, katexHtml || mathJaxHtml || renderMathFallback(item.snippet));
-  }, html);
-}
-
-function collectEquationLabels(math: MathSnippet[]): Map<string, number> {
-  const labels = new Map<string, number>();
-  let count = 0;
-  for (const snippet of math) {
-    if (!snippet.displayMode) continue;
-    const label = snippet.tex.match(/\\label\{([^}]+)\}/)?.[1];
-    if (label) labels.set(label, ++count);
+    const renderedHtml = katexHtml ?? mathJaxHtml;
+    if (renderedHtml !== undefined) rendered += 1;
+    else fallback += 1;
+    result = result.replace(item.record.token, renderedHtml ?? renderMathFallback(item.record));
   }
-  return labels;
+
+  const dropped = formulas.records.filter((record) => result.includes(record.token)).length;
+  return { html: result, formulaDiagnostics: formulas.diagnostics(rendered, fallback, dropped) };
 }
 
-function tryRenderTeX(snippet: MathSnippet, labels: Map<string, number>, macros: Record<string, string>): string | undefined {
-  const label = snippet.tex.match(/\\label\{([^}]+)\}/)?.[1];
-  let tex = snippet.tex.replace(/\\label\{[^}]*\}/g, "");
-  tex = tex.replace(/\\eqref\{([^}]+)\}/g, (_all, reference) => `(${labels.get(reference) ?? reference})`);
-  if (snippet.displayMode && label && labels.has(label)) tex += `\\tag{${labels.get(label)}}`;
+function needsMathJaxFallback(value: SanitizedContent | ReaderArticle): boolean {
+  return (value.formulaDiagnostics?.fallback ?? 0) > 0;
+}
+
+function collectEquationMetadata(records: FormulaRecord[]): EquationIndex {
+  const labels = new Map<string, string>();
+  const byToken = new Map<string, EquationMetadata>();
+  let generated = 0;
+  for (const record of records) {
+    if (!record.displayMode) continue;
+    const label = findTeXCommandGroup(record.tex, "label")?.content.trim();
+    const explicitTag = findTeXCommandGroup(record.tex, "tag")?.content.trim();
+    const tag = explicitTag || (label ? String(++generated) : undefined);
+    const metadata = { label: label || undefined, tag };
+    byToken.set(record.token, metadata);
+    if (label && tag) labels.set(label, tag);
+  }
+  return { labels, byToken };
+}
+
+function tryRenderTeX(
+  record: FormulaRecord,
+  labels: Map<string, string>,
+  metadata: EquationMetadata | undefined,
+  macros: Record<string, string>
+): string | undefined {
+  const tex = prepareEquationTeX(record.tex, labels);
   if (!tex.trim()) return "";
   try {
-    return katex.renderToString(tex, {
-      displayMode: snippet.displayMode,
+    // The app owns all display layout and equation tags. Rendering the KaTeX
+    // core in inline mode prevents its internal `.base/.tag` implementation
+    // from becoming a second, version-sensitive layout system.
+    const html = katex.renderToString(tex, {
+      displayMode: false,
       throwOnError: true,
       strict: "ignore",
       trust: false,
@@ -1136,27 +1268,209 @@ function tryRenderTeX(snippet: MathSnippet, labels: Map<string, number>, macros:
       maxSize: 24,
       maxExpand: 1_000
     });
+    return record.displayMode ? wrapDisplayEquation(html, metadata?.tag, "katex") : html;
   } catch {
     return undefined;
   }
 }
 
-function renderMathFallback(snippet: MathSnippet): string {
-  // A malformed equation must not break the article's entire layout.
-  return `<code class="reader-math-source${snippet.displayMode ? " reader-math-source--block" : ""}">${escapeHtml(snippet.tex)}</code>`;
+function tryRenderScientificMath(
+  scientificMath: ScientificMathRenderer | undefined,
+  record: FormulaRecord,
+  labels: Map<string, string>,
+  metadata: EquationMetadata | undefined,
+  macros: Record<string, string>
+): string | undefined {
+  if (!scientificMath) return undefined;
+  const html = scientificMath.render(prepareEquationTeX(record.tex, labels), record.displayMode, macros);
+  if (!html) return undefined;
+  return record.displayMode ? wrapDisplayEquation(html, metadata?.tag, "mathjax") : html;
 }
 
-/** Parses the simple string/array macro forms used in MathJax 2 config blocks. */
+function prepareEquationTeX(tex: string, labels: Map<string, string>): string {
+  const withoutMetadata = stripTeXCommandGroups(stripTeXCommandGroups(tex, "label"), "tag");
+  const referencesResolved = withoutMetadata.replace(/\\(eqref|ref)\{([^}]+)\}/g, (_all, kind, reference) => {
+    const label = labels.get(reference) || reference;
+    return kind === "eqref" ? `(${label})` : label;
+  });
+  return normaliseTopLevelDisplayEnvironment(referencesResolved);
+}
+
+function normaliseTopLevelDisplayEnvironment(tex: string): string {
+  const match = tex.trim().match(/^\\begin\{(equation\*?|align\*?|gather\*?|multline\*?)\}([\s\S]*?)\\end\{\1\}$/);
+  return match ? normaliseDisplayEnvironment(match[1], match[2]) : tex;
+}
+
+function wrapDisplayEquation(content: string, tag: string | undefined, renderer: "katex" | "mathjax"): string {
+  const tagHtml = tag ? `<span class="reader-equation__tag" aria-label="公式编号">(${escapeHtml(tag)})</span>` : "";
+  const rendererClass = renderer === "mathjax" ? " reader-equation--mathjax" : "";
+  // The formula and its tag are stable flex siblings. For ordinary equations
+  // the formula column consumes the available width and centres the math;
+  // intrinsic-width equations expand the inner row, leaving the outer wrapper
+  // as the sole horizontal scroll container. No renderer-internal geometry or
+  // dynamically generated style values are needed.
+  return `<span class="katex-display" data-reader-equation="true"><span class="reader-equation${rendererClass}"><span class="reader-equation__content">${content}</span>${tagHtml}</span></span>`;
+}
+
+function renderMathFallback(record: FormulaRecord): string {
+  // A malformed equation must not break the article's entire layout.
+  return `<code class="reader-math-source${record.displayMode ? " reader-math-source--block" : ""}">${escapeHtml(record.tex)}</code>`;
+}
+
+function findTeXCommandGroup(input: string, command: string): { content: string; start: number; next: number } | undefined {
+  const expression = new RegExp(`\\\\${command}(?![A-Za-z])\\s*`, "g");
+  let match: RegExpExecArray | null;
+  while ((match = expression.exec(input))) {
+    const group = readTeXGroup(input, match.index + match[0].length);
+    if (group) return { content: group.content, start: match.index, next: group.next };
+  }
+  return undefined;
+}
+
+function stripTeXCommandGroups(input: string, command: string): string {
+  let output = "";
+  let cursor = 0;
+  while (cursor < input.length) {
+    const found = findTeXCommandGroup(input.slice(cursor), command);
+    if (!found) return output + input.slice(cursor);
+    output += input.slice(cursor, cursor + found.start);
+    cursor += found.next;
+  }
+  return output;
+}
+
+/**
+ * Parses MathJax's object syntax with an inert, brace- and quote-aware
+ * scanner. A regex cannot safely read `Macros: { rcos: ["\\\\mathop{…}"] }`
+ * because the macro definition itself contains nested braces.
+ */
 function extractMathJaxConfigMacros(input: string): Map<string, string> {
   const macros = new Map<string, string>();
-  const blocks = input.matchAll(/(?:Macros|macros)\s*:\s*\{([\s\S]*?)\}/g);
-  for (const block of blocks) {
-    const values = block[1];
-    const pair = /["']?([A-Za-z]+)["']?\s*:\s*(?:\[\s*)?["']([^"']+)["']/g;
-    let match: RegExpExecArray | null;
-    while ((match = pair.exec(values))) macros.set(match[1], match[2].replace(/\\\\/g, "\\"));
+  const marker = /(?:Macros|macros)\s*:\s*\{/g;
+  let match: RegExpExecArray | null;
+  while ((match = marker.exec(input))) {
+    const opening = input.indexOf("{", match.index);
+    const object = readJavaScriptBalanced(input, opening, "{", "}");
+    if (!object) continue;
+    for (const [name, definition] of parseMathJaxMacroObject(object.content)) macros.set(name, definition);
+    marker.lastIndex = object.next;
   }
   return macros;
+}
+
+function parseMathJaxMacroObject(input: string): Map<string, string> {
+  const macros = new Map<string, string>();
+  let cursor = 0;
+  while (cursor < input.length) {
+    cursor = skipJavaScriptSeparators(input, cursor);
+    const key = readJavaScriptPropertyKey(input, cursor);
+    if (!key) break;
+    cursor = skipJavaScriptSeparators(input, key.next);
+    if (input[cursor] !== ":") {
+      cursor = key.next + 1;
+      continue;
+    }
+    const value = readJavaScriptMacroValue(input, cursor + 1);
+    if (!value) break;
+    const name = key.value.replace(/^\\/, "").trim();
+    if (/^[A-Za-z]+$/.test(name) && value.definition) macros.set(name, value.definition);
+    cursor = value.next;
+  }
+  return macros;
+}
+
+function skipJavaScriptSeparators(input: string, start: number): number {
+  let cursor = start;
+  while (/[\s,;]/.test(input[cursor] || "")) cursor += 1;
+  return cursor;
+}
+
+function readJavaScriptPropertyKey(input: string, start: number): { value: string; next: number } | undefined {
+  const quote = input[start];
+  if (quote === "'" || quote === '"') return readJavaScriptString(input, start);
+  const match = input.slice(start).match(/^([A-Za-z][A-Za-z0-9_]*)/);
+  return match ? { value: match[1], next: start + match[1].length } : undefined;
+}
+
+function readJavaScriptMacroValue(input: string, start: number): { definition?: string; next: number } | undefined {
+  let cursor = skipJavaScriptSeparators(input, start);
+  const quote = input[cursor];
+  if (quote === "'" || quote === '"') {
+    const value = readJavaScriptString(input, cursor);
+    return value && { definition: value.value, next: value.next };
+  }
+  if (input[cursor] === "[") {
+    const array = readJavaScriptBalanced(input, cursor, "[", "]");
+    if (!array) return undefined;
+    const first = readJavaScriptFirstString(array.content);
+    return { definition: first, next: array.next };
+  }
+  if (input[cursor] === "{") {
+    const object = readJavaScriptBalanced(input, cursor, "{", "}");
+    return object && { next: object.next };
+  }
+  while (cursor < input.length && !/[,;}]/.test(input[cursor])) cursor += 1;
+  return { next: cursor };
+}
+
+function readJavaScriptFirstString(input: string): string | undefined {
+  for (let cursor = 0; cursor < input.length; cursor += 1) {
+    if (input[cursor] !== "'" && input[cursor] !== '"') continue;
+    return readJavaScriptString(input, cursor)?.value;
+  }
+  return undefined;
+}
+
+function readJavaScriptString(input: string, start: number): { value: string; next: number } | undefined {
+  const quote = input[start];
+  let value = "";
+  for (let cursor = start + 1; cursor < input.length; cursor += 1) {
+    const character = input[cursor];
+    if (character === quote) return { value, next: cursor + 1 };
+    if (character !== "\\") {
+      value += character;
+      continue;
+    }
+    const escaped = input[cursor + 1];
+    if (escaped === undefined) return undefined;
+    cursor += 1;
+    if (escaped === "n") value += "\n";
+    else if (escaped === "r") value += "\r";
+    else if (escaped === "t") value += "\t";
+    else if (escaped === "b") value += "\b";
+    else if (escaped === "f") value += "\f";
+    else if (escaped === "v") value += "\v";
+    else if (escaped === "0") value += "\0";
+    else if (escaped === "\\") value += "\\";
+    else value += `\\${escaped}`;
+  }
+  return undefined;
+}
+
+function readJavaScriptBalanced(input: string, start: number, opening: string, closing: string): { content: string; next: number } | undefined {
+  if (input[start] !== opening) return undefined;
+  let depth = 0;
+  let quote: string | undefined;
+  let escaped = false;
+  for (let cursor = start; cursor < input.length; cursor += 1) {
+    const character = input[cursor];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === opening) depth += 1;
+    if (character === closing) {
+      depth -= 1;
+      if (depth === 0) return { content: input.slice(start + 1, cursor), next: cursor + 1 };
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -1187,13 +1501,10 @@ function extractMacroDeclarations(input: string): { tex: string; macros: Map<str
 }
 
 function collectMathMacros(groups: Map<string, string>[]): Record<string, string> {
-  // These two aliases are used by sites that configure MathJax globally rather
-  // than declaring them in each article. Treat them as named operators when the
-  // global configuration is not part of the extracted article HTML.
-  const macros = new Map<string, string>([
-    ["softcap", "\\operatorname{softcap}"],
-    ["SiTU", "\\operatorname{SiTU}"]
-  ]);
+  // Do not smuggle site-specific aliases into the reader. Every macro must be
+  // declared by the page's safe TeX/MathJax metadata, then shared consistently
+  // across its formula document.
+  const macros = new Map<string, string>();
   for (const group of groups) {
     for (const [name, definition] of group) macros.set(name, definition);
   }

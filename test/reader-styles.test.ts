@@ -5,14 +5,13 @@ import { describe, expect, it } from "vitest";
 const styles = readFileSync(resolve(process.cwd(), "src/renderer/styles.css"), "utf8");
 
 describe("reader display-equation layout", () => {
-  it("keeps KaTeX formula bases in flow and places an equation tag afterwards", () => {
-    expect(styles).toMatch(/\.article-body\s+\.katex-display\s*>\s*\.katex\s*\{[^}]*display:\s*block/s);
-    expect(styles).toMatch(/\.katex-html\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*nowrap/s);
-    expect(styles).toMatch(/\.article-body\s+\.katex-display\s*>\s*\.katex\s*>\s*\.katex-html\s*>\s*\.base\s*\{[^}]*flex:\s*0\s+0\s+auto;[^}]*order:\s*1/s);
-    expect(styles).toMatch(/\.article-body\s+\.katex-display\s*>\s*\.katex\s*>\s*\.katex-html\s*>\s*\.tag\s*\{[^}]*position:\s*static;[^}]*flex:\s*0\s+0\s+auto;[^}]*order:\s*2/s);
-    expect(styles).toMatch(/\.tag\s*\{[^}]*margin-left:\s*1em/s);
-    expect(styles).not.toContain(".article-body .katex-display > .katex { display: inline-block;");
-    expect(styles).not.toContain(".article-body .katex-display > .katex > .katex-html > .base {\n  grid-column");
+  it("owns equation tag layout outside KaTeX's private DOM", () => {
+    expect(styles).toMatch(/\.article-body\s+\[data-reader-equation\]\s*>\s*\.reader-equation\s*\{[^}]*display:\s*flex;[^}]*width:\s*100%;[^}]*min-width:\s*max-content/s);
+    expect(styles).toMatch(/\.article-body\s+\.reader-equation__content\s*\{[^}]*display:\s*flex;[^}]*min-width:\s*0;[^}]*flex:\s*1\s+0\s+auto/s);
+    expect(styles).toMatch(/\.article-body\s+\.reader-equation__tag\s*\{[^}]*flex:\s*0\s+0\s+auto;[^}]*margin-left:\s*\.75em;[^}]*white-space:\s*nowrap/s);
+    expect(styles).toContain(".article-body [data-reader-equation], .article-body mjx-container[display=\"true\"] { display: block;");
+    expect(styles).not.toContain(".article-body .katex-display > .katex > .katex-html > .base");
+    expect(styles).not.toContain(".article-body .katex-display > .katex > .katex-html > .tag");
   });
 
   it("constrains reader images and keeps the main scrolling regions intentional", () => {

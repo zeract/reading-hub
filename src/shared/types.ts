@@ -226,6 +226,21 @@ export interface ConnectorAdapter {
   normalize(item: RawEntry, source: Source): NormalizedEntry;
 }
 
+/**
+ * Count-only formula ingestion diagnostics. They are deliberately transient:
+ * no TeX, page HTML, credentials, or source URLs are retained here.
+ */
+export interface ReaderFormulaDiagnostics {
+  total: number;
+  semantic: number;
+  mathJaxScript: number;
+  mathJaxFrame: number;
+  text: number;
+  rendered: number;
+  fallback: number;
+  dropped: number;
+}
+
 /** A transient, sanitised article document shown only inside the local reader. */
 export interface ReaderArticle {
   entryId: string;
@@ -242,6 +257,8 @@ export interface ReaderArticle {
    * automated access.
    */
   contentMode?: "article" | "feed_body" | "feed_summary";
+  /** Safe count-only telemetry used by the local reader audit. */
+  formulaDiagnostics?: ReaderFormulaDiagnostics;
   contentHtml: string;
 }
 

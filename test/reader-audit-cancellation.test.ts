@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { expectedImageProxyDiagnostic, findLeakedInlineMath, ReaderAuditTimeoutError, runReaderAuditOperation, selectReaderAuditSamples } from "../src/main/reader-audit";
+import { expectedImageProxyDiagnostic, findLeakedInlineMath, readerAuditSummaryLead, ReaderAuditTimeoutError, runReaderAuditOperation, selectReaderAuditSamples } from "../src/main/reader-audit";
 import { UnsupportedReaderImageTypeError } from "../src/main/http";
 import { RobotsDisallowedError } from "../src/main/robots";
 import type { Entry, Source } from "../src/shared/types";
@@ -60,6 +60,12 @@ describe("reader audit cancellation", () => {
     expect(findLeakedInlineMath("$19,200/mo Mid 2× i4i.8xlarge (32 vCPU) 2× NVMe RAID0 446,667 24,000 44ms 109ms ~$"))
       .toEqual([]);
     expect(findLeakedInlineMath("The reader leaked $q_i = q^2$ and $\\frac{a}{b}$.")).toEqual(["$q_i = q^2$", "$\\frac{a}{b}$"]);
+  });
+
+  it("compares Scientific Spaces summaries by their prose lead before raw TeX", () => {
+    expect(readerAuditSummaryLead("一个以动量为状态变量的优化器，基本形式如下：\\begin{equation}\\boldsymbol{M}_t = \\beta\\boldsymbol{M}_{t-1}")).toBe("一个以动量为状态变量的优化器，基本形式如下：");
+    expect(readerAuditSummaryLead("纯文本摘要没有公式。")).toBe("纯文本摘要没有公式。");
+    expect(readerAuditSummaryLead("\\[q_i = x_i\\]")).toBe("");
   });
 
   it("aborts the underlying sample operation before reporting its deadline", async () => {
