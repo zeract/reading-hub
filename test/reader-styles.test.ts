@@ -6,13 +6,15 @@ const styles = readFileSync(resolve(process.cwd(), "src/renderer/styles.css"), "
 
 describe("reader display-equation layout", () => {
   it("owns equation tag layout outside KaTeX's private DOM", () => {
-    expect(styles).toMatch(/\.article-body\s+\[data-reader-equation\]\s*>\s*\.reader-equation\s*\{[^}]*display:\s*flex;[^}]*width:\s*100%;[^}]*min-width:\s*max-content/s);
-    expect(styles).toMatch(/\.article-body\s+\.reader-equation__content\s*\{[^}]*display:\s*flex;[^}]*min-width:\s*0;[^}]*flex:\s*1\s+0\s+auto/s);
-    expect(styles).toMatch(/\.article-body\s+\.reader-equation__tag\s*\{[^}]*flex:\s*0\s+0\s+auto;[^}]*margin-left:\s*\.75em;[^}]*white-space:\s*nowrap/s);
+    expect(styles).toMatch(/\.article-body\s+\[data-reader-equation\]\s*>\s*\.reader-equation\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0,1fr\)\s+auto;[^}]*min-width:\s*0/s);
+    expect(styles).toMatch(/\.article-body\s+\.reader-equation__viewport\s*\{[^}]*min-width:\s*0;[^}]*overflow-x:\s*auto/s);
+    expect(styles).toMatch(/\.article-body\s+\.reader-equation__content\s*\{[^}]*display:\s*flex;[^}]*width:\s*max-content;[^}]*min-width:\s*100%/s);
+    expect(styles).toMatch(/\.article-body\s+\.reader-equation__tag\s*\{[^}]*align-self:\s*center;[^}]*white-space:\s*nowrap/s);
     expect(styles).toContain(".article-body [data-reader-equation] { display: block;");
     expect(styles).toContain(".article-body > mjx-container[display=\"true\"] { display: block;");
     expect(styles).not.toContain(".article-body [data-reader-equation], .article-body mjx-container[display=\"true\"]");
     expect(styles).toMatch(/\.reader-equation--mathjax\s+\.reader-equation__content\s*>\s*mjx-container\s*\{[^}]*overflow:\s*visible/s);
+    expect(styles).toContain(".article-body .reader-equation--native-tags { display: block; }");
     expect(styles).not.toContain(".article-body .katex-display > .katex > .katex-html > .base");
     expect(styles).not.toContain(".article-body .katex-display > .katex > .katex-html > .tag");
   });

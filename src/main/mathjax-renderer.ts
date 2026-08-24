@@ -10,6 +10,19 @@ export interface MathMacroDefinition {
 }
 
 /**
+ * One already-sanitised FormulaDocument expression. The reader supplies a
+ * lexical macro snapshot for every item, while this adapter guarantees that a
+ * scientific formula group is either rendered as a whole or rejected as a
+ * whole.  The type deliberately contains no URL, article HTML, or credential
+ * material.
+ */
+export interface MathJaxDocumentExpression {
+  tex: string;
+  displayMode: boolean;
+  macros: Record<string, MathMacroDefinition>;
+}
+
+/**
  * Local MathJax 4 adapter for pages that author their formulas for MathJax.
  * It intentionally runs only in the main process and returns inert SVG. SVG
  * keeps every delimiter as a path, so the reader never depends on MathJax
@@ -68,6 +81,28 @@ export class ScientificMathRenderer {
     }
   }
 
+  /**
+   * Render a document-scoped group in authored order.  MathJax's SVG adapter
+   * is still invoked for each output anchor so prose can remain interleaved
+   * with equations, but the group is deliberately atomic: a failed member
+   * returns `undefined` for the entire group rather than mixing KaTeX, SVG,
+   * and raw-TeX fallbacks inside one macro/label scope.
+   */
+  async renderDocumentAsync(expressions: readonly MathJaxDocumentExpression[]): Promise<string[] | undefined> {
+    if (!this.runtime) return undefined;
+    const rendered: string[] = [];
+    for (const expression of expressions) {
+      if (!expression.tex.trim()) {
+        rendered.push("");
+        continue;
+      }
+      const html = await this.renderAsync(expression.tex, expression.displayMode, expression.macros);
+      if (html === undefined) return undefined;
+      rendered.push(html);
+    }
+    return rendered;
+  }
+
   private withMacroPrelude(tex: string, macros: Record<string, MathMacroDefinition>): string {
     const prelude = Object.entries(macros)
       .map(([name, definition]) => mathJaxMacroDeclaration(name, definition))
@@ -91,10 +126,10 @@ export class ScientificMathRenderer {
     const runtime = require("mathjax") as MathJaxRuntime;
     if (!runtime) throw new Error("MathJax 未能加载。");
     await runtime.init({
-      loader: { load: ["input/tex", "output/svg"] },
+      loader: { load: ["input/tex", "output/svg", "[tex]/cancel"] },
       tex: {
         packages: {
-          "[+]": ["base", "ams", "newcommand", "configmacros"],
+          "[+]": ["base", "ams", "newcommand", "configmacros", "cancel"],
           // MathJax's default `noundefined` extension turns an unknown TeX
           // command into a red text glyph rather than a render failure. That
           // is useful in a browser authoring page, but unsafe for a reader:
@@ -122,7 +157,7 @@ export class ScientificMathRenderer {
  * outside MathJax's small rendering vocabulary causes a safe formula fallback.
  */
 const SAFE_MATHJAX_SVG_TAGS = new Set([
-  "mjx-container", "svg", "defs", "g", "path", "use", "rect", "line",
+  "mjx-container", "mjx-break", "svg", "defs", "g", "path", "use", "rect", "line",
   "polygon", "polyline", "circle", "ellipse", "text", "tspan"
 ]);
 
@@ -131,24 +166,48 @@ const SAFE_MATHJAX_SVG_ATTRIBUTES = new Set([
   "preserveAspectRatio", "role", "focusable", "id", "d", "x", "y", "x1", "x2", "y1", "y2",
   "cx", "cy", "r", "rx", "ry", "points", "transform", "fill", "fill-opacity", "fill-rule",
   "stroke", "stroke-opacity", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-miterlimit",
-  "opacity", "font-size", "font-family", "href", "xlink:href"
+  "opacity", "font-size", "font-family", "href", "xlink:href", "size"
 ]);
 
 const SAFE_DIMENSION = /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:ex|em|px|pt|pc|cm|mm|in|%|)?$/i;
 const SAFE_NUMBER_LIST = /^\s*-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][-+]?\d+)?(?:[\s,]+-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][-+]?\d+)?){0,7}\s*$/;
-const SAFE_PATH_DATA = /^[a-zA-Z0-9,\s.\-+]+$/;
+// MathJax emits an empty inert path for U+2061 (function application) in
+// operator names such as `\operatorname{softcap}`. Empty geometry is safe;
+// rejecting it made an otherwise valid entire scientific document fall back.
+const SAFE_PATH_DATA = /^[a-zA-Z0-9,\s.\-+]*$/;
 const SAFE_TRANSFORM = /^(?:(?:matrix|translate|scale|rotate|skewX|skewY)\(\s*[-+0-9.eE,\s]+\)\s*)+$/;
 const SAFE_MATHJAX_ID = /^MJX-[A-Za-z0-9_.:-]+$/;
 const SAFE_MATHJAX_REFERENCE = /^#MJX-[A-Za-z0-9_.:-]+$/;
+const SAFE_MATHJAX_BREAK_SIZE = /^(?:[1-9]|[1-5]\d|6[0-4])$/;
 
 /** Exported for deterministic SVG-safety regression tests. */
 export function sanitizeMathJaxSvg(rawHtml: string): string | undefined {
   const $ = load(rawHtml, { xmlMode: true }, false);
   const root = $.root();
   const container = root.children("mjx-container");
-  if (container.length !== 1 || root.children().length !== 1 || container.children("svg").length !== 1) return undefined;
+  if (container.length !== 1 || root.children().length !== 1) return undefined;
   const containerNode = container.get(0);
   if (!containerNode) return undefined;
+
+  // MathJax 4 can split a single inline expression into several inert SVG
+  // fragments, separated by its own `<mjx-break size="…">` marker.  The old
+  // sanitizer assumed exactly one SVG and consequently rejected otherwise
+  // valid formulas containing a relation or spacing break.  Accept this
+  // precise generated shape only: SVG and break markers are direct children
+  // of the MathJax container, at least one SVG is present, and break markers
+  // contain whitespace only.  No arbitrary custom-element subtree crosses
+  // the reader boundary.
+  const directChildren = container.children().toArray();
+  const directChildTag = (node: any) => node.tagName?.toLowerCase();
+  if (!directChildren.some((node) => directChildTag(node) === "svg")
+    || directChildren.some((node) => {
+      const tag = directChildTag(node);
+      return tag !== "svg" && tag !== "mjx-break";
+    })
+    || container.children("mjx-break").toArray().some((node: any) => {
+      const children = node.children || [];
+      return children.some((child: any) => child.type === "tag") || !/^\s*$/.test($(node).text());
+    })) return undefined;
 
   // This has to happen before the structural sanitizer drops `data-*`
   // attributes. MathJax 4 reports ordinary parse failures through merror
@@ -243,6 +302,12 @@ function isSafeMathJaxSvgAttribute(tag: string, name: string, value: string, def
   if (name === "role") return tag === "svg" && value === "img";
   if (name === "focusable") return tag === "svg" && value === "false";
   if (name === "id") return SAFE_MATHJAX_ID.test(value);
+  if (name === "size") return tag === "mjx-break" && SAFE_MATHJAX_BREAK_SIZE.test(value);
+  // Display MathJax SVG uses `width="full"` on its outer container to mean
+  // "occupy the equation line". It is an inert renderer-owned keyword, not a
+  // CSS length, and rejecting it used to make every native align/tag formula
+  // silently fall back even though the SVG itself was otherwise safe.
+  if (tag === "mjx-container" && name === "width" && value === "full") return true;
   if (["width", "height", "x", "y", "x1", "x2", "y1", "y2", "cx", "cy", "r", "rx", "ry", "stroke-width", "stroke-miterlimit"].includes(name)) {
     return SAFE_DIMENSION.test(value);
   }

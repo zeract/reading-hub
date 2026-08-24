@@ -30,7 +30,7 @@ const viewports = [
 
 function page(mathJaxSvg) {
   const largeImage = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='900'><rect width='100%' height='100%' fill='#d6cec0'/><text x='70' y='160' fill='#1b1b17' font-size='96'>Reading Hub visual fixture</text></svg>");
-  const formula = (id, tex, tag) => `<span class="katex-display" data-reader-equation="true" id="${id}"><span class="reader-equation"><span class="reader-equation__content">${katex.renderToString(tex, { displayMode: false, throwOnError: true, strict: "ignore" })}</span>${tag ? `<span class="reader-equation__tag">(${tag})</span>` : ""}</span></span>`;
+  const formula = (id, tex, tag) => `<span class="katex-display" data-reader-equation="true" id="${id}"><span class="reader-equation"><span class="reader-equation__viewport"><span class="reader-equation__content">${katex.renderToString(tex, { displayMode: false, throwOnError: true, strict: "ignore" })}</span></span>${tag ? `<span class="reader-equation__tag">(${tag})</span>` : ""}</span></span>`;
   const normalFormula = formula("formula-normal", String.raw`\begin{aligned}
     q_i &= \frac{x_i}{y_i}\\
     z_i &= q_i + 1
@@ -40,7 +40,7 @@ function page(mathJaxSvg) {
       &+ \sum_{i=1}^{n}\frac{\alpha_i\,\underbrace{x_i}_{\text{long scientific expression}}}{\sqrt{1+\lambda_i^2}}\\
       &+ \frac{\prod_{j=1}^{m}(a_j+b_j+c_j+d_j+e_j+f_j+g_j+h_j)}{\sum_{k=1}^{m}(u_k+v_k+w_k)}
   \end{aligned}`, "14");
-  const mathJaxFormula = `<span class="katex-display" data-reader-equation="true" id="formula-mathjax"><span class="reader-equation reader-equation--mathjax"><span class="reader-equation__content">${mathJaxSvg}</span><span class="reader-equation__tag">(15)</span></span></span>`;
+  const mathJaxFormula = `<span class="katex-display" data-reader-equation="true" id="formula-mathjax"><span class="reader-equation reader-equation--mathjax"><span class="reader-equation__viewport"><span class="reader-equation__content">${mathJaxSvg}</span></span><span class="reader-equation__tag">(15)</span></span></span>`;
   return `<!doctype html><html><head><meta charset="utf-8"><style>${katexCss}\n${css}</style></head><body>
     <main class="shell" id="shell"><header class="app-titlebar" id="app-titlebar"><div class="app-titlebar-actions"><button class="app-titlebar-button" aria-label="收起来源"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16M12.5 9h4"/></svg></button><button class="app-titlebar-button" aria-label="刷新"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0 1.1 4M20 5v6h-6"/></svg></button><button class="app-titlebar-button app-titlebar-add" aria-label="添加来源"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div></header><aside class="sidebar" id="source-sidebar"><nav class="library-nav" id="library-nav"><div class="section-title" id="library-heading">阅读</div><button class="library-filter selected"><span><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/></svg>今日</span></button><button class="library-filter"><span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></svg>未读</span><em>12</em></button><button class="library-filter"><span><svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.8-5.4 2.8 1-6.1-4.4-4.3 6.1-.9Z"/></svg>收藏</span><em>6</em></button></nav><section class="source-section"><div class="section-title" id="source-heading">来源 <span>12</span></div><div class="source-list"><section class="source-group"><button class="source-group-heading"><span class="source-group-label"><svg viewBox="0 0 24 24"><path d="m7 9 5 5 5-5"/></svg><svg class="folder-icon" viewBox="0 0 24 24"><path d="M3.5 7.5h6l1.7 2H20.5v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></svg><span>网页与订阅</span></span><em>2</em></button><button class="source-filter selected"><span class="source-icon source-icon--rss"><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="1"/><path d="M5 11a8 8 0 0 1 8 8M5 5a14 14 0 0 1 14 14"/></svg></span><span class="source-title">测试来源名称应仅显示一行</span></button></section></div></section><footer class="sidebar-footer"><button class="sidebar-settings-button"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/></svg><span>设置</span></button></footer></aside><section class="timeline" id="entry-timeline"><header><div><p class="eyebrow">阅读收件箱</p><h1>今日更新</h1></div><span class="count">12 篇更新</span></header><div class="entry-list"><article class="entry-card selected"><button class="entry-main"><div class="entry-copy"><p class="entry-source">科学空间 · 今天</p><h2>这是一个在窄窗口和大字号下仍必须限制为两行显示的非常长的文章标题测试样例</h2><p class="summary">这是用于验证文章摘要在时间线卡片内会随可用列宽安全截断的长文本；它不能越过卡片边界，也不能无限增高，而应在两行之后明确以省略效果收束，保持列表浏览时的视觉节奏和可读性。</p></div></button></article><article class="entry-card"><button class="entry-main"><div class="entry-copy"><p class="entry-source">测试来源 · 昨天</p><h2>另一篇待读文章</h2></div></button></article></div></section>
     <section class="reader-view reader--scientific" data-reader-preset="reading" style="--reader-font-scale: 1">
@@ -84,13 +84,34 @@ async function auditViewport(window, viewport, mathJaxSvg) {
       });
       const rootRect = root?.getBoundingClientRect();
       const tagRect = tag?.getBoundingClientRect();
-      const baseRect = bases[0];
-      return rootRect && tagRect && baseRect ? {
+      const viewport = root?.querySelector('.reader-equation__viewport');
+      const viewportRect = viewport?.getBoundingClientRect();
+      // A deliberately wide formula may extend beyond its local scrollport.
+      // Collision checks must use the visible part of that formula, not its
+      // unconstrained layout box, otherwise a correctly clipped formula looks
+      // as though it overlaps its fixed equation number.
+      const visibleBases = viewportRect ? bases.map((base) => ({
+        left: Math.max(base.left, viewportRect.left),
+        right: Math.min(base.right, viewportRect.right),
+        top: Math.max(base.top, viewportRect.top),
+        bottom: Math.min(base.bottom, viewportRect.bottom)
+      })).filter((base) => base.right > base.left && base.bottom > base.top) : bases;
+      const baseRect = visibleBases[0];
+      return rootRect && tagRect && viewportRect && baseRect && viewport instanceof HTMLElement ? {
         root: { left: rootRect.left, right: rootRect.right, width: rootRect.width },
+        viewport: {
+          left: viewportRect.left,
+          right: viewportRect.right,
+          top: viewportRect.top,
+          bottom: viewportRect.bottom,
+          width: viewportRect.width,
+          scrollWidth: viewport.scrollWidth,
+          clientWidth: viewport.clientWidth
+        },
         tag: { left: tagRect.left, right: tagRect.right, top: tagRect.top, bottom: tagRect.bottom },
         base: { left: baseRect.left, right: baseRect.right, top: baseRect.top, bottom: baseRect.bottom },
         bases,
-        scrollWidth: root.scrollWidth, clientWidth: root.clientWidth
+        visibleBases
       } : undefined;
     };
     const image = document.querySelector('#fixture-image');
@@ -269,18 +290,18 @@ async function auditViewport(window, viewport, mathJaxSvg) {
   for (const name of ["normal", "wide", "mathJax"]) {
     const formula = geometry[name];
     if (!formula) failures.push(`${name}: 公式夹具缺失`);
-    else if (formula.bases.some((base) => overlaps(formula.tag, base))) failures.push(`${name}: 公式编号与主体重叠`);
-    else if (formula.tag.left < Math.max(...formula.bases.map((base) => base.right)) + 4) failures.push(`${name}: 公式编号未保留最小间距`);
-    else if (name === "normal" && (formula.scrollWidth > formula.clientWidth + 1 || formula.tag.left < formula.root.left - 1 || formula.tag.right > formula.root.right + 1)) {
+    else if (formula.visibleBases.some((base) => overlaps(formula.tag, base))) failures.push(`${name}: 公式编号与主体重叠`);
+    else if (formula.tag.left < Math.max(...formula.visibleBases.map((base) => base.right)) + 4) failures.push(`${name}: 公式编号未保留最小间距`);
+    else if (name === "normal" && (formula.viewport.scrollWidth > formula.viewport.clientWidth + 1 || formula.tag.left < formula.root.left - 1 || formula.tag.right > formula.root.right + 1)) {
       failures.push("normal: 非超宽公式的编号被裁切或错误地落入横向滚动区");
     }
-    else if (formula.bases.some((base, index) => formula.bases.slice(index + 1).some((other) => overlaps(base, other)))) {
+    else if (formula.visibleBases.some((base, index) => formula.visibleBases.slice(index + 1).some((other) => overlaps(base, other)))) {
       failures.push(`${name}: 公式分段主体互相重叠`);
     }
   }
   if (geometry.pageOverflow) failures.push("页面出现非预期横向滚动");
-  if (!geometry.wide || geometry.wide.scrollWidth <= geometry.wide.clientWidth) failures.push("超宽公式没有落入自身可滚动容器");
-  if (!geometry.mathJax || geometry.mathJax.scrollWidth <= geometry.mathJax.clientWidth) failures.push("科学空间 MathJax/SVG 公式没有落入自身可滚动容器");
+  if (!geometry.wide || geometry.wide.viewport.scrollWidth <= geometry.wide.viewport.clientWidth) failures.push("超宽公式没有落入自身可滚动容器");
+  if (!geometry.mathJax || geometry.mathJax.viewport.scrollWidth <= geometry.mathJax.viewport.clientWidth) failures.push("科学空间 MathJax/SVG 公式没有落入自身可滚动容器");
   if (!geometry.image || geometry.image.width > geometry.image.articleWidth + 1 || geometry.image.height > Math.min(360, viewport.height * 0.45) + 2) failures.push("图片尺寸没有受正文列约束");
   if (!geometry.feedSummaryNotice || geometry.feedSummaryNotice.left < -1 || geometry.feedSummaryNotice.right > geometry.feedSummaryNotice.articleWidth + geometry.feedSummaryNotice.left + 1 || geometry.feedSummaryNotice.width > geometry.feedSummaryNotice.articleWidth + 1 || geometry.feedSummaryNotice.height < 20) failures.push("订阅摘要提示没有受正文列约束");
   if (!geometry.typography || geometry.typography.titleFontSize > geometry.typography.bodyFontSize * 2.1 || geometry.typography.titleFontSize < geometry.typography.bodyFontSize * 1.6) failures.push("阅读器标题与正文字号比例失衡");
@@ -351,13 +372,19 @@ async function createMathJaxFixture() {
 await app.whenReady();
 const mathJaxSvg = await createMathJaxFixture();
 const window = new BrowserWindow({ show: false, width: 1280, height: 800, webPreferences: { contextIsolation: true, sandbox: true } });
+let auditFailed = false;
 try {
   const report = [];
   for (const viewport of viewports) report.push(await auditViewport(window, viewport, mathJaxSvg));
   console.log(JSON.stringify(report, null, 2));
   const failed = report.flatMap((item) => item.failures.map((failure) => `${item.viewport.name}: ${failure}`));
   if (failed.length) throw new Error(failed.join("\n"));
+} catch (error) {
+  auditFailed = true;
+  console.error("Reading Hub visual audit failed:", error);
 } finally {
   if (!window.isDestroyed()) window.destroy();
-  app.quit();
+  // `app.quit()` can discard `process.exitCode` during Electron shutdown. Use
+  // the explicit exit status so CI and local quality gates fail reliably.
+  app.exit(auditFailed ? 1 : 0);
 }

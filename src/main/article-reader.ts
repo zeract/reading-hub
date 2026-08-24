@@ -11,7 +11,7 @@ import { parseFeed } from "./feed";
 import { abortError, throwIfAborted } from "./cancellation";
 import { PublicHttpClient, type PublicRequestOptions } from "./http";
 import { extractPagePublishedAt } from "./extractor";
-import { ScientificMathRenderer, type MathMacroDefinition } from "./mathjax-renderer";
+import { ScientificMathRenderer, type MathJaxDocumentExpression, type MathMacroDefinition } from "./mathjax-renderer";
 import type { PageRenderer } from "./page-renderer";
 import { RobotsDisallowedError } from "./robots";
 
@@ -110,24 +110,20 @@ const COMMENT_CONTROL_SELECTOR = [
 ].join(",");
 
 // Do not use a broad `[class*='comment']` noise rule here. Zhihu marks an
-// author's quoted passage with several line-comment class variants, so a
-// substring match silently deletes real prose whenever its markup changes.
-// Comment *threads* and standalone controls have stable structural roles and
-// are the only comment-related nodes that belong in the generic noise set.
-const ZHIHU_INLINE_ANNOTATION_TAGS = new Set([
-  // Zhihu currently uses inline spans, but older and experiment variants can
-  // attach the line-comment marker to a paragraph or a transparent wrapper.
-  // Those are safe to normalize after the surrounding discussion thread has
-  // been ruled out; the sanitizer later keeps only allowed reader semantics.
-  "a", "b", "button", "del", "div", "em", "i", "ins", "mark", "p", "s", "small", "span", "strong", "sub", "sup", "u"
-]);
-
-// Zhihu reuses comment-component classes for inline annotations attached to
-// authored prose. Keep the role decision structural: real discussion records
-// are block-level containers, while inline nodes remain part of the selected
-// RichContent and are unwrapped by `preserveZhihuInlineAnnotations` below.
+// author's selected passage with the same class namespace it uses for its
+// discussion UI. Whether a node is a comment is therefore a structural fact,
+// not a class-name fact. Thread containers and standalone controls are
+// removed; an annotation wrapper and all of its descendants remain prose.
 const INLINE_COMMENT_CARRIER_TAGS = new Set([
   "a", "abbr", "b", "button", "cite", "code", "del", "em", "i", "ins", "kbd", "mark", "s", "small", "span", "strong", "sub", "sup", "u"
+]);
+
+// A line comment can mark more than one inline span. Zhihu has also attached
+// it to a whole paragraph, quote or list item, so do not make text survival
+// depend on an "inline" tag whitelist.
+const ZHIHU_ANNOTATION_CARRIER_TAGS = new Set([
+  ...INLINE_COMMENT_CARRIER_TAGS,
+  "blockquote", "dd", "div", "dt", "figcaption", "h1", "h2", "h3", "h4", "h5", "h6", "li", "p", "section"
 ]);
 
 const ZHIHU_AUTHORED_PROSE_ROOT_SELECTOR = ".Post-RichTextContainer, .RichContent-inner, .RichText";
@@ -163,8 +159,14 @@ const SCIENTIFIC_AUXILIARY_SELECTOR = "#content_tips, #pay, #how_to_cite";
 type FormulaOrigin = "semantic" | "mathjax-script" | "mathjax-frame" | "text";
 type FormulaRecord = { id: number; token: string; tex: string; displayMode: boolean; origin: FormulaOrigin };
 type MathMacroScope = Map<string, MathMacroDefinition>;
-type SanitizedContent = { html: string; formulaDiagnostics: ReaderFormulaDiagnostics };
-type PreparedSanitizedContent = { html: string; formulas: FormulaDocument };
+/**
+ * Formula policy is derived from the semantic document rather than its host.
+ * A Zhihu repost of a MathJax-authored Scientific Spaces article therefore
+ * receives the same renderer guarantees as the original article URL.
+ */
+type FormulaRenderPolicy = "standard" | "scientific-document";
+type SanitizedContent = { html: string; formulaDiagnostics: ReaderFormulaDiagnostics; formulaRenderPolicy: FormulaRenderPolicy };
+type PreparedSanitizedContent = { html: string; formulas: FormulaDocument; formulaRenderPolicy: FormulaRenderPolicy };
 
 /**
  * FormulaDocument is the single semantic boundary between an untrusted page
@@ -206,7 +208,12 @@ class FormulaDocument {
     return `[data-reader-formula-document="${this.tokenNamespace}"][data-reader-formula-anchor]`;
   }
 
-  diagnostics(rendered: Set<number>, fallback: Set<number>, dropped: Set<number>): ReaderFormulaDiagnostics {
+  diagnostics(
+    rendered: Set<number>,
+    fallback: Set<number>,
+    dropped: Set<number>,
+    formulaRenderPolicy: FormulaRenderPolicy
+  ): ReaderFormulaDiagnostics {
     const count = (origin: FormulaOrigin) => this.records.filter((record) => record.origin === origin).length;
     const display = (records: Iterable<number>) => [...records]
       .map((id) => this.get(id))
@@ -223,9 +230,27 @@ class FormulaDocument {
       dropped: dropped.size,
       displayRendered: display(rendered),
       displayFallback: display(fallback),
-      displayDropped: display(dropped)
+      displayDropped: display(dropped),
+      formulaRenderPolicy
     };
   }
+}
+
+/**
+ * Choose a renderer from authored formula semantics, never from a provider
+ * name.  The narrow standard path remains fast for independent expressions;
+ * anything whose meaning depends on document order, labels, tags, or a
+ * multi-row environment is compiled as one scientific document.
+ */
+function chooseFormulaRenderPolicy(formulas: FormulaDocument, hasGlobalMacros = false): FormulaRenderPolicy {
+  if (hasGlobalMacros) return "scientific-document";
+  return formulas.records.some((record) => /\\(?:newcommand\*?|renewcommand\*?|providecommand\*?|DeclareMathOperator\*?|(?:g|e|x)?def|require|label|tag|eqref|ref)\b|\\begin\{(?:align\*?|gather\*?|multline\*?)\}/.test(record.tex))
+    ? "scientific-document"
+    : "standard";
+}
+
+function effectiveReaderProfile(base: ReaderRenderProfile, formulaRenderPolicy: FormulaRenderPolicy): ReaderRenderProfile {
+  return base === "scientific" || formulaRenderPolicy === "scientific-document" ? "scientific" : "standard";
 }
 type ContentCandidate = {
   html: string;
@@ -409,6 +434,9 @@ export class ArticleReader {
 
     const renderProfile = resolveReaderProfile(entry.url);
     const preparedContent = prepareSanitizedContent(item.feedContentHtml, response.url);
+    if (preparedContent.formulaRenderPolicy === "scientific-document" && !this.scientificMath.isReady()) {
+      await this.scientificMath.ready().catch(() => undefined);
+    }
     let sanitised = await renderPreparedContentAsync(preparedContent, this.scientificMath, new Map());
     if (needsMathJaxFallback(sanitised) && !this.scientificMath.isReady()) {
       await this.scientificMath.ready().catch(() => undefined);
@@ -425,7 +453,7 @@ export class ArticleReader {
       author: entry.author,
       publishedAt: entry.publishedAt,
       coverImageUrl: coverCandidate && !containsImage(contentHtml, coverCandidate) ? coverCandidate : undefined,
-      renderProfile,
+      renderProfile: effectiveReaderProfile(renderProfile, sanitised.formulaRenderPolicy),
       contentMode: "feed_body",
       formulaDiagnostics: sanitised.formulaDiagnostics,
       contentHtml
@@ -433,14 +461,21 @@ export class ArticleReader {
   }
 
   /**
-   * KaTeX remains the primary renderer for every FormulaDocument record.
-   * Only an observed per-formula fallback starts the local MathJax SVG
-   * runtime. The retry reuses the same selected article and sanitised formula
-   * template, rather than extracting untrusted page HTML again.
+   * The standard path uses KaTeX first and retries only an observed failed
+   * expression. A document-scoped formula policy starts local MathJax before
+   * rendering so macro scope, labels and multi-row environments never mix
+   * renderers. Both paths reuse the same inert extraction template.
    */
   private async extractWithMathFallback(html: string, pageUrl: string, entry: Entry): Promise<ExtractedArticle | undefined> {
     const prepared = prepareReaderExtraction(html, pageUrl, entry);
     if (!prepared) return undefined;
+    // Complex formula documents must not first be rendered one record at a
+    // time with KaTeX and then selectively retried with MathJax.  Start the
+    // local SVG renderer before the first render so macros, labels and display
+    // layout use one atomic document policy from the outset.
+    if (prepared.content.formulaRenderPolicy === "scientific-document" && !this.scientificMath.isReady()) {
+      await this.scientificMath.ready().catch(() => undefined);
+    }
     let extracted = await renderPreparedReaderArticleAsync(prepared, this.scientificMath);
     if (!extracted || !needsMathJaxFallback(extracted.article) || this.scientificMath.isReady()) return extracted;
     await this.scientificMath.ready().catch(() => undefined);
@@ -544,7 +579,7 @@ function finishReaderArticle(prepared: PreparedReaderArticle, sanitised: Sanitiz
       author: prepared.author,
       publishedAt: prepared.publishedAt,
       coverImageUrl,
-      renderProfile: prepared.renderProfile,
+      renderProfile: effectiveReaderProfile(prepared.renderProfile, sanitised.formulaRenderPolicy),
       formulaDiagnostics: sanitised.formulaDiagnostics,
       contentHtml
     },
@@ -559,9 +594,14 @@ function finishReaderArticle(prepared: PreparedReaderArticle, sanitised: Sanitiz
  */
 function prepareReaderExtraction(html: string, pageUrl: string, entry: Entry): PreparedReaderExtraction | undefined {
   const article = prepareReaderArticle(html, pageUrl, entry);
-  return article
-    ? { article, content: prepareSanitizedContent(article.rawContentHtml, pageUrl) }
-    : undefined;
+  if (!article) return undefined;
+  const content = prepareSanitizedContent(article.rawContentHtml, pageUrl);
+  // Head-level MathJax macro configuration is inertly parsed while the full
+  // page is available. Include it in the document policy after capture so a
+  // generic host with real formula scope does not accidentally take the
+  // independent-expression path.
+  content.formulaRenderPolicy = chooseFormulaRenderPolicy(content.formulas, article.globalMathMacros.size > 0);
+  return { article, content };
 }
 
 function renderPreparedReaderArticle(
@@ -578,6 +618,9 @@ async function renderPreparedReaderArticleAsync(
   prepared: PreparedReaderExtraction,
   scientificMath?: ScientificMathRenderer
 ): Promise<ExtractedArticle | undefined> {
+  if (prepared.content.formulaRenderPolicy === "scientific-document" && scientificMath && !scientificMath.isReady()) {
+    await scientificMath.ready().catch(() => undefined);
+  }
   return finishReaderArticle(
     prepared.article,
     await renderPreparedContentAsync(prepared.content, scientificMath, prepared.article.globalMathMacros)
@@ -749,7 +792,7 @@ function isZhihuContentUrl(rawUrl: string): boolean {
   }
 }
 
-function isCommentThreadElement(element: any, content?: any, pageUrl?: string): boolean {
+function isCommentThreadElement(element: any, content?: any, pageUrl?: string, annotationNodes?: Set<any>): boolean {
   if (!element.is(COMMENT_THREAD_CONTAINER_SELECTOR) && !element.is(COMMENT_THREAD_ITEM_SELECTOR)) return false;
   if (element.is(COMMENT_THREAD_CONTAINER_SELECTOR)) return true;
   // A discussion item can appear inside the selected RichContent shell on
@@ -758,10 +801,13 @@ function isCommentThreadElement(element: any, content?: any, pageUrl?: string): 
   if (element.parents(COMMENT_THREAD_CONTAINER_SELECTOR).length) return true;
   const tagName = element.get(0)?.tagName?.toLowerCase();
   if (!tagName || INLINE_COMMENT_CARRIER_TAGS.has(tagName)) return false;
-  // A few Zhihu RichContent variants use a block wrapper for a line-comment
-  // annotation. Keep only an explicitly marked annotation in an authored
-  // prose root. A bare block CommentItem remains a discussion record even
-  // when a page omits its outer CommentList container.
+  // A block CommentItem nested inside an already-recognised annotation is
+  // part of the author's selected passage, not a new discussion record. This
+  // matters for the current DOM where `RichContent-commented` wraps a child
+  // `CommentItem`; removing the parent class first used to make that child
+  // indistinguishable from a thread item.
+  if (hasZhihuAnnotationAncestor(element, annotationNodes)) return false;
+  // A few variants attach the annotation marker directly to a block wrapper.
   return !isZhihuBlockAnnotationCarrier(element, content, pageUrl);
 }
 
@@ -771,12 +817,21 @@ function isZhihuBlockAnnotationCarrier(element: any, content: any, pageUrl?: str
     .split(/\s+/)
     .some((className: string) => /(?:^|[-_])(?:commented|commenthighlight|annotation|highlight)(?:$|[-_])/i.test(className));
   return hasExplicitAnnotationMarker && (content.is(ZHIHU_AUTHORED_PROSE_ROOT_SELECTOR)
-    || element.parents(ZHIHU_AUTHORED_PROSE_ROOT_SELECTOR).length > 0);
+    || element.parents(ZHIHU_AUTHORED_PROSE_ROOT_SELECTOR).length > 0
+    || /^reader-(?:selected-)?content$/.test(content.attr("id") || ""));
 }
 
-function hasCommentThreadAncestor(element: any, content?: any, pageUrl?: string): boolean {
+function hasZhihuAnnotationAncestor(element: any, annotationNodes?: Set<any>): boolean {
+  if (!annotationNodes?.size) return false;
   for (let parent = element.parent(); parent.length; parent = parent.parent()) {
-    if (isCommentThreadElement(parent, content, pageUrl)) return true;
+    if (annotationNodes.has(parent.get(0))) return true;
+  }
+  return false;
+}
+
+function hasCommentThreadAncestor(element: any, content?: any, pageUrl?: string, annotationNodes?: Set<any>): boolean {
+  for (let parent = element.parent(); parent.length; parent = parent.parent()) {
+    if (isCommentThreadElement(parent, content, pageUrl, annotationNodes)) return true;
   }
   return false;
 }
@@ -795,6 +850,10 @@ function hasCommentThreadAncestor(element: any, content?: any, pageUrl?: string)
  */
 function preserveZhihuInlineAnnotations($: ReturnType<typeof load>, content: any, pageUrl: string): void {
   if (!isZhihuContentUrl(pageUrl)) return;
+  // This only exists during a single sanitisation pass. It is intentionally a
+  // local identity set, rather than a data attribute, so a remote page cannot
+  // forge the provenance of an annotation subtree.
+  const annotationNodes = new Set<any>();
   const nodes = content.find("[class]").toArray();
   if (content.is("[class]")) nodes.unshift(content.get(0));
   for (const node of nodes) {
@@ -802,8 +861,9 @@ function preserveZhihuInlineAnnotations($: ReturnType<typeof load>, content: any
     const element = $(node);
     const tagName = element.get(0)?.tagName?.toLowerCase();
     const className = element.attr("class") || "";
-    if (!tagName || !ZHIHU_INLINE_ANNOTATION_TAGS.has(tagName)) continue;
-    if (isCommentThreadElement(element, content, pageUrl) || hasCommentThreadAncestor(element, content, pageUrl)) continue;
+    if (!tagName || !ZHIHU_ANNOTATION_CARRIER_TAGS.has(tagName)) continue;
+    if (isCommentThreadElement(element, content, pageUrl, annotationNodes)
+      || hasCommentThreadAncestor(element, content, pageUrl, annotationNodes)) continue;
 
     const isCommentControl = element.is(COMMENT_CONTROL_SELECTOR);
     // Do not tie authored prose to a particular Zhihu experiment class such
@@ -818,7 +878,8 @@ function preserveZhihuInlineAnnotations($: ReturnType<typeof load>, content: any
     // Zhihu article root plus the explicit thread/control checks above,
     // rather than requiring a class-bearing ancestor that may no longer be
     // present after root selection.
-    if (!carriesLineCommentMarker) continue;
+    const inheritsLineCommentMarker = hasZhihuAnnotationAncestor(element, annotationNodes);
+    if (!carriesLineCommentMarker && !inheritsLineCommentMarker) continue;
 
     // A labelled control remains UI even when an experiment happens to put a
     // generic annotation class on it. Buttons are handled too: a line-comment
@@ -827,11 +888,14 @@ function preserveZhihuInlineAnnotations($: ReturnType<typeof load>, content: any
     const isButton = tagName === "button";
     if ((isCommentControl || isButton) && isZhihuCommentControlLabel(element)) continue;
 
-    const retainedClasses = className
-      .split(/\s+/)
-      .filter((classToken) => classToken && !/(?:comment|annotation)/i.test(classToken));
-    if (retainedClasses.length) element.attr("class", retainedClasses.join(" "));
-    else element.removeAttr("class");
+    annotationNodes.add(node);
+    if (carriesLineCommentMarker) {
+      const retainedClasses = className
+        .split(/\s+/)
+        .filter((classToken) => classToken && !/(?:comment|annotation)/i.test(classToken));
+      if (retainedClasses.length) element.attr("class", retainedClasses.join(" "));
+      else element.removeAttr("class");
+    }
     if (isCommentControl || isButton) element.replaceWith(element.contents());
   }
 }
@@ -985,7 +1049,7 @@ function prepareSanitizedContent(rawHtml: string, pageUrl: string): PreparedSani
   // re-instantiate this inert DOM rather than selecting/extracting remote
   // HTML a second time, so fallback rendering cannot change content roots,
   // formula order, or macro scope between passes.
-  return { html: root.html() || "", formulas };
+  return { html: root.html() || "", formulas, formulaRenderPolicy: chooseFormulaRenderPolicy(formulas) };
 }
 
 function instantiateSanitizedContent(prepared: PreparedSanitizedContent): { $: ReturnType<typeof load>; root: any } {
@@ -999,7 +1063,7 @@ function renderPreparedContent(
   globalMathMacros: MathMacroScope
 ): SanitizedContent {
   const { $, root } = instantiateSanitizedContent(prepared);
-  return renderMath($, root, prepared.formulas, scientificMath, globalMathMacros);
+  return renderMath($, root, prepared.formulas, scientificMath, globalMathMacros, prepared.formulaRenderPolicy);
 }
 
 async function renderPreparedContentAsync(
@@ -1008,7 +1072,7 @@ async function renderPreparedContentAsync(
   globalMathMacros: MathMacroScope
 ): Promise<SanitizedContent> {
   const { $, root } = instantiateSanitizedContent(prepared);
-  return renderMathAsync($, root, prepared.formulas, scientificMath, globalMathMacros);
+  return renderMathAsync($, root, prepared.formulas, scientificMath, globalMathMacros, prepared.formulaRenderPolicy);
 }
 
 /**
@@ -1457,8 +1521,12 @@ function tokenizeMath(value: string, formulas: FormulaDocument): string {
 
 function normaliseDisplayEnvironment(environment: string, body: string): string {
   const content = body.trim();
+  // Preserve authored multi-row environments in FormulaDocument. Rewriting
+  // `align` to `aligned` looks visually similar for simple equations but
+  // irreversibly discards per-row tag/label semantics before the scientific
+  // renderer has a chance to interpret them.
   if (environment.startsWith("align") || environment.startsWith("gather") || environment.startsWith("multline")) {
-    return `\\begin{aligned}${content}\\end{aligned}`;
+    return `\\begin{${environment}}${content}\\end{${environment}}`;
   }
   return content;
 }
@@ -1518,7 +1586,14 @@ function materializeFormulaAnchors($: ReturnType<typeof load>, root: any, formul
   }
 }
 
-type EquationMetadata = { tag?: string; label?: string };
+type EquationMetadata = {
+  /** Reader-owned tag for a simple one-line equation. */
+  tag?: string;
+  /** Kept for diagnostics/backwards-compatible simple-equation behavior. */
+  label?: string;
+  /** Multiple or explicit TeX tags belong to the scientific renderer itself. */
+  nativeTags: boolean;
+};
 type EquationIndex = { labels: Map<string, string>; byToken: Map<string, EquationMetadata> };
 type PreparedFormula = {
   record: FormulaRecord;
@@ -1589,14 +1664,14 @@ function renderMath(
   root: any,
   formulas: FormulaDocument,
   scientificMath: ScientificMathRenderer | undefined,
-  globalMathMacros: MathMacroScope
+  globalMathMacros: MathMacroScope,
+  formulaRenderPolicy: FormulaRenderPolicy
 ): SanitizedContent {
   const plan = createFormulaRenderPlan($, root, formulas, globalMathMacros);
-  const output = new Map<number, string | undefined>();
-  for (const item of plan.formulas) {
-    output.set(item.record.id, renderFormulaSynchronously(item, plan.equations, scientificMath));
-  }
-  return installFormulaOutput($, root, formulas, plan, output);
+  const output = formulaRenderPolicy === "scientific-document"
+    ? renderScientificFormulaDocumentSynchronously(plan, scientificMath)
+    : renderStandardFormulaDocumentSynchronously(plan, scientificMath);
+  return installFormulaOutput($, root, formulas, plan, output, formulaRenderPolicy);
 }
 
 /**
@@ -1609,14 +1684,92 @@ async function renderMathAsync(
   root: any,
   formulas: FormulaDocument,
   scientificMath: ScientificMathRenderer | undefined,
-  globalMathMacros: MathMacroScope
+  globalMathMacros: MathMacroScope,
+  formulaRenderPolicy: FormulaRenderPolicy
 ): Promise<SanitizedContent> {
   const plan = createFormulaRenderPlan($, root, formulas, globalMathMacros);
+  const output = await (formulaRenderPolicy === "scientific-document"
+    ? renderScientificFormulaDocumentAsynchronously(plan, scientificMath)
+    : renderStandardFormulaDocumentAsynchronously(plan, scientificMath));
+  return installFormulaOutput($, root, formulas, plan, output, formulaRenderPolicy);
+}
+
+function renderStandardFormulaDocumentSynchronously(
+  plan: FormulaRenderPlan,
+  scientificMath: ScientificMathRenderer | undefined
+): Map<number, string | undefined> {
+  const output = new Map<number, string | undefined>();
+  for (const item of plan.formulas) {
+    output.set(item.record.id, renderFormulaSynchronously(item, plan.equations, scientificMath));
+  }
+  return output;
+}
+
+async function renderStandardFormulaDocumentAsynchronously(
+  plan: FormulaRenderPlan,
+  scientificMath: ScientificMathRenderer | undefined
+): Promise<Map<number, string | undefined>> {
   const output = new Map<number, string | undefined>();
   for (const item of plan.formulas) {
     output.set(item.record.id, await renderFormulaAsynchronously(item, plan.equations, scientificMath));
   }
-  return installFormulaOutput($, root, formulas, plan, output);
+  return output;
+}
+
+/**
+ * Scientific formulas are an all-or-nothing document component. A partial
+ * fallback makes macro scope and equation references impossible to trust, so
+ * one MathJax failure deliberately produces safe TeX cards for the group
+ * instead of silently mixing renderers.
+ */
+function renderScientificFormulaDocumentSynchronously(
+  plan: FormulaRenderPlan,
+  scientificMath: ScientificMathRenderer | undefined
+): Map<number, string | undefined> {
+  const failed = (): Map<number, string | undefined> => new Map(plan.formulas.map((item) => [item.record.id, undefined]));
+  // `extractReaderArticle()` is the deterministic synchronous test/helper
+  // API. It cannot start MathJax's asynchronous module loader, so retain the
+  // safe KaTeX compatibility path here. User-visible reads always use the
+  // async path below, which starts MathJax before a scientific document is
+  // rendered and never mixes the two renderers.
+  if (!scientificMath?.isReady()) return renderStandardFormulaDocumentSynchronously(plan, undefined);
+  const output = new Map<number, string | undefined>();
+  for (const item of plan.formulas) {
+    if (!item.record.tex.trim()) {
+      output.set(item.record.id, "");
+      continue;
+    }
+    const rendered = renderScientificFormula(item, plan.equations, scientificMath);
+    if (rendered === undefined) return failed();
+    output.set(item.record.id, rendered);
+  }
+  return output;
+}
+
+async function renderScientificFormulaDocumentAsynchronously(
+  plan: FormulaRenderPlan,
+  scientificMath: ScientificMathRenderer | undefined
+): Promise<Map<number, string | undefined>> {
+  const failed = (): Map<number, string | undefined> => new Map(plan.formulas.map((item) => [item.record.id, undefined]));
+  if (!scientificMath?.isReady()) return failed();
+  if (typeof scientificMath.renderDocumentAsync !== "function") {
+    const output = new Map<number, string | undefined>();
+    for (const item of plan.formulas) {
+      const html = await renderScientificFormulaAsync(item, plan.equations, scientificMath);
+      if (html === undefined) return failed();
+      output.set(item.record.id, html);
+    }
+    return output;
+  }
+  const requests: MathJaxDocumentExpression[] = plan.formulas.map((item) => scientificFormulaRequest(item, plan.equations));
+  const rendered = await scientificMath.renderDocumentAsync(requests);
+  if (!rendered || rendered.length !== plan.formulas.length) return failed();
+  const output = new Map<number, string | undefined>();
+  plan.formulas.forEach((item, index) => {
+    const html = rendered[index];
+    output.set(item.record.id, html === "" ? "" : wrapScientificFormula(item, plan.equations, html));
+  });
+  return output;
 }
 
 function renderFormulaSynchronously(
@@ -1652,7 +1805,8 @@ function installFormulaOutput(
   root: any,
   formulas: FormulaDocument,
   plan: FormulaRenderPlan,
-  output: Map<number, string | undefined>
+  output: Map<number, string | undefined>,
+  formulaRenderPolicy: FormulaRenderPolicy
 ): SanitizedContent {
   const rendered = new Set<number>();
   const fallback = new Set<number>();
@@ -1685,15 +1839,15 @@ function installFormulaOutput(
   });
   return {
     html: root.html() || "",
-    formulaDiagnostics: formulas.diagnostics(rendered, fallback, dropped)
+    formulaDiagnostics: formulas.diagnostics(rendered, fallback, dropped, formulaRenderPolicy),
+    formulaRenderPolicy
   };
 }
 
 function needsMathJaxFallback(value: SanitizedContent | ReaderArticle): boolean {
-  // Booting MathJax is intentionally a retry of an observed KaTeX failure,
-  // never a guess based on where a formula came from. This keeps normal Zhihu
-  // and RSS equations on the same renderer and prevents a whole article from
-  // being re-laid out solely because its source happened to use MathJax.
+  // Independent formulas may still retry locally after an observed KaTeX
+  // failure. Document-scoped formulas have already selected MathJax before
+  // their first pass, based on semantic structure rather than hostname.
   return (value.formulaDiagnostics?.fallback ?? 0) > 0;
 }
 
@@ -1703,14 +1857,28 @@ function collectEquationMetadata(records: FormulaRecord[]): EquationIndex {
   let generated = 0;
   for (const record of records) {
     if (!record.displayMode) continue;
-    const label = findTeXCommandGroup(record.tex, "label")?.content.trim();
-    const explicitTag = findTeXCommandGroup(record.tex, "tag")?.content.trim();
-    const tag = explicitTag || (label ? String(++generated) : undefined);
-    const metadata = { label: label || undefined, tag };
+    const recordLabels = findTeXCommandGroups(record.tex, "label").map((group) => group.content.trim()).filter(Boolean);
+    const explicitTags = findTeXCommandGroups(record.tex, "tag").map((group) => group.content.trim()).filter(Boolean);
+    const nativeTags = explicitTags.length > 0 || recordLabels.length > 1 || (isMultiRowDisplayEnvironment(record.tex) && recordLabels.length > 0);
+    // A label map is a document semantic index, not a renderer side effect.
+    // This makes references deterministic even when the original page used
+    // distinct MathJax frames for neighbouring equations.
+    recordLabels.forEach((label, index) => {
+      const tag = explicitTags[index] || (explicitTags.length === 1 ? explicitTags[0] : undefined) || String(++generated);
+      labels.set(label, tag);
+    });
+    const label = recordLabels[0];
+    // The sync-only compatibility path needs an app-owned fallback tag, while
+    // the async scientific path suppresses it whenever `nativeTags` is true.
+    const tag = explicitTags[0] || (label ? labels.get(label) : undefined);
+    const metadata = { label: label || undefined, tag, nativeTags };
     byToken.set(record.token, metadata);
-    if (label && tag) labels.set(label, tag);
   }
   return { labels, byToken };
+}
+
+function isMultiRowDisplayEnvironment(tex: string): boolean {
+  return /\\begin\{(?:align\*?|gather\*?|multline\*?)\}/.test(tex);
 }
 
 function tryRenderTeX(
@@ -1779,9 +1947,9 @@ function tryRenderScientificMath(
   macros: MathMacroScope
 ): string | undefined {
   if (!scientificMath) return undefined;
-  const html = scientificMath.render(prepareEquationTeX(record.tex, labels), record.displayMode, Object.fromEntries(macros));
-  if (!html) return undefined;
-  return record.displayMode ? wrapDisplayEquation(html, metadata?.tag, "mathjax") : html;
+  const item: PreparedFormula = { record, macros };
+  const equations: EquationIndex = { labels, byToken: new Map([[record.token, metadata || { nativeTags: false }]]) };
+  return renderScientificFormula(item, equations, scientificMath);
 }
 
 async function tryRenderScientificMathAsync(
@@ -1792,45 +1960,92 @@ async function tryRenderScientificMathAsync(
   macros: MathMacroScope
 ): Promise<string | undefined> {
   if (!scientificMath) return undefined;
+  const item: PreparedFormula = { record, macros };
+  const equations: EquationIndex = { labels, byToken: new Map([[record.token, metadata || { nativeTags: false }]]) };
+  return renderScientificFormulaAsync(item, equations, scientificMath);
+}
+
+function scientificFormulaRequest(item: PreparedFormula, equations: EquationIndex): MathJaxDocumentExpression {
+  const metadata = equations.byToken.get(item.record.token);
+  return {
+    tex: prepareEquationTeX(item.record.tex, equations.labels, { preserveNativeTags: metadata?.nativeTags === true }),
+    displayMode: item.record.displayMode,
+    macros: Object.fromEntries(item.macros)
+  };
+}
+
+function renderScientificFormula(
+  item: PreparedFormula,
+  equations: EquationIndex,
+  scientificMath: ScientificMathRenderer
+): string | undefined {
+  if (!item.record.tex.trim()) return "";
+  const request = scientificFormulaRequest(item, equations);
+  const html = scientificMath.render(request.tex, request.displayMode, request.macros);
+  return html === undefined ? undefined : wrapScientificFormula(item, equations, html);
+}
+
+async function renderScientificFormulaAsync(
+  item: PreparedFormula,
+  equations: EquationIndex,
+  scientificMath: ScientificMathRenderer
+): Promise<string | undefined> {
+  if (!item.record.tex.trim()) return "";
+  const request = scientificFormulaRequest(item, equations);
   // Test doubles and older local helper instances may only expose the
   // synchronous compatibility method. Production ScientificMathRenderer
   // always provides renderAsync(), but retaining this fallback keeps the
-  // safe extraction contract backwards-compatible.
-  if (typeof scientificMath.renderAsync !== "function") {
-    return tryRenderScientificMath(scientificMath, record, labels, metadata, macros);
-  }
-  const html = await scientificMath.renderAsync(
-    prepareEquationTeX(record.tex, labels),
-    record.displayMode,
-    Object.fromEntries(macros)
-  );
-  if (!html) return undefined;
-  return record.displayMode ? wrapDisplayEquation(html, metadata?.tag, "mathjax") : html;
+  // extraction contract backwards-compatible.
+  const html = typeof scientificMath.renderAsync === "function"
+    ? await scientificMath.renderAsync(request.tex, request.displayMode, request.macros)
+    : scientificMath.render(request.tex, request.displayMode, request.macros);
+  return html === undefined ? undefined : wrapScientificFormula(item, equations, html);
 }
 
-function prepareEquationTeX(tex: string, labels: Map<string, string>): string {
-  const withoutMetadata = stripTeXCommandGroups(stripTeXCommandGroups(tex, "label"), "tag");
+function wrapScientificFormula(item: PreparedFormula, equations: EquationIndex, html: string): string {
+  const metadata = equations.byToken.get(item.record.token);
+  return item.record.displayMode ? wrapDisplayEquation(html, metadata?.tag, "mathjax", metadata?.nativeTags === true) : html;
+}
+
+function prepareEquationTeX(
+  tex: string,
+  labels: Map<string, string>,
+  options?: { preserveNativeTags?: boolean }
+): string {
+  const withoutMetadata = options?.preserveNativeTags ? tex : stripTeXCommandGroups(stripTeXCommandGroups(tex, "label"), "tag");
   const referencesResolved = withoutMetadata.replace(/\\(eqref|ref)\{([^}]+)\}/g, (_all, kind, reference) => {
     const label = labels.get(reference) || reference;
     return kind === "eqref" ? `(${label})` : label;
   });
-  return normaliseTopLevelDisplayEnvironment(referencesResolved);
+  return options?.preserveNativeTags ? referencesResolved : normaliseTopLevelDisplayEnvironment(referencesResolved);
 }
 
 function normaliseTopLevelDisplayEnvironment(tex: string): string {
   const match = tex.trim().match(/^\\begin\{(equation\*?|align\*?|gather\*?|multline\*?)\}([\s\S]*?)\\end\{\1\}$/);
-  return match ? normaliseDisplayEnvironment(match[1], match[2]) : tex;
+  if (!match) return tex;
+  // This branch is used only by the standard KaTeX compatibility renderer.
+  // FormulaDocument itself retains the original environment for the async
+  // scientific renderer, where per-row numbering remains meaningful.
+  const [environment, body] = [match[1], match[2].trim()];
+  return environment.startsWith("align") || environment.startsWith("gather") || environment.startsWith("multline")
+    ? `\\begin{aligned}${body}\\end{aligned}`
+    : body;
 }
 
-function wrapDisplayEquation(content: string, tag: string | undefined, renderer: "katex" | "mathjax"): string {
+function wrapDisplayEquation(
+  content: string,
+  tag: string | undefined,
+  renderer: "katex" | "mathjax",
+  nativeTags = false
+): string {
   const tagHtml = tag ? `<span class="reader-equation__tag" aria-label="公式编号">(${escapeHtml(tag)})</span>` : "";
   const rendererClass = renderer === "mathjax" ? " reader-equation--mathjax" : "";
-  // The formula and its tag are stable flex siblings. For ordinary equations
-  // the formula column consumes the available width and centres the math;
-  // intrinsic-width equations expand the inner row, leaving the outer wrapper
-  // as the sole horizontal scroll container. No renderer-internal geometry or
-  // dynamically generated style values are needed.
-  return `<span class="katex-display" data-reader-equation="true"><span class="reader-equation${rendererClass}"><span class="reader-equation__content">${content}</span>${tagHtml}</span></span>`;
+  const nativeClass = nativeTags ? " reader-equation--native-tags" : "";
+  // The scroll viewport and reader-owned tag are distinct grid columns. This
+  // keeps a long formula independently scrollable while the tag stays inside
+  // the visible reading column. Native MathJax tags never receive a second
+  // app tag.
+  return `<span class="katex-display" data-reader-equation="true"><span class="reader-equation${rendererClass}${nativeClass}"><span class="reader-equation__viewport"><span class="reader-equation__content">${content}</span></span>${nativeTags ? "" : tagHtml}</span></span>`;
 }
 
 function renderMathFallback(record: FormulaRecord): string {
@@ -1846,6 +2061,19 @@ function findTeXCommandGroup(input: string, command: string): { content: string;
     if (group) return { content: group.content, start: match.index, next: group.next };
   }
   return undefined;
+}
+
+/** Returns every balanced command group without using a brittle regex body. */
+function findTeXCommandGroups(input: string, command: string): Array<{ content: string; start: number; next: number }> {
+  const groups: Array<{ content: string; start: number; next: number }> = [];
+  let cursor = 0;
+  while (cursor < input.length) {
+    const found = findTeXCommandGroup(input.slice(cursor), command);
+    if (!found) break;
+    groups.push({ content: found.content, start: cursor + found.start, next: cursor + found.next });
+    cursor += found.next;
+  }
+  return groups;
 }
 
 function stripTeXCommandGroups(input: string, command: string): string {

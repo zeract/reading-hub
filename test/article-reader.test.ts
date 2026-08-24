@@ -455,6 +455,44 @@ describe("article reader extraction", () => {
     expect(content).not.toContain("reader-math-source");
   });
 
+  it("keeps multi-row Zhihu tags inside the scientific formula document instead of adding an overlapping reader tag", async () => {
+    const math = new ScientificMathRenderer();
+    await math.ready();
+    const result = await extractReaderArticleAsync(
+      `<article><div class="Post-RichTextContainer">
+        <p>${"知乎转载的数学正文用于验证多行公式、编号和引用遵循同一文档语义。 ".repeat(24)}</p>
+        <script type="math/tex">\\newcommand{\\rcos}{\\operatorname{rcos}}</script>
+        <script type="math/tex; mode=display">\\begin{align}
+          \\rcos(\\boldsymbol{x},\\boldsymbol{y}) &= 1 \\tag{13}\\label{eq:rcos}\\\\
+          \\rcos(\\boldsymbol{x},-\\boldsymbol{y}) &= -1 \\tag{14}\\label{eq:anti-rcos}
+        \\end{align}</script>
+        <p>由公式 $\\eqref{eq:rcos}$ 可知该相似度的边界。${"后续作者正文仍要完整保留。 ".repeat(24)}</p>
+      </div></article>`,
+      "https://zhuanlan.zhihu.com/p/2073205832964220804",
+      entry,
+      math
+    );
+
+    const content = result?.article.contentHtml || "";
+    const document = load(content);
+    const nonFormula = load(`<article>${content}</article>`);
+    nonFormula("mjx-container, .reader-math-source").remove();
+    expect(result?.article.formulaDiagnostics).toMatchObject({
+      total: 3,
+      display: 1,
+      rendered: 3,
+      fallback: 0,
+      dropped: 0,
+      formulaRenderPolicy: "scientific-document"
+    });
+    expect(document("[data-reader-equation]")).toHaveLength(1);
+    expect(document(".reader-equation--mathjax.reader-equation--native-tags")).toHaveLength(1);
+    expect(document(".reader-equation__tag")).toHaveLength(0);
+    expect(content).toContain("mjx-container");
+    expect(content).not.toMatch(/\\(?:begin|end|tag|label|eqref|rcos)/);
+    expect(nonFormula.text()).toContain("由公式");
+  });
+
   it("replays lost zero-arity custom operators from a post-typeset Scientific Spaces snapshot", () => {
     const result = extractReaderArticle(
       `<article><p>${"用于保证正文提取稳定的说明文字。 ".repeat(26)}</p>
@@ -612,6 +650,20 @@ describe("article reader extraction", () => {
     expect(rendered).not.toContain("\\left");
   });
 
+  it("keeps MathJax 4 multi-SVG break fragments in a safe local formula", async () => {
+    const math = new ScientificMathRenderer();
+    await math.ready();
+
+    // MathJax 4 emits this expression as two SVG glyph runs separated by an
+    // inert `<mjx-break>` marker. It is a normal renderer output, not source
+    // HTML, and must not make an entire scientific document fall back.
+    const rendered = await math.renderAsync("\\boldsymbol{x},\\boldsymbol{y}\\in\\mathbb{R}^d", false, {});
+
+    expect(rendered).toContain("<mjx-break size=\"4\"> ");
+    expect(rendered?.match(/<svg\b/g)?.length).toBe(2);
+    expect(rendered).not.toMatch(/(?:data-|on\w+=|javascript:)/i);
+  });
+
   it("removes unsafe MathJax links from remote TeX and macro output", async () => {
     const math = new ScientificMathRenderer();
     await math.ready();
@@ -638,11 +690,13 @@ describe("article reader extraction", () => {
 
   it("keeps only local MathJax SVG glyph references and rejects active SVG nodes", () => {
     const safe = sanitizeMathJaxSvg(`
-      <mjx-container class="MathJax" jax="SVG" overflow="overflow"><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1ex" height="1ex" viewBox="0 0 10 10" role="img" focusable="false" style="vertical-align:-0.02ex">
-        <defs><path id="MJX-safe" d="M0 0L10 10" style="stroke-width:.06ex"/></defs><g fill="currentColor"><use xlink:href="#MJX-safe"/></g>
+      <mjx-container class="MathJax" jax="SVG" overflow="overflow" width="full"><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1ex" height="1ex" viewBox="0 0 10 10" role="img" focusable="false" style="vertical-align:-0.02ex">
+        <defs><path id="MJX-safe" d="M0 0L10 10" style="stroke-width:.06ex"/><path id="MJX-empty" d=""/></defs><g fill="currentColor"><use xlink:href="#MJX-safe"/></g>
       </svg></mjx-container>
     `) || "";
     expect(safe).toContain('xlink:href="#MJX-safe"');
+    expect(safe).toContain('width="full"');
+    expect(safe).toContain('id="MJX-empty" d=""');
     expect(safe).toContain('style="vertical-align: -0.02ex;"');
     expect(safe).toContain('style="stroke-width: .06ex;"');
 
@@ -663,6 +717,15 @@ describe("article reader extraction", () => {
       <mjx-container class="MathJax" jax="SVG" overflow="overflow"><svg xmlns="http://www.w3.org/2000/svg" width="1ex" height="1ex" viewBox="0 0 10 10">
         <foreignObject><script>alert(1)</script></foreignObject>
       </svg></mjx-container>
+    `)).toBeUndefined();
+
+    // A MathJax 4 line-break marker is accepted only as a direct,
+    // whitespace-only sibling of SVG output. It cannot carry a nested
+    // active subtree into the reader.
+    expect(sanitizeMathJaxSvg(`
+      <mjx-container class="MathJax" jax="SVG" overflow="overflow"><svg xmlns="http://www.w3.org/2000/svg" width="1ex" height="1ex" viewBox="0 0 10 10"></svg>
+        <mjx-break size="4"><script>alert(1)</script></mjx-break>
+      </mjx-container>
     `)).toBeUndefined();
 
     // An older MathJax `noundefined` result is syntactically safe SVG but is
@@ -722,10 +785,10 @@ describe("article reader extraction", () => {
     expect(content).not.toContain("\\url{");
   });
 
-  it("keeps Scientific Spaces formulas on the primary renderer without duplicate previews or title anchors", async () => {
+  it("renders a Scientific Spaces formula document through one MathJax path without duplicate previews or title anchors", async () => {
     const math = new ScientificMathRenderer();
     await math.ready();
-    const result = extractReaderArticle(
+    const result = await extractReaderArticleAsync(
       `<html><head>
         <script type="text/x-mathjax-config">MathJax.Hub.Config({ TeX: { Macros: { softcap: "\\\\operatorname{softcap}" } } });</script>
       </head><body><div id="post-body">
@@ -745,8 +808,10 @@ describe("article reader extraction", () => {
     const visible = load(`<article>${content}</article>`);
     visible(".katex, mjx-container, .reader-math-source").remove();
     expect(result?.article.renderProfile).toBe("scientific");
-    expect(content).not.toContain("reader-equation--mathjax");
-    expect(content).toContain('class="katex"');
+    expect(result?.article.formulaDiagnostics?.formulaRenderPolicy).toBe("scientific-document");
+    expect(content).toContain("reader-equation--mathjax");
+    expect(content).toContain("mjx-container");
+    expect(content).not.toContain('class="katex"');
     expect(content).not.toContain("预览副本");
     expect(content).not.toContain("READING_HUB_MATH");
     expect(visible.text()).not.toContain("\\begin{align}");
@@ -1214,6 +1279,25 @@ describe("article reader extraction", () => {
     expect(content).not.toContain("没有列表容器的真实评论记录");
     expect(content).not.toContain("真正的讨论记录绝不能进入正文");
     expect(content).not.toMatch(/CommentItem|RichContent-commented/);
+  });
+
+  it("preserves a nested block CommentItem when an authored Zhihu annotation owns the subtree", () => {
+    const result = extractReaderArticle(
+      `<article class="QuestionAnswer-content">
+        <div class="Post-RichTextContainer">
+          <p>${"知乎正文内容 ".repeat(24)}</p>
+          <div class="RichContent-commented"><div class="CommentItem"><blockquote>被读者评论的整段作者文字仍然必须显示。</blockquote></div></div>
+          <section class="CommentList"><article class="CommentItem"><p>真正的评论区文字绝不能混入正文。</p></article></section>
+        </div>
+      </article>`,
+      "https://zhuanlan.zhihu.com/p/123456",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(content).toContain("被读者评论的整段作者文字仍然必须显示");
+    expect(content).not.toContain("真正的评论区文字绝不能混入正文");
+    expect(content).not.toMatch(/RichContent-commented|CommentItem|CommentList/);
   });
 
   it("uses the authorised Zhihu reading path for line-comment annotations", async () => {

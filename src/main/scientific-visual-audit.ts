@@ -50,7 +50,7 @@ export class ScientificArticleVisualAuditor {
     if (!renderedBlocks && expectedBlocks) return [`块公式语义丢失：期望 ${expectedBlocks} 个块公式，实际为 0`];
     const visualWindow = this.getWindow();
     const diagnostics: string[] = [];
-    const page = await this.page(article.contentHtml);
+    const page = await this.page(article.contentHtml, article.renderProfile);
     const auditPagePath = await this.getAuditPagePath();
     // Full KaTeX CSS plus an extracted article can exceed Chromium's accepted
     // data: URL size. A local, per-audit temporary file also gives KaTeX font
@@ -74,6 +74,7 @@ export class ScientificArticleVisualAuditor {
         const formulas = [...owned, ...legacyKatex, ...legacyMathJax].map((formula) => {
           const rect = formula.getBoundingClientRect();
           const tag = formula.querySelector(".reader-equation__tag");
+          const viewport = formula.querySelector(".reader-equation__viewport") || formula;
           const bases = [...formula.querySelectorAll(".reader-equation__content > .katex, .reader-equation__content > mjx-container, :scope > .katex")];
           const tagRect = tag?.getBoundingClientRect();
           const baseRects = bases.map((base) => base.getBoundingClientRect());
@@ -82,7 +83,7 @@ export class ScientificArticleVisualAuditor {
             hasTag: Boolean(tagRect),
             collision,
             escapesBody: rect.left < bodyRect.left - 1 || rect.right > bodyRect.right + 1,
-            horizontallyScrollable: formula.scrollWidth > formula.clientWidth + 1,
+            horizontallyScrollable: viewport.scrollWidth > viewport.clientWidth + 1,
             tagEscapesVisibleArea: Boolean(tagRect && (tagRect.left < rect.left - 1 || tagRect.right > rect.right + 1))
           };
         });
@@ -105,7 +106,7 @@ export class ScientificArticleVisualAuditor {
           diagnostics.push(`${viewport.name}：第 ${index + 1} 个公式编号在非超宽公式中被裁切`);
         }
         // A formula that is intrinsically wider than the column is valid only
-        // when the formula element itself owns the scrollable overflow.
+        // when its generated formula viewport owns the scrollable overflow.
         if (formula.horizontallyScrollable === false && formula.escapesBody) {
           diagnostics.push(`${viewport.name}：第 ${index + 1} 个超宽公式没有独立横向滚动`);
         }
@@ -134,12 +135,12 @@ export class ScientificArticleVisualAuditor {
     return this.window;
   }
 
-  private async page(contentHtml: string): Promise<string> {
+  private async page(contentHtml: string, renderProfile: ReaderArticle["renderProfile"]): Promise<string> {
     const styles = await this.loadStyles();
     const content = load(`<div id="audit-content">${contentHtml}</div>`);
     content("img").attr("src", AUDIT_IMAGE).removeAttr("srcset");
     return `<!doctype html><html><head><meta charset="utf-8"><style>${styles}</style></head><body>
-      <section class="reader-view reader--scientific" data-reader-preset="reading" style="--reader-font-scale: 1">
+      <section class="reader-view reader--${renderProfile}" data-reader-preset="reading" style="--reader-font-scale: 1">
         <div class="reader-workspace"><div class="reader-scroll"><article class="reader-article"><div class="article-body">${content("#audit-content").html() || ""}</div></article></div></div>
       </section>
     </body></html>`;

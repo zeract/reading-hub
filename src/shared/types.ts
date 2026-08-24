@@ -245,6 +245,12 @@ export interface ReaderFormulaDiagnostics {
   displayRendered: number;
   displayFallback: number;
   displayDropped: number;
+  /**
+   * Transient local renderer policy selected from FormulaDocument features.
+   * It contains no source text and lets audits distinguish a simple KaTeX
+   * article from a document-scoped MathJax article.
+   */
+  formulaRenderPolicy?: "standard" | "scientific-document";
 }
 
 /** A transient, sanitised article document shown only inside the local reader. */
