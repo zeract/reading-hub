@@ -30,6 +30,7 @@ const viewports = [
 
 function page(mathJaxSvg) {
   const largeImage = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='900'><rect width='100%' height='100%' fill='#d6cec0'/><text x='70' y='160' fill='#1b1b17' font-size='96'>Reading Hub visual fixture</text></svg>");
+  const previewItems = Array.from({ length: 10 }, (_value, index) => `<div role="listitem"><strong>这是一个用于测试预览弹窗标题截断的非常长条目名称 ${index + 1}，不应造成横向滚动</strong><span>https://example.com/a-very-long-preview-entry-${index + 1}-that-must-stay-within-the-dialog-width</span></div>`).join("");
   const formula = (id, tex, tag) => `<span class="katex-display" data-reader-equation="true" id="${id}"><span class="reader-equation"><span class="reader-equation__viewport"><span class="reader-equation__content">${katex.renderToString(tex, { displayMode: false, throwOnError: true, strict: "ignore" })}</span></span>${tag ? `<span class="reader-equation__tag">(${tag})</span>` : ""}</span></span>`;
   const normalFormula = formula("formula-normal", String.raw`\begin{aligned}
     q_i &= \frac{x_i}{y_i}\\
@@ -44,7 +45,7 @@ function page(mathJaxSvg) {
   return `<!doctype html><html><head><meta charset="utf-8"><style>${katexCss}\n${css}</style></head><body>
     <main class="shell" id="shell"><header class="app-titlebar" id="app-titlebar"><div class="app-titlebar-actions"><button class="app-titlebar-button" aria-label="收起来源"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16M12.5 9h4"/></svg></button><button class="app-titlebar-button" aria-label="刷新"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0 1.1 4M20 5v6h-6"/></svg></button><button class="app-titlebar-button app-titlebar-add" aria-label="添加来源"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div></header><aside class="sidebar" id="source-sidebar"><nav class="library-nav" id="library-nav"><div class="section-title" id="library-heading">阅读</div><button class="library-filter selected"><span><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/></svg>今日</span></button><button class="library-filter"><span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></svg>未读</span><em>12</em></button><button class="library-filter"><span><svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.8-5.4 2.8 1-6.1-4.4-4.3 6.1-.9Z"/></svg>收藏</span><em>6</em></button></nav><section class="source-section"><div class="section-title" id="source-heading">来源 <span>12</span></div><div class="source-list"><section class="source-group"><button class="source-group-heading"><span class="source-group-label"><svg viewBox="0 0 24 24"><path d="m7 9 5 5 5-5"/></svg><svg class="folder-icon" viewBox="0 0 24 24"><path d="M3.5 7.5h6l1.7 2H20.5v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></svg><span>网页与订阅</span></span><em>2</em></button><button class="source-filter selected"><span class="source-icon source-icon--rss"><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="1"/><path d="M5 11a8 8 0 0 1 8 8M5 5a14 14 0 0 1 14 14"/></svg></span><span class="source-title">测试来源名称应仅显示一行</span></button></section></div></section><footer class="sidebar-footer"><button class="sidebar-settings-button"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/></svg><span>设置</span></button></footer></aside><section class="timeline" id="entry-timeline"><header><div><p class="eyebrow">阅读收件箱</p><h1>今日更新</h1></div><span class="count">12 篇更新</span></header><div class="entry-list"><article class="entry-card selected"><button class="entry-main"><div class="entry-copy"><p class="entry-source">科学空间 · 今天</p><h2>这是一个在窄窗口和大字号下仍必须限制为两行显示的非常长的文章标题测试样例</h2><p class="summary">这是用于验证文章摘要在时间线卡片内会随可用列宽安全截断的长文本；它不能越过卡片边界，也不能无限增高，而应在两行之后明确以省略效果收束，保持列表浏览时的视觉节奏和可读性。</p></div></button></article><article class="entry-card"><button class="entry-main"><div class="entry-copy"><p class="entry-source">测试来源 · 昨天</p><h2>另一篇待读文章</h2></div></button></article></div></section>
     <section class="reader-view reader--scientific" data-reader-preset="reading" style="--reader-font-scale: 1">
-      <header class="reader-toolbar"><div class="reader-toolbar-spacer"></div><div class="reader-toolbar-center"><p>科学空间</p><div class="reader-controls"><button>阅读</button></div></div><div class="reader-toolbar-actions"><button class="toolbar-icon-button favorite-button is-favorite">★</button><button class="toolbar-icon-button ai-toggle">✦</button><button class="toolbar-icon-button reader-focus-toggle" aria-pressed="false">⛶</button><button class="toolbar-icon-button external-button">↗</button></div></header>
+      <header class="reader-toolbar"><div class="reader-toolbar-spacer"></div><div class="reader-toolbar-center"><p>科学空间</p><div class="reader-toolbar-settings"><div class="reader-language-switcher" id="reader-language-switcher"><button>English</button><button class="selected">中文</button></div><div class="reader-controls"><button>阅读</button></div></div></div><div class="reader-toolbar-actions"><button class="toolbar-icon-button favorite-button is-favorite">★</button><button class="toolbar-icon-button ai-toggle">✦</button><button class="toolbar-icon-button reader-focus-toggle" aria-pressed="false">⛶</button><button class="toolbar-icon-button external-button">↗</button></div></header>
       <div class="reader-workspace reader-workspace--assistant"><div class="reader-scroll"><article class="reader-article"><header><p class="eyebrow">视觉回归夹具</p><h1>中文长标题与数学公式布局</h1></header><aside class="reader-content-notice" id="feed-summary-notice">正在显示订阅 Feed 提供的内容摘要。原页受 robots 限制，完整原文可在浏览器中打开。</aside><div class="article-body">
         <p>这段内容用于检查文字、图片、表格和公式编号在不同窗口与字号下不会错误重叠或撑破阅读列。</p>
         ${normalFormula}
@@ -53,7 +54,7 @@ function page(mathJaxSvg) {
         <img id="fixture-image" src="${largeImage}" alt="large fixture" />
         <table><thead><tr><th>来源</th><th>状态</th></tr></thead><tbody><tr><td>OpenAlex</td><td>正常</td></tr></tbody></table>
       </div></article></div><div class="reader-selection-underlines" aria-hidden="true"><span id="selection-underline" style="left: 58vw; top: 302px; width: 124px"></span></div><section class="reader-selection-toolbar" id="selection-toolbar" style="left: 58vw; top: 308px"><button>翻译</button><button>解释</button><button>提问</button><button>×</button></section><aside class="selection-assistant-card" id="selection-card" data-placement="below" style="left: 56vw; top: 356px; width: min(330px,calc(100vw - 32px)); max-height: 250px"><header><div><p>解释所选文字</p><strong>本机 Codex CLI</strong></div><button>×</button></header><blockquote>“这段选中的文章文字会保留在就地回答旁边。”</blockquote><div class="selection-assistant-answer"><p>这是一个和正文紧邻的流式回答卡片，长内容将在卡片内滚动。</p><pre class="ai-code-block" id="selection-card-code"><code>selection_answer_must_not_expand_the_reading_workspace_0123456789</code></pre></div></aside><aside class="reader-ai-panel" id="assistant-panel"><header><div><strong>AI 学习助手</strong><p>提问时才会发送文章摘录。</p></div><div class="assistant-header-actions"><button class="panel-icon-button">−</button><button class="panel-icon-button">×</button></div></header><div class="ai-messages"><div class="ai-message" id="assistant-markdown"><strong>AI</strong><div class="ai-message-content ai-markdown"><h2 class="ai-markdown-heading">推导摘要</h2><p class="ai-markdown-paragraph">这是一段 <strong>Markdown</strong> 回答。</p><ul class="ai-markdown-list"><li>列表项</li><li><code class="ai-inline-code">inline_code</code></li></ul><pre class="ai-code-block" id="assistant-code"><code>very_long_identifier_that_must_scroll_instead_of_overflowing_the_assistant_sidebar_0123456789</code></pre><div class="ai-table-wrap"><table><thead><tr><th>方法</th><th>复杂度</th></tr></thead><tbody><tr><td>线性</td><td>O(n)</td></tr></tbody></table></div></div></div></div><form class="ai-question"><label>向文章提问</label><textarea>这个公式表达什么？</textarea><button class="primary">发送问题</button></form></aside></div>
-    </section></main><div class="reader-image-lightbox" id="image-lightbox" hidden><section class="reader-image-lightbox__frame"><button class="reader-image-lightbox__close">×</button><img id="lightbox-image" src="${largeImage}" alt="large fixture preview" /></section></div></body></html>`;
+    </section></main><div class="modal-backdrop" style="visibility:hidden" aria-hidden="true"><section class="dialog dialog--preview" id="preview-dialog"><header><h2>确认来源</h2><button>×</button></header><div class="preview-dialog__body" id="preview-dialog-body"><p class="dialog-intro"><strong class="preview-source-title">一个特别长的来源名称，用于验证预览弹窗不会因为名称而出现横向滚动</strong></p><div class="preview-list preview-list--source" role="list">${previewItems}</div></div><div class="dialog-actions dialog-actions--fixed" id="preview-dialog-actions"><button>取消</button><button class="primary">保存来源</button></div></section></div><div class="reader-image-lightbox" id="image-lightbox" hidden><section class="reader-image-lightbox__frame"><button class="reader-image-lightbox__close">×</button><img id="lightbox-image" src="${largeImage}" alt="large fixture preview" /></section></div></body></html>`;
 }
 
 function overlaps(a, b) {
@@ -180,6 +181,34 @@ async function auditViewport(window, viewport, mathJaxSvg) {
         const toolbar = document.querySelector('.reader-toolbar')?.getBoundingClientRect();
         const controls = [...document.querySelectorAll('.reader-toolbar button')].map((button) => button.getBoundingClientRect());
         return toolbar ? { left: toolbar.left, right: toolbar.right, controls: controls.map((control) => ({ left: control.left, right: control.right, top: control.top, bottom: control.bottom })) } : undefined;
+      })(),
+      languageSwitcher: (() => {
+        const root = document.querySelector('#reader-language-switcher');
+        const toolbar = document.querySelector('.reader-toolbar');
+        const rootRect = root?.getBoundingClientRect();
+        const toolbarRect = toolbar?.getBoundingClientRect();
+        const controls = root ? [...root.querySelectorAll('button')].map((button) => button.getBoundingClientRect()) : [];
+        return rootRect && toolbarRect ? {
+          root: { left: rootRect.left, right: rootRect.right, top: rootRect.top, bottom: rootRect.bottom, width: rootRect.width },
+          toolbar: { left: toolbarRect.left, right: toolbarRect.right, top: toolbarRect.top, bottom: toolbarRect.bottom },
+          controls: controls.map((control) => ({ left: control.left, right: control.right, top: control.top, bottom: control.bottom }))
+        } : undefined;
+      })(),
+      previewDialog: (() => {
+        const dialog = document.querySelector('#preview-dialog');
+        const body = document.querySelector('#preview-dialog-body');
+        const actions = document.querySelector('#preview-dialog-actions');
+        const title = document.querySelector('.preview-source-title');
+        const dialogRect = dialog?.getBoundingClientRect();
+        const bodyRect = body?.getBoundingClientRect();
+        const actionsRect = actions?.getBoundingClientRect();
+        const titleRect = title?.getBoundingClientRect();
+        return dialog instanceof HTMLElement && body instanceof HTMLElement && actionsRect && dialogRect && bodyRect && titleRect ? {
+          dialog: { left: dialogRect.left, right: dialogRect.right, top: dialogRect.top, bottom: dialogRect.bottom },
+          body: { left: bodyRect.left, right: bodyRect.right, top: bodyRect.top, bottom: bodyRect.bottom, scrollWidth: body.scrollWidth, clientWidth: body.clientWidth, scrollHeight: body.scrollHeight, clientHeight: body.clientHeight },
+          actions: { left: actionsRect.left, right: actionsRect.right, top: actionsRect.top, bottom: actionsRect.bottom },
+          title: { left: titleRect.left, right: titleRect.right }
+        } : undefined;
       })(),
       selectionToolbar: (() => {
         const root = document.querySelector('#selection-toolbar');
@@ -319,6 +348,12 @@ async function auditViewport(window, viewport, mathJaxSvg) {
   }
   if (!geometry.toolbar || geometry.toolbar.controls.some((control) => control.left < geometry.toolbar.left - 1 || control.right > geometry.toolbar.right + 1)) {
     failures.push("阅读器工具栏按钮溢出");
+  }
+  if (!geometry.languageSwitcher || geometry.languageSwitcher.root.left < geometry.languageSwitcher.toolbar.left - 1 || geometry.languageSwitcher.root.right > geometry.languageSwitcher.toolbar.right + 1 || geometry.languageSwitcher.root.top < geometry.languageSwitcher.toolbar.top - 1 || geometry.languageSwitcher.root.bottom > geometry.languageSwitcher.toolbar.bottom + 1 || geometry.languageSwitcher.controls.some((control) => control.left < geometry.languageSwitcher.root.left - 1 || control.right > geometry.languageSwitcher.root.right + 1 || control.top < geometry.languageSwitcher.root.top - 1 || control.bottom > geometry.languageSwitcher.root.bottom + 1)) {
+    failures.push("文章语言切换控件在工具栏内溢出");
+  }
+  if (!geometry.previewDialog || geometry.previewDialog.dialog.left < -1 || geometry.previewDialog.dialog.right > geometry.viewport.width + 1 || geometry.previewDialog.body.scrollWidth > geometry.previewDialog.body.clientWidth + 1 || geometry.previewDialog.title.left < geometry.previewDialog.body.left - 1 || geometry.previewDialog.title.right > geometry.previewDialog.body.right + 1 || geometry.previewDialog.actions.top < geometry.previewDialog.body.bottom - 1 || geometry.previewDialog.actions.bottom > geometry.previewDialog.dialog.bottom + 1 || geometry.previewDialog.body.scrollHeight <= geometry.previewDialog.body.clientHeight) {
+    failures.push("来源预览弹窗出现横向滚动或固定操作区布局异常");
   }
   if (!geometry.selectionToolbar || !geometry.viewport || geometry.selectionToolbar.left < 0 || geometry.selectionToolbar.right > geometry.viewport.width || geometry.selectionToolbar.top < 0 || geometry.selectionToolbar.bottom > geometry.viewport.height || geometry.selectionToolbar.controls.some((control) => control.left < geometry.selectionToolbar.left - 1 || control.right > geometry.selectionToolbar.right + 1)) {
     failures.push("划词操作工具栏在当前窗口或字号下溢出");

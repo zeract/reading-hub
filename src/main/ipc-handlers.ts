@@ -85,6 +85,14 @@ export function registerIpcHandlers(services: ApplicationServices): void {
       return { kind: "embedded" as const };
     }
   });
+  handle(IPC_CHANNELS.entry.readLanguageVariant, async (_event, entryId: unknown, rawUrl: unknown) => {
+    const entry = findEntry(database, requireEntityId(entryId));
+    return articles.readLanguageVariant(
+      entry,
+      database.getSource(entry.sourceId),
+      requireText(rawUrl, "语言版本地址无效，请重新打开文章后再试。", 2_000)
+    );
+  });
   handle(IPC_CHANNELS.entry.openEmbedded, async (_event, entryId: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));
     await inAppArticleViewer.open(entry.url, entry.title);

@@ -6,13 +6,14 @@ import { randomUUID } from "node:crypto";
 import { compactText, parsePublishedAt } from "../shared/text";
 import { inlineDollarMathAt } from "../shared/tex";
 import { assertPublicUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl, toAbsoluteUrl } from "../shared/url";
-import type { Entry, ReaderArticle, ReaderFormulaDiagnostics, ReaderRenderProfile, Source } from "../shared/types";
+import type { Entry, ReaderArticle, ReaderFormulaDiagnostics, ReaderLanguageVariant, ReaderRenderProfile, Source } from "../shared/types";
 import { parseFeed } from "./feed";
 import { abortError, throwIfAborted } from "./cancellation";
 import { PublicHttpClient, type PublicRequestOptions } from "./http";
 import { extractPagePublishedAt } from "./extractor";
 import { ScientificMathRenderer, type MathJaxDocumentExpression, type MathMacroDefinition } from "./mathjax-renderer";
 import type { PageRenderer } from "./page-renderer";
+import { discoverReaderLanguageVariants, mergeReaderLanguageVariants, sameCanonicalUrl } from "./reader-language-variants";
 import { RobotsDisallowedError } from "./robots";
 
 const CONTENT_SELECTORS = [
@@ -290,12 +291,22 @@ type PreparedReaderArticle = {
   publishedAt?: number;
   coverCandidate?: string;
   renderProfile: ReaderRenderProfile;
+  languageVariants: ReaderLanguageVariant[];
+  activeLanguage?: string;
   globalMathMacros: MathMacroScope;
 };
 type PreparedReaderExtraction = {
   article: PreparedReaderArticle;
   content: PreparedSanitizedContent;
 };
+
+type LanguageVariantCache = {
+  expiresAt: number;
+  variants: ReaderLanguageVariant[];
+};
+
+const LANGUAGE_VARIANT_CACHE_TTL_MS = 15 * 60_000;
+const MAX_LANGUAGE_VARIANT_CACHES = 240;
 
 function resolveReaderProfile(pageUrl: string): ReaderRenderProfile {
   try {
@@ -336,6 +347,13 @@ function collectGlobalMathMacros($: ReturnType<typeof load>): MathMacroScope {
  * the React renderer or become an on-disk full-text archive.
  */
 export class ArticleReader {
+  /**
+   * The renderer never gets authority to fetch an arbitrary URL.  It can only
+   * switch to a publisher-declared language variant that this short-lived,
+   * metadata-only cache remembers after the current article was read.
+   */
+  private readonly languageVariants = new Map<string, LanguageVariantCache>();
+
   constructor(
     private readonly http: PublicHttpClient,
     private readonly renderer: PageRenderer,
@@ -344,17 +362,39 @@ export class ArticleReader {
   ) {}
 
   async read(entry: Entry, source?: Source, options?: ReaderReadOptions): Promise<ReaderArticle> {
+    return this.readAtUrl(entry, source, entry.url, options, true);
+  }
+
+  async readLanguageVariant(entry: Entry, source: Source | undefined, rawUrl: string, options?: ReaderReadOptions): Promise<ReaderArticle> {
+    const requestedUrl = assertPublicUrl(rawUrl).toString();
+    const cached = this.getLanguageVariants(entry.id);
+    const requestedCanonicalUrl = canonicalizeUrl(requestedUrl);
+    const variant = cached?.variants.find((candidate) => canonicalizeUrl(candidate.url) === requestedCanonicalUrl);
+    if (!cached || !variant) {
+      throw new Error("这个文章的语言版本已过期或不可用，请重新打开文章后再切换。");
+    }
+    return this.readAtUrl(entry, source, variant.url, options, false, cached.variants);
+  }
+
+  private async readAtUrl(
+    entry: Entry,
+    source: Source | undefined,
+    targetUrl: string,
+    options: ReaderReadOptions | undefined,
+    allowFeedFallback: boolean,
+    knownLanguageVariants: ReaderLanguageVariant[] = []
+  ): Promise<ReaderArticle> {
     throwIfAborted(options?.signal);
     let staticArticle: ExtractedArticle | undefined;
     let staticFailure: unknown;
     const usesZhihuSession = source?.kind === "zhihu_follow" && Boolean(this.renderWithZhihuSession);
-    if (resolveReaderProfile(entry.url) === "scientific") await this.scientificMath.ready().catch(() => undefined);
+    if (resolveReaderProfile(targetUrl) === "scientific") await this.scientificMath.ready().catch(() => undefined);
     throwIfAborted(options?.signal);
     if (!usesZhihuSession) {
       try {
-        const response = await this.http.getText(entry.url, undefined, readerHttpOptions({ maxBytes: 8_000_000 }, options?.signal));
+        const response = await this.http.getText(targetUrl, undefined, readerHttpOptions({ maxBytes: 8_000_000 }, options?.signal));
         staticArticle = await this.extractWithMathFallback(response.text, response.url, entry);
-        if (staticArticle && staticArticle.textLength >= 220) return staticArticle.article;
+        if (staticArticle && staticArticle.textLength >= 220) return this.rememberLanguageVariants(entry.id, staticArticle.article, knownLanguageVariants);
       } catch (error) {
         if (options?.signal?.aborted) throw abortError(options.signal);
         // robots.txt must remain a hard boundary. A feed can nevertheless
@@ -362,13 +402,14 @@ export class ArticleReader {
         // subscription data rather than an extraction of the blocked page.
         // This makes RSSHub/X items readable without trying to fetch X again.
         if (error instanceof RobotsDisallowedError) {
+          if (!allowFeedFallback) throw error;
           const feedBody = await this.readTransientFeedBody(entry, source, options).catch(() => {
             if (options?.signal?.aborted) throw abortError(options.signal);
             return undefined;
           });
-          if (feedBody) return feedBody;
+          if (feedBody) return this.rememberLanguageVariants(entry.id, feedBody, knownLanguageVariants);
           const feedSummary = createFeedSummaryArticle(entry, source);
-          if (feedSummary) return feedSummary;
+          if (feedSummary) return this.rememberLanguageVariants(entry.id, feedSummary, knownLanguageVariants);
           throw error;
         }
         staticFailure = error;
@@ -378,30 +419,72 @@ export class ArticleReader {
     let renderedHtml: string | undefined;
     try {
       renderedHtml = usesZhihuSession && this.renderWithZhihuSession
-        ? await this.renderWithZhihuSession(entry.url, options)
-        : await this.renderer.render(entry.url, options);
+        ? await this.renderWithZhihuSession(targetUrl, options)
+        : await this.renderer.render(targetUrl, options);
     } catch (error) {
       if (options?.signal?.aborted) throw abortError(options.signal);
       // Keep a usable static article when Chromium rendering is unavailable.
     }
     throwIfAborted(options?.signal);
-    const renderedArticle = renderedHtml ? await this.extractWithMathFallback(renderedHtml, entry.url, entry) : undefined;
-    if (renderedArticle && renderedArticle.textLength > (staticArticle?.textLength ?? 0)) return renderedArticle.article;
-    if (staticArticle) return staticArticle.article;
+    const renderedArticle = renderedHtml ? await this.extractWithMathFallback(renderedHtml, targetUrl, entry) : undefined;
+    if (renderedArticle && renderedArticle.textLength > (staticArticle?.textLength ?? 0)) {
+      return this.rememberLanguageVariants(entry.id, renderedArticle.article, knownLanguageVariants);
+    }
+    if (staticArticle) return this.rememberLanguageVariants(entry.id, staticArticle.article, knownLanguageVariants);
     // A public original can intermittently reject a reader request (or time
     // out) even though its RSS response already supplied a body. That body is
     // part of the user's subscription, so re-fetch and sanitise it in memory
     // before surfacing an avoidable read error. This never retries a blocked
     // original page and never persists full Feed content.
+    if (!allowFeedFallback) {
+      if (staticFailure) throw staticFailure;
+      throw new ArticleContentUnavailableError();
+    }
     const feedBody = await this.readTransientFeedBody(entry, source, options).catch(() => {
       if (options?.signal?.aborted) throw abortError(options.signal);
       return undefined;
     });
-    if (feedBody) return feedBody;
+    if (feedBody) return this.rememberLanguageVariants(entry.id, feedBody, knownLanguageVariants);
     const feedSummary = createFeedSummaryArticle(entry, source);
-    if (feedSummary) return feedSummary;
+    if (feedSummary) return this.rememberLanguageVariants(entry.id, feedSummary, knownLanguageVariants);
     if (staticFailure) throw staticFailure;
     throw new ArticleContentUnavailableError();
+  }
+
+  private getLanguageVariants(entryId: string): LanguageVariantCache | undefined {
+    this.pruneLanguageVariants();
+    const cached = this.languageVariants.get(entryId);
+    if (!cached) return undefined;
+    if (cached.expiresAt > Date.now()) return cached;
+    this.languageVariants.delete(entryId);
+    return undefined;
+  }
+
+  private rememberLanguageVariants(entryId: string, article: ReaderArticle, knownVariants: ReaderLanguageVariant[]): ReaderArticle {
+    this.pruneLanguageVariants();
+    const variants = mergeReaderLanguageVariants(knownVariants, article.languageVariants || [], article.url, article.activeLanguage);
+    const activeLanguage = article.activeLanguage || variants.find((variant) => sameCanonicalUrl(variant.url, article.url))?.language;
+    const result = variants.length
+      ? { ...article, languageVariants: variants, ...(activeLanguage ? { activeLanguage } : {}) }
+      : article;
+    if (variants.length > 1) {
+      this.languageVariants.set(entryId, { expiresAt: Date.now() + LANGUAGE_VARIANT_CACHE_TTL_MS, variants });
+    } else {
+      this.languageVariants.delete(entryId);
+    }
+    return result;
+  }
+
+  private pruneLanguageVariants(): void {
+    const now = Date.now();
+    for (const [entryId, cached] of this.languageVariants) {
+      if (cached.expiresAt <= now) this.languageVariants.delete(entryId);
+    }
+    if (this.languageVariants.size < MAX_LANGUAGE_VARIANT_CACHES) return;
+    const oldest = [...this.languageVariants.entries()]
+      .sort((left, right) => left[1].expiresAt - right[1].expiresAt)
+      .slice(0, this.languageVariants.size - MAX_LANGUAGE_VARIANT_CACHES + 1);
+    for (const [entryId] of oldest) this.languageVariants.delete(entryId);
   }
 
   /**
@@ -522,6 +605,8 @@ function createFeedSummaryArticle(entry: Entry, source?: Source): ReaderArticle 
 function prepareReaderArticle(html: string, pageUrl: string, entry: Entry): PreparedReaderArticle | undefined {
   const $ = load(html);
   const renderProfile = resolveReaderProfile(pageUrl);
+  const languageVariants = discoverReaderLanguageVariants($, pageUrl);
+  const activeLanguage = languageVariants.find((variant) => sameCanonicalUrl(variant.url, pageUrl))?.language;
   const content = chooseContentCandidate(pickContentRoot($, renderProfile, pageUrl), extractReadabilityContent(html, pageUrl));
   if (!content) return undefined;
   const contentDocument = load(`<article id="reader-selected-content">${content.html}</article>`);
@@ -558,6 +643,8 @@ function prepareReaderArticle(html: string, pageUrl: string, entry: Entry): Prep
     publishedAt,
     coverCandidate,
     renderProfile,
+    languageVariants,
+    activeLanguage,
     globalMathMacros: collectGlobalMathMacros($)
   };
 }
@@ -574,13 +661,18 @@ function finishReaderArticle(prepared: PreparedReaderArticle, sanitised: Sanitiz
   return {
     article: {
       entryId: prepared.entry.id,
-      url: prepared.entry.url,
+      // A reader language switch may intentionally open an author-declared
+      // sibling page. Keep the active page URL here so both the external
+      // button and the learning assistant refer to what is on screen.
+      url: prepared.pageUrl,
       title: prepared.title,
       author: prepared.author,
       publishedAt: prepared.publishedAt,
       coverImageUrl,
       renderProfile: effectiveReaderProfile(prepared.renderProfile, sanitised.formulaRenderPolicy),
       formulaDiagnostics: sanitised.formulaDiagnostics,
+      ...(prepared.languageVariants.length ? { languageVariants: prepared.languageVariants } : {}),
+      ...(prepared.activeLanguage ? { activeLanguage: prepared.activeLanguage } : {}),
       contentHtml
     },
     textLength

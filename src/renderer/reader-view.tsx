@@ -5,6 +5,7 @@ import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { buildAiArticleContext, collectAiArticleText } from "./ai-request";
 import { errorMessage } from "./errors";
 import { adjustReaderFontScale, loadReaderPreferences, saveReaderPreferences, type ReaderPreferences, type ReaderPreset } from "./reader-preferences";
+import { LatestRequestGuard } from "./request-guard";
 import { normaliseSelectedArticleText, selectedTextLabel, selectionActionQuestion, selectionContext, selectionOverlay, type SelectionOverlay, type SelectionRect } from "./selection-actions";
 
 type AssistantPanelState = "closed" | "minimized" | "open";
@@ -35,6 +36,15 @@ function toAiArticleContext(article: ReaderArticle, sourceTitle?: string): AiArt
     sourceTitle,
     plainText: collectAiArticleText(textNodeValues(document.body))
   });
+}
+
+/**
+ * Translation is deliberately context-free: it must not parse the article DOM
+ * or send a title, link, source label, or article excerpt through IPC.
+ */
+function articlePayloadForAiRequest(article: ReaderArticle, sourceTitle: string | undefined, selection?: AiSelectionContext): { article?: AiArticleContext } {
+  if (selection?.intent === "translate") return {};
+  return { article: toAiArticleContext(article, sourceTitle) };
 }
 
 function* textNodeValues(root: Node): Generator<string> {
@@ -72,23 +82,37 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   const [selectionQuestion, setSelectionQuestion] = useState("");
   const [preferredAiProviderId, setPreferredAiProviderId] = useState<AiProviderId>("codex-cli");
   const [favoriteUpdating, setFavoriteUpdating] = useState(false);
+  const [languageSwitching, setLanguageSwitching] = useState<string>();
+  const [languageSwitchError, setLanguageSwitchError] = useState<string>();
   const articleBodyElement = useRef<HTMLDivElement>(null);
   const readerWorkspaceElement = useRef<HTMLDivElement>(null);
+  const articleRequestGuard = useRef(new LatestRequestGuard());
+  const renderedEntryId = useRef(entry.id);
+
+  // Effects run after React commits the new entry. Invalidate synchronously as
+  // soon as this render belongs to a different entry so a just-resolved IPC
+  // response for the previous article can never replace the new view.
+  if (renderedEntryId.current !== entry.id) {
+    renderedEntryId.current = entry.id;
+    articleRequestGuard.current.invalidate();
+  }
 
   useEffect(() => {
     saveReaderPreferences(preferences);
   }, [preferences]);
 
   const loadArticle = useCallback(async () => {
-    setLoading(true); setError(undefined); setArticle(undefined); setEmbedded(false);
+    const request = articleRequestGuard.current.begin();
+    setLoading(true); setError(undefined); setLanguageSwitchError(undefined); setArticle(undefined); setEmbedded(false);
     try {
       const result = await window.reader.readEntry(entry.id);
+      if (!articleRequestGuard.current.isCurrent(request)) return;
       if (result.kind === "article") setArticle(result.article);
       else setEmbedded(true);
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (articleRequestGuard.current.isCurrent(request)) setError(errorMessage(reason));
     } finally {
-      setLoading(false);
+      if (articleRequestGuard.current.isCurrent(request)) setLoading(false);
     }
   }, [entry.id]);
 
@@ -98,6 +122,8 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
     setImagePreview(undefined);
     setTextSelection(undefined);
     setSelectionQuestion("");
+    setLanguageSwitching(undefined);
+    setLanguageSwitchError(undefined);
   }, [entry.id]);
   useEffect(() => {
     if (!imagePreview && !textSelection) return;
@@ -218,6 +244,29 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   function openEmbedded() {
     void window.reader.openEmbeddedEntry(entry.id).catch((reason) => setError(errorMessage(reason)));
   }
+  async function switchLanguage(url: string) {
+    if (!article || languageSwitching || url === article.url) return;
+    const request = articleRequestGuard.current.begin();
+    setLanguageSwitching(url);
+    setLanguageSwitchError(undefined);
+    try {
+      const next = await window.reader.readEntryLanguageVariant(entry.id, url);
+      if (!articleRequestGuard.current.isCurrent(request)) return;
+      window.getSelection()?.removeAllRanges();
+      setArticle(next);
+      setEmbedded(false);
+      setImagePreview(undefined);
+      setTextSelection(undefined);
+      setSelectionQuestion("");
+      // An answer may quote the previous-language document, so do not retain
+      // a stale assistant panel across an article-version switch.
+      setAssistantState("closed");
+    } catch (reason) {
+      if (articleRequestGuard.current.isCurrent(request)) setLanguageSwitchError(errorMessage(reason));
+    } finally {
+      if (articleRequestGuard.current.isCurrent(request)) setLanguageSwitching(undefined);
+    }
+  }
   async function toggleFavorite() {
     if (favoriteUpdating) return;
     setFavoriteUpdating(true);
@@ -240,25 +289,45 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   };
   const assistantVisible = assistantState === "open";
   const assistantMounted = assistantState !== "closed";
+  const languageVariants = article?.languageVariants || [];
+  const hasLanguageVariants = languageVariants.length > 1;
 
   return <section className={`reader-view reader--${article?.renderProfile || "standard"}`} data-reader-preset={preferences.preset} style={readerStyle} aria-label="应用内阅读器">
     <header className="reader-toolbar">
       <div className="reader-toolbar-spacer" aria-hidden="true" />
       <div className="reader-toolbar-center">
         <p>{source?.title || "已保存内容"}</p>
-        <div className="reader-controls" aria-label="阅读排版设置">
-          <button type="button" className={preferences.preset === "compact" ? "selected" : ""} aria-pressed={preferences.preset === "compact"} onClick={() => setPreset("compact")}>紧凑</button>
-          <button type="button" className={preferences.preset === "reading" ? "selected" : ""} aria-pressed={preferences.preset === "reading"} onClick={() => setPreset("reading")}>阅读</button>
-          <span aria-hidden="true" />
-          <button type="button" aria-label="缩小字号" disabled={preferences.fontScale <= 0.85} onClick={() => adjustFont(-0.05)}>A−</button>
-          <button type="button" aria-label="放大字号" disabled={preferences.fontScale >= 1.25} onClick={() => adjustFont(0.05)}>A+</button>
+        <div className="reader-toolbar-settings">
+          {hasLanguageVariants && <div className="reader-language-switcher" role="group" aria-label="文章语言版本">
+            {languageVariants.map((variant) => {
+              const matchingLanguageCount = languageVariants.filter((candidate) => candidate.language === variant.language).length;
+              const active = variant.url === article?.url || (matchingLanguageCount === 1 && variant.language === article?.activeLanguage);
+              return <button
+                type="button"
+                key={variant.url}
+                className={active ? "selected" : ""}
+                aria-pressed={active}
+                disabled={active || Boolean(languageSwitching)}
+                title={active ? `当前：${variant.label}` : `切换为${variant.label}`}
+                onClick={() => void switchLanguage(variant.url)}
+              >{languageSwitching === variant.url ? "…" : variant.label}</button>;
+            })}
+          </div>}
+          <div className="reader-controls" aria-label="阅读排版设置">
+            <button type="button" className={preferences.preset === "compact" ? "selected" : ""} aria-pressed={preferences.preset === "compact"} onClick={() => setPreset("compact")}>紧凑</button>
+            <button type="button" className={preferences.preset === "reading" ? "selected" : ""} aria-pressed={preferences.preset === "reading"} onClick={() => setPreset("reading")}>阅读</button>
+            <span aria-hidden="true" />
+            <button type="button" aria-label="缩小字号" disabled={preferences.fontScale <= 0.85} onClick={() => adjustFont(-0.05)}>A−</button>
+            <button type="button" aria-label="放大字号" disabled={preferences.fontScale >= 1.25} onClick={() => adjustFont(0.05)}>A+</button>
+          </div>
         </div>
+        {languageSwitchError && <span className="reader-language-error" role="status" title={languageSwitchError}>{languageSwitchError}</span>}
       </div>
       <div className="reader-toolbar-actions">
         <button type="button" className={`toolbar-icon-button favorite-button${entry.favorite ? " is-favorite" : ""}`} aria-pressed={entry.favorite} aria-label={entry.favorite ? "取消收藏" : "收藏文章"} title={entry.favorite ? "取消收藏" : "收藏文章"} disabled={favoriteUpdating} onClick={() => void toggleFavorite()}>{entry.favorite ? "★" : "☆"}</button>
         <button type="button" className="toolbar-icon-button ai-toggle" aria-pressed={assistantVisible} aria-label={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} title={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} disabled={!article} onClick={toggleAssistant}>✦</button>
         <button type="button" className="toolbar-icon-button reader-focus-toggle" aria-pressed={readerOnly} aria-label={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} title={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} onClick={onToggleReaderOnly}>⛶</button>
-        <button type="button" className="toolbar-icon-button external-button" aria-label="在浏览器中打开原文" title="在浏览器中打开原文" onClick={() => void window.reader.openExternal(entry.url)}>↗</button>
+        <button type="button" className="toolbar-icon-button external-button" aria-label="在浏览器中打开原文" title="在浏览器中打开原文" onClick={() => void window.reader.openExternal(article?.url || entry.url)}>↗</button>
       </div>
     </header>
     <div ref={readerWorkspaceElement} className={`reader-workspace ${assistantVisible && article ? "reader-workspace--assistant" : ""}`}>
@@ -381,7 +450,7 @@ function SelectionAssistantCard({ request, overlay, article, sourceTitle, prefer
         provider: provider.id,
         question: request.question,
         selection: request.selection,
-        article: toAiArticleContext(article, sourceTitle)
+        ...articlePayloadForAiRequest(article, sourceTitle, request.selection)
       }
     }).catch((reason) => {
       if (activeRequestId.current !== requestId) return;
@@ -399,7 +468,7 @@ function SelectionAssistantCard({ request, overlay, article, sourceTitle, prefer
     </header>
     <blockquote>“{excerpt}”</blockquote>
     <div className="selection-assistant-answer" aria-live="polite" aria-busy={busy}>
-      {busy && !answer && <p className="ai-streaming-status">正在结合文章上下文生成…</p>}
+      {busy && !answer && <p className="ai-streaming-status">{request.selection.intent === "translate" ? "正在翻译所选文字…" : "正在结合文章上下文生成…"}</p>}
       {answer && <AiMarkdownContent text={answer} />}
       {error && <p className="selection-assistant-error">{error}</p>}
     </div>
@@ -503,7 +572,7 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
           provider: providerId,
           question: text,
           selection,
-          article: toAiArticleContext(article, sourceTitle)
+          ...articlePayloadForAiRequest(article, sourceTitle, selection)
         }
       });
     } catch (reason) {

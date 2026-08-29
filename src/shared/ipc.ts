@@ -12,6 +12,7 @@ import type {
   OpmlImportResult,
   ProbeResult,
   ProfileSubscriptionInput,
+  ReaderArticle,
   Source,
   SourceSettings,
   SubscriptionDraft
@@ -40,6 +41,7 @@ export const IPC_CHANNELS = {
     list: "entry:list",
     counts: "entry:counts",
     readContent: "entry:read-content",
+    readLanguageVariant: "entry:read-language-variant",
     openEmbedded: "entry:open-embedded",
     loadImage: "entry:load-image",
     markRead: "entry:read",
@@ -81,6 +83,8 @@ export interface ReaderApi {
   listEntries(query?: EntryListQuery): Promise<Entry[]>;
   getLibraryCounts(): Promise<LibraryCounts>;
   readEntry(id: string): Promise<ArticleReadResult>;
+  /** Opens only a language URL declared by the currently loaded article. */
+  readEntryLanguageVariant(id: string, url: string): Promise<ReaderArticle>;
   openEmbeddedEntry(id: string): Promise<void>;
   loadArticleImage(id: string, imageUrl: string): Promise<string>;
   loadSourceIcon(id: string): Promise<string | undefined>;

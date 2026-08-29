@@ -59,4 +59,22 @@ describe("IPC input validation", () => {
     const longArticle = { ...request, request: { ...request.request, article: { ...request.request.article, text: "x".repeat(MAX_AI_ARTICLE_TEXT_LENGTH + 1) } } };
     expect(() => parseAiStreamRequest(longArticle)).toThrow("文章上下文超过 18,000 个字符");
   });
+
+  it("accepts context-free selected-text translation only", () => {
+    const translation = {
+      requestId: "translation_123",
+      request: {
+        provider: "codex-cli",
+        question: "请翻译所选文字。",
+        selection: { text: "Selected text", intent: "translate" }
+      }
+    };
+
+    expect(parseAiStreamRequest(translation)).toEqual(translation);
+    const withArticleContext = {
+      ...translation,
+      request: { ...translation.request, article: { title: "文章标题", text: "不应上传的正文" } }
+    };
+    expect(() => parseAiStreamRequest(withArticleContext)).toThrow("翻译请求不应包含文章上下文");
+  });
 });

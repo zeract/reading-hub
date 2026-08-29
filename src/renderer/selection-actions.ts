@@ -72,7 +72,7 @@ export function normaliseSelectedArticleText(value: string): string | undefined 
 }
 
 export function selectionActionQuestion(intent: AiSelectionIntent, customQuestion?: string): string | undefined {
-  if (intent === "translate") return "请把所选文字翻译成自然、准确的中文，并结合全文语境保留术语、公式与专有名词。";
+  if (intent === "translate") return "请把所选文字翻译成自然、准确的中文。保留术语、公式、专有名词和原有结构；不要补充未提供的全文语境。";
   if (intent === "explain") return "请解释所选文字的含义、关键概念，以及它在全文论述中的作用。";
   const question = customQuestion?.replace(/\s+/g, " ").trim();
   return question || undefined;

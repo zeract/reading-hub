@@ -7,10 +7,18 @@ type AddSourceMethod = "public" | "zhihu" | "x" | "xiaohongshu" | "academic";
 
 export function PreviewDialog({ pending, onCancel, onConfirm, busy }: { pending: PendingPreview; onCancel: () => void; onConfirm: () => void; busy: boolean }) {
   const { probe } = pending;
-  return <Dialog title="确认来源" onClose={onCancel}>
-    <p className="dialog-intro"><strong>{probe.title}</strong><br />{probe.kind === "rss" ? "已发现 Feed，将自动更新。" : probe.kind === "manual" ? "小红书分享链接将作为一次性卡片保存。" : probe.requiresReview ? "结构识别置信度较低，保存后需要校正规则。" : "已识别公开页面结构，将自动更新。"}</p>
-    <div className="preview-list">{probe.preview.slice(0, 4).map((entry) => <div key={entry.url}><strong>{entry.title}</strong><span>{entry.summary}</span></div>)}</div>
-    <div className="dialog-actions"><button onClick={onCancel}>取消</button><button className="primary" onClick={onConfirm} disabled={busy}>保存来源</button></div>
+  return <Dialog title="确认来源" onClose={onCancel} className="dialog--preview">
+    <div className="preview-dialog__body">
+      <p className="dialog-intro"><strong className="preview-source-title" title={probe.title}>{probe.title}</strong><br />{probe.kind === "rss" ? "已发现 Feed，将自动更新。" : probe.kind === "manual" ? "小红书分享链接将作为一次性卡片保存。" : probe.requiresReview ? "结构识别置信度较低，保存后需要校正规则。" : "已识别公开页面结构，将自动更新。"}</p>
+      <div className="preview-list preview-list--source" role="list" aria-label="识别到的文章">
+        {probe.preview.slice(0, 4).map((entry) => {
+          const title = entry.title.trim() || "未命名文章";
+          const summary = entry.summary?.trim() || entry.url;
+          return <div key={entry.url} role="listitem"><strong title={title}>{title}</strong><span title={summary}>{summary}</span></div>;
+        })}
+      </div>
+    </div>
+    <div className="dialog-actions dialog-actions--fixed"><button onClick={onCancel}>取消</button><button className="primary" onClick={onConfirm} disabled={busy}>保存来源</button></div>
   </Dialog>;
 }
 
@@ -284,8 +292,8 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
   </Dialog>;
 }
 
-export function Dialog({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
-  return <div className="modal-backdrop" role="presentation"><section className="dialog" role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button onClick={onClose} aria-label="关闭">×</button></header>{children}</section></div>;
+export function Dialog({ title, children, onClose, className }: { title: string; children: ReactNode; onClose: () => void; className?: string }) {
+  return <div className="modal-backdrop" role="presentation"><section className={`dialog${className ? ` ${className}` : ""}`} role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button onClick={onClose} aria-label="关闭">×</button></header>{children}</section></div>;
 }
 
 function StatusBadge({ status }: { status: Source["status"] }) {

@@ -32,6 +32,69 @@ describe("article reader extraction", () => {
     expect(result?.article.publishedAt).toBe(Date.UTC(2024, 1, 4));
   });
 
+  it("discovers author-declared native language versions without guessing from an arbitrary URL", () => {
+    const result = extractReaderArticle(
+      `<html lang="en"><head><link rel="alternate" hreflang="zh-Hans" href="/reinforcement-learning/2025/12/01/kl-estimators-zh.html"></head><body>
+        <article><header><h1>KL Estimators</h1><a href="/reinforcement-learning/2025/12/01/kl-estimators-zh.html">中文版本 →</a></header>
+        <p>${"A complete English article body. ".repeat(30)}</p></article>
+      </body></html>`,
+      "https://xihuai18.github.io/reinforcement-learning/2025/12/01/kl-estimators-en.html",
+      entry
+    );
+
+    expect(result?.article.activeLanguage).toBe("en");
+    expect(result?.article.url).toBe("https://xihuai18.github.io/reinforcement-learning/2025/12/01/kl-estimators-en.html");
+    expect(result?.article.languageVariants).toEqual([
+      { url: "https://xihuai18.github.io/reinforcement-learning/2025/12/01/kl-estimators-en.html", language: "en", label: "English" },
+      { url: "https://xihuai18.github.io/reinforcement-learning/2025/12/01/kl-estimators-zh.html", language: "zh", label: "中文" }
+    ]);
+  });
+
+  it("does not treat an arbitrary off-site language-labelled link as an article version", () => {
+    const result = extractReaderArticle(
+      `<html lang="en"><body><article><h1>Original article</h1>
+        <p>${"Enough article prose to make this extraction stable. ".repeat(30)}</p>
+        <p><a href="https://translator.example/translated-copy">中文版本</a></p>
+      </article></body></html>`,
+      entry.url,
+      entry
+    );
+
+    expect(result?.article.languageVariants).toEqual([
+      { url: entry.url, language: "en", label: "English" }
+    ]);
+  });
+
+  it("does not mistake a site-wide language navigation for an article version", () => {
+    const result = extractReaderArticle(
+      `<html lang="en"><body><nav><a href="/zh/">中文版本</a></nav><article><h1>Original article</h1>
+        <p>${"Enough article prose to make this extraction stable. ".repeat(30)}</p>
+      </article></body></html>`,
+      entry.url,
+      entry
+    );
+
+    expect(result?.article.languageVariants).toEqual([
+      { url: entry.url, language: "en", label: "English" }
+    ]);
+  });
+
+  it("keeps a neutral original-language entry when the publisher omits html lang", () => {
+    const result = extractReaderArticle(
+      `<html><body><article><header><h1>Original article</h1><a href="/articles/translated">中文版本</a></header>
+        <p>${"Enough article prose to make this extraction stable. ".repeat(30)}</p>
+      </article></body></html>`,
+      entry.url,
+      entry
+    );
+
+    expect(result?.article.activeLanguage).toBe("und");
+    expect(result?.article.languageVariants).toEqual([
+      { url: entry.url, language: "und", label: "原文" },
+      { url: "https://example.com/articles/translated", language: "zh", label: "中文" }
+    ]);
+  });
+
   it("keeps the complete article body and normalises relative images without allowing executable markup", () => {
     const longTitle = `完整标题 ${"不会被截断 ".repeat(40)}`.trim();
     const result = extractReaderArticle(
@@ -1017,6 +1080,46 @@ describe("article reader extraction", () => {
 
     expect(article.title).toBe("渲染后正文");
     expect(article.contentHtml).toContain('class="katex"');
+  });
+
+  it("switches only to a short-lived, author-declared language variant", async () => {
+    const englishUrl = "https://xihuai18.github.io/reinforcement-learning/2025/12/01/kl-estimators-en.html";
+    const chineseUrl = "https://xihuai18.github.io/reinforcement-learning/2025/12/01/kl-estimators-zh.html";
+    const bilingualEntry: Entry = { ...entry, url: englishUrl, canonicalUrl: englishUrl };
+    const getText = vi.fn(async (url: string) => {
+      if (url === englishUrl) {
+        return {
+          url: englishUrl,
+          text: `<html lang="en"><body><article><header><h1>KL estimators</h1><a href="${chineseUrl}">中文版本 →</a></header><p>${"English body. ".repeat(40)}</p></article></body></html>`
+        };
+      }
+      if (url === chineseUrl) {
+        return {
+          url: chineseUrl,
+          text: `<html lang="zh-CN"><body><article><header><h1>KL 估计量</h1><a href="${englishUrl}">English Version →</a></header><p>${"中文正文。".repeat(80)}</p></article></body></html>`
+        };
+      }
+      throw new Error(`unexpected URL ${url}`);
+    });
+    const reader = new ArticleReader(
+      { getText } as unknown as PublicHttpClient,
+      { render: async () => { throw new Error("renderer must not be used"); } }
+    );
+
+    const initial = await reader.read(bilingualEntry);
+    const switched = await reader.readLanguageVariant(bilingualEntry, undefined, chineseUrl);
+
+    expect(initial.activeLanguage).toBe("en");
+    expect(switched.url).toBe(chineseUrl);
+    expect(switched.title).toBe("KL 估计量");
+    expect(switched.activeLanguage).toBe("zh");
+    expect(switched.languageVariants).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: englishUrl, language: "en" }),
+      expect.objectContaining({ url: chineseUrl, language: "zh" })
+    ]));
+    const callsBeforeRejectedSwitch = getText.mock.calls.length;
+    await expect(reader.readLanguageVariant(bilingualEntry, undefined, "https://untrusted.example/translation")).rejects.toThrow("语言版本已过期或不可用");
+    expect(getText).toHaveBeenCalledTimes(callsBeforeRejectedSwitch);
   });
 
   it("propagates an audit cancellation to the active fetch and does not enter renderer fallback", async () => {

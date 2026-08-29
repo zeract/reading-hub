@@ -61,6 +61,13 @@ describe("reader display-equation layout", () => {
     expect(styles).not.toContain(".reader-article h1 { margin: 0; color: var(--ink); font-family: \"Iowan Old Style\",\"Songti SC\",\"STSong\",Georgia,serif; font-size: clamp(32px,3.8vw,51px);");
   });
 
+  it("keeps publisher language switching compact and bounded inside the reader toolbar", () => {
+    expect(styles).toMatch(/\.reader-toolbar-settings\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;[^}]*justify-content:\s*center/s);
+    expect(styles).toMatch(/\.reader-language-switcher\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;[^}]*overflow:\s*hidden/s);
+    expect(styles).toMatch(/\.reader-language-switcher button\s*\{[^}]*max-width:\s*7\.5em;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/s);
+    expect(styles).toMatch(/\.reader-language-switcher button\.selected\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--accent-ink\)/s);
+  });
+
   it("uses a restrained native-blue palette for selection and keeps translation as a separate soft signal", () => {
     expect(styles).toContain("--accent: #4f7ea8;");
     expect(styles).toContain("--selection-surface: #dce8f5;");

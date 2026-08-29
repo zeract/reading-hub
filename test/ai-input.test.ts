@@ -34,9 +34,11 @@ describe("AI article IPC input", () => {
     expect(text).not.toContain("不应收集");
   });
 
-  it("uses the same context builder for the panel and selected-text helper", () => {
+  it("omits article context for translation while retaining the shared full-context path for questions", () => {
     const reader = readFileSync(resolve(process.cwd(), "src", "renderer", "reader-view.tsx"), "utf8");
-    expect([...reader.matchAll(/article:\s*toAiArticleContext\(article, sourceTitle\)/g)]).toHaveLength(2);
+    expect(reader).toContain('selection?.intent === "translate"');
+    expect(reader).toContain('if (selection?.intent === "translate") return {};');
+    expect([...reader.matchAll(/\.\.\.articlePayloadForAiRequest\(article, sourceTitle,/g)]).toHaveLength(2);
     expect(reader).toContain("collectAiArticleText(textNodeValues(document.body))");
     expect(reader).not.toContain("document.body.textContent");
   });

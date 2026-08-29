@@ -118,6 +118,36 @@ describe("AI learning service", () => {
     expect(prompt).toContain("不可信参考材料");
   });
 
+  it("sends selected text only for translation, never the article context", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ output_text: "这是翻译。" }));
+    const service = new AiService(new MemorySecrets(), fetcher);
+    await configure(service, "openai");
+    const privateArticle = {
+      title: "含术语的文章标题",
+      url: "https://example.com/private-article",
+      sourceTitle: "不应发送的来源名称",
+      text: "ARTICLE_BODY_MUST_NEVER_REACH_THE_TRANSLATION_PROVIDER"
+    };
+
+    await ask(service, {
+      provider: "openai",
+      question: "请翻译所选文字。",
+      selection: { intent: "translate", text: "Selected technical phrase" },
+      // The service also defends against an old renderer that mistakenly
+      // includes the normal context shape.
+      article: privateArticle
+    });
+
+    const request = JSON.parse(String(fetcher.mock.calls[0][1].body));
+    const prompt = request.input[1].content[0].text as string;
+    expect(prompt).toContain("Selected technical phrase");
+    expect(prompt).not.toContain("ARTICLE_BODY_MUST_NEVER_REACH_THE_TRANSLATION_PROVIDER");
+    expect(prompt).not.toContain("https://example.com/private-article");
+    expect(prompt).not.toContain("不应发送的来源名称");
+    expect(prompt).not.toContain("含术语的文章标题");
+    expect(prompt).not.toContain("<article-excerpt>");
+  });
+
   it("does not forward raw provider diagnostics from a streaming error", async () => {
     const fetcher = vi.fn().mockResolvedValue(eventStream([
       "data: {\"type\":\"error\",\"error\":{\"message\":\"token test-key should not leak\"}}\n\n"

@@ -141,6 +141,37 @@ export function parseAiStreamRequest(value: unknown): AiStreamRequest {
   if (!AI_PROVIDERS.includes(request.provider as typeof AI_PROVIDERS[number])) throw new Error("AI 服务无效，请重新选择。");
   if (typeof request.question !== "string") throw new Error("AI 问题无效，请重新输入。");
   if (request.question.length > MAX_AI_QUESTION_LENGTH) throw new Error("问题过长，请控制在 3,000 个字符以内。");
+  if (selection !== undefined) {
+    if (!isRecord(selection) || typeof selection.text !== "string" || selection.text.length > MAX_AI_SELECTION_TEXT_LENGTH
+      || !["translate", "explain", "ask"].includes(selection.intent as string)) {
+      throw new Error("所选文字请求无效，请重新选择文章内容。");
+    }
+  }
+  const parsedSelection: AiSelectionContext | undefined = selection === undefined
+    ? undefined
+    : { text: selection.text as string, intent: selection.intent as AiSelectionContext["intent"] };
+  const parsedArticle = parsedSelection?.intent === "translate"
+    ? parseAiTranslationPayload(article)
+    : parseRequiredAiArticleContext(article);
+  const parsedRequest: AiQuestionRequest = {
+    provider: request.provider as AiProviderId,
+    question: request.question as string,
+    ...(parsedArticle ? { article: parsedArticle } : {}),
+    ...(parsedSelection ? { selection: parsedSelection } : {})
+  };
+  return { requestId: value.requestId, request: parsedRequest };
+}
+
+/**
+ * A translation request is purposefully context-free. Rejecting any article
+ * field catches renderer regressions before an external provider sees it.
+ */
+function parseAiTranslationPayload(article: unknown): undefined {
+  if (article !== undefined) throw new Error("翻译请求不应包含文章上下文，请刷新文章后重试。");
+  return undefined;
+}
+
+function parseRequiredAiArticleContext(article: unknown): AiArticleContext {
   if (!isRecord(article)) throw new Error("AI 文章上下文无效，请刷新文章后重试。");
   if (typeof article.title !== "string" || article.title.length > MAX_AI_ARTICLE_TITLE_LENGTH) throw new Error("AI 文章标题无效，请刷新文章后重试。");
   if (typeof article.url !== "string" || article.url.length > MAX_AI_ARTICLE_URL_LENGTH) throw new Error("AI 文章链接无效，请刷新文章后重试。");
@@ -149,28 +180,12 @@ export function parseAiStreamRequest(value: unknown): AiStreamRequest {
   if (article.sourceTitle !== undefined && (typeof article.sourceTitle !== "string" || article.sourceTitle.length > MAX_AI_SOURCE_TITLE_LENGTH)) {
     throw new Error("AI 文章来源无效，请刷新文章后重试。");
   }
-  if (selection !== undefined) {
-    if (!isRecord(selection) || typeof selection.text !== "string" || selection.text.length > MAX_AI_SELECTION_TEXT_LENGTH
-      || !["translate", "explain", "ask"].includes(selection.intent as string)) {
-      throw new Error("所选文字请求无效，请重新选择文章内容。");
-    }
-  }
-  const parsedArticle: AiArticleContext = {
-    title: article.title as string,
-    url: article.url as string,
-    text: article.text as string,
-    ...(article.sourceTitle === undefined ? {} : { sourceTitle: article.sourceTitle as string })
+  return {
+    title: article.title,
+    url: article.url,
+    text: article.text,
+    ...(article.sourceTitle === undefined ? {} : { sourceTitle: article.sourceTitle })
   };
-  const parsedSelection: AiSelectionContext | undefined = selection === undefined
-    ? undefined
-    : { text: selection.text as string, intent: selection.intent as AiSelectionContext["intent"] };
-  const parsedRequest: AiQuestionRequest = {
-    provider: request.provider as AiProviderId,
-    question: request.question as string,
-    article: parsedArticle,
-    ...(parsedSelection ? { selection: parsedSelection } : {})
-  };
-  return { requestId: value.requestId, request: parsedRequest };
 }
 
 function numericTimestamp(value: unknown, message: string): number | undefined {

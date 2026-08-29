@@ -253,6 +253,22 @@ export interface ReaderFormulaDiagnostics {
   formulaRenderPolicy?: "standard" | "scientific-document";
 }
 
+/**
+ * An author-declared native-language version of the current article.
+ *
+ * This is intentionally transient reader metadata: it is discovered from the
+ * page's own alternate-language links and never becomes a subscription,
+ * credential, or stored copy of the translated article.
+ */
+export interface ReaderLanguageVariant {
+  /** Public URL that the main process has already approved for this article. */
+  url: string;
+  /** BCP 47 primary language tag where the publisher made it available. */
+  language: string;
+  /** A compact reader-facing label such as “English” or “中文”. */
+  label: string;
+}
+
 /** A transient, sanitised article document shown only inside the local reader. */
 export interface ReaderArticle {
   entryId: string;
@@ -271,6 +287,10 @@ export interface ReaderArticle {
   contentMode?: "article" | "feed_body" | "feed_summary";
   /** Safe count-only telemetry used by the local reader audit. */
   formulaDiagnostics?: ReaderFormulaDiagnostics;
+  /** Publisher-declared versions available for this article, including this page. */
+  languageVariants?: ReaderLanguageVariant[];
+  /** Primary language tag for the version currently rendered in this reader. */
+  activeLanguage?: string;
   contentHtml: string;
 }
 
@@ -328,7 +348,11 @@ export interface AiQuestionRequest {
   question: string;
   /** Present only after the reader deliberately invokes an action on selected article text. */
   selection?: AiSelectionContext;
-  article: AiArticleContext;
+  /**
+   * Translation carries no article context at all. Explanation and free-form
+   * questions carry the normal bounded article excerpt.
+   */
+  article?: AiArticleContext;
 }
 
 export type AiSelectionIntent = "translate" | "explain" | "ask";
