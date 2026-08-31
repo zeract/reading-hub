@@ -14,8 +14,11 @@ import type {
   ProfileSubscriptionInput,
   ReaderArticle,
   Source,
+  SourceCollectionSettings,
+  SourceFacet,
   SourceSettings,
-  SubscriptionDraft
+  SubscriptionDraft,
+  SubscriptionScope
 } from "./types";
 
 /**
@@ -33,6 +36,9 @@ export const IPC_CHANNELS = {
     remove: "source:delete",
     refresh: "source:refresh",
     updateSettings: "source:update-settings",
+    collectionSettings: "source:collection-settings",
+    updateCollectionScope: "source:update-collection-scope",
+    inspectCollectionFacets: "source:inspect-collection-facets",
     updateRule: "source:update-rule",
     calibration: "source:calibration",
     loadIcon: "source:load-icon"
@@ -77,6 +83,9 @@ export interface ReaderApi {
   deleteSource(id: string): Promise<void>;
   refreshSource(id: string): Promise<SourceSyncResult>;
   updateSourceSettings(id: string, settings: SourceSettings): Promise<Source>;
+  getSourceCollectionSettings(id: string): Promise<SourceCollectionSettings>;
+  updateSourceCollectionScope(id: string, scope: SubscriptionScope): Promise<SourceCollectionSettings>;
+  inspectSourceCollectionFacets(id: string): Promise<SourceFacet[]>;
   updateRule(id: string, rule: Source["extractionRule"]): Promise<void>;
   calibrateSource(id: string): Promise<CalibrationResult>;
   subscribeXiaohongshuProfile(input: ProfileSubscriptionInput): Promise<Source>;

@@ -6,7 +6,7 @@ import { MAX_FUTURE_PUBLICATION_SKEW_MS } from "../../shared/publication-date";
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 type SqliteDatabase = Database.Database;
 
@@ -206,6 +206,54 @@ const MIGRATIONS: readonly SchemaMigration[] = [
       // represent already-published content so they do not sort as future.
       database.prepare("UPDATE entries SET published_at = NULL WHERE published_at > ?")
         .run(Date.now() + MAX_FUTURE_PUBLICATION_SKEW_MS);
+    }
+  },
+  {
+    version: 5,
+    name: "add-source-scoped-content-facets-and-subscription-scopes",
+    up: (database) => {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS facets (
+          id TEXT PRIMARY KEY,
+          scheme TEXT NOT NULL,
+          facet_key TEXT NOT NULL,
+          label TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE (scheme, facet_key)
+        );
+        CREATE TABLE IF NOT EXISTS entry_origin_facets (
+          entry_id TEXT NOT NULL,
+          source_id TEXT NOT NULL,
+          provider_id TEXT NOT NULL,
+          external_id TEXT NOT NULL DEFAULT '',
+          facet_id TEXT NOT NULL REFERENCES facets(id) ON DELETE CASCADE,
+          PRIMARY KEY (entry_id, source_id, provider_id, external_id, facet_id),
+          FOREIGN KEY (entry_id, source_id, provider_id, external_id)
+            REFERENCES entry_origins(entry_id, source_id, provider_id, external_id)
+            ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS entry_origin_facets_source_facet
+          ON entry_origin_facets(source_id, facet_id, entry_id);
+        CREATE TABLE IF NOT EXISTS subscription_scopes (
+          subscription_id TEXT PRIMARY KEY REFERENCES subscriptions(id) ON DELETE CASCADE,
+          history_mode TEXT NOT NULL DEFAULT 'none',
+          history_limit INTEGER,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS subscription_scope_facets (
+          subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+          facet_id TEXT NOT NULL REFERENCES facets(id) ON DELETE CASCADE,
+          PRIMARY KEY (subscription_id, facet_id)
+        );
+        CREATE INDEX IF NOT EXISTS subscription_scope_facets_subscription
+          ON subscription_scope_facets(subscription_id, facet_id);
+      `);
+      // Explicitly materialise the conservative default for existing targets.
+      // This is data-only: it neither probes an archive nor changes source
+      // configuration, so opening an upgraded database cannot trigger a sync.
+      database.prepare(`INSERT OR IGNORE INTO subscription_scopes (subscription_id, history_mode, history_limit, updated_at)
+        SELECT id, 'none', NULL, ? FROM subscriptions`).run(Date.now());
     }
   }
 ];

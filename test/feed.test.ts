@@ -25,6 +25,38 @@ describe("feed parser", () => {
     expect(feed.iconUrl).toBe("https://example.com/assets/site-icon.png");
   });
 
+  it("maps RSS and Atom category terms into publisher-scoped facets", async () => {
+    const rss = await parseFeed(
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>Facet Feed</title><item><title>RSS item</title><link>/rss-item</link><category domain="https://example.com/categories">Machine Learning</category><category>Systems</category></item></channel></rss>`,
+      "https://example.com/feed.xml"
+    );
+    const atom = await parseFeed(
+      `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Facet Feed</title><entry><title>Atom item</title><id>https://example.com/atom-item</id><link href="https://example.com/atom-item"/><category term="ml" label="Machine Learning"/><category term="systems"/></entry></feed>`,
+      "https://example.com/atom.xml"
+    );
+
+    expect(rss.entries[0]?.facets).toEqual([
+      { scheme: "feed:https://example.com:category", key: "machine-learning", label: "Machine Learning" },
+      { scheme: "feed:https://example.com:category", key: "systems", label: "Systems" }
+    ]);
+    expect(atom.entries[0]?.facets).toEqual([
+      { scheme: "feed:https://example.com:category", key: "ml", label: "Machine Learning" },
+      { scheme: "feed:https://example.com:category", key: "systems", label: "systems" }
+    ]);
+  });
+
+  it("maps JSON Feed tags into source-scoped tag facets", async () => {
+    const feed = await parseFeed(
+      JSON.stringify({ version: "https://jsonfeed.org/version/1", title: "JSON Feed", items: [{ id: "x", url: "/post", title: "JSON 条目", tags: ["AI", "中文 标签", "AI"] }] }),
+      "https://example.com/feed.json"
+    );
+
+    expect(feed.entries[0]?.facets).toEqual([
+      { scheme: "feed:https://example.com:tag", key: "ai", label: "AI" },
+      { scheme: "feed:https://example.com:tag", key: "中文-标签", label: "中文 标签" }
+    ]);
+  });
+
   it("retains a declared RSS channel image as source metadata", async () => {
     const feed = await parseFeed(
       `<?xml version="1.0"?><rss version="2.0"><channel><title>测试订阅</title><image><url>/static/logo.png</url><title>测试订阅</title><link>https://example.com/</link></image><item><title>第一条</title><link>/first</link></item></channel></rss>`,

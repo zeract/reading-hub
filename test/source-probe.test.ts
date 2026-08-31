@@ -37,6 +37,72 @@ describe("SourceProbe platform boundaries", () => {
     });
   });
 
+  it("records an explicit archive descriptor without downloading history during Feed preview", async () => {
+    const http = {
+      getText: vi.fn(async (url: string) => {
+        if (url === "https://example.com/feed.xml") {
+          return {
+            url,
+            status: 200,
+            contentType: "application/rss+xml",
+            text: `<?xml version="1.0"?><rss version="2.0"><channel><title>Example</title><link>https://example.com/</link><item><title>Current post</title><link>/post/current</link></item></channel></rss>`
+          };
+        }
+        if (url === "https://example.com/") {
+          return { url, status: 200, contentType: "text/html", text: `<a href="/archive.html">Archive</a>` };
+        }
+        throw new Error(`unexpected history request: ${url}`);
+      })
+    };
+    const probe = new SourceProbe(http as any);
+
+    await expect(probe.probe("https://example.com/feed.xml")).resolves.toMatchObject({
+      kind: "rss",
+      historicalArchiveUrl: "https://example.com/archive.html",
+      message: expect.stringContaining("默认只收集 Feed 最新内容")
+    });
+    expect(http.getText.mock.calls.map(([url]) => url)).toEqual(["https://example.com/feed.xml", "https://example.com/"]);
+  });
+
+  it("does not attach an aggregator's archive to a third-party Feed", async () => {
+    const http = {
+      getText: vi.fn(async (url: string) => {
+        if (url === "https://aggregator.example/") {
+          return {
+            url,
+            status: 200,
+            contentType: "text/html",
+            text: `<link rel="alternate" type="application/rss+xml" href="https://publisher.example/feed.xml"><a href="/archive.html">Archive</a>`
+          };
+        }
+        if (url === "https://publisher.example/feed.xml") {
+          return {
+            url,
+            status: 200,
+            contentType: "application/rss+xml",
+            text: `<?xml version="1.0"?><rss version="2.0"><channel><title>Publisher</title><link>https://publisher.example/</link><item><title>Post</title><link>/post</link></item></channel></rss>`
+          };
+        }
+        if (url === "https://publisher.example/") {
+          return { url, status: 200, contentType: "text/html", text: "<main>Publisher homepage</main>" };
+        }
+        throw new Error(`unexpected archive request: ${url}`);
+      })
+    };
+    const probe = new SourceProbe(http as any);
+
+    await expect(probe.probe("https://aggregator.example/")).resolves.toMatchObject({
+      kind: "rss",
+      url: "https://publisher.example/feed.xml",
+      historicalArchiveUrl: undefined
+    });
+    expect(http.getText.mock.calls.map(([url]) => url)).toEqual([
+      "https://aggregator.example/",
+      "https://publisher.example/feed.xml",
+      "https://publisher.example/"
+    ]);
+  });
+
   it("accepts an explicit loopback endpoint only when it is a real feed", async () => {
     const http = {
       getText: vi.fn(async () => ({

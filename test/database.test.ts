@@ -449,6 +449,105 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("persists facets per source-origin, exposes source counts, and filters the library safely", () => {
+    const db = new ReadingDatabase(":memory:");
+    const primary = db.createSource({ url: "https://example.com/feed", title: "Primary", kind: "rss", pollingEnabled: true });
+    const mirror = db.createSource({ url: "https://mirror.example/feed", title: "Mirror", kind: "rss", pollingEnabled: true });
+    const category = { scheme: "feed:https://example.com:category", key: "machine-learning", label: "机器学习" };
+    const tag = { scheme: "feed:https://mirror.example:tag", key: "research", label: "Research" };
+    const canonicalUrl = "https://example.com/posts/shared";
+
+    db.saveEntries([
+      entry(primary.id, "Shared", { canonicalUrl, url: canonicalUrl, facets: [category] }),
+      entry(mirror.id, "Shared", { canonicalUrl, url: canonicalUrl, facets: [tag] })
+    ]);
+
+    const stored = db.listEntries()[0]!;
+    expect(stored.facets).toEqual(expect.arrayContaining([category, tag]));
+    expect(stored.origins?.find((origin) => origin.sourceId === primary.id)?.facets).toEqual([category]);
+    expect(stored.origins?.find((origin) => origin.sourceId === mirror.id)?.facets).toEqual([tag]);
+    expect(db.listSourceFacets(primary.id)).toEqual([{ ...category, sourceId: primary.id, entryCount: 1 }]);
+    expect(db.getSourceCollectionSettings(primary.id)).toEqual({
+      scope: { facetSelections: [], history: { mode: "none" } },
+      facets: [{ ...category, sourceId: primary.id, entryCount: 1 }]
+    });
+    expect(db.listEntries({ sourceId: primary.id, facetSelections: [{ scheme: category.scheme, key: category.key }] })).toHaveLength(1);
+    expect(db.listEntries({ sourceId: primary.id, facetSelections: [{ scheme: tag.scheme, key: tag.key }] })).toEqual([]);
+
+    // An explicit empty category response updates only this source-origin;
+    // the mirror's independently declared tag remains attached to the card.
+    db.saveEntries([entry(primary.id, "Shared", { canonicalUrl, url: canonicalUrl, facets: [] })]);
+    const afterClear = db.listEntries()[0]!;
+    expect(afterClear.facets).toEqual([tag]);
+    expect(afterClear.origins?.find((origin) => origin.sourceId === primary.id)?.facets).toEqual([]);
+    expect(db.listSourceFacets(primary.id)).toEqual([]);
+    expect(db.listSourceFacets(mirror.id)).toEqual([{ ...tag, sourceId: mirror.id, entryCount: 1 }]);
+    db.deleteSource(primary.id);
+    expect(db.listEntries(mirror.id)[0]?.facets).toEqual([tag]);
+    expect(db.listEntries(mirror.id)[0]?.origins).toEqual([expect.objectContaining({ sourceId: mirror.id, facets: [tag] })]);
+    db.close();
+  });
+
+  it("persists a bounded subscription scope without changing legacy source configuration", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({
+      url: "https://example.com/feed",
+      title: "Example",
+      kind: "rss",
+      config: { legacyOption: true },
+      pollingEnabled: true
+    });
+    const selected = { scheme: "feed:https://example.com:category", key: "systems", label: "系统" };
+
+    const subscription = db.updateSubscriptionScope(source.id, {
+      facetSelections: [selected, { ...selected }],
+      history: { mode: "selected", limit: 100 }
+    });
+
+    expect(subscription.scope).toEqual({ facetSelections: [selected], history: { mode: "selected", limit: 100 } });
+    expect(db.getSubscriptionForSource(source.id)?.scope).toEqual(subscription.scope);
+    expect(db.getSource(source.id)?.config).toEqual({ legacyOption: true });
+    expect(() => db.updateSubscriptionScope(source.id, { facetSelections: [], history: { mode: "selected" } }))
+      .toThrow("选择分类历史时至少选择一个分类");
+    expect(() => db.updateSubscriptionScope(source.id, { facetSelections: [selected], history: { mode: "all" } }))
+      .toThrow("不能同时筛选文章分类");
+    db.close();
+  });
+
+  it("uses a source's saved scope for its normal timeline without deleting retained cards", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+    const systems = { scheme: "feed:https://example.com:category", key: "systems", label: "Systems" };
+    db.saveEntries([
+      entry(source.id, "Systems", { canonicalUrl: "https://example.com/systems", url: "https://example.com/systems", facets: [systems] }),
+      entry(source.id, "ML", { canonicalUrl: "https://example.com/ml", url: "https://example.com/ml", facets: [{ scheme: systems.scheme, key: "ml", label: "ML" }] })
+    ]);
+    db.updateSubscriptionScope(source.id, { facetSelections: [systems], history: { mode: "none" } });
+
+    expect(db.listEntries(source.id).map((item) => item.title)).toEqual(["Systems"]);
+    const retained = db.listEntries({ sourceId: source.id, facetSelections: [] }).map((item) => item.title);
+    expect(retained).toHaveLength(2);
+    expect(retained).toEqual(expect.arrayContaining(["ML", "Systems"]));
+    db.close();
+  });
+
+  it("resets a selected collection scope when the connector kind changes", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+    db.updateSubscriptionScope(source.id, {
+      facetSelections: [{ scheme: "feed:https://example.com:category", key: "systems", label: "系统" }],
+      history: { mode: "selected", limit: 50 }
+    });
+
+    db.updateSourceSettings(source.id, { title: "Example", kind: "generic", pollingEnabled: true });
+
+    expect(db.getSubscriptionForSource(source.id)).toMatchObject({
+      connectorId: "generic",
+      scope: { facetSelections: [], history: { mode: "none" } }
+    });
+    db.close();
+  });
+
   it("creates a compatibility subscription and persists checkpoints separately from source metadata", () => {
     const db = new ReadingDatabase(":memory:");
     const account = db.saveAccount({ connectorId: "x", displayName: "X", scopes: [], status: "active" });

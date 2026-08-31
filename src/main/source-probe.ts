@@ -1,6 +1,6 @@
 import { extractCalibrationCandidates, extractGenericPage } from "./extractor";
 import { discoverFeedUrls, parseFeed, looksLikeFeed } from "./feed";
-import { discoverPublicArchive, type PublicArchive } from "./archive-backfill";
+import { discoverPublicArchiveUrl, findPublicArchiveUrls } from "./archive-backfill";
 import { loadGenericPage } from "./generic-page-loader";
 import { PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
@@ -19,18 +19,18 @@ export class SourceProbe {
       : await loadGenericPage(this.http, this.renderer, input);
     if (looksLikeFeed(page.contentType, page.text)) {
       const feed = await parseFeed(page.text, page.url);
-      const archive = localFeed ? undefined : await this.discoverFeedArchive(feed.siteUrl);
+      const archiveUrl = localFeed ? undefined : await this.discoverFeedArchive(feed.siteUrl);
       return {
         kind: "rss",
         title: feed.title,
         url: page.url,
         confidence: 1,
         preview: feed.entries.slice(0, 10),
-        historicalArchiveUrl: archive?.url,
+        historicalArchiveUrl: archiveUrl,
         requiresReview: false,
         message: localFeed
           ? "已验证本机 Feed；只会按 RSS/Atom/JSON Feed 读取。"
-          : archive ? `发现作者公开归档；保存后会一次性补全 ${archive.entries.length} 篇历史文章。` : undefined
+          : archiveUrl ? archiveDiscoveryMessage() : undefined
       };
     }
 
@@ -41,16 +41,20 @@ export class SourceProbe {
         const feedResponse = await this.http.getText(feedUrl);
         if (!looksLikeFeed(feedResponse.contentType, feedResponse.text)) continue;
         const feed = await parseFeed(feedResponse.text, feedResponse.url);
-        const archive = await this.discoverFeedArchive(feed.siteUrl);
+        // The source page is already available during this probe, so prefer
+        // its archive link only when it belongs to the Feed's declared site.
+        // An aggregator can legally link to a third-party Feed; its own
+        // archive must never become that Feed's history catalogue.
+        const archiveUrl = archiveUrlForFeedHomepage(page.text, page.url, feed.siteUrl) ?? await this.discoverFeedArchive(feed.siteUrl);
         return {
           kind: "rss",
           title: feed.title,
           url: feedResponse.url,
           confidence: 0.98,
           preview: feed.entries.slice(0, 10),
-          historicalArchiveUrl: archive?.url,
+          historicalArchiveUrl: archiveUrl,
           requiresReview: false,
-          message: archive ? `发现作者公开归档；保存后会一次性补全 ${archive.entries.length} 篇历史文章。` : undefined
+          message: archiveUrl ? archiveDiscoveryMessage() : undefined
         };
       } catch {
         // A broken alternate link should not prevent the generic-page fallback.
@@ -127,15 +131,29 @@ export class SourceProbe {
     return { url: response.url, text: response.text, contentType: response.contentType, fromRenderer: false };
   }
 
-  private async discoverFeedArchive(siteUrl: string | undefined): Promise<PublicArchive | undefined> {
+  private async discoverFeedArchive(siteUrl: string | undefined): Promise<string | undefined> {
     if (!siteUrl) return undefined;
     try {
-      return await discoverPublicArchive(this.http, siteUrl);
+      return await discoverPublicArchiveUrl(this.http, siteUrl);
     } catch {
-      // Historical backfill is an optional enhancement. A temporary archive
+      // Archive catalogue discovery is an optional enhancement. A temporary
       // failure must never prevent a valid Feed from being added or refreshed.
       return undefined;
     }
+  }
+}
+
+function archiveDiscoveryMessage(): string {
+  return "发现作者公开归档；默认只收集 Feed 最新内容。可在来源设置中选择分类或导入历史内容。";
+}
+
+function archiveUrlForFeedHomepage(html: string, pageUrl: string, feedSiteUrl: string | undefined): string | undefined {
+  if (!feedSiteUrl) return undefined;
+  try {
+    const feedOrigin = new URL(feedSiteUrl).origin;
+    return findPublicArchiveUrls(html, pageUrl).find((candidate) => new URL(candidate).origin === feedOrigin);
+  } catch {
+    return undefined;
   }
 }
 

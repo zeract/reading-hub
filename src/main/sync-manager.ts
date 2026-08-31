@@ -1,4 +1,5 @@
-import type { RawEntry, Source, SyncResult } from "../shared/types";
+import type { RawEntry, Source, Subscription, SyncResult } from "../shared/types";
+import { entryMatchesSubscriptionScope, normaliseSubscriptionScope } from "../shared/subscription-scope";
 import { ContentMaintenance } from "./content-maintenance";
 import { ReadingDatabase } from "./database";
 import { ConnectorRegistry } from "./connector-registry";
@@ -77,7 +78,7 @@ export class SyncManager {
         const connector = this.registry.get(subscription.connectorId);
         if (connector.manifest.requiresAccount && !account) throw new Error(`${connector.manifest.displayName} 需要重新授权。`);
         const outcome = await connector.sync({ source, subscription, account, checkpoint: this.db.getCheckpoint(subscription.id) });
-        const currentSource = currentSourceForSync(this.db, source, subscription.connectorId);
+        const currentSource = currentSourceForSync(this.db, source, subscription);
         let effectiveSource = connectorId === "generic" && outcome.extractionRule
           ? this.db.replaceAutomaticRule(currentSource.id, outcome.extractionRule)
           : currentSource;
@@ -89,7 +90,13 @@ export class SyncManager {
         // successful response. We never delete ordinary entries merely
         // because a paginated Feed no longer returns them.
         if (!outcome.notModified) this.db.deleteNonContentFeedNavigationEntries(effectiveSource, Boolean(effectiveSource.extractionRule?.feedUrl));
-        const inserted = outcome.notModified ? 0 : this.saveRawEntries(effectiveSource, outcome.entries);
+        // A connector only maps provider records into the shared shape.  The
+        // host owns collection policy so category filters cannot slowly drift
+        // across RSS, web, platform, or future adapters.
+        const saved = outcome.notModified
+          ? { inserted: 0, accepted: 0 }
+          : this.saveRawEntries(effectiveSource, outcome.entries, subscription);
+        const inserted = saved.inserted;
         this.maintenance?.afterSuccessfulSync(effectiveSource);
         if (outcome.checkpoint) this.db.saveCheckpoint(subscription.id, outcome.checkpoint);
         const updated = this.db.markSuccess(effectiveSource, {
@@ -97,8 +104,12 @@ export class SyncManager {
           lastModified: outcome.lastModified,
           empty: !outcome.emptyIsHealthy && !outcome.notModified && outcome.entries.length === 0
         });
-        this.db.recordSyncEvent(source.id, updated.status === "needs_review" ? "warning" : "success", outcome.entries.length, inserted,
-          updated.status === "needs_review" ? "来源需要复核提取规则" : undefined);
+        const eventMessage = updated.status === "needs_review"
+          ? "来源需要复核提取规则"
+          : outcome.entries.length > 0 && saved.accepted === 0 && subscription.scope.facetSelections.length > 0
+            ? "本次内容不在已选分类内；已正常推进同步状态"
+            : undefined;
+        this.db.recordSyncEvent(source.id, updated.status === "needs_review" ? "warning" : "success", outcome.entries.length, inserted, eventMessage);
         await this.afterSuccessfulSync?.(updated, outcome);
         return { inserted, source: updated };
       } catch (error) {
@@ -115,13 +126,16 @@ export class SyncManager {
   }
 
   savePreview(source: Source, entries: RawEntry[]): number {
-    return this.saveRawEntries(source, entries);
+    return this.saveRawEntries(source, entries).inserted;
   }
 
-  private saveRawEntries(source: Source, entries: RawEntry[]): number {
+  private saveRawEntries(source: Source, entries: RawEntry[], subscription?: Subscription): { inserted: number; accepted: number } {
     const connector = this.registry.get(source.connectorId ?? source.kind);
     const normalized = entries.map((entry) => connector.normalize(entry, source));
-    return this.db.saveEntries(normalized);
+    const accepted = subscription
+      ? normalized.filter((entry) => entryMatchesSubscriptionScope(entry, subscription.scope))
+      : normalized;
+    return { inserted: this.db.saveEntries(accepted), accepted: accepted.length };
   }
 
   private scheduleDueRun(): void {
@@ -141,7 +155,7 @@ export class SyncManager {
 export class SyncFailure extends Error {}
 export class SyncCancelledError extends Error {}
 
-function currentSourceForSync(database: ReadingDatabase, initial: Source, connectorId: string): Source {
+function currentSourceForSync(database: ReadingDatabase, initial: Source, initialSubscription: Subscription): Source {
   const current = database.getSource(initial.id);
   if (!current) throw new SyncCancelledError("来源已被删除，已取消此次同步。");
   // An explicit pause is a user/compliance decision, not an error state to be
@@ -149,8 +163,13 @@ function currentSourceForSync(database: ReadingDatabase, initial: Source, connec
   if (!current.pollingEnabled || current.status === "paused") {
     throw new SyncCancelledError("来源已暂停，已取消此次同步。");
   }
-  if (current.kind !== initial.kind || (current.connectorId ?? current.kind) !== connectorId) {
+  if (current.kind !== initial.kind || (current.connectorId ?? current.kind) !== initialSubscription.connectorId) {
     throw new SyncCancelledError("来源类型已更新，已取消旧的同步结果。");
+  }
+  const currentSubscription = database.getSubscriptionForSource(current.id);
+  if (!currentSubscription || currentSubscription.id !== initialSubscription.id
+    || JSON.stringify(normaliseSubscriptionScope(currentSubscription.scope)) !== JSON.stringify(normaliseSubscriptionScope(initialSubscription.scope))) {
+    throw new SyncCancelledError("收集范围已更新，已取消旧的同步结果。");
   }
   // A calibration replaces the old cards and is an explicit user decision.
   // Never reinsert an in-flight extraction based on the previous rule.

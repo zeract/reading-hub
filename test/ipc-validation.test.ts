@@ -7,6 +7,7 @@ import {
   parseEntryListQuery,
   parseExtractionRule,
   parseProfileSubscriptionInput,
+  parseSubscriptionScope,
   parseSourceSettings,
   requireEntityId,
   requireText
@@ -36,9 +37,21 @@ describe("IPC input validation", () => {
     expect(requireEntityId("source-1")).toBe("source-1");
     expect(() => requireEntityId(" ")).toThrow("项目无效");
     expect(() => requireText("x".repeat(21), "太长", 20)).toThrow("太长");
-    expect(parseEntryListQuery({ sourceId: "source-1", startAt: 1, endAt: 2, limit: 100 })).toEqual({ sourceId: "source-1", startAt: 1, endAt: 2, limit: 100 });
+    const facet = { scheme: "feed:https://example.com:category", key: "systems", label: "系统" };
+    expect(parseEntryListQuery({ sourceId: "source-1", startAt: 1, endAt: 2, limit: 100, facetSelections: [facet] })).toEqual({ sourceId: "source-1", startAt: 1, endAt: 2, limit: 100, facetSelections: [{ scheme: facet.scheme, key: facet.key }] });
     expect(() => parseEntryListQuery({ startAt: 2, endAt: 2 })).toThrow("时间筛选范围无效");
+    expect(() => parseEntryListQuery({ facetSelections: [{ scheme: "", key: "bad" }] })).toThrow("文章分类筛选无效");
     expect(() => parseProfileSubscriptionInput({ title: "missing URL" })).toThrow("主页地址无效");
+  });
+
+  it("validates a coherent collection scope before it crosses IPC", () => {
+    const facet = { scheme: "feed:https://example.com:category", key: "systems", label: "系统" };
+    expect(parseSubscriptionScope({ facetSelections: [facet], history: { mode: "selected", limit: 100 } }))
+      .toEqual({ facetSelections: [facet], history: { mode: "selected", limit: 100 } });
+    expect(() => parseSubscriptionScope({ facetSelections: [], history: { mode: "selected" } }))
+      .toThrow("至少选择一个文章分类");
+    expect(() => parseSubscriptionScope({ facetSelections: [facet], history: { mode: "all" } }))
+      .toThrow("不能同时筛选文章分类");
   });
 
   it("supports all approved Codex effort values but bounds streamed AI requests", () => {

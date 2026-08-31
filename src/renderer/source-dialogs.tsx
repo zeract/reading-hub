@@ -1,5 +1,15 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useState } from "react";
-import type { CalibrationResult, OpmlImportResult, ProbeResult, Source, SourceKind, SubscriptionDraft } from "../shared/types";
+import type {
+  CalibrationResult,
+  OpmlImportResult,
+  ProbeResult,
+  Source,
+  SourceCollectionSettings,
+  SourceFacet,
+  SourceKind,
+  SubscriptionDraft,
+  SubscriptionScope
+} from "../shared/types";
 import { errorMessage } from "./errors";
 
 type PendingPreview = { token: string; probe: ProbeResult };
@@ -233,12 +243,28 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
   const [kind, setKind] = useState<SourceKind>(source.kind);
   const [pollingEnabled, setPollingEnabled] = useState(source.pollingEnabled);
   const [refresh, setRefresh] = useState<"default" | "30" | "60" | "120" | "240" | "720" | "1440">(source.refreshIntervalMinutes ? String(source.refreshIntervalMinutes) as "30" | "60" | "120" | "240" | "720" | "1440" : "default");
+  const [collection, setCollection] = useState<SourceCollectionSettings>();
+  const [initialCollectionScope, setInitialCollectionScope] = useState<SubscriptionScope>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const legacyRssHubFeed = source.config?.sourceProvider === "rsshub";
   const retiredXPublicProfile = isRetiredXPublicProfile(source);
   const typeLocked = !PUBLIC_SOURCE_KINDS.includes(source.kind) || legacyRssHubFeed;
   const manual = kind === "manual";
+
+  useEffect(() => {
+    let active = true;
+    void window.reader.getSourceCollectionSettings(source.id)
+      .then((settings) => {
+        if (!active) return;
+        setCollection(settings);
+        setInitialCollectionScope(settings.scope);
+      })
+      .catch((reason) => {
+        if (active) setError(errorMessage(reason));
+      });
+    return () => { active = false; };
+  }, [source.id]);
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -251,6 +277,20 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
         pollingEnabled: manual ? false : pollingEnabled,
         refreshIntervalMinutes: !manual && pollingEnabled && refresh !== "default" ? Number(refresh) : undefined
       });
+      // Changing a public source kind resets its connector subscription in
+      // the database. Never replay the outgoing connector's category IDs
+      // onto the newly selected connector: doing so could make a generic or
+      // manual source appear empty until it happens to emit identical tags.
+      const scopeChanged = kind === source.kind
+        && Boolean(collection && initialCollectionScope && !sameCollectionScope(collection.scope, initialCollectionScope));
+      if (scopeChanged && collection) {
+        const persisted = await window.reader.updateSourceCollectionScope(source.id, collection.scope);
+        setCollection(persisted);
+        setInitialCollectionScope(persisted.scope);
+        // Scope changes deliberately take effect now: this is the only path
+        // that can start an explicitly chosen historical import.
+        if (!retiredXPublicProfile) await onRefresh();
+      }
       await onSaved();
     } catch (reason) {
       setError(errorMessage(reason));
@@ -271,11 +311,22 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
     }
   }
 
+  async function inspectCollectionFacets() {
+    await runOperation(async () => {
+      const facets = await window.reader.inspectSourceCollectionFacets(source.id);
+      setCollection((current) => current ? { ...current, facets } : current);
+    });
+  }
+
+  function updateCollectionScope(update: (scope: SubscriptionScope) => SubscriptionScope) {
+    setCollection((current) => current ? { ...current, scope: update(current.scope) } : current);
+  }
+
   return <Dialog title={`配置「${source.title}」`} onClose={onClose}>
     <form className="source-settings-form" onSubmit={(event) => void save(event)}>
       <label>来源名称<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} required autoFocus /></label>
-      <label>分类<input value={category} onChange={(event) => setCategory(event.target.value)} maxLength={60} placeholder="留空则自动归类" /></label>
-      <p className="source-settings-note">分类仅保存在本机，用于将来源整理为可折叠的文件夹。</p>
+      <label>来源文件夹<input value={category} onChange={(event) => setCategory(event.target.value)} maxLength={60} placeholder="留空则自动归类" /></label>
+      <p className="source-settings-note">来源文件夹仅保存在本机，用于将来源整理为可折叠的分组；它不会过滤文章。</p>
       <label>信源类型<select value={kind} onChange={(event) => setKind(event.target.value as SourceKind)} disabled={typeLocked || busy}>
         {typeLocked ? <option value={source.kind}>{sourceKindLabel(source.kind)}</option> : PUBLIC_SOURCE_KINDS.map((item) => <option key={item} value={item}>{sourceKindLabel(item)}</option>)}
       </select></label>
@@ -284,12 +335,92 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
       <label>刷新时间<select value={refresh} onChange={(event) => setRefresh(event.target.value as typeof refresh)} disabled={manual || retiredXPublicProfile || !pollingEnabled || busy}>{REFRESH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
       {manual && <p className="source-settings-note">分享链接是一次性阅读卡片，不会自动轮询。</p>}
       <label>来源地址<input value={source.url} readOnly aria-readonly="true" /></label>
+      {collection && <CollectionScopeEditor
+        source={source}
+        settings={collection}
+        disabled={busy}
+        onInspect={() => void inspectCollectionFacets()}
+        onChange={updateCollectionScope}
+      />}
       <dl className="source-settings-details"><div><dt>当前状态</dt><dd><StatusBadge status={source.status} /></dd></div><div><dt>实际连接器</dt><dd>{sourceConnectorLabel(source)}</dd></div></dl>
       <div className="source-settings-operations">{!retiredXPublicProfile && <button type="button" onClick={() => void runOperation(onRefresh)} disabled={busy}>立即刷新</button>}{source.kind === "generic" && <button type="button" onClick={() => void runOperation(onCalibrate)} disabled={busy}>自动校准</button>}{source.kind === "zhihu_follow" && <button type="button" onClick={() => void runOperation(onReconnectZhihu)} disabled={busy}>重新登录知乎</button>}<button type="button" className="danger" onClick={() => void runOperation(onDelete)} disabled={busy}>删除来源</button></div>
       {error && <p className="error">{error}</p>}
       <div className="dialog-actions"><button type="button" onClick={onClose} disabled={busy}>取消</button><button className="primary" disabled={busy}>{busy ? "正在保存…" : "保存配置"}</button></div>
     </form>
   </Dialog>;
+}
+
+function CollectionScopeEditor({ source, settings, disabled, onInspect, onChange }: {
+  source: Source;
+  settings: SourceCollectionSettings;
+  disabled: boolean;
+  onInspect: () => void;
+  onChange: (update: (scope: SubscriptionScope) => SubscriptionScope) => void;
+}) {
+  const canInspectArchive = settings.historyAvailable === true;
+  const visible = settings.facetDiscoveryAvailable === true || settings.facets.length > 0;
+  if (!visible) return null;
+  const { scope, facets } = settings;
+  const selectedIds = new Set(scope.facetSelections.map(facetId));
+  const canImportSelectedHistory = scope.facetSelections.length > 0;
+
+  function toggleFacet(facet: SourceFacet) {
+    onChange((current) => {
+      const id = facetId(facet);
+      const facetSelections = current.facetSelections.some((item) => facetId(item) === id)
+        ? current.facetSelections.filter((item) => facetId(item) !== id)
+        : [...current.facetSelections, { scheme: facet.scheme, key: facet.key, label: facet.label }];
+      return {
+        ...current,
+        facetSelections,
+        history: current.history.mode === "all"
+          ? { mode: "none" }
+          : current.history.mode === "selected" && !facetSelections.length
+            ? { mode: "none" }
+            : current.history
+      };
+    });
+  }
+
+  function setHistory(mode: SubscriptionScope["history"]["mode"]) {
+    onChange((current) => ({
+      ...current,
+      facetSelections: mode === "all" ? [] : current.facetSelections,
+      history: mode === "none" ? { mode } : {
+        mode,
+        ...(current.history.limit === undefined ? { limit: 100 } : { limit: current.history.limit })
+      }
+    }));
+  }
+
+  function setHistoryLimit(limit: number) {
+    onChange((current) => ({ ...current, history: { ...current.history, limit } }));
+  }
+
+  return <fieldset className="source-collection-scope">
+    <legend>文章收集范围</legend>
+    <p className="source-settings-note">文章分类只采用 Feed 或公开归档中已声明的标签；不会根据标题猜测，也不会与“来源文件夹”混用。</p>
+    <div className="source-collection-scope__heading">
+      <strong>文章分类</strong>
+      {canInspectArchive && <button type="button" onClick={onInspect} disabled={disabled}>读取可用分类</button>}
+    </div>
+    {facets.length > 0 ? <div className="facet-options" role="group" aria-label="文章分类">
+      {facets.map((facet) => <label className="facet-option" key={facetId(facet)}>
+        <input type="checkbox" checked={selectedIds.has(facetId(facet))} onChange={() => toggleFacet(facet)} disabled={disabled} />
+        <span>{facet.label}</span>{facet.entryCount > 0 && <em>{facet.entryCount} 篇</em>}
+      </label>)}
+    </div> : <p className="source-settings-note">尚未发现可验证的文章分类。{canInspectArchive ? "可读取公开归档中的分类标签。" : "此来源将收集全部当前更新。"}</p>}
+    <p className="source-settings-note">{scope.facetSelections.length ? `已选 ${scope.facetSelections.length} 个分类；之后只保留匹配的更新。` : "未选择分类：将保留当前 Feed 的全部更新。"}</p>
+    {canInspectArchive && <div className="history-options" role="group" aria-label="历史文章范围">
+      <strong>历史文章</strong>
+      <label><input type="radio" name={`history-${source.id}`} checked={scope.history.mode === "none"} onChange={() => setHistory("none")} disabled={disabled} />只收集当前 Feed（默认）</label>
+      <label><input type="radio" name={`history-${source.id}`} checked={scope.history.mode === "selected"} onChange={() => setHistory("selected")} disabled={disabled || !canImportSelectedHistory} />按所选分类补充公开历史</label>
+      <label><input type="radio" name={`history-${source.id}`} checked={scope.history.mode === "all"} onChange={() => setHistory("all")} disabled={disabled} />补充全部公开历史（不筛选分类）</label>
+      {scope.history.mode !== "none" && <label className="history-limit">最多导入<select value={scope.history.limit ?? 100} onChange={(event) => setHistoryLimit(Number(event.target.value))} disabled={disabled}>
+        {[50, 100, 300, 1_000, 5_000].map((limit) => <option key={limit} value={limit}>{limit} 篇</option>)}
+      </select></label>}
+    </div>}
+  </fieldset>;
 }
 
 export function Dialog({ title, children, onClose, className }: { title: string; children: ReactNode; onClose: () => void; className?: string }) {
@@ -324,4 +455,18 @@ function sourceConnectorLabel(source: Source): string {
 
 function isSourceKind(value: string): value is SourceKind {
   return Object.hasOwn(SOURCE_KIND_LABELS, value);
+}
+
+function facetId(facet: Pick<SourceFacet, "scheme" | "key">): string {
+  return `${facet.scheme}\u0000${facet.key}`;
+}
+
+/** Scope comparison ignores display-label changes and selection order. */
+function sameCollectionScope(left: SubscriptionScope, right: SubscriptionScope): boolean {
+  const identityList = (scope: SubscriptionScope) => scope.facetSelections
+    .map(facetId)
+    .sort();
+  return left.history.mode === right.history.mode
+    && left.history.limit === right.history.limit
+    && JSON.stringify(identityList(left)) === JSON.stringify(identityList(right));
 }

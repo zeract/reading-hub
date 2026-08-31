@@ -85,6 +85,36 @@ describe("SyncManager", () => {
     db.close();
   });
 
+  it("applies one shared category scope before persistence while preserving a healthy checkpoint", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+    const selected = { scheme: "feed:https://example.com:category", key: "systems", label: "Systems" };
+    db.updateSubscriptionScope(source.id, { facetSelections: [selected], history: { mode: "none" } });
+    const registry = new ConnectorRegistry();
+    registry.register({
+      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      async sync() {
+        return {
+          entries: [
+            { url: "https://example.com/systems", title: "Systems", facets: [selected] },
+            { url: "https://example.com/ml", title: "ML", facets: [{ scheme: selected.scheme, key: "ml", label: "ML" }] }
+          ],
+          checkpoint: { cursor: "next-page" },
+          emptyIsHealthy: true
+        };
+      },
+      normalize(item: RawEntry, currentSource: Source): Entry { return readerEntry(currentSource, item); }
+    });
+
+    const result = await new SyncManager(db, registry).syncSource(source.id);
+
+    expect(result).toMatchObject({ inserted: 1, source: { status: "active" } });
+    expect(db.listEntries(source.id).map((entry) => entry.title)).toEqual(["Systems"]);
+    expect(db.getCheckpoint(db.getSubscriptionForSource(source.id)!.id)).toMatchObject({ cursor: "next-page" });
+    expect(db.listSyncEvents(source.id)[0]).toMatchObject({ outcome: "success", fetchedCount: 2, insertedCount: 1 });
+    db.close();
+  });
+
   it("does not write a delayed refresh after its source is deleted", async () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
@@ -136,6 +166,34 @@ describe("SyncManager", () => {
     await expect(refreshing).rejects.toBeInstanceOf(SyncCancelledError);
     expect(db.getSource(source.id)?.extractionRule).toEqual({ version: 1, itemRootSelector: ".new-card" });
     expect(db.listEntries(source.id)).toEqual([]);
+    db.close();
+  });
+
+  it("does not persist an in-flight response after its collection scope changes", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+    const registry = new ConnectorRegistry();
+    const gate = deferred();
+    registry.register({
+      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      async sync() {
+        gate.started();
+        await gate.wait;
+        return { entries: [{ url: "https://example.com/new", title: "Delayed" }], emptyIsHealthy: true };
+      },
+      normalize(item: RawEntry, currentSource: Source): Entry { return readerEntry(currentSource, item); }
+    });
+    const refreshing = new SyncManager(db, registry).syncSource(source.id);
+    await gate.startedPromise;
+    db.updateSubscriptionScope(source.id, {
+      facetSelections: [{ scheme: "feed:https://example.com:category", key: "systems", label: "Systems" }],
+      history: { mode: "none" }
+    });
+    gate.release();
+
+    await expect(refreshing).rejects.toBeInstanceOf(SyncCancelledError);
+    expect(db.listEntries(source.id)).toEqual([]);
+    expect(db.getSource(source.id)).toMatchObject({ status: "active" });
     db.close();
   });
 

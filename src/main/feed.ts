@@ -2,7 +2,8 @@ import RSSParser from "rss-parser";
 import { load } from "cheerio";
 import { compactText, parsePublishedAt } from "../shared/text";
 import { toAbsoluteUrl } from "../shared/url";
-import type { RawEntry } from "../shared/types";
+import type { Facet, RawEntry } from "../shared/types";
+import { publisherFacet, uniqueFacets } from "./content-facets";
 
 const parser = new RSSParser({
   customFields: {
@@ -14,7 +15,11 @@ const parser = new RSSParser({
       // rss-parser's generic `content` field can be populated from a plain
       // <description>. Keep content:encoded distinct so the reader can
       // prefer the actual feed body when both are present.
-      ["content:encoded", "contentEncoded"]
+      ["content:encoded", "contentEncoded"],
+      // `rss-parser` exposes RSS categories for many feeds, but Atom
+      // categories carry their stable `term` in attributes. Retain the raw
+      // category nodes so both formats can use the same facet mapper.
+      ["category", "categoryItems", { keepArray: true }]
     ]
   }
 });
@@ -29,7 +34,7 @@ const MAX_TRANSIENT_FEED_HTML_LENGTH = 250_000;
  * replayed once so cached cards can receive newly supported fields, then
  * resume normal conditional requests.
  */
-export const RSS_METADATA_REVISION = 4;
+export const RSS_METADATA_REVISION = 5;
 
 /**
  * Older generic sources are rechecked once for a declared Feed. A Feed is
@@ -172,7 +177,8 @@ export async function parseFeed(text: string, feedUrl: string): Promise<ParsedFe
     const feedContentHtml = transientFeedHtml((item as any).contentEncoded || item.content);
     const imageUrl = toAbsoluteUrl((item as any).mediaContent?.[0]?.$.url || item.enclosure?.url, feedUrl);
     if (isFeedNavigationLink({ url, title, publishedAt, summary, feedContentHtml, imageUrl }, feedUrl, feedTitle)) continue;
-    entries.push({
+    const facets = feedItemFacets(item as unknown as Record<string, unknown>, feedUrl, "category");
+    entries.push(withFacets({
       url,
       title,
       author: compactText(item.creator || (item as any).author, 120),
@@ -180,7 +186,7 @@ export async function parseFeed(text: string, feedUrl: string): Promise<ParsedFe
       summary,
       imageUrl,
       feedContentHtml
-    });
+    }, facets));
   }
   return {
     title: compactText(feed.title, 180) || new URL(feedUrl).hostname,
@@ -223,7 +229,8 @@ function parseJsonFeed(text: string, feedUrl: string): ParsedFeed {
     const url = toAbsoluteUrl(item.url || item.external_url || item.id, feedUrl);
     const title = compactText(item.title, 240);
     if (!url || !title) continue;
-    entries.push({
+    const facets = jsonFeedItemFacets(item, feedUrl);
+    entries.push(withFacets({
       url,
       title,
       author: compactText(item.authors?.[0]?.name || item.author?.name, 120),
@@ -231,7 +238,7 @@ function parseJsonFeed(text: string, feedUrl: string): ParsedFeed {
       summary: compactText(item.summary || item.content_text || stripHtml(item.content_html), 500),
       imageUrl: toAbsoluteUrl(item.image || item.banner_image, feedUrl),
       feedContentHtml: transientFeedHtml(item.content_html)
-    });
+    }, facets));
   }
   return {
     title: compactText(feed.title, 180) || new URL(feedUrl).hostname,
@@ -260,4 +267,44 @@ function transientFeedHtml(value: unknown): string | undefined {
   // document. Prefer the already-persisted summary if a Feed item is too
   // large for the ephemeral reader path.
   return html && html.length <= MAX_TRANSIENT_FEED_HTML_LENGTH ? html : undefined;
+}
+
+/**
+ * Maps publisher-declared RSS/Atom categories into local facets. It consumes
+ * both rss-parser's convenient `categories` array and the raw category nodes
+ * retained above: the latter is required for Atom's `term`/`label` attributes.
+ */
+function feedItemFacets(item: Record<string, unknown>, feedUrl: string, kind: "category" | "tag"): Facet[] {
+  const values = [...asArray(item.categories), ...asArray(item.categoryItems)];
+  return uniqueFacets(values.map((value) => parsedFeedFacet(value, feedUrl, kind)));
+}
+
+function jsonFeedItemFacets(item: Record<string, any>, feedUrl: string): Facet[] {
+  return uniqueFacets(asArray(item.tags)
+    .filter((value): value is string => typeof value === "string")
+    .map((tag) => publisherFacet(feedUrl, "tag", tag)));
+}
+
+function parsedFeedFacet(value: unknown, feedUrl: string, kind: "category" | "tag"): Facet | undefined {
+  if (typeof value === "string") return publisherFacet(feedUrl, kind, value);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const attributes = record.$ && typeof record.$ === "object" && !Array.isArray(record.$)
+    ? record.$ as Record<string, unknown>
+    : {};
+  const term = stringValue(attributes.term);
+  const label = stringValue(attributes.label) ?? stringValue(record._) ?? term;
+  return label ? publisherFacet(feedUrl, kind, label, term ?? label) : undefined;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function withFacets(entry: RawEntry, facets: Facet[]): RawEntry {
+  return facets.length ? { ...entry, facets } : entry;
 }

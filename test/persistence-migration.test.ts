@@ -21,7 +21,8 @@ describe("persistent schema migrations", () => {
       expect(database.getSubscriptionForSource("legacy-source")).toMatchObject({
         id: "legacy-source",
         sourceId: "legacy-source",
-        connectorId: "rss"
+        connectorId: "rss",
+        scope: { facetSelections: [], history: { mode: "none" } }
       });
       expect(database.listEntries()).toEqual(expect.arrayContaining([expect.objectContaining({
         id: "legacy-entry",
@@ -38,9 +39,10 @@ describe("persistent schema migrations", () => {
       database = undefined;
 
       const firstOpen = inspectMigrationState(filePath);
-      expect(firstOpen.versions).toEqual([1, 2, 3, 4]);
+      expect(firstOpen.versions).toEqual([1, 2, 3, 4, 5]);
       expect(firstOpen.originCount).toBe(2);
       expect(firstOpen.hasSourceMaintenance).toBe(true);
+      expect(firstOpen.hasFacetTables).toBe(true);
 
       reopened = new ReadingDatabase(filePath);
       expect(reopened.listEntries()).toHaveLength(2);
@@ -51,6 +53,45 @@ describe("persistent schema migrations", () => {
 
       expect(inspectMigrationState(filePath)).toEqual(firstOpen);
       expect(firstOpen.versions.at(-1)).toBe(CURRENT_SCHEMA_VERSION);
+    } finally {
+      database?.close();
+      reopened?.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps source-scoped facets and an explicit collection scope after reopening", () => {
+    const directory = mkdtempSync(join(tmpdir(), "reading-hub-facet-persistence-"));
+    const filePath = join(directory, "facets.sqlite");
+    let database: ReadingDatabase | undefined;
+    let reopened: ReadingDatabase | undefined;
+    const facet = { scheme: "feed:https://example.com:category", key: "ml", label: "机器学习" };
+    try {
+      database = new ReadingDatabase(filePath);
+      const source = database.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+      database.saveEntries([{
+        id: "facet-entry",
+        sourceId: source.id,
+        canonicalUrl: "https://example.com/posts/facet",
+        url: "https://example.com/posts/facet",
+        title: "Faceted post",
+        contentHash: "facet-hash",
+        read: false,
+        favorite: false,
+        createdAt: 1_700_000_000_000,
+        facets: [facet]
+      }]);
+      database.updateSubscriptionScope(source.id, { facetSelections: [facet], history: { mode: "selected", limit: 50 } });
+      database.close();
+      database = undefined;
+
+      reopened = new ReadingDatabase(filePath);
+      expect(reopened.getSubscriptionForSource(source.id)?.scope).toEqual({
+        facetSelections: [facet],
+        history: { mode: "selected", limit: 50 }
+      });
+      expect(reopened.listSourceFacets(source.id)).toEqual([{ ...facet, sourceId: source.id, entryCount: 1 }]);
+      expect(reopened.listEntries({ sourceId: source.id, facetSelections: [facet] })).toHaveLength(1);
     } finally {
       database?.close();
       reopened?.close();
@@ -127,13 +168,16 @@ function inspectMigrationState(filePath: string): {
   versions: number[];
   originCount: number;
   hasSourceMaintenance: boolean;
+  hasFacetTables: boolean;
 } {
   const database = new Sqlite(filePath, { readonly: true });
   try {
     return {
       versions: (database.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: number }>).map((row) => row.version),
       originCount: (database.prepare("SELECT COUNT(*) AS count FROM entry_origins").get() as { count: number }).count,
-      hasSourceMaintenance: Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'source_maintenance'").get())
+      hasSourceMaintenance: Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'source_maintenance'").get()),
+      hasFacetTables: ["facets", "entry_origin_facets", "subscription_scopes", "subscription_scope_facets"]
+        .every((table) => Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)))
     };
   } finally {
     database.close();

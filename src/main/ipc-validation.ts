@@ -7,11 +7,13 @@ import type {
   AiStreamRequest,
   EntryListQuery,
   ExtractionRule,
+  SubscriptionScope,
   ProfileSubscriptionInput,
   SourceKind,
   SourceSettings,
   SubscriptionDraft
 } from "../shared/types";
+import { normaliseFacet, normaliseFacetReference, normaliseSubscriptionScope } from "../shared/subscription-scope";
 import {
   AI_STREAM_REQUEST_ID_PATTERN,
   MAX_AI_ARTICLE_TEXT_LENGTH,
@@ -66,8 +68,49 @@ export function parseEntryListQuery(value: unknown): EntryListQuery | undefined 
   const startAt = numericTimestamp(value.startAt, "开始时间无效。");
   const endAt = numericTimestamp(value.endAt, "结束时间无效。");
   const limit = value.limit === undefined ? undefined : boundedInteger(value.limit, 1, 1_000, "文章数量限制无效。");
+  const facetSelections = value.facetSelections === undefined ? undefined : parseFacetReferences(value.facetSelections, "文章分类筛选无效。");
   if (startAt !== undefined && endAt !== undefined && startAt >= endAt) throw new Error("时间筛选范围无效。");
-  return { sourceId, startAt, endAt, limit };
+  return { sourceId, startAt, endAt, limit, ...(facetSelections === undefined ? {} : { facetSelections }) };
+}
+
+/** Validate the renderer-owned collection policy before it reaches SQLite. */
+export function parseSubscriptionScope(value: unknown): SubscriptionScope {
+  if (!isRecord(value) || !Array.isArray(value.facetSelections) || !isRecord(value.history)) {
+    throw new Error("收集范围设置无效，请重新打开来源设置。");
+  }
+  if (value.facetSelections.length > 64) throw new Error("最多选择 64 个文章分类。");
+  const facets = value.facetSelections.map((facet) => {
+    const parsed = normaliseFacet(facet);
+    if (!parsed) throw new Error("收集范围包含无效分类。");
+    return parsed;
+  });
+  const mode = value.history.mode;
+  if (mode !== "none" && mode !== "selected" && mode !== "all") throw new Error("历史收集方式无效。");
+  const limit = value.history.limit === undefined
+    ? undefined
+    : boundedInteger(value.history.limit, 1, 10_000, "历史文章数量无效。");
+  const scope = normaliseSubscriptionScope({
+    facetSelections: facets,
+    history: { mode, ...(limit === undefined ? {} : { limit }) }
+  });
+  if (scope.history.mode === "selected" && !scope.facetSelections.length) {
+    throw new Error("按分类补充历史前，请至少选择一个文章分类。");
+  }
+  if (scope.history.mode === "all" && scope.facetSelections.length) {
+    throw new Error("补充全部历史时不能同时筛选文章分类。");
+  }
+  return scope;
+}
+
+function parseFacetReferences(value: unknown, message: string): NonNullable<EntryListQuery["facetSelections"]> {
+  if (!Array.isArray(value) || value.length > 64) throw new Error(message);
+  const references = new Map<string, NonNullable<EntryListQuery["facetSelections"]>[number]>();
+  for (const item of value) {
+    const parsed = normaliseFacetReference(item);
+    if (!parsed) throw new Error(message);
+    references.set(`${parsed.scheme}\u0000${parsed.key}`, parsed);
+  }
+  return [...references.values()];
 }
 
 export function parseSourceSettings(value: unknown): SourceSettings {

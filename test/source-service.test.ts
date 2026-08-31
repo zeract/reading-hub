@@ -67,7 +67,7 @@ describe("SourceService initial acquisition", () => {
     db.close();
   });
 
-  it("stores a verified archive backfill descriptor without storing archive content", async () => {
+  it("stores an archive catalogue descriptor without scheduling history import", async () => {
     const db = new ReadingDatabase(":memory:");
     const sync = { savePreview: vi.fn(), syncSource: vi.fn().mockResolvedValue({ inserted: 0 }) };
     const service = new SourceService(
@@ -80,7 +80,40 @@ describe("SourceService initial acquisition", () => {
     const pending = await service.preview("https://example.com/feed.xml");
     const source = await service.confirm(pending.token);
 
-    expect(source.config).toEqual({ archiveBackfill: { url: "https://example.com/archive.html" } });
+    expect(source.config).toEqual({ archiveCatalog: { url: "https://example.com/archive.html" } });
+    expect(db.getSubscriptionForSource(source.id)?.scope).toEqual({ facetSelections: [], history: { mode: "none" } });
+    db.close();
+  });
+
+  it("inspects an explicit archive catalogue without importing its cards", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({
+      url: "https://example.com/feed.xml",
+      title: "Example Feed",
+      kind: "rss",
+      config: { archiveCatalog: { url: "https://example.com/archive.html" } },
+      pollingEnabled: true
+    });
+    const sync = { savePreview: vi.fn(), syncSource: vi.fn() };
+    const rss = {
+      supportsHistoricalCollection: vi.fn(() => true),
+      inspectFacets: vi.fn().mockResolvedValue({
+        url: "https://example.com/archive.html",
+        totalEntries: 1_864,
+        facets: [{ scheme: "feed:https://example.com:category", key: "kubernetes", label: "Kubernetes" }]
+      })
+    };
+    const connectors = { has: vi.fn(() => true), get: vi.fn(() => rss) };
+    const service = new SourceService(db, { probe: vi.fn() } as any, sync as any, {} as any, connectors as any);
+
+    expect(service.getCollectionSettings(source.id)).toMatchObject({ facetDiscoveryAvailable: true, historyAvailable: true });
+    await expect(service.inspectCollectionFacets(source.id)).resolves.toEqual([
+      { sourceId: source.id, entryCount: 0, scheme: "feed:https://example.com:category", key: "kubernetes", label: "Kubernetes" }
+    ]);
+    expect(rss.inspectFacets).toHaveBeenCalledWith(expect.objectContaining({ id: source.id }));
+    expect(connectors.get).toHaveBeenCalledWith("rss");
+    expect(sync.syncSource).not.toHaveBeenCalled();
+    expect(db.listEntries(source.id, 100)).toEqual([]);
     db.close();
   });
 

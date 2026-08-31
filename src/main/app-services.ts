@@ -63,7 +63,7 @@ export async function createApplicationServices(databasePath: string): Promise<A
   registry.register(academic);
   const maintenance = new ContentMaintenance(database);
   const sync = new SyncManager(database, registry, createPostSyncWorkflow(database, registry, zhihu), maintenance);
-  const sources = new SourceService(database, probe, sync, zhihuFollow);
+  const sources = new SourceService(database, probe, sync, zhihuFollow, registry);
   const articles = new ArticleReader(http, renderer, (url, options) => zhihuFollow.renderArticle(url, options));
   const inAppArticleViewer = new InAppArticleViewer();
 

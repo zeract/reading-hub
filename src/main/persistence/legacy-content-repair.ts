@@ -112,6 +112,10 @@ export function repairScourRedirectEntries(database: SqliteDatabase, sourceId: s
     FROM entry_origins WHERE entry_id = ?`);
   const insertOrigin = database.prepare(`INSERT OR IGNORE INTO entry_origins
     (entry_id, source_id, provider_id, provider_label, external_id, original_url, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  const facetsForOrigin = database.prepare(`SELECT facet_id FROM entry_origin_facets
+    WHERE entry_id = ? AND source_id = ? AND provider_id = ? AND external_id = ?`);
+  const insertOriginFacet = database.prepare(`INSERT OR IGNORE INTO entry_origin_facets
+    (entry_id, source_id, provider_id, external_id, facet_id) VALUES (?, ?, ?, ?, ?)`);
   const deleteOrigins = database.prepare("DELETE FROM entry_origins WHERE entry_id = ?");
   const deleteEntry = database.prepare("DELETE FROM entries WHERE id = ?");
   const updateWinner = database.prepare(`UPDATE entries SET canonical_url = ?, canonical_identity = ?,
@@ -130,6 +134,9 @@ export function repairScourRedirectEntries(database: SqliteDatabase, sourceId: s
       for (const loser of losers) {
         for (const origin of originsForEntry.all(loser.id) as Array<{ source_id: string; provider_id: string; provider_label: string | null; external_id: string; original_url: string; observed_at: number }>) {
           insertOrigin.run(winner.id, origin.source_id, origin.provider_id, origin.provider_label, origin.external_id, origin.original_url, origin.observed_at);
+          for (const facet of facetsForOrigin.all(loser.id, origin.source_id, origin.provider_id, origin.external_id) as Array<{ facet_id: string }>) {
+            insertOriginFacet.run(winner.id, origin.source_id, origin.provider_id, origin.external_id, facet.facet_id);
+          }
         }
         deleteOrigins.run(loser.id);
         deleteEntry.run(loser.id);

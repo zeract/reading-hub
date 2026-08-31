@@ -63,6 +63,64 @@ export interface Source {
   updatedAt: number;
 }
 
+/**
+ * A provider-defined, stable label attached to a piece of content.
+ *
+ * `scheme` namespaces a provider's taxonomy so that unrelated labels such as
+ * two different sites' “AI” categories are never accidentally merged. `key`
+ * is the provider's stable category/tag id (often a slug) and `label` is the
+ * user-facing text. The host records the source/origin relationship
+ * separately; connectors therefore never need to know database IDs.
+ */
+export interface Facet {
+  scheme: string;
+  key: string;
+  label: string;
+}
+
+/** Stable facet identity without presentation text, suitable for filtering. */
+export type FacetReference = Pick<Facet, "scheme" | "key">;
+
+/** A locally-queryable facet count for one source's content origins. */
+export interface SourceFacet extends Facet {
+  sourceId: string;
+  entryCount: number;
+}
+
+export type SubscriptionHistoryMode = "none" | "selected" | "all";
+
+/**
+ * User-owned collection policy for one connector target.
+ *
+ * Empty `facetSelections` accepts all current items. Once categories are
+ * selected, newly received content must match at least one selected facet;
+ * history still defaults to `none`, so discovering a publisher archive can
+ * never silently import its entire back catalogue.
+ */
+export interface SubscriptionScope {
+  facetSelections: Facet[];
+  history: {
+    mode: SubscriptionHistoryMode;
+    /** Optional bounded cap when a connector supports historical discovery. */
+    limit?: number;
+  };
+}
+
+/** Returned to source settings without exposing connector credentials. */
+export interface SourceCollectionSettings {
+  scope: SubscriptionScope;
+  facets: SourceFacet[];
+  /** Adapter capability metadata; absent only on persistence-only callers. */
+  facetDiscoveryAvailable?: boolean;
+  historyAvailable?: boolean;
+}
+
+/** Connector-provided, metadata-only taxonomy catalogue. */
+export interface FacetCatalog {
+  facets: Facet[];
+  totalEntries?: number;
+}
+
 export interface RawEntry {
   url: string;
   title: string;
@@ -86,6 +144,11 @@ export interface RawEntry {
   /** Human-readable provenance such as OpenAlex or ORCID. */
   providerLabel?: string;
   externalUrl?: string;
+  /**
+   * Provider-declared categories/tags. They are persisted against this
+   * source-origin, not as globally authoritative facts about the content.
+   */
+  facets?: Facet[];
 }
 
 export interface Entry extends RawEntry {
@@ -110,6 +173,8 @@ export interface Entry extends RawEntry {
  */
 export interface EntryListQuery {
   sourceId?: string;
+  /** Match an entry that has at least one matching source-origin facet. */
+  facetSelections?: FacetReference[];
   startAt?: number;
   endAt?: number;
   /** Omit the limit for an explicitly bounded time-range query. */
@@ -130,6 +195,8 @@ export interface ContentOrigin {
   externalId?: string;
   originalUrl: string;
   observedAt: number;
+  /** Facets declared by this exact provider origin. */
+  facets?: Facet[];
 }
 
 /** A locally authorised provider account. Secret values are only keychain references. */
@@ -154,6 +221,8 @@ export interface Subscription {
   accountId?: string;
   targetId?: string;
   config: Record<string, unknown>;
+  /** Always present; legacy subscriptions resolve to a feed-only default. */
+  scope: SubscriptionScope;
   createdAt: number;
   updatedAt: number;
 }
@@ -222,6 +291,10 @@ export interface ConnectorAdapter {
   manifest: ConnectorManifest;
   authorize?(context: AuthorizationContext): Promise<Account>;
   discover?(input: string, context: DiscoveryContext): Promise<SubscriptionDraft[]>;
+  /** Optional metadata-only taxonomy discovery for the shared collection UI. */
+  inspectFacets?(source: Source): Promise<FacetCatalog | undefined>;
+  /** Whether this concrete source has an explicit, safely readable history catalogue. */
+  supportsHistoricalCollection?(source: Source): boolean;
   sync(context: SyncContext): Promise<SyncResult>;
   normalize(item: RawEntry, source: Source): NormalizedEntry;
 }
@@ -394,10 +467,11 @@ export interface ProbeResult {
   extractionRule?: ExtractionRule;
   preview: RawEntry[];
   /**
-   * An author-linked, same-origin archive independently verified to contain
-   * dated post metadata. It enables one bounded initial backfill; article
-   * bodies are never fetched or persisted for this purpose.
-  */
+   * An author-linked, same-origin archive descriptor. It is discovery
+   * metadata only: a new source remains Feed-only until the user explicitly
+   * selects a history scope, at which point the archive is parsed and
+   * validated. Article bodies are never fetched or persisted for this.
+   */
   historicalArchiveUrl?: string;
   requiresReview: boolean;
   message?: string;

@@ -13,6 +13,7 @@ import {
   parseEntryListQuery,
   parseExtractionRule,
   parseProfileSubscriptionInput,
+  parseSubscriptionScope,
   parseSourceSettings,
   requireBoolean,
   requireEntityId,
@@ -57,6 +58,12 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   handle(IPC_CHANNELS.source.refresh, (_event, id: unknown) => sync.syncSource(requireEntityId(id)));
   handle(IPC_CHANNELS.source.updateSettings, (_event, id: unknown, settings: unknown) =>
     sources.updateSettings(requireEntityId(id), parseSourceSettings(settings)));
+  handle(IPC_CHANNELS.source.collectionSettings, (_event, id: unknown) =>
+    sources.getCollectionSettings(requireEntityId(id)));
+  handle(IPC_CHANNELS.source.updateCollectionScope, (_event, id: unknown, scope: unknown) =>
+    sources.updateCollectionScope(requireEntityId(id), parseSubscriptionScope(scope)));
+  handle(IPC_CHANNELS.source.inspectCollectionFacets, (_event, id: unknown) =>
+    sources.inspectCollectionFacets(requireEntityId(id)));
   handle(IPC_CHANNELS.source.updateRule, (_event, id: unknown, rule: unknown) =>
     database.updateRule(requireEntityId(id), parseExtractionRule(rule)));
   handle(IPC_CHANNELS.source.calibration, (_event, id: unknown) => sources.calibrate(requireEntityId(id)));

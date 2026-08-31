@@ -7,16 +7,22 @@ import type {
   ContentOrigin,
   Entry,
   EntryListQuery,
+  Facet,
+  FacetReference,
   Followee,
   LibraryCounts,
   Source,
+  SourceCollectionSettings,
+  SourceFacet,
   SourceInput,
   SourceSettings,
   SourceStatus,
   Subscription,
+  SubscriptionScope,
   SyncCheckpoint
 } from "../shared/types";
 import { assertPublicUrl } from "../shared/url";
+import { defaultSubscriptionScope, facetIdentity, normaliseFacetReference, normaliseFacets, normaliseSubscriptionScope } from "../shared/subscription-scope";
 import {
   deletePromotedZhihuFollowEntries,
   deleteTaxonomyEntries,
@@ -98,6 +104,37 @@ type SubscriptionRow = {
   updated_at: number;
 };
 
+type SubscriptionScopeRow = {
+  subscription_id: string;
+  history_mode: string;
+  history_limit: number | null;
+  updated_at: number;
+};
+
+type FacetRow = {
+  id: string;
+  scheme: string;
+  facet_key: string;
+  label: string;
+};
+
+type OriginRow = {
+  entry_id: string;
+  source_id: string;
+  provider_id: ConnectorId;
+  provider_label: string | null;
+  external_id: string;
+  original_url: string;
+  observed_at: number;
+};
+
+type OriginFacetRow = FacetRow & {
+  entry_id: string;
+  source_id: string;
+  provider_id: ConnectorId;
+  external_id: string;
+};
+
 const toOptionalNumber = (value: number | null): number | undefined => (value === null ? undefined : value);
 
 function finiteTimestamp(value: number | undefined): number | undefined {
@@ -107,6 +144,16 @@ function finiteTimestamp(value: number | undefined): number | undefined {
 function boundedLimit(value: number | undefined): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   return Math.max(1, Math.min(10_000, Math.floor(value)));
+}
+
+function originIdentity(origin: Pick<OriginRow, "entry_id" | "source_id" | "provider_id" | "external_id">): string {
+  return `${origin.entry_id}\u0000${origin.source_id}\u0000${origin.provider_id}\u0000${origin.external_id}`;
+}
+
+function chunked<T>(items: readonly T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) chunks.push(items.slice(index, index + size));
+  return chunks;
 }
 
 function normaliseSourceCategory(value: string | undefined): string | undefined {
@@ -187,6 +234,26 @@ function parseJsonArray(value: string | null | undefined): string[] {
   }
 }
 
+function prepareFacetStatements(database: Database.Database) {
+  return {
+    upsert: database.prepare(`INSERT INTO facets (id, scheme, facet_key, label, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(scheme, facet_key) DO UPDATE SET label = excluded.label, updated_at = excluded.updated_at`),
+    findId: database.prepare("SELECT id FROM facets WHERE scheme = ? AND facet_key = ?")
+  };
+}
+
+function persistFacet(
+  statements: ReturnType<typeof prepareFacetStatements>,
+  facet: Facet,
+  now: number
+): string {
+  statements.upsert.run(randomUUID(), facet.scheme, facet.key, facet.label, now, now);
+  const row = statements.findId.get(facet.scheme, facet.key) as { id: string } | undefined;
+  if (!row) throw new Error("无法保存文章分类。");
+  return row.id;
+}
+
 function accountFromRow(row: AccountRow): Account {
   return {
     id: row.id,
@@ -202,7 +269,11 @@ function accountFromRow(row: AccountRow): Account {
   };
 }
 
-function subscriptionFromRow(row: SubscriptionRow): Subscription {
+function facetFromRow(row: FacetRow): Facet {
+  return { scheme: row.scheme, key: row.facet_key, label: row.label };
+}
+
+function subscriptionFromRow(row: SubscriptionRow, scope: SubscriptionScope = defaultSubscriptionScope()): Subscription {
   return {
     id: row.id,
     sourceId: row.source_id,
@@ -210,6 +281,7 @@ function subscriptionFromRow(row: SubscriptionRow): Subscription {
     accountId: row.account_id ?? undefined,
     targetId: row.target_id ?? undefined,
     config: parseJsonRecord(row.config_json) ?? {},
+    scope,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -280,6 +352,7 @@ export class ReadingDatabase {
       accountId: source.accountId,
       targetId: typeof source.config?.targetId === "string" ? source.config.targetId : undefined,
       config: source.config ?? {},
+      scope: defaultSubscriptionScope(),
       createdAt: source.createdAt,
       updatedAt: source.updatedAt
     };
@@ -291,6 +364,8 @@ export class ReadingDatabase {
       accountId: subscription.accountId ?? null,
       configJson: JSON.stringify(subscription.config)
     });
+    this.db.prepare(`INSERT OR IGNORE INTO subscription_scopes (subscription_id, history_mode, history_limit, updated_at)
+      VALUES (?, 'none', NULL, ?)`).run(subscription.id, subscription.updatedAt);
     return subscription;
   }
 
@@ -320,6 +395,18 @@ export class ReadingDatabase {
       if (kindChanged) {
         this.db.prepare("UPDATE subscriptions SET connector_id = ?, account_id = NULL, updated_at = ? WHERE source_id = ?")
           .run(settings.kind, now, sourceId);
+        // Facet IDs are provider-scoped. Carrying a selected RSS category
+        // into a different connector would silently filter all of its cards,
+        // so a user-confirmed connector switch restores the conservative
+        // current-Feed/no-selection policy.
+        this.db.prepare(`INSERT OR IGNORE INTO subscription_scopes (subscription_id, history_mode, history_limit, updated_at)
+          SELECT id, 'none', NULL, ? FROM subscriptions WHERE source_id = ?`).run(now, sourceId);
+        this.db.prepare(`DELETE FROM subscription_scope_facets
+          WHERE subscription_id IN (SELECT id FROM subscriptions WHERE source_id = ?)`)
+          .run(sourceId);
+        this.db.prepare(`UPDATE subscription_scopes SET history_mode = 'none', history_limit = NULL, updated_at = ?
+          WHERE subscription_id IN (SELECT id FROM subscriptions WHERE source_id = ?)`)
+          .run(now, sourceId);
         // A connector switch can expose cards collected by a different legacy
         // path. Let the source-scoped maintenance pass inspect it once again.
         this.db.prepare("DELETE FROM source_maintenance WHERE source_id = ?").run(sourceId);
@@ -378,7 +465,77 @@ export class ReadingDatabase {
 
   getSubscriptionForSource(sourceId: string): Subscription | undefined {
     const row = this.db.prepare("SELECT * FROM subscriptions WHERE source_id = ?").get(sourceId) as SubscriptionRow | undefined;
-    return row ? subscriptionFromRow(row) : undefined;
+    return row ? subscriptionFromRow(row, this.getSubscriptionScope(row.id)) : undefined;
+  }
+
+  /**
+   * Safe, renderer-ready collection metadata. Local source folders remain on
+   * `Source.category`; these facets describe only content attributed to this
+   * source's connector origins.
+   */
+  getSourceCollectionSettings(sourceId: string): SourceCollectionSettings {
+    const subscription = this.getSubscriptionForSource(sourceId);
+    if (!subscription) throw new Error("来源不存在。");
+    return { scope: subscription.scope, facets: this.listSourceFacets(sourceId) };
+  }
+
+  listSourceFacets(sourceId: string): SourceFacet[] {
+    const rows = this.db.prepare(`SELECT facets.scheme, facets.facet_key, facets.label, COUNT(DISTINCT entry_origin_facets.entry_id) AS entry_count
+      FROM entry_origin_facets
+      INNER JOIN facets ON facets.id = entry_origin_facets.facet_id
+      WHERE entry_origin_facets.source_id = ?
+      GROUP BY facets.id, facets.scheme, facets.facet_key, facets.label
+      ORDER BY entry_count DESC, facets.label COLLATE NOCASE ASC, facets.scheme ASC, facets.facet_key ASC`).all(sourceId) as Array<FacetRow & { entry_count: number }>;
+    return rows.map((row) => ({ ...facetFromRow(row), sourceId, entryCount: row.entry_count }));
+  }
+
+  /**
+   * Replaces the user-owned selection atomically while leaving opaque
+   * connector configuration and source metadata untouched.
+   */
+  updateSubscriptionScope(sourceId: string, requestedScope: SubscriptionScope): Subscription {
+    const subscription = this.getSubscriptionForSource(sourceId);
+    if (!subscription) throw new Error("来源不存在。");
+    const scope = normaliseSubscriptionScope(requestedScope);
+    if (scope.history.mode === "selected" && !scope.facetSelections.length) {
+      throw new Error("选择分类历史时至少选择一个分类。");
+    }
+    if (scope.history.mode === "all" && scope.facetSelections.length) {
+      throw new Error("导入全部历史时不能同时筛选文章分类。");
+    }
+    const now = Date.now();
+    const facetStatements = prepareFacetStatements(this.db);
+    const insertScopeFacet = this.db.prepare("INSERT OR IGNORE INTO subscription_scope_facets (subscription_id, facet_id) VALUES (?, ?)");
+    const clearScopeFacets = this.db.prepare("DELETE FROM subscription_scope_facets WHERE subscription_id = ?");
+    this.db.transaction(() => {
+      this.db.prepare(`INSERT INTO subscription_scopes (subscription_id, history_mode, history_limit, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(subscription_id) DO UPDATE SET history_mode = excluded.history_mode,
+          history_limit = excluded.history_limit, updated_at = excluded.updated_at`)
+        .run(subscription.id, scope.history.mode, scope.history.limit ?? null, now);
+      clearScopeFacets.run(subscription.id);
+      for (const facet of scope.facetSelections) {
+        insertScopeFacet.run(subscription.id, persistFacet(facetStatements, facet, now));
+      }
+    })();
+    return this.getSubscriptionForSource(sourceId)!;
+  }
+
+  private getSubscriptionScope(subscriptionId: string): SubscriptionScope {
+    const row = this.db.prepare("SELECT * FROM subscription_scopes WHERE subscription_id = ?").get(subscriptionId) as SubscriptionScopeRow | undefined;
+    if (!row) return defaultSubscriptionScope();
+    const facets = this.db.prepare(`SELECT facets.id, facets.scheme, facets.facet_key, facets.label
+      FROM subscription_scope_facets
+      INNER JOIN facets ON facets.id = subscription_scope_facets.facet_id
+      WHERE subscription_scope_facets.subscription_id = ?
+      ORDER BY facets.label COLLATE NOCASE ASC, facets.scheme ASC, facets.facet_key ASC`).all(subscriptionId) as FacetRow[];
+    return normaliseSubscriptionScope({
+      facetSelections: facets.map(facetFromRow),
+      history: {
+        mode: row.history_mode as SubscriptionScope["history"]["mode"],
+        ...(row.history_limit === null ? {} : { limit: row.history_limit })
+      }
+    });
   }
 
   getCheckpoint(subscriptionId: string): SyncCheckpoint | undefined {
@@ -487,6 +644,30 @@ export class ReadingDatabase {
       ))`);
       parameters.push(query.sourceId, query.sourceId);
     }
+    // Selecting a source means “show this subscription as configured”.  An
+    // explicit empty array remains an escape hatch for maintenance/auditing
+    // callers that deliberately need every retained origin.
+    const implicitSelections = query.sourceId && query.facetSelections === undefined
+      ? this.getSubscriptionForSource(query.sourceId)?.scope.facetSelections ?? []
+      : query.facetSelections ?? [];
+    const facetSelections = new Map<string, FacetReference>();
+    for (const selection of implicitSelections) {
+      const normalised = normaliseFacetReference(selection);
+      if (normalised) facetSelections.set(facetIdentity(normalised), normalised);
+    }
+    if (facetSelections.size) {
+      const selections = [...facetSelections.values()];
+      const sameSource = query.sourceId ? " AND entry_origin_facets.source_id = ?" : "";
+      const selectedFacetSql = selections.map(() => "(facets.scheme = ? AND facets.facet_key = ?)").join(" OR ");
+      conditions.push(`EXISTS (
+        SELECT 1 FROM entry_origin_facets
+        INNER JOIN facets ON facets.id = entry_origin_facets.facet_id
+        WHERE entry_origin_facets.entry_id = entries.id${sameSource}
+          AND (${selectedFacetSql})
+      )`);
+      if (query.sourceId) parameters.push(query.sourceId);
+      for (const selection of selections) parameters.push(selection.scheme, selection.key);
+    }
     // A missing publication time is deliberately represented by the first
     // observed time (then creation time) throughout the timeline.
     const timelineTimestamp = "COALESCE(entries.published_at, entries.observed_at, entries.created_at)";
@@ -531,19 +712,54 @@ export class ReadingDatabase {
 
   private withOrigins(entries: Entry[]): Entry[] {
     if (!entries.length) return entries;
-    const originQuery = this.db.prepare(`SELECT source_id, provider_id, provider_label, external_id, original_url, observed_at
-      FROM entry_origins WHERE entry_id = ? ORDER BY observed_at ASC`);
-    return entries.map((entry) => ({
-      ...entry,
-      origins: (originQuery.all(entry.id) as Array<any>).map((origin): ContentOrigin => ({
-        sourceId: origin.source_id,
-        providerId: origin.provider_id,
-        providerLabel: origin.provider_label ?? undefined,
-        externalId: origin.external_id || undefined,
-        originalUrl: origin.original_url,
-        observedAt: origin.observed_at
-      }))
-    }));
+    // Historical imports can contain thousands of cards. Fetch their origin
+    // graph in bounded batches instead of issuing one query per entry (and a
+    // second query for every origin). The batch size stays below SQLite's
+    // conservative bind-variable limit while retaining the existing API.
+    const originsByEntry = new Map<string, OriginRow[]>();
+    const facetsByOrigin = new Map<string, Facet[]>();
+    for (const entryIds of chunked(entries.map((entry) => entry.id), 400)) {
+      const placeholders = entryIds.map(() => "?").join(", ");
+      const origins = this.db.prepare(`SELECT entry_id, source_id, provider_id, provider_label, external_id, original_url, observed_at
+        FROM entry_origins WHERE entry_id IN (${placeholders}) ORDER BY entry_id ASC, observed_at ASC`)
+        .all(...entryIds) as OriginRow[];
+      for (const origin of origins) {
+        const entryOrigins = originsByEntry.get(origin.entry_id) ?? [];
+        entryOrigins.push(origin);
+        originsByEntry.set(origin.entry_id, entryOrigins);
+      }
+      const facetRows = this.db.prepare(`SELECT entry_origin_facets.entry_id, entry_origin_facets.source_id,
+          entry_origin_facets.provider_id, entry_origin_facets.external_id, facets.id, facets.scheme, facets.facet_key, facets.label
+        FROM entry_origin_facets
+        INNER JOIN facets ON facets.id = entry_origin_facets.facet_id
+        WHERE entry_origin_facets.entry_id IN (${placeholders})
+        ORDER BY entry_origin_facets.entry_id ASC, entry_origin_facets.source_id ASC, entry_origin_facets.provider_id ASC,
+          entry_origin_facets.external_id ASC, facets.label COLLATE NOCASE ASC, facets.scheme ASC, facets.facet_key ASC`)
+        .all(...entryIds) as OriginFacetRow[];
+      for (const row of facetRows) {
+        const key = originIdentity(row);
+        const facets = facetsByOrigin.get(key) ?? [];
+        facets.push(facetFromRow(row));
+        facetsByOrigin.set(key, facets);
+      }
+    }
+    return entries.map((entry) => {
+      const facetMap = new Map<string, Facet>();
+      const origins = (originsByEntry.get(entry.id) ?? []).map((origin): ContentOrigin => {
+        const facets = facetsByOrigin.get(originIdentity(origin)) ?? [];
+        for (const facet of facets) facetMap.set(facetIdentity(facet), facet);
+        return {
+          sourceId: origin.source_id,
+          providerId: origin.provider_id,
+          providerLabel: origin.provider_label ?? undefined,
+          externalId: origin.external_id || undefined,
+          originalUrl: origin.original_url,
+          observedAt: origin.observed_at,
+          facets
+        };
+      });
+      return { ...entry, facets: [...facetMap.values()], origins };
+    });
   }
 
   deleteSource(sourceId: string): void {
@@ -681,20 +897,28 @@ export class ReadingDatabase {
       VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(entry_id, source_id, provider_id, external_id) DO UPDATE SET
         provider_label = COALESCE(excluded.provider_label, entry_origins.provider_label), original_url = excluded.original_url, observed_at = excluded.observed_at`);
+    const facetStatements = prepareFacetStatements(this.db);
+    const clearOriginFacets = this.db.prepare(`DELETE FROM entry_origin_facets
+      WHERE entry_id = ? AND source_id = ? AND provider_id = ? AND external_id = ?`);
+    const upsertOriginFacet = this.db.prepare(`INSERT OR IGNORE INTO entry_origin_facets
+      (entry_id, source_id, provider_id, external_id, facet_id) VALUES (?, ?, ?, ?, ?)`);
     let inserted = 0;
     const transaction = this.db.transaction((records: Entry[]) => {
       for (const entry of records) {
         const identity = entry.canonicalIdentity ?? entry.canonicalUrl;
         if (isDismissed.get(identity)) continue;
         const isNew = !exists.get(entry.canonicalUrl);
+        const providerId = entry.providerId ?? this.getSource(entry.sourceId)?.connectorId ?? "generic";
+        const externalId = entry.externalId ?? "";
+        const observedAt = entry.observedAt ?? entry.createdAt;
         insert.run({
           ...entry,
           author: entry.author ?? null,
           publishedAt: entry.publishedAt ?? null,
           summary: entry.summary ?? null,
           imageUrl: entry.imageUrl ?? null,
-          observedAt: entry.observedAt ?? entry.createdAt,
-          providerId: entry.providerId ?? this.getSource(entry.sourceId)?.connectorId ?? "generic",
+          observedAt,
+          providerId,
           providerLabel: entry.providerLabel ?? null,
           externalId: entry.externalId ?? null,
           canonicalIdentity: identity
@@ -703,12 +927,21 @@ export class ReadingDatabase {
         upsertOrigin.run(
           stored.id,
           entry.sourceId,
-          entry.providerId ?? this.getSource(entry.sourceId)?.connectorId ?? "generic",
+          providerId,
           entry.providerLabel ?? null,
-          entry.externalId ?? "",
+          externalId,
           entry.url,
-          entry.observedAt ?? entry.createdAt
+          observedAt
         );
+        // Undefined means the connector has no facet capability, not that an
+        // existing source-origin taxonomy should be erased. An explicit empty
+        // array is authoritative and clears stale facets for that origin.
+        if (entry.facets !== undefined) {
+          clearOriginFacets.run(stored.id, entry.sourceId, providerId, externalId);
+          for (const facet of normaliseFacets(entry.facets)) {
+            upsertOriginFacet.run(stored.id, entry.sourceId, providerId, externalId, persistFacet(facetStatements, facet, Date.now()));
+          }
+        }
         if (isNew) inserted += 1;
       }
     });

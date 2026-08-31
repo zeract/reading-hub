@@ -1,6 +1,20 @@
 import { randomUUID } from "node:crypto";
-import type { Account, CalibrationResult, ProbeResult, ProfileSubscriptionInput, Source, SourceInput, SourceSettings, SubscriptionDraft } from "../shared/types";
+import type {
+  Account,
+  CalibrationResult,
+  ProbeResult,
+  ProfileSubscriptionInput,
+  Source,
+  SourceCollectionSettings,
+  SourceFacet,
+  SourceInput,
+  SourceSettings,
+  SubscriptionDraft,
+  SubscriptionScope
+} from "../shared/types";
+import { facetIdentity } from "../shared/subscription-scope";
 import { ReadingDatabase } from "./database";
+import type { ConnectorRegistry } from "./connector-registry";
 import { isXiaohongshuUrl, manualProbe, SourceProbe } from "./source-probe";
 import { SyncManager } from "./sync-manager";
 import { ZhihuFollowConnector } from "./zhihu-follow";
@@ -17,7 +31,9 @@ export class SourceService {
     private readonly db: ReadingDatabase,
     private readonly probeService: SourceProbe,
     private readonly sync: SyncManager,
-    private readonly zhihuFollow: ZhihuFollowConnector
+    private readonly zhihuFollow: ZhihuFollowConnector,
+    /** Optional in focused service tests; production resolves built-in adapters through the registry. */
+    private readonly connectors?: Pick<ConnectorRegistry, "get" | "has">
   ) {}
 
   async preview(url: string): Promise<{ token: string; probe: ProbeResult }> {
@@ -39,7 +55,10 @@ export class SourceService {
     const config: Record<string, unknown> = {};
     if (probe.kind === "rss" && isTrustedLoopbackFeedUrl(probe.url)) config.allowTrustedLoopbackFeed = true;
     if (probe.kind === "rss" && probe.historicalArchiveUrl) {
-      config.archiveBackfill = {
+      // This is discovery metadata, not an import instruction. A new
+      // subscription always starts feed-only; settings must explicitly choose
+      // a bounded selected/all history scope before the archive is read.
+      config.archiveCatalog = {
         url: probe.historicalArchiveUrl
       };
     }
@@ -208,6 +227,62 @@ export class SourceService {
     }
     const pollingEnabled = settings.kind === "manual" || unsupportedXPublicProfile ? false : settings.pollingEnabled;
     return this.db.updateSourceSettings(sourceId, { ...settings, title, category, pollingEnabled, refreshIntervalMinutes: pollingEnabled ? interval : undefined });
+  }
+
+  /**
+   * Returns local collection policy and labels already observed on this
+   * source.  It contains no provider configuration, history HTML, or
+   * credentials, so it is safe for the renderer settings view.
+   */
+  getCollectionSettings(sourceId: string): SourceCollectionSettings {
+    const source = this.db.getSource(sourceId);
+    if (!source) throw new Error("来源不存在。");
+    return this.withCollectionCapabilities(source, this.db.getSourceCollectionSettings(sourceId));
+  }
+
+  /** Persist only user-owned collection scope; connector config stays opaque. */
+  updateCollectionScope(sourceId: string, scope: SubscriptionScope): SourceCollectionSettings {
+    this.db.updateSubscriptionScope(sourceId, scope);
+    return this.getCollectionSettings(sourceId);
+  }
+
+  /**
+   * Reads a publisher-declared RSS archive only after the user opens the
+   * collection controls.  The adapter returns metadata labels/counts only;
+   * no article body or historical card is written here.
+   */
+  async inspectCollectionFacets(sourceId: string): Promise<SourceFacet[]> {
+    const source = this.db.getSource(sourceId);
+    if (!source) throw new Error("来源不存在。");
+    const local = this.db.listSourceFacets(sourceId);
+    const adapter = this.collectionAdapter(source);
+    if (!adapter?.inspectFacets) return local;
+    const catalog = await adapter.inspectFacets(source);
+    if (!catalog) return local;
+    const merged = new Map<string, SourceFacet>();
+    for (const facet of local) merged.set(facetIdentity(facet), facet);
+    for (const facet of catalog.facets) {
+      const key = facetIdentity(facet);
+      const existing = merged.get(key);
+      merged.set(key, { ...facet, sourceId, entryCount: existing?.entryCount ?? 0 });
+    }
+    return [...merged.values()].sort((left, right) => right.entryCount - left.entryCount
+      || left.label.localeCompare(right.label, "zh-CN") || left.scheme.localeCompare(right.scheme) || left.key.localeCompare(right.key));
+  }
+
+  private withCollectionCapabilities(source: Source, settings: SourceCollectionSettings): SourceCollectionSettings {
+    const adapter = this.collectionAdapter(source);
+    return {
+      ...settings,
+      facetDiscoveryAvailable: Boolean(adapter?.inspectFacets),
+      historyAvailable: Boolean(adapter?.supportsHistoricalCollection?.(source))
+    };
+  }
+
+  private collectionAdapter(source: Source) {
+    const connectorId = source.connectorId ?? source.kind;
+    if (!this.connectors?.has(connectorId)) return undefined;
+    return this.connectors.get(connectorId);
   }
 
   async delete(sourceId: string): Promise<void> {

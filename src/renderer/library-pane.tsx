@@ -93,9 +93,13 @@ function EntryCard({ entry, source, selected, onRead, onOpen, onDismiss, busy }:
     ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(entry.publishedAt)
     : entry.observedAt ? `收集于 ${new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(entry.observedAt)}` : "刚刚收集";
   const providers = [...new Set((entry.origins || []).map((origin) => origin.providerLabel || origin.providerId).filter((id) => id !== source?.connectorId))];
+  const sourceFacets = source
+    ? entry.origins?.find((origin) => origin.sourceId === source.id)?.facets
+    : entry.facets;
+  const facets = (sourceFacets ?? entry.facets ?? []).slice(0, 3);
   return <article className={`entry-card ${entry.read ? "read" : ""}${selected ? " selected" : ""}`}>
     <button className="entry-main" type="button" onClick={() => onOpen(entry)} aria-label={`在应用内阅读：${entry.title}`}>
-      <div className="entry-copy"><p className="entry-source">{source?.title || "已保存内容"} <span>·</span> {date}{providers.length ? <><span>·</span>{providers.join(" / ")}</> : null}</p><h2>{entry.title}</h2>{entry.summary && <p className="summary">{entry.summary}</p>}<p className="byline">{entry.author || "原文链接"}</p></div>
+      <div className="entry-copy"><p className="entry-source">{source?.title || "已保存内容"} <span>·</span> {date}{providers.length ? <><span>·</span>{providers.join(" / ")}</> : null}</p><h2>{entry.title}</h2>{entry.summary && <p className="summary">{entry.summary}</p>}{facets.length > 0 && <p className="entry-facets" aria-label="文章分类">{facets.map((facet) => <span key={`${facet.scheme}\u0000${facet.key}`}>{facet.label}</span>)}</p>}<p className="byline">{entry.author || "原文链接"}</p></div>
       {entry.imageUrl && <img src={entry.imageUrl} alt="" loading="lazy" />}
     </button>
     <div className="entry-actions"><button type="button" onClick={() => onOpen(entry)}>应用内阅读</button><button aria-label="标记已读" onClick={() => void onRead(entry, "read", !entry.read)}>{entry.read ? "未读" : "已读"}</button><button aria-label="收藏" onClick={() => void onRead(entry, "favorite", !entry.favorite)}>{entry.favorite ? "★" : "☆"}</button><button type="button" className="delete-entry" onClick={() => void onDismiss(entry)} disabled={busy}>删除</button></div>

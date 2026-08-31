@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { discoverPublicArchive, parsePublishedArchive } from "../src/main/archive-backfill";
+import { discoverPublicArchiveUrl, inspectPublicArchiveFacets, parsePublishedArchive } from "../src/main/archive-backfill";
 import { RssConnector } from "../src/main/connectors";
-import type { Source } from "../src/shared/types";
+import type { Source, Subscription, SubscriptionScope } from "../src/shared/types";
 
 const ARCHIVE_HTML = `<html><body><nav><a href="/archive.html">归档</a></nav><ul class="archive-list">
-  <li><span class="archive-date">2026-08-02</span><a href="/post/two.html">Second post</a></li>
-  <li><time datetime="2026-08-01">2026-08-01</time><a href="/post/one.html">First post</a></li>
+  <li><span class="archive-date">2026-08-02</span><a href="/post/two.html">Second post</a><a rel="tag" href="/tags/ml">Machine Learning</a></li>
+  <li><time datetime="2026-08-01">2026-08-01</time><a href="/post/one.html">First post</a><a class="archive-cats" href="/categories/systems.html">Systems</a></li>
   <li><a href="/tags/ml">Machine-learning tag</a></li>
 </ul></body></html>`;
 
@@ -25,8 +25,12 @@ function source(): Source {
   return {
     id: "source", url: "https://example.com/rss.xml", title: "Example", kind: "rss", connectorId: "rss", status: "active",
     pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1,
-    config: { archiveBackfill: { url: "https://example.com/archive.html" } }
+    config: { archiveCatalog: { url: "https://example.com/archive.html" } }
   };
+}
+
+function subscription(scope: SubscriptionScope = { facetSelections: [], history: { mode: "none" } }): Subscription {
+  return { id: "source", sourceId: "source", connectorId: "rss", config: {}, scope, createdAt: 1, updatedAt: 1 };
 }
 
 describe("public archive backfill", () => {
@@ -43,37 +47,82 @@ describe("public archive backfill", () => {
     ]);
   });
 
-  it("requires an explicit same-origin archive link before downloading it", async () => {
+  it("associates declared taxonomy links from the same dated archive row", () => {
+    expect(parsePublishedArchive(ARCHIVE_HTML, "https://example.com/archive.html")).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: "Second post",
+        facets: [{ scheme: "feed:https://example.com:tag", key: "ml", label: "Machine Learning" }]
+      }),
+      expect.objectContaining({
+        title: "First post",
+        facets: [{ scheme: "feed:https://example.com:category", key: "systems", label: "Systems" }]
+      })
+    ]));
+  });
+
+  it("discovers an explicit same-origin archive link without downloading its back catalogue", async () => {
     const http = {
       getText: vi.fn(async (url: string) => url === "https://example.com/"
         ? { url, status: 200, contentType: "text/html", text: `<a href="/archive.html">归档</a>` }
         : { url, status: 200, contentType: "text/html", text: ARCHIVE_HTML })
     };
 
-    await expect(discoverPublicArchive(http as any, "https://example.com/")).resolves.toMatchObject({
-      url: "https://example.com/archive.html",
-      entries: [expect.objectContaining({ title: "Second post" }), expect.objectContaining({ title: "First post" })]
-    });
-    expect(http.getText).toHaveBeenCalledWith("https://example.com/archive.html", undefined, { maxBytes: 8_000_000 });
+    await expect(discoverPublicArchiveUrl(http as any, "https://example.com/")).resolves.toBe("https://example.com/archive.html");
+    expect(http.getText).toHaveBeenCalledTimes(1);
+    expect(http.getText).toHaveBeenCalledWith("https://example.com/");
   });
 
-  it("backfills an explicit archive once while preserving RSS for future updates", async () => {
+  it("inspects archive facets only when explicitly requested", async () => {
+    const http = {
+      getText: vi.fn(async (url: string) => ({ url, status: 200, contentType: "text/html", text: ARCHIVE_HTML }))
+    };
+
+    await expect(inspectPublicArchiveFacets(http as any, "https://example.com/archive.html")).resolves.toEqual({
+      url: "https://example.com/archive.html",
+      totalEntries: 2,
+      facets: expect.arrayContaining([
+        { scheme: "feed:https://example.com:tag", key: "ml", label: "Machine Learning" },
+        { scheme: "feed:https://example.com:category", key: "systems", label: "Systems" }
+      ])
+    });
+    expect(http.getText).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an archive descriptor feed-only until the user explicitly chooses history", async () => {
     const http = {
       getText: vi.fn(async (url: string) => url.endsWith("rss.xml")
         ? { url, status: 200, contentType: "application/rss+xml", text: FEED, etag: "feed" }
         : { url, status: 200, contentType: "text/html", text: ARCHIVE_HTML })
     };
     const connector = new RssConnector(http as any);
-    const result = await connector.sync({ source: source(), subscription: { id: "source", sourceId: "source", connectorId: "rss", config: {}, createdAt: 1, updatedAt: 1 } });
+    const result = await connector.sync({ source: source(), subscription: subscription() });
 
-    expect(result.entries.map((entry) => entry.title)).toEqual(["Newest post", "Second post", "First post"]);
-    expect(result.checkpoint?.data).toMatchObject({ archiveBackfill: { url: "https://example.com/archive.html", importedEntries: 2 } });
+    expect(result.entries.map((entry) => entry.title)).toEqual(["Newest post"]);
+    expect(result.checkpoint).toBeUndefined();
+    expect(http.getText).toHaveBeenCalledTimes(1);
+  });
+
+  it("imports only selected archive facets and checkpoints the selected scope", async () => {
+    const http = {
+      getText: vi.fn(async (url: string) => url.endsWith("rss.xml")
+        ? { url, status: 200, contentType: "application/rss+xml", text: FEED, etag: "feed" }
+        : { url, status: 200, contentType: "text/html", text: ARCHIVE_HTML })
+    };
+    const connector = new RssConnector(http as any);
+    const scope: SubscriptionScope = {
+      facetSelections: [{ scheme: "feed:https://example.com:tag", key: "ml", label: "Machine Learning" }],
+      history: { mode: "selected", limit: 50 }
+    };
+    const result = await connector.sync({ source: source(), subscription: subscription(scope) });
+
+    expect(result.entries.map((entry) => entry.title)).toEqual(["Newest post", "Second post"]);
+    expect(result.checkpoint?.data).toMatchObject({ archiveHistory: { importedEntries: 1, completedAt: expect.any(Number) } });
 
     const callsBeforeRetry = http.getText.mock.calls.length;
     http.getText.mockImplementation(async (url: string) => ({ url, status: 304, contentType: "application/rss+xml", text: "" }));
     const retry = await connector.sync({
       source: source(),
-      subscription: { id: "source", sourceId: "source", connectorId: "rss", config: {}, createdAt: 1, updatedAt: 1 },
+      subscription: subscription(scope),
       checkpoint: { subscriptionId: "source", data: result.checkpoint?.data, updatedAt: 2 }
     });
     expect(retry).toMatchObject({ entries: [], notModified: true });
@@ -88,10 +137,13 @@ describe("public archive backfill", () => {
         : { url, status: 200, contentType: "text/html", text: ARCHIVE_HTML })
     };
     const result = await new RssConnector(http as any).sync({
-      source: source(), subscription: { id: "source", sourceId: "source", connectorId: "rss", config: {}, createdAt: 1, updatedAt: 1 }
+      source: source(), subscription: subscription({ facetSelections: [], history: { mode: "all" } })
     });
 
     expect(result.entries.map((entry) => entry.title)).toEqual(["Current Feed title", "Second post"]);
+    expect(result.entries[0]?.facets).toEqual([
+      { scheme: "feed:https://example.com:category", key: "systems", label: "Systems" }
+    ]);
   });
 
   it("keeps a healthy Feed active when its optional archive is unavailable", async () => {
@@ -102,10 +154,10 @@ describe("public archive backfill", () => {
       })
     };
     const result = await new RssConnector(http as any).sync({
-      source: source(), subscription: { id: "source", sourceId: "source", connectorId: "rss", config: {}, createdAt: 1, updatedAt: 1 }
+      source: source(), subscription: subscription({ facetSelections: [], history: { mode: "all" } })
     });
 
     expect(result.entries).toHaveLength(1);
-    expect(result.checkpoint?.data).toMatchObject({ archiveBackfill: { url: "https://example.com/archive.html", attempts: 1 } });
+    expect(result.checkpoint?.data).toMatchObject({ archiveHistory: { attempts: 1 } });
   });
 });
