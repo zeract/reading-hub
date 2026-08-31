@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ReadingDatabase } from "../src/main/database";
 import { CURRENT_SCHEMA_VERSION } from "../src/main/persistence/schema";
+import { MAX_FUTURE_PUBLICATION_SKEW_MS } from "../src/shared/publication-date";
 
 describe("persistent schema migrations", () => {
   it("upgrades a pre-subscription database once without losing existing cards", () => {
@@ -22,22 +23,28 @@ describe("persistent schema migrations", () => {
         sourceId: "legacy-source",
         connectorId: "rss"
       });
-      expect(database.listEntries()).toEqual([expect.objectContaining({
+      expect(database.listEntries()).toEqual(expect.arrayContaining([expect.objectContaining({
         id: "legacy-entry",
         observedAt: 1_700_000_000_000,
         providerId: "rss",
         canonicalIdentity: "https://example.com/posts/legacy"
-      })]);
+      })]));
+      expect(database.getEntry("future-entry")).toMatchObject({
+        id: "future-entry",
+        publishedAt: undefined,
+        observedAt: 1_700_000_000_000
+      });
       database.close();
       database = undefined;
 
       const firstOpen = inspectMigrationState(filePath);
-      expect(firstOpen.versions).toEqual([1, 2, 3]);
-      expect(firstOpen.originCount).toBe(1);
+      expect(firstOpen.versions).toEqual([1, 2, 3, 4]);
+      expect(firstOpen.originCount).toBe(2);
       expect(firstOpen.hasSourceMaintenance).toBe(true);
 
       reopened = new ReadingDatabase(filePath);
-      expect(reopened.listEntries()).toHaveLength(1);
+      expect(reopened.listEntries()).toHaveLength(2);
+      expect(reopened.getEntry("future-entry")?.publishedAt).toBeUndefined();
       expect(reopened.getSubscriptionForSource("legacy-source")).toBeDefined();
       reopened.close();
       reopened = undefined;
@@ -99,6 +106,20 @@ function createLegacyDatabase(filePath: string): void {
     content_hash, is_read, is_favorite, created_at
   ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, 0, 0, ?)`)
     .run("legacy-entry", "legacy-source", "https://example.com/posts/legacy", "https://example.com/posts/legacy", "Legacy article", "legacy-hash", 1_700_000_000_000);
+  database.prepare(`INSERT INTO entries (
+    id, source_id, canonical_url, original_url, title, author, published_at, summary, image_url,
+    content_hash, is_read, is_favorite, created_at
+  ) VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, 0, 0, ?)`)
+    .run(
+      "future-entry",
+      "legacy-source",
+      "https://example.com/posts/future",
+      "https://example.com/posts/future",
+      "Incorrectly future-dated article",
+      Date.now() + MAX_FUTURE_PUBLICATION_SKEW_MS + 60_000,
+      "future-hash",
+      1_700_000_000_000
+    );
   database.close();
 }
 

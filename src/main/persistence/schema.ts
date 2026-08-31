@@ -1,11 +1,12 @@
 import type Database from "better-sqlite3";
+import { MAX_FUTURE_PUBLICATION_SKEW_MS } from "../../shared/publication-date";
 
 /**
  * Persistent schema upgrades are deliberately kept out of the repository
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 type SqliteDatabase = Database.Database;
 
@@ -194,6 +195,17 @@ const MIGRATIONS: readonly SchemaMigration[] = [
           updated_at INTEGER NOT NULL
         );
       `);
+    }
+  },
+  {
+    version: 4,
+    name: "clear-unverified-future-publication-dates",
+    up: (database) => {
+      // Earlier builds trusted every source timestamp.  Retain affected
+      // cards and their local observation time, but clear dates that cannot
+      // represent already-published content so they do not sort as future.
+      database.prepare("UPDATE entries SET published_at = NULL WHERE published_at > ?")
+        .run(Date.now() + MAX_FUTURE_PUBLICATION_SKEW_MS);
     }
   }
 ];

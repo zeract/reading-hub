@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ConnectorId, Entry, RawEntry, Source } from "../shared/types";
 import { canonicalizeContentUrl } from "../shared/url";
+import { sanitizePublishedAt } from "../shared/publication-date";
 import { contentHash, identityContentHash } from "./content-hash";
 
 type Canonicalizer = (url: string) => string;
@@ -42,20 +43,28 @@ export class ContentNormalizer {
     const canonicalIdentity = (options.canonicalIdentity ?? defaultIdentity)(item, defaultCanonicalUrl);
     const canonicalUrl = (options.canonicalUrl ?? defaultCanonicalUrlResolver)(item, canonicalIdentity, defaultCanonicalUrl);
     const now = Date.now();
+    const observedAt = finiteTimestamp(item.observedAt) ?? now;
+    const publishedAt = sanitizePublishedAt(item.publishedAt, now);
+    // Every connector passes through this boundary.  Never let a mistaken
+    // future date from a Feed, archive, or provider move public content ahead
+    // of the real timeline; preserve the card and its local collection time.
+    const normalizedItem = publishedAt === item.publishedAt && observedAt === item.observedAt
+      ? item
+      : { ...item, publishedAt, observedAt };
     const providerId = resolveProviderId(options.providerId, item, source);
     const providerLabel = resolveProviderLabel(options.providerLabel, item, source);
 
     return {
-      ...item,
+      ...normalizedItem,
       id: randomUUID(),
       sourceId: source.id,
       canonicalUrl,
       canonicalIdentity,
-      contentHash: options.hashMode === "identity" ? identityContentHash(canonicalIdentity, item) : contentHash(item),
+      contentHash: options.hashMode === "identity" ? identityContentHash(canonicalIdentity, normalizedItem) : contentHash(normalizedItem),
       read: false,
       favorite: false,
       createdAt: now,
-      observedAt: item.observedAt ?? now,
+      observedAt,
       providerId,
       providerLabel
     };
@@ -70,6 +79,10 @@ function defaultIdentity(item: RawEntry, canonicalUrl: string): string {
 
 function defaultCanonicalUrlResolver(_item: RawEntry, _canonicalIdentity: string, canonicalUrl: string): string {
   return canonicalUrl;
+}
+
+function finiteTimestamp(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function resolveProviderId(
