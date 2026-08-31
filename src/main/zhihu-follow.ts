@@ -6,6 +6,7 @@ import { contentNormalizer } from "./content-normalizer";
 import { awaitWithAbort, delayWithAbort, throwIfAborted } from "./cancellation";
 import { extractZhihuFollowPage } from "./zhihu-follow-parser";
 import { configureChromiumSession } from "./network";
+import { createBackgroundWindow } from "./background-window";
 
 const FOLLOW_URL = "https://www.zhihu.com/follow";
 const PARTITION = "persist:reading-hub-zhihu-follow";
@@ -118,8 +119,7 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
     // session, while retaining the user's explicit HTTP(S)_PROXY route.
     await awaitWithAbort(configureChromiumSession(isolatedSession), signal);
     throwIfAborted(signal);
-    const window = new BrowserWindow({
-      show,
+    const windowOptions = {
       width: 960,
       height: 760,
       minWidth: 720,
@@ -133,7 +133,13 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
         webviewTag: false,
         spellcheck: false
       }
-    });
+    };
+    // Feed/article rendering runs on the timer, so it must never activate this
+    // app or pull macOS back to Reading Hub's current Space. The login window
+    // remains a normal, visible window because opening it is a user action.
+    const window = show
+      ? new BrowserWindow({ ...windowOptions, show: true })
+      : createBackgroundWindow(windowOptions);
     isolatedSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     isolatedSession.setPermissionCheckHandler(() => false);
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));

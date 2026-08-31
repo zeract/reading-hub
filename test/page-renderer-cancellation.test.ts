@@ -17,7 +17,10 @@ const electron = vi.hoisted(() => {
     };
     readonly loadURL = vi.fn((...args: unknown[]) => renderState.loadURL(...args));
 
-    constructor() {
+    readonly options: Record<string, unknown>;
+
+    constructor(options: Record<string, unknown> = {}) {
+      this.options = options;
       windows.push(this);
     }
 
@@ -58,6 +61,7 @@ describe("isolated page renderer cancellation", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const window = electron.windows[0];
     expect(window).toBeDefined();
+    expect(window.options).toMatchObject({ show: false, focusable: false, skipTaskbar: true });
     controller.abort(new Error("审计停止"));
 
     await expect(rendering).rejects.toThrow("审计停止");

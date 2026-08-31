@@ -4,6 +4,7 @@ import { formatByteLimit } from "./byte-limit";
 import { awaitWithAbort, combineAbortSignals, delayWithAbort, throwIfAborted } from "./cancellation";
 import { configureChromiumSession } from "./network";
 import { RobotsPolicy } from "./robots";
+import { createBackgroundWindow } from "./background-window";
 
 const RENDER_TIMEOUT_MS = 20_000;
 const DEFAULT_RENDERED_DOCUMENT_MAX_BYTES = 8_000_000;
@@ -49,8 +50,7 @@ export class IsolatedPageRenderer implements PageRenderer {
     await awaitWithAbort(configureChromiumSession(isolatedSession), options?.signal);
     isolatedSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     isolatedSession.setPermissionCheckHandler(() => false);
-    const window = new BrowserWindow({
-      show: false,
+    const window = createBackgroundWindow({
       webPreferences: {
         partition,
         sandbox: true,
