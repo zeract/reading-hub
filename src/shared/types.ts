@@ -393,6 +393,12 @@ export interface ProbeResult {
   confidence: number;
   extractionRule?: ExtractionRule;
   preview: RawEntry[];
+  /**
+   * An author-linked, same-origin archive independently verified to contain
+   * dated post metadata. It enables one bounded initial backfill; article
+   * bodies are never fetched or persisted for this purpose.
+  */
+  historicalArchiveUrl?: string;
   requiresReview: boolean;
   message?: string;
 }

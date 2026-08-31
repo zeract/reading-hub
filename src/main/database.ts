@@ -313,9 +313,10 @@ export class ReadingDatabase {
     this.db.transaction(() => {
       this.db.prepare(`UPDATE sources SET title = ?, category = ?, kind = ?, connector_id = ?, polling_enabled = ?, refresh_interval_minutes = ?,
         extraction_rule = ?, etag = CASE WHEN ? THEN NULL ELSE etag END, last_modified = CASE WHEN ? THEN NULL ELSE last_modified END,
-        status = CASE WHEN ? THEN 'active' ELSE status END, next_check_at = ?, updated_at = ? WHERE id = ?`)
+        status = CASE WHEN ? OR (? AND status = 'paused') THEN 'active' ELSE status END,
+        next_check_at = ?, updated_at = ? WHERE id = ?`)
         .run(settings.title, normaliseSourceCategory(settings.category) ?? null, settings.kind, connectorId, Number(settings.pollingEnabled), settings.refreshIntervalMinutes ?? null,
-          extractionRule, Number(kindChanged), Number(kindChanged), Number(kindChanged), nextCheckAt, now, sourceId);
+          extractionRule, Number(kindChanged), Number(kindChanged), Number(kindChanged), Number(settings.pollingEnabled), nextCheckAt, now, sourceId);
       if (kindChanged) {
         this.db.prepare("UPDATE subscriptions SET connector_id = ?, account_id = NULL, updated_at = ? WHERE source_id = ?")
           .run(settings.kind, now, sourceId);
@@ -335,6 +336,22 @@ export class ReadingDatabase {
       last_error = ?, updated_at = ? WHERE id = ?`)
       .run(reason.slice(0, 300), now, sourceId);
     return this.getSource(sourceId)!;
+  }
+
+  /**
+   * Repairs the legacy automatic-failure state machine. Earlier builds wrote
+   * `paused + polling_enabled=1` after five transient failures, leaving a
+   * source outside the scheduler forever. A genuine pause always disables
+   * polling, so this only touches internally inconsistent legacy rows.
+   */
+  resumeLegacyAutoPausedSources(now = Date.now()): number {
+    const sources = this.db.prepare(`SELECT id FROM sources
+      WHERE status = 'paused' AND polling_enabled = 1 ORDER BY updated_at ASC`).all() as Array<{ id: string }>;
+    const resume = this.db.prepare(`UPDATE sources SET status = 'error', next_check_at = ?, updated_at = ? WHERE id = ?`);
+    this.db.transaction(() => {
+      for (const source of sources) resume.run(now + legacyResumeJitter(source.id), now, source.id);
+    })();
+    return sources.length;
   }
 
   getSourceByUrl(url: string): Source | undefined {
@@ -746,11 +763,13 @@ export class ReadingDatabase {
   markFailure(source: Source, message: string): Source {
     const now = Date.now();
     const failures = source.failureCount + 1;
-    const pause = failures >= 5;
     this.db
       .prepare(`UPDATE sources SET status = ?, failure_count = ?, last_error = ?, last_checked_at = ?,
         next_check_at = ?, updated_at = ? WHERE id = ?`)
-      .run(pause ? "paused" : "error", failures, message.slice(0, 300), now, pause ? null : now + retryDelay(failures), now, source.id);
+      // Network/parser failures remain retryable indefinitely. `paused` is
+      // reserved for an explicit user or compliance stop through pauseSource,
+      // which also disables polling.
+      .run("error", failures, message.slice(0, 300), now, now + retryDelay(failures), now, source.id);
     this.recordSyncEvent(source.id, "failure", 0, 0, message);
     return this.getSource(source.id)!;
   }
@@ -803,4 +822,11 @@ export function refreshDelay(intervalMinutes?: number): number {
 
 export function retryDelay(failures: number): number {
   return Math.min(6 * 60 * 60_000, 5 * 60_000 * 2 ** Math.max(0, failures - 1));
+}
+
+/** Spread recovered legacy sources over a short window without using Math.random in persistence. */
+function legacyResumeJitter(sourceId: string): number {
+  let hash = 0;
+  for (let index = 0; index < sourceId.length; index += 1) hash = (hash * 31 + sourceId.charCodeAt(index)) >>> 0;
+  return hash % (15 * 60_000);
 }

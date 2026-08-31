@@ -86,13 +86,86 @@ describe("SourceProbe platform boundaries", () => {
     expect(renderer.render).toHaveBeenCalledWith("https://example.com/archive", undefined);
   });
 
-  it("does not treat an oversized Feed as an HTML page", async () => {
-    const error = new ResponseTooLargeError(3_000_000, "application/rss+xml", "https://example.com/feed.xml", 3_000_001);
+  it("uses the isolated renderer when an oversized HTML page is mislabeled as plain text", async () => {
+    const http = {
+      getText: vi.fn().mockRejectedValue(new ResponseTooLargeError(
+        3_000_000,
+        "text/plain",
+        "https://example.com/archive",
+        3_000_001
+      ))
+    };
+    const renderer = {
+      render: vi.fn().mockResolvedValue(`<main><ul>
+        <li><a href="/one">A sufficiently descriptive first post</a><time datetime="2026-08-20">20 Aug 2026</time></li>
+        <li><a href="/two">A sufficiently descriptive second post</a><time datetime="2026-08-19">19 Aug 2026</time></li>
+      </ul></main>`)
+    };
+    const probe = new SourceProbe(http as any, renderer as any);
+
+    await expect(probe.probe("https://example.com/archive")).resolves.toMatchObject({
+      kind: "generic",
+      extractionRule: expect.objectContaining({ rendererRequired: true })
+    });
+    expect(renderer.render).toHaveBeenCalledWith("https://example.com/archive", undefined);
+  });
+
+  it("uses the isolated renderer for a non-Feed XML response that exceeds the page budget", async () => {
+    const http = {
+      getText: vi.fn().mockRejectedValue(new ResponseTooLargeError(
+        3_000_000,
+        "application/xml",
+        "https://example.com/archive",
+        3_000_001,
+        "page"
+      ))
+    };
+    const renderer = {
+      render: vi.fn().mockResolvedValue(`<main><ul>
+        <li><a href="/one">A sufficiently descriptive first post</a><time datetime="2026-08-20">20 Aug 2026</time></li>
+        <li><a href="/two">A sufficiently descriptive second post</a><time datetime="2026-08-19">19 Aug 2026</time></li>
+      </ul></main>`)
+    };
+    const probe = new SourceProbe(http as any, renderer as any);
+
+    await expect(probe.probe("https://example.com/archive")).resolves.toMatchObject({ kind: "generic" });
+    expect(renderer.render).toHaveBeenCalledWith("https://example.com/archive", undefined);
+  });
+
+  it("does not treat a signature-verified oversized Feed as an HTML page", async () => {
+    const error = new ResponseTooLargeError(12_000_000, "application/rss+xml", "https://example.com/feed.xml", 12_000_001, "feed");
     const http = { getText: vi.fn().mockRejectedValue(error) };
     const renderer = { render: vi.fn() };
     const probe = new SourceProbe(http as any, renderer as any);
 
     await expect(probe.probe("https://example.com/feed.xml")).rejects.toBe(error);
+    expect(renderer.render).not.toHaveBeenCalled();
+  });
+
+  it("allows a mislabeled Feed MIME response to use the page fallback when it was not verified as a Feed", async () => {
+    const http = {
+      getText: vi.fn().mockRejectedValue(new ResponseTooLargeError(
+        3_000_000,
+        "application/rss+xml",
+        "https://example.com/archive",
+        3_000_001,
+        "page"
+      ))
+    };
+    const renderer = { render: vi.fn().mockResolvedValue("<main><p>HTML page</p></main>") };
+    const probe = new SourceProbe(http as any, renderer as any);
+
+    await expect(probe.probe("https://example.com/archive")).resolves.toMatchObject({ kind: "generic" });
+    expect(renderer.render).toHaveBeenCalledWith("https://example.com/archive", undefined);
+  });
+
+  it("does not hand an arbitrary oversized application response to Chromium", async () => {
+    const error = new ResponseTooLargeError(3_000_000, "application/javascript", "https://example.com/app.js", 3_000_001);
+    const http = { getText: vi.fn().mockRejectedValue(error) };
+    const renderer = { render: vi.fn() };
+    const probe = new SourceProbe(http as any, renderer as any);
+
+    await expect(probe.probe("https://example.com/app.js")).rejects.toBe(error);
     expect(renderer.render).not.toHaveBeenCalled();
   });
 });

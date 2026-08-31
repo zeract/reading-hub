@@ -7,6 +7,7 @@ import { RobotsPolicy } from "./robots";
 
 const RENDER_TIMEOUT_MS = 20_000;
 const DEFAULT_RENDERED_DOCUMENT_MAX_BYTES = 8_000_000;
+const MAX_RENDER_REDIRECTS = 5;
 
 export interface PageRenderOptions {
   /** Optional caller-owned cancellation. Omitted for normal reader requests. */
@@ -76,7 +77,7 @@ export class IsolatedPageRenderer implements PageRenderer {
       throwIfAborted(options?.signal);
       window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       window.webContents.on("will-attach-webview", (event) => event.preventDefault());
-      await withTimeout(window.loadURL(url), RENDER_TIMEOUT_MS, "页面渲染超时，请检查网络后重试。", options?.signal);
+      await loadWithVerifiedRedirects(window, this.robots, url, options?.signal);
       await delayWithAbort(800, options?.signal);
       const html = await withTimeout(
         window.webContents.executeJavaScript(serializedDocumentScript(maxBytes), true),
@@ -98,6 +99,40 @@ export class IsolatedPageRenderer implements PageRenderer {
         await isolatedSession.clearStorageData();
       }
     }
+  }
+}
+
+/**
+ * BrowserWindow follows redirects itself, which would otherwise skip the
+ * public-address and robots checks performed for the initial URL. Intercept
+ * main-frame redirects, validate the next target, then deliberately start a
+ * fresh isolated navigation. Subframes cannot export HTML to the host and do
+ * not become the reader document.
+ */
+async function loadWithVerifiedRedirects(window: BrowserWindow, robots: RobotsPolicy, initialUrl: string, signal?: AbortSignal): Promise<void> {
+  let targetUrl = initialUrl;
+  let redirectCount = 0;
+  let redirectedTo: string | undefined;
+  const interceptRedirect = (event: Electron.Event, nextUrl: string, isInPlace?: boolean, isMainFrame?: boolean) => {
+    if (isInPlace || isMainFrame === false) return;
+    event.preventDefault();
+    redirectedTo = nextUrl;
+  };
+  window.webContents.on("will-redirect", interceptRedirect);
+  window.webContents.on("will-navigate", interceptRedirect);
+  while (true) {
+    throwIfAborted(signal);
+    redirectedTo = undefined;
+    try {
+      await withTimeout(window.loadURL(targetUrl), RENDER_TIMEOUT_MS, "页面渲染超时，请检查网络后重试。", signal);
+    } catch (error) {
+      if (!redirectedTo) throw error;
+    }
+    if (!redirectedTo) return;
+    targetUrl = assertPublicUrl(redirectedTo).toString();
+    redirectCount += 1;
+    if (redirectCount > MAX_RENDER_REDIRECTS) throw new Error("页面重定向次数过多，已停止渲染。");
+    await robots.assertAllowed(targetUrl, { signal });
   }
 }
 

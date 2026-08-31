@@ -43,6 +43,7 @@ export interface ApplicationServices {
 export async function createApplicationServices(databasePath: string): Promise<ApplicationServices> {
   await configureChromiumNetwork();
   const database = new ReadingDatabase(databasePath);
+  const resumedAutomaticSources = database.resumeLegacyAutoPausedSources();
   const http = new PublicHttpClient();
   const renderer = new IsolatedPageRenderer();
   const probe = new SourceProbe(http, renderer);
@@ -67,6 +68,10 @@ export async function createApplicationServices(databasePath: string): Promise<A
   const inAppArticleViewer = new InAppArticleViewer();
 
   sources.retireUnsupportedXPublicProfileSources();
+  if (resumedAutomaticSources) {
+    // Count only: never log source URLs, titles or remote error payloads.
+    console.info(`Reading Hub 已恢复 ${resumedAutomaticSources} 个因旧版临时失败而停滞的自动来源。`);
+  }
   const maintenanceReport = maintenance.runStartupMaintenance();
   if (maintenanceReport.failures.length) {
     // Deliberately omit URLs, article text and identifiers from logs. A later

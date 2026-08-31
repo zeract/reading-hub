@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { discoverFeedUrls, parseFeed } from "../src/main/feed";
+import { discoverFeedUrls, hasFeedSignature, looksLikeFeed, parseFeed } from "../src/main/feed";
 
 describe("feed parser", () => {
   it("normalizes Atom/RSS fields into reader entries", async () => {
@@ -82,5 +82,16 @@ describe("feed parser", () => {
       "https://news.example/"
     );
     expect(urls).toEqual(["https://news.example/subscribe"]);
+  });
+
+  it("recognizes only a real JSON Feed before granting a larger response budget", () => {
+    expect(hasFeedSignature('{"version":"https://jsonfeed.org/version/1.1","items":[]}')).toBe(true);
+    expect(hasFeedSignature('{"items":[{"title":"ordinary API data"}]}')).toBe(false);
+  });
+
+  it("does not classify arbitrary XML or JSON as a Feed based only on MIME type", () => {
+    expect(looksLikeFeed("application/xml", "<root><item>ordinary XML</item></root>")).toBe(false);
+    expect(looksLikeFeed("application/json", '{"items":["ordinary API data"]}')).toBe(false);
+    expect(looksLikeFeed("application/rss+xml", "<html>mislabeled page</html>")).toBe(false);
   });
 });

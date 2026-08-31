@@ -144,6 +144,11 @@ export class SyncCancelledError extends Error {}
 function currentSourceForSync(database: ReadingDatabase, initial: Source, connectorId: string): Source {
   const current = database.getSource(initial.id);
   if (!current) throw new SyncCancelledError("来源已被删除，已取消此次同步。");
+  // An explicit pause is a user/compliance decision, not an error state to be
+  // overwritten by an older in-flight response.
+  if (!current.pollingEnabled || current.status === "paused") {
+    throw new SyncCancelledError("来源已暂停，已取消此次同步。");
+  }
   if (current.kind !== initial.kind || (current.connectorId ?? current.kind) !== connectorId) {
     throw new SyncCancelledError("来源类型已更新，已取消旧的同步结果。");
   }

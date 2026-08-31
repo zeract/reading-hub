@@ -5,6 +5,7 @@ import {
   ResponseTooLargeError,
   type TextResponse
 } from "./http";
+import { isAmbiguousFeedContentType, isExplicitFeedContentType } from "./feed";
 import type { PageRenderer } from "./page-renderer";
 
 export interface GenericPageLoadOptions {
@@ -49,10 +50,30 @@ export async function loadGenericPage(
 
 function shouldUseRenderedFallback(error: unknown): boolean {
   // A transport failure has no reliable content type. This preserves the
-  // existing public-page fallback, whereas an oversized non-HTML response is
-  // never handed to Chromium as if it were an article list.
+  // existing public-page fallback. Verified Feed responses stay outside the
+  // renderer and retain their parser-specific bounded path below.
   return error instanceof NetworkRequestError
-    || (error instanceof ResponseTooLargeError && isHtmlDocumentContentType(error.contentType));
+    || (error instanceof ResponseTooLargeError && isRenderableHtmlResponse(error));
+}
+
+/**
+ * Some publishers send HTML as text/plain or omit the MIME type. They are
+ * still safe candidates for the same isolated, cookie-free HTML renderer.
+ * A verified Feed remains in the parser path, while clearly binary documents
+ * are never treated as webpages.
+ */
+function isRenderableHtmlResponse(error: ResponseTooLargeError): boolean {
+  // A verified Feed must stay in the parser path; Chromium is not a Feed
+  // parser. Other textual/XML responses can be safely retried in the same
+  // isolated renderer when their MIME type was missing or misleading.
+  if (error.documentKind === "feed") return false;
+  if (isHtmlDocumentContentType(error.contentType)) return true;
+  // Do not attempt to render arbitrary application responses (for example a
+  // JavaScript bundle accidentally pasted as a source). The whitelist is
+  // deliberately narrow: blank/plain/XML/JSON and syndication MIME types
+  // only reach here after Feed-signature inspection, so they may safely be a
+  // mislabeled public HTML page when that inspection failed.
+  return isAmbiguousFeedContentType(error.contentType) || isExplicitFeedContentType(error.contentType);
 }
 
 async function renderPage(renderer: PageRenderer, url: string, signal?: AbortSignal): Promise<LoadedGenericPage> {

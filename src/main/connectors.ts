@@ -1,6 +1,7 @@
 import { load } from "cheerio";
-import type { ConnectorAdapter, Entry, ExtractionRule, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
+import type { ConnectorAdapter, Entry, ExtractionRule, RawEntry, Source, SyncCheckpoint, SyncContext, SyncResult } from "../shared/types";
 import { canonicalizeContentUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
+import { MAX_ARCHIVE_DOCUMENT_BYTES, parsePublishedArchive } from "./archive-backfill";
 import { contentNormalizer } from "./content-normalizer";
 import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage, extractPagePublishedAt, extractPublicationDateFromUrl, withPublicationDateRevision } from "./extractor";
 import { discoverFeedUrls, FEED_DISCOVERY_REVISION, looksLikeFeed, parseFeed, RSS_METADATA_REVISION } from "./feed";
@@ -12,7 +13,7 @@ import { builtInManifest } from "./connector-registry";
 /** RSS and public-web fetchers return the same host-owned sync contract. */
 export type FetchOutcome = Pick<
   SyncResult,
-  "entries" | "notModified" | "emptyIsHealthy" | "etag" | "lastModified" | "extractionRule" | "metadataRevision" | "iconUrl"
+  "entries" | "notModified" | "emptyIsHealthy" | "etag" | "lastModified" | "extractionRule" | "metadataRevision" | "iconUrl" | "checkpoint"
 >;
 
 abstract class BaseConnector {
@@ -27,10 +28,10 @@ export class RssConnector extends BaseConnector implements ConnectorAdapter {
   readonly manifest = builtInManifest("rss", "RSS / Atom / JSON Feed", ["public-http"], []);
 
   sync(context: SyncContext): Promise<SyncResult> {
-    return this.fetchWithMetadata(context.source);
+    return this.fetchWithMetadata(context.source, context.checkpoint);
   }
 
-  async fetchWithMetadata(source: Source): Promise<FetchOutcome> {
+  async fetchWithMetadata(source: Source, checkpoint?: SyncCheckpoint): Promise<FetchOutcome> {
     // A 304 response contains no feed body to replay. After a metadata-parser
     // upgrade, deliberately make one normal public request so existing cards
     // can be enriched; the revision prevents this from recurring on refresh.
@@ -41,17 +42,118 @@ export class RssConnector extends BaseConnector implements ConnectorAdapter {
       needsMetadataReplay ? undefined : { etag: source.etag, lastModified: source.lastModified },
       allowTrustedLoopbackFeed ? { allowTrustedLoopbackFeed: true } : undefined
     );
-    if (response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true };
-    const feed = await parseFeed(response.text, response.url);
+    const feed = response.status === 304 ? undefined : await parseFeed(response.text, response.url);
+    const archive = await this.fetchArchiveBackfill(source, checkpoint);
     return {
-      entries: feed.entries,
-      notModified: false,
+      // The current Feed is authoritative for its overlapping entries. A
+      // one-time archive can supply older records and publication dates, but
+      // must never overwrite richer Feed titles/summaries in the same save.
+      entries: mergeFeedFirst(feed?.entries ?? [], archive.entries),
+      notModified: response.status === 304 && archive.entries.length === 0,
       emptyIsHealthy: true,
       etag: response.etag,
       lastModified: response.lastModified,
       metadataRevision: RSS_METADATA_REVISION,
-      iconUrl: feed.iconUrl
+      iconUrl: feed?.iconUrl,
+      checkpoint: archive.checkpoint
     };
+  }
+
+  /**
+   * A Feed remains the recurring source of truth. An explicitly verified
+   * publisher archive is read only to fill the one-time history window, then
+   * a checkpoint prevents it from being downloaded on future polls.
+   */
+  private async fetchArchiveBackfill(source: Source, checkpoint: SyncCheckpoint | undefined): Promise<{ entries: RawEntry[]; checkpoint?: FetchOutcome["checkpoint"] }> {
+    const config = archiveBackfillConfig(source);
+    if (!config) return { entries: [] };
+    const previous = archiveCheckpoint(checkpoint?.data, config.url);
+    const now = Date.now();
+    if (previous?.completedAt || (previous?.nextAttemptAt !== undefined && previous.nextAttemptAt > now)) return { entries: [] };
+    try {
+      const response = await this.http.getText(config.url, undefined, { maxBytes: MAX_ARCHIVE_DOCUMENT_BYTES });
+      const entries = parsePublishedArchive(response.text, response.url);
+      if (!entries.length) throw new Error("作者公开归档未包含可验证的日期条目。");
+      return {
+        entries,
+        checkpoint: {
+          data: {
+            ...(checkpoint?.data ?? {}),
+            archiveBackfill: { url: config.url, completedAt: now, importedEntries: entries.length }
+          }
+        }
+      };
+    } catch {
+      // Do not turn a healthy Feed into a failed source merely because its
+      // optional archive is temporarily unavailable. Persist a conservative
+      // retry checkpoint so future Feed polls can resume it without a burst.
+      const attempts = (previous?.attempts ?? 0) + 1;
+      return {
+        entries: [],
+        checkpoint: {
+          data: {
+            ...(checkpoint?.data ?? {}),
+            archiveBackfill: {
+              url: config.url,
+              attempts,
+              nextAttemptAt: now + archiveRetryDelay(attempts)
+            }
+          }
+        }
+      };
+    }
+  }
+}
+
+type ArchiveBackfillConfig = { url: string };
+type ArchiveBackfillCheckpoint = { url: string; completedAt?: number; importedEntries?: number; attempts?: number; nextAttemptAt?: number };
+
+function archiveBackfillConfig(source: Source): ArchiveBackfillConfig | undefined {
+  const value = source.config?.archiveBackfill;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.url !== "string" || !record.url.trim()) return undefined;
+  return { url: record.url };
+}
+
+function archiveCheckpoint(data: Record<string, unknown> | undefined, url: string): ArchiveBackfillCheckpoint | undefined {
+  const value = data?.archiveBackfill;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.url !== url) return undefined;
+  return {
+    url,
+    completedAt: finiteCheckpointNumber(record.completedAt),
+    importedEntries: finiteCheckpointNumber(record.importedEntries),
+    attempts: finiteCheckpointNumber(record.attempts),
+    nextAttemptAt: finiteCheckpointNumber(record.nextAttemptAt)
+  };
+}
+
+function finiteCheckpointNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function archiveRetryDelay(attempts: number): number {
+  return Math.min(24 * 60 * 60_000, 30 * 60_000 * 2 ** Math.max(0, attempts - 1));
+}
+
+function mergeFeedFirst(feedEntries: RawEntry[], archiveEntries: RawEntry[]): RawEntry[] {
+  const known = new Set(feedEntries.map(entryIdentity));
+  const olderOnly = archiveEntries.filter((entry) => {
+    const identity = entryIdentity(entry);
+    if (known.has(identity)) return false;
+    known.add(identity);
+    return true;
+  });
+  return [...feedEntries, ...olderOnly];
+}
+
+function entryIdentity(entry: Pick<RawEntry, "url" | "canonicalIdentity">): string {
+  try {
+    return canonicalizeContentUrl(entry.canonicalIdentity ?? entry.url);
+  } catch {
+    return entry.canonicalIdentity ?? entry.url;
   }
 }
 

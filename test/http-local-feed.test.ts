@@ -4,7 +4,7 @@ const chromiumFetch = vi.hoisted(() => vi.fn());
 
 vi.mock("../src/main/network", () => ({ chromiumFetch }));
 
-import { PublicHttpClient, ResponseTooLargeError } from "../src/main/http";
+import { DEFAULT_FEED_DOCUMENT_MAX_BYTES, PublicHttpClient, ResponseTooLargeError } from "../src/main/http";
 
 describe("PublicHttpClient local-feed boundary", () => {
   it("reads only an explicitly enabled loopback Feed without consulting remote robots", async () => {
@@ -75,6 +75,69 @@ describe("PublicHttpClient local-feed boundary", () => {
       contentType: "text/html; charset=utf-8",
       url: "https://example.com/large-page",
       receivedBytes: 3_000_001
+    } satisfies Partial<ResponseTooLargeError>);
+  });
+
+  it("uses the larger bounded Feed budget for an RSS response even with a misleading MIME type", async () => {
+    const robots = { assertAllowed: vi.fn() };
+    const padding = "x".repeat(3_050_000);
+    chromiumFetch.mockResolvedValueOnce(new Response(
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>Large feed</title><item><title>Post</title><description>${padding}</description></item></channel></rss>`,
+      { status: 200, headers: { "content-type": "text/plain" } }
+    ));
+    const client = new PublicHttpClient(robots as never);
+
+    await expect(client.getText("https://example.com/subscription")).resolves.toMatchObject({
+      contentType: "text/plain",
+      text: expect.stringContaining("<rss")
+    });
+    expect(robots.assertAllowed).toHaveBeenCalledWith("https://example.com/subscription", expect.anything());
+  });
+
+  it("requires a real Feed signature even when the server declares an RSS MIME type", async () => {
+    const robots = { assertAllowed: vi.fn() };
+    chromiumFetch.mockResolvedValueOnce(new Response(`<html><body>${"x".repeat(3_050_000)}</body></html>`, {
+      status: 200,
+      headers: { "content-type": "application/rss+xml" }
+    }));
+    const client = new PublicHttpClient(robots as never);
+
+    await expect(client.getText("https://example.com/mislabeled")).rejects.toMatchObject({
+      name: "ResponseTooLargeError",
+      maxBytes: 3_000_000,
+      documentKind: "page"
+    } satisfies Partial<ResponseTooLargeError>);
+  });
+
+  it("recognizes RSS 1.0 from its RDF root before applying the Feed budget", async () => {
+    const robots = { assertAllowed: vi.fn() };
+    const padding = "x".repeat(3_050_000);
+    chromiumFetch.mockResolvedValueOnce(new Response(
+      `<!-- publisher comment --><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><item><title>${padding}</title></item></rdf:RDF>`,
+      { status: 200, headers: { "content-type": "application/xml" } }
+    ));
+    const client = new PublicHttpClient(robots as never);
+
+    await expect(client.getText("https://example.com/rss-1.0")).resolves.toMatchObject({
+      text: expect.stringContaining("<rdf:RDF")
+    });
+  });
+
+  it("keeps a strict upper bound for oversized Feed responses", async () => {
+    const robots = { assertAllowed: vi.fn() };
+    chromiumFetch.mockResolvedValueOnce(new Response("<rss version=\"2.0\"><channel /></rss>", {
+      status: 200,
+      headers: {
+        "content-type": "application/rss+xml",
+        "content-length": String(DEFAULT_FEED_DOCUMENT_MAX_BYTES + 1)
+      }
+    }));
+    const client = new PublicHttpClient(robots as never);
+
+    await expect(client.getText("https://example.com/too-large-feed")).rejects.toMatchObject({
+      name: "ResponseTooLargeError",
+      maxBytes: DEFAULT_FEED_DOCUMENT_MAX_BYTES,
+      documentKind: "feed"
     } satisfies Partial<ResponseTooLargeError>);
   });
 

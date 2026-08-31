@@ -1,6 +1,7 @@
 import { assertFeedSubscriptionUrl, assertPublicUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 import { abortError, throwIfAborted, withRequestTimeout } from "./cancellation";
 import { formatByteLimit } from "./byte-limit";
+import { hasFeedSignature, isAmbiguousFeedContentType, isExplicitFeedContentType } from "./feed";
 import { chromiumFetch } from "./network";
 import { RobotsPolicy } from "./robots";
 
@@ -15,6 +16,12 @@ export interface TextResponse {
 
 export interface PublicRequestOptions {
   maxBytes?: number;
+  /**
+   * Optional larger budget used only after a response has been verified as a
+   * RSS/Atom/JSON Feed. Omit it to use the normal source-feed budget whenever
+   * `maxBytes` is also omitted.
+   */
+  maxFeedBytes?: number;
   allowTrustedLoopbackFeed?: boolean;
   /** Optional caller-owned cancellation. Normal app requests do not use it. */
   signal?: AbortSignal;
@@ -27,15 +34,26 @@ export interface PublicRequestOptions {
  */
 export const DEFAULT_SOURCE_DOCUMENT_MAX_BYTES = 3_000_000;
 
+/**
+ * Feeds can legitimately contain more historical cards than a source page.
+ * This remains a bounded, streamed read; it is not a permission to load an
+ * arbitrary large webpage into the main process.
+ */
+export const DEFAULT_FEED_DOCUMENT_MAX_BYTES = 12_000_000;
+
+/** Enough bytes to find XML roots or a JSON Feed version without buffering a page. */
+const FEED_SIGNATURE_SNIFF_BYTES = 64_000;
+
 /** A bounded response exceeded its documented byte budget. */
 export class ResponseTooLargeError extends Error {
   constructor(
     readonly maxBytes: number,
     readonly contentType: string,
     readonly url: string,
-    readonly receivedBytes?: number
+    readonly receivedBytes?: number,
+    readonly documentKind: "page" | "feed" = "page"
   ) {
-    super(`页面响应超过 ${formatByteLimit(maxBytes)}，已拒绝读取。`);
+    super(`${documentKind === "feed" ? "Feed 响应" : "页面响应"}超过 ${formatByteLimit(maxBytes)}，已拒绝读取。`);
     this.name = "ResponseTooLargeError";
   }
 }
@@ -82,6 +100,7 @@ export class PublicHttpClient {
 
   async getText(rawUrl: string, cached?: { etag?: string; lastModified?: string }, options?: PublicRequestOptions): Promise<TextResponse> {
     const maxBytes = options?.maxBytes ?? DEFAULT_SOURCE_DOCUMENT_MAX_BYTES;
+    const maxFeedBytes = normalisedFeedByteLimit(options, maxBytes);
     const localFeed = options?.allowTrustedLoopbackFeed === true && isTrustedLoopbackFeedUrl(rawUrl);
     const localFeedOrigin = localFeed ? assertFeedSubscriptionUrl(rawUrl, true).origin : undefined;
     let targetUrl = localFeed ? assertFeedSubscriptionUrl(rawUrl, true).toString() : assertPublicUrl(rawUrl).toString();
@@ -125,7 +144,8 @@ export class PublicHttpClient {
         if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
         const contentType = response.headers.get("content-type") ?? "";
         const declaredSize = Number(response.headers.get("content-length") ?? 0);
-        if (Number.isFinite(declaredSize) && declaredSize > maxBytes) {
+        const feedCandidate = isExplicitFeedContentType(contentType) || isAmbiguousFeedContentType(contentType);
+        if (Number.isFinite(declaredSize) && declaredSize > maxBytes && !feedCandidate) {
           // A declared size lets us reject before creating a body reader. Tell
           // Chromium to stop consuming the response so a preview cannot keep
           // an unnecessarily large transfer alive in the background.
@@ -133,7 +153,11 @@ export class PublicHttpClient {
           throw new ResponseTooLargeError(maxBytes, contentType, targetUrl, declaredSize);
         }
         try {
-          const text = await readTextWithinLimit(response, maxBytes, contentType, targetUrl);
+          const text = await readTextWithinLimit(response, {
+            maxBytes,
+            maxFeedBytes,
+            declaredSize: Number.isFinite(declaredSize) ? declaredSize : undefined
+          }, contentType, targetUrl);
           return {
             url: targetUrl,
             status: response.status,
@@ -222,31 +246,80 @@ export class PublicHttpClient {
  * neither of which implements an actual network-byte limit. Read chunks as
  * bytes instead, cancelling as soon as the caller's budget is exceeded.
  */
-async function readTextWithinLimit(response: Response, maxBytes: number, contentType: string, url: string): Promise<string> {
+type TextByteLimits = {
+  maxBytes: number;
+  maxFeedBytes: number;
+  declaredSize?: number;
+};
+
+/**
+ * Reads an ordinary source page within its normal budget, while allowing a
+ * larger bounded read only after a short prefix confirms RSS/Atom/JSON Feed
+ * syntax. This avoids trusting a missing or misleading Content-Type header.
+ */
+async function readTextWithinLimit(response: Response, limits: TextByteLimits, contentType: string, url: string): Promise<string> {
   if (!response.body) return "";
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let receivedBytes = 0;
+  const prefixChunks: Uint8Array[] = [];
+  let prefixBytes = 0;
+  const mayBeFeed = isExplicitFeedContentType(contentType) || isAmbiguousFeedContentType(contentType);
+  let isFeed = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!value) continue;
+      if (mayBeFeed && prefixBytes < FEED_SIGNATURE_SNIFF_BYTES) {
+        const remaining = FEED_SIGNATURE_SNIFF_BYTES - prefixBytes;
+        const prefix = value.byteLength <= remaining ? value : value.subarray(0, remaining);
+        prefixChunks.push(prefix);
+        prefixBytes += prefix.byteLength;
+        if (hasFeedSignature(decodeChunks(prefixChunks, prefixBytes))) isFeed = true;
+      }
       receivedBytes += value.byteLength;
-      if (receivedBytes > maxBytes) {
+      const maxBytes = isFeed ? limits.maxFeedBytes : limits.maxBytes;
+      if (isFeed && limits.declaredSize !== undefined && limits.declaredSize > limits.maxFeedBytes) {
         await reader.cancel().catch(() => undefined);
-        throw new ResponseTooLargeError(maxBytes, contentType, url, receivedBytes);
+        throw new ResponseTooLargeError(limits.maxFeedBytes, contentType, url, receivedBytes, "feed");
+      }
+      // If a response advertised a large ambiguous body but its first safe
+      // prefix proves it is not a Feed, stop immediately instead of consuming
+      // the remaining ordinary-page allowance.
+      const largeNonFeed = !isFeed
+        && limits.declaredSize !== undefined
+        && limits.declaredSize > limits.maxBytes
+        && prefixBytes >= FEED_SIGNATURE_SNIFF_BYTES;
+      if (receivedBytes > maxBytes || largeNonFeed) {
+        await reader.cancel().catch(() => undefined);
+        throw new ResponseTooLargeError(maxBytes, contentType, url, receivedBytes, isFeed ? "feed" : "page");
       }
       chunks.push(value);
     }
   } finally {
     reader.releaseLock();
   }
-  const bytes = new Uint8Array(receivedBytes);
+  return decodeChunks(chunks, receivedBytes);
+}
+
+function decodeChunks(chunks: Uint8Array[], byteLength: number): string {
+  const bytes = new Uint8Array(byteLength);
   let offset = 0;
   for (const chunk of chunks) {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
   return new TextDecoder().decode(bytes);
+}
+
+function normalisedFeedByteLimit(options: PublicRequestOptions | undefined, maxBytes: number): number {
+  if (options?.maxFeedBytes !== undefined) {
+    return Number.isFinite(options.maxFeedBytes) && options.maxFeedBytes > 0
+      ? Math.max(maxBytes, Math.floor(options.maxFeedBytes))
+      : maxBytes;
+  }
+  // An explicit caller budget (for example article-date enrichment) remains
+  // authoritative. Source/Feed discovery gets the larger bounded budget.
+  return options?.maxBytes === undefined ? DEFAULT_FEED_DOCUMENT_MAX_BYTES : maxBytes;
 }

@@ -38,8 +38,54 @@ export const RSS_METADATA_REVISION = 4;
  */
 export const FEED_DISCOVERY_REVISION = 1;
 
-export function looksLikeFeed(contentType: string, text: string): boolean {
-  return /(?:rss|atom|feed\+json|xml)/i.test(contentType) || /^\s*<(?:\?xml[^>]*>)?\s*<(rss|feed)\b/i.test(text) || /^\s*\{/.test(text);
+/** A MIME type that explicitly identifies a syndication document. */
+export function isExplicitFeedContentType(contentType: string): boolean {
+  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase();
+  return mediaType === "application/rss+xml"
+    || mediaType === "application/atom+xml"
+    || mediaType === "application/feed+json";
+}
+
+/**
+ * MIME types frequently used for a Feed but too broad to trust on their own.
+ * A response using one of these types must also expose a Feed signature before
+ * it receives the larger, Feed-specific byte budget.
+ */
+export function isAmbiguousFeedContentType(contentType: string): boolean {
+  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase();
+  return mediaType === "application/xml"
+    || mediaType === "text/xml"
+    || mediaType === "application/rdf+xml"
+    || mediaType === "application/json"
+    || mediaType === "text/json"
+    || mediaType === "text/plain"
+    || mediaType === "";
+}
+
+/**
+ * Checks only the small leading portion of a response. It deliberately does
+ * not accept every JSON object: a larger transfer is granted only to a JSON
+ * Feed with its required version marker, not arbitrary API data.
+ */
+export function hasFeedSignature(text: string): boolean {
+  const prefix = text.replace(/^\uFEFF?\s*/, "");
+  // A MIME type can be wrong, so only the actual document root earns the
+  // larger Feed budget. Comments and an XML declaration are allowed before
+  // the root; arbitrary XML/JSON payloads are not Feed signatures.
+  const xml = prefix
+    .replace(/^(?:<\?xml[^>]*>\s*)?/i, "")
+    .replace(/^(?:<!--[\s\S]*?-->\s*)*/i, "")
+    .replace(/^(?:<!DOCTYPE[^>]*>\s*)*/i, "");
+  return /^<(?:rss|feed|rdf:RDF)\b/i.test(xml)
+    || /^\{[\s\S]{0,65536}?"version"\s*:\s*"https?:\/\/jsonfeed\.org\/version\//i.test(prefix);
+}
+
+export function looksLikeFeed(_contentType: string, text: string): boolean {
+  // MIME types are discovery hints only: a site can mislabel a perfectly
+  // valid Feed, but a raw document must still expose the Feed root/version
+  // before parser work begins. This prevents arbitrary JSON/XML endpoints
+  // from being classified merely by their Content-Type header.
+  return hasFeedSignature(text);
 }
 
 /**
@@ -103,8 +149,17 @@ function isFeedLikeQuery(rawUrl: string | undefined, pageUrl: string): boolean {
   }
 }
 
-export async function parseFeed(text: string, feedUrl: string): Promise<{ title: string; entries: RawEntry[]; iconUrl?: string }> {
-  if (/^\s*\{/.test(text)) return parseJsonFeed(text, feedUrl);
+export interface ParsedFeed {
+  title: string;
+  entries: RawEntry[];
+  iconUrl?: string;
+  /** Feed-declared public homepage; used only to discover an explicit archive link. */
+  siteUrl?: string;
+}
+
+export async function parseFeed(text: string, feedUrl: string): Promise<ParsedFeed> {
+  const normalizedText = text.replace(/^\uFEFF?\s*/, "");
+  if (/^\{/.test(normalizedText)) return parseJsonFeed(normalizedText, feedUrl);
   const feed = await parser.parseString(text);
   const feedTitle = compactText(feed.title, 180);
   const entries: RawEntry[] = [];
@@ -127,7 +182,12 @@ export async function parseFeed(text: string, feedUrl: string): Promise<{ title:
       feedContentHtml
     });
   }
-  return { title: compactText(feed.title, 180) || new URL(feedUrl).hostname, entries, iconUrl: feedIconUrl(feed, feedUrl) };
+  return {
+    title: compactText(feed.title, 180) || new URL(feedUrl).hostname,
+    entries,
+    iconUrl: feedIconUrl(feed, feedUrl),
+    siteUrl: toAbsoluteUrl(feed.link, feedUrl)
+  };
 }
 
 /**
@@ -155,7 +215,7 @@ function isFeedNavigationLink(
   }
 }
 
-function parseJsonFeed(text: string, feedUrl: string): { title: string; entries: RawEntry[]; iconUrl?: string } {
+function parseJsonFeed(text: string, feedUrl: string): ParsedFeed {
   const feed = JSON.parse(text);
   if (!feed.version || !Array.isArray(feed.items)) throw new Error("JSON 不符合 JSON Feed 格式。");
   const entries: RawEntry[] = [];
@@ -176,7 +236,8 @@ function parseJsonFeed(text: string, feedUrl: string): { title: string; entries:
   return {
     title: compactText(feed.title, 180) || new URL(feedUrl).hostname,
     entries,
-    iconUrl: toAbsoluteUrl(feed.icon || feed.favicon, feedUrl)
+    iconUrl: toAbsoluteUrl(feed.icon || feed.favicon, feedUrl),
+    siteUrl: toAbsoluteUrl(feed.home_page_url, feedUrl)
   };
 }
 

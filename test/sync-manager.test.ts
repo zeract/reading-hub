@@ -138,6 +138,31 @@ describe("SyncManager", () => {
     expect(db.listEntries(source.id)).toEqual([]);
     db.close();
   });
+
+  it("does not revive a source explicitly paused while a sync was in flight", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+    const registry = new ConnectorRegistry();
+    const gate = deferred();
+    registry.register({
+      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      async sync() {
+        gate.started();
+        await gate.wait;
+        return { entries: [{ url: "https://example.com/new", title: "Delayed" }], emptyIsHealthy: true };
+      },
+      normalize(item: RawEntry, currentSource: Source): Entry { return readerEntry(currentSource, item); }
+    });
+    const refreshing = new SyncManager(db, registry).syncSource(source.id);
+    await gate.startedPromise;
+    db.pauseSource(source.id, "user paused");
+    gate.release();
+
+    await expect(refreshing).rejects.toBeInstanceOf(SyncCancelledError);
+    expect(db.getSource(source.id)).toMatchObject({ status: "paused", pollingEnabled: false });
+    expect(db.listEntries(source.id)).toEqual([]);
+    db.close();
+  });
 });
 
 function replayAdapter(): ConnectorAdapter {

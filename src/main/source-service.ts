@@ -36,18 +36,36 @@ export class SourceService {
     const { probe } = pending;
     const existing = this.db.getSourceByUrl(probe.url);
     if (existing) return existing;
+    const config: Record<string, unknown> = {};
+    if (probe.kind === "rss" && isTrustedLoopbackFeedUrl(probe.url)) config.allowTrustedLoopbackFeed = true;
+    if (probe.kind === "rss" && probe.historicalArchiveUrl) {
+      config.archiveBackfill = {
+        url: probe.historicalArchiveUrl
+      };
+    }
     const input: SourceInput = {
       url: probe.url,
       title: probe.title,
       kind: probe.kind,
       extractionRule: probe.extractionRule,
-      config: probe.kind === "rss" && isTrustedLoopbackFeedUrl(probe.url) ? { allowTrustedLoopbackFeed: true } : undefined,
+      config: Object.keys(config).length ? config : undefined,
       pollingEnabled: probe.kind !== "manual",
       status: probe.kind === "generic" && probe.confidence < 0.5 ? "needs_review" : "active"
     };
     const source = this.db.createSource(input);
+    // Keep the preview as a resilient, immediately visible fallback. It is
+    // intentionally capped for the dialog, so it must never be treated as the
+    // initial import itself: a normal source can legitimately have far more
+    // than ten Feed items.
     this.sync.savePreview(source, probe.preview);
-    return source;
+    if (source.pollingEnabled && source.status === "active") {
+      // A source must not rely on the next one-minute scheduler tick to get
+      // its full initial result. A transient failure is already persisted by
+      // SyncManager; retain the preview and let normal retry/backoff recover
+      // rather than rejecting the user's confirmed source.
+      await this.sync.syncSource(source.id).catch(() => undefined);
+    }
+    return this.db.getSource(source.id) ?? source;
   }
 
   importOpml(text: string): { imported: number; existing: number; skipped: number } {

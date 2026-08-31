@@ -8,10 +8,11 @@ const electron = vi.hoisted(() => {
   };
   class BrowserWindow {
     private destroyed = false;
+    readonly listeners = new Map<string, (...args: any[]) => void>();
     readonly webContents = {
       stop: vi.fn(),
       setWindowOpenHandler: vi.fn(),
-      on: vi.fn(),
+      on: vi.fn((event: string, listener: (...args: any[]) => void) => this.listeners.set(event, listener)),
       executeJavaScript: vi.fn((...args: unknown[]) => renderState.executeJavaScript(...args))
     };
     readonly loadURL = vi.fn((...args: unknown[]) => renderState.loadURL(...args));
@@ -76,5 +77,42 @@ describe("isolated page renderer cancellation", () => {
 
     await expect(renderer.render("https://example.com/large", { maxBytes: 5 })).rejects.toBeInstanceOf(RenderedPageTooLargeError);
     expect(robots.assertAllowed).toHaveBeenCalledWith("https://example.com/large", { signal: undefined });
+  });
+
+  it("blocks an isolated renderer redirect to a private address before it can load", async () => {
+    let prevented = false;
+    electron.renderState.loadURL = (..._args: unknown[]) => {
+      const window = electron.windows.at(-1);
+      const event = { preventDefault: () => { prevented = true; } };
+      window.listeners.get("will-redirect")?.(event, "http://127.0.0.1:4312/private", false, true);
+      return Promise.reject(new Error("ERR_ABORTED"));
+    };
+    const robots = { assertAllowed: vi.fn().mockResolvedValue(undefined) };
+    const renderer = new IsolatedPageRenderer(robots as never);
+
+    await expect(renderer.render("https://example.com/redirect")).rejects.toThrow("不能添加本机或私有网络地址");
+    expect(prevented).toBe(true);
+    expect(robots.assertAllowed).toHaveBeenCalledTimes(1);
+    expect(robots.assertAllowed).toHaveBeenCalledWith("https://example.com/redirect", { signal: undefined });
+  });
+
+  it("checks robots again before following a public renderer redirect", async () => {
+    let redirected = false;
+    electron.renderState.loadURL = (..._args: unknown[]) => {
+      const window = electron.windows.at(-1);
+      if (!redirected) {
+        redirected = true;
+        window.listeners.get("will-redirect")?.({ preventDefault: vi.fn() }, "https://redirected.example/article", false, true);
+        return Promise.reject(new Error("ERR_ABORTED"));
+      }
+      return Promise.resolve();
+    };
+    electron.renderState.executeJavaScript = () => Promise.resolve("<html><body>safe</body></html>");
+    const robots = { assertAllowed: vi.fn().mockResolvedValue(undefined) };
+    const renderer = new IsolatedPageRenderer(robots as never);
+
+    await expect(renderer.render("https://example.com/redirect")).resolves.toContain("safe");
+    expect(robots.assertAllowed).toHaveBeenNthCalledWith(1, "https://example.com/redirect", { signal: undefined });
+    expect(robots.assertAllowed).toHaveBeenNthCalledWith(2, "https://redirected.example/article", { signal: undefined });
   });
 });

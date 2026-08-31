@@ -197,6 +197,35 @@ describe("ReadingDatabase", () => {
     db.close();
   });
 
+  it("continues retrying after repeated transient failures instead of pausing the source", () => {
+    const db = new ReadingDatabase(":memory:");
+    let source = db.createSource({ url: "https://example.com/retry-forever", title: "Example", kind: "rss", pollingEnabled: true });
+    for (let attempt = 0; attempt < 6; attempt += 1) source = db.markFailure(source, "temporary network failure");
+
+    expect(source).toMatchObject({ status: "error", failureCount: 6, pollingEnabled: true });
+    expect(source.nextCheckAt).toBeDefined();
+    expect(db.listDueSources((source.nextCheckAt ?? 0) + 1).map((item) => item.id)).toContain(source.id);
+    db.close();
+  });
+
+  it("recovers only legacy automatic pauses and preserves explicit pauses", () => {
+    const db = new ReadingDatabase(":memory:");
+    const legacy = db.createSource({ url: "https://example.com/legacy", title: "Legacy", kind: "rss", pollingEnabled: true });
+    const explicit = db.createSource({ url: "https://example.com/explicit", title: "Explicit", kind: "rss", pollingEnabled: true });
+    db.pauseSource(explicit.id, "user paused");
+    // This state can only originate from older app versions, so construct it
+    // directly as a migration fixture rather than reintroducing the old API.
+    (db as any).db.prepare(`UPDATE sources SET status = 'paused', polling_enabled = 1, next_check_at = NULL, failure_count = 5 WHERE id = ?`).run(legacy.id);
+
+    const now = 1_800_000_000_000;
+    expect(db.resumeLegacyAutoPausedSources(now)).toBe(1);
+    expect(db.getSource(legacy.id)).toMatchObject({ status: "error", pollingEnabled: true });
+    expect(db.getSource(legacy.id)?.nextCheckAt).toBeGreaterThanOrEqual(now);
+    expect(db.getSource(legacy.id)?.nextCheckAt).toBeLessThan(now + 15 * 60_000);
+    expect(db.getSource(explicit.id)).toMatchObject({ status: "paused", pollingEnabled: false, nextCheckAt: undefined });
+    db.close();
+  });
+
   it("orders the timeline by newest timestamp even when a newer entry is already read", () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/chronological", title: "Example", kind: "rss", pollingEnabled: true });

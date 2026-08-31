@@ -1,5 +1,6 @@
 import { extractCalibrationCandidates, extractGenericPage } from "./extractor";
 import { discoverFeedUrls, parseFeed, looksLikeFeed } from "./feed";
+import { discoverPublicArchive, type PublicArchive } from "./archive-backfill";
 import { loadGenericPage } from "./generic-page-loader";
 import { PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
@@ -18,14 +19,18 @@ export class SourceProbe {
       : await loadGenericPage(this.http, this.renderer, input);
     if (looksLikeFeed(page.contentType, page.text)) {
       const feed = await parseFeed(page.text, page.url);
+      const archive = localFeed ? undefined : await this.discoverFeedArchive(feed.siteUrl);
       return {
         kind: "rss",
         title: feed.title,
         url: page.url,
         confidence: 1,
         preview: feed.entries.slice(0, 10),
+        historicalArchiveUrl: archive?.url,
         requiresReview: false,
-        message: localFeed ? "已验证本机 Feed；只会按 RSS/Atom/JSON Feed 读取。" : undefined
+        message: localFeed
+          ? "已验证本机 Feed；只会按 RSS/Atom/JSON Feed 读取。"
+          : archive ? `发现作者公开归档；保存后会一次性补全 ${archive.entries.length} 篇历史文章。` : undefined
       };
     }
 
@@ -36,7 +41,17 @@ export class SourceProbe {
         const feedResponse = await this.http.getText(feedUrl);
         if (!looksLikeFeed(feedResponse.contentType, feedResponse.text)) continue;
         const feed = await parseFeed(feedResponse.text, feedResponse.url);
-        return { kind: "rss", title: feed.title, url: feedResponse.url, confidence: 0.98, preview: feed.entries.slice(0, 10), requiresReview: false };
+        const archive = await this.discoverFeedArchive(feed.siteUrl);
+        return {
+          kind: "rss",
+          title: feed.title,
+          url: feedResponse.url,
+          confidence: 0.98,
+          preview: feed.entries.slice(0, 10),
+          historicalArchiveUrl: archive?.url,
+          requiresReview: false,
+          message: archive ? `发现作者公开归档；保存后会一次性补全 ${archive.entries.length} 篇历史文章。` : undefined
+        };
       } catch {
         // A broken alternate link should not prevent the generic-page fallback.
       }
@@ -110,6 +125,17 @@ export class SourceProbe {
   private async localFeedPage(input: string) {
     const response = await this.http.getText(input, undefined, { allowTrustedLoopbackFeed: true });
     return { url: response.url, text: response.text, contentType: response.contentType, fromRenderer: false };
+  }
+
+  private async discoverFeedArchive(siteUrl: string | undefined): Promise<PublicArchive | undefined> {
+    if (!siteUrl) return undefined;
+    try {
+      return await discoverPublicArchive(this.http, siteUrl);
+    } catch {
+      // Historical backfill is an optional enhancement. A temporary archive
+      // failure must never prevent a valid Feed from being added or refreshed.
+      return undefined;
+    }
   }
 }
 
