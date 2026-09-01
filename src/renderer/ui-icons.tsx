@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Source } from "../shared/types";
 import { sourceIconKind, type SourceIconKind } from "../shared/source-icon";
 
-export type AppIconName = "sidebar" | "expand" | "refresh" | "add" | "today" | "unread" | "favorite" | "folder" | "chevron-down" | "chevron-right" | "settings" | "back" | "reading" | "ai" | SourceIconKind;
+export type AppIconName = "sidebar" | "expand" | "refresh" | "add" | "search" | "today" | "unread" | "favorite" | "folder" | "chevron-down" | "chevron-right" | "settings" | "back" | "reading" | "ai" | SourceIconKind;
 
 /** Compact, local-only line icons with a native macOS reading-list emphasis. */
 export function AppIcon({ name }: { name: AppIconName }) {
@@ -12,6 +12,7 @@ export function AppIcon({ name }: { name: AppIconName }) {
     case "expand": return <svg {...props}><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5" /></svg>;
     case "refresh": return <svg {...props}><path d="M21 12a9 9 0 0 0-15.5-6.2L3 8" /><path d="M3 3v5h5" /><path d="M3 12a9 9 0 0 0 15.5 6.2L21 16" /><path d="M21 21v-5h-5" /></svg>;
     case "add": return <svg {...props}><path d="M12 5v14M5 12h14" /></svg>;
+    case "search": return <svg {...props}><circle cx="10.5" cy="10.5" r="5.75" /><path d="m15 15 4.25 4.25" /></svg>;
     case "today": return <svg {...props}><rect x="4" y="5.5" width="16" height="14" rx="2.5" /><path d="M8 3.5v4M16 3.5v4M4 10h16" /><circle cx="12" cy="14.5" r="1.2" fill="currentColor" stroke="none" /></svg>;
     case "unread": return <svg {...props}><circle cx="12" cy="12" r="7" /></svg>;
     case "favorite": return <svg {...props}><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.8-5.4 2.8 1-6.1-4.4-4.3 6.1-.9Z" /></svg>;

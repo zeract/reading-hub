@@ -48,4 +48,12 @@ describe("application shell source controls", () => {
     expect(libraryData).toContain("reloadSequence");
     expect(libraryData).toContain("requiresSourceReload");
   });
+
+  it("keeps keyword search local to the selected source timeline", () => {
+    expect(libraryPane).toContain('className="entry-search"');
+    expect(libraryPane).toContain("搜索 ${activeSource.title} 中的帖子");
+    expect(libraryPane).toContain("不会读取或保存文章全文");
+    expect(libraryData).toContain("setEntrySearchState(\"\")");
+    expect(libraryData).toContain("resetEntryPages();\n    setEntrySearchState(search)");
+  });
 });

@@ -748,6 +748,19 @@ export class ReadingDatabase {
       ))`);
       parameters.push(query.sourceId, query.sourceId);
     }
+    // The renderer only exposes this as a source-local feature. Keep the
+    // database boundary equally strict so an accidental future IPC caller
+    // cannot turn a source search into an unbounded library-wide scan.
+    if (query.search && !query.sourceId) return undefined;
+    for (const term of entrySearchTerms(query.search)) {
+      const pattern = `%${escapeLikePattern(term)}%`;
+      conditions.push(`(
+        entries.title LIKE ? ESCAPE '\\' COLLATE NOCASE
+        OR COALESCE(entries.author, '') LIKE ? ESCAPE '\\' COLLATE NOCASE
+        OR COALESCE(entries.summary, '') LIKE ? ESCAPE '\\' COLLATE NOCASE
+      )`);
+      parameters.push(pattern, pattern, pattern);
+    }
     // Selecting a source means “show this subscription as configured”.  An
     // explicit empty array remains an escape hatch for maintenance/auditing
     // callers that deliberately need every retained origin.
@@ -1145,6 +1158,19 @@ export class ReadingDatabase {
   close(): void {
     this.db.close();
   }
+}
+
+/**
+ * Search remains deliberately small and local: each whitespace-separated
+ * term must occur in one retained card field. SQLite parameters carry the
+ * terms, while this helper only escapes LIKE's three pattern characters.
+ */
+function entrySearchTerms(search?: string): string[] {
+  return search?.trim().split(/\s+/u).filter(Boolean) ?? [];
+}
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/gu, "\\$&");
 }
 
 export function randomRefreshDelay(): number {

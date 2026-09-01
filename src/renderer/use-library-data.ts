@@ -20,12 +20,16 @@ export function useLibraryData() {
   const [loadingMoreEntries, setLoadingMoreEntries] = useState(false);
   const [activeSourceId, setActiveSourceId] = useState<string>();
   const [libraryView, setLibraryView] = useState<LibraryView>("today");
+  const [entrySearch, setEntrySearchState] = useState("");
   const reloadSequence = useRef(0);
   const pageGeneration = useRef(0);
   const loadedBeyondFirstPage = useRef(false);
   const loadingMore = useRef(false);
 
-  const entriesQuery = useMemo(() => entryQueryForLibrary(libraryView, activeSourceId), [activeSourceId, libraryView]);
+  const entriesQuery = useMemo(
+    () => entryQueryForLibrary(libraryView, activeSourceId, new Date(), entrySearch),
+    [activeSourceId, entrySearch, libraryView]
+  );
   const reload = useCallback(async () => {
     const sequence = ++reloadSequence.current;
     const generation = pageGeneration.current;
@@ -65,14 +69,22 @@ export function useLibraryData() {
       return;
     }
     resetEntryPages();
+    setEntrySearchState("");
     setActiveSourceId(sourceId);
   }, [activeSourceId, reload, resetEntryPages]);
 
   const selectLibrary = useCallback((view: LibraryView) => {
     resetEntryPages();
+    setEntrySearchState("");
     setActiveSourceId(undefined);
     setLibraryView(view);
   }, [resetEntryPages]);
+
+  const setEntrySearch = useCallback((search: string) => {
+    if (!activeSourceId || search === entrySearch) return;
+    resetEntryPages();
+    setEntrySearchState(search);
+  }, [activeSourceId, entrySearch, resetEntryPages]);
 
   const loadMoreEntries = useCallback(async () => {
     const cursor = nextEntryCursor;
@@ -96,6 +108,7 @@ export function useLibraryData() {
 
   const clearActiveSource = useCallback(() => {
     resetEntryPages();
+    setEntrySearchState("");
     setActiveSourceId(undefined);
   }, [resetEntryPages]);
 
@@ -111,6 +124,7 @@ export function useLibraryData() {
     libraryCounts,
     activeSourceId,
     libraryView,
+    entrySearch,
     sourceById,
     activeSource,
     sourceGroups,
@@ -118,6 +132,7 @@ export function useLibraryData() {
     loadMoreEntries,
     selectSource,
     selectLibrary,
+    setEntrySearch,
     clearActiveSource
   };
 }

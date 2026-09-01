@@ -26,6 +26,7 @@ export function App() {
     libraryCounts,
     activeSourceId,
     libraryView,
+    entrySearch,
     sourceById,
     activeSource,
     sourceGroups,
@@ -33,6 +34,7 @@ export function App() {
     loadMoreEntries,
     selectSource: selectLibrarySource,
     selectLibrary: selectLibraryView,
+    setEntrySearch,
     clearActiveSource
   } = useLibraryData();
   const [pending, setPending] = useState<PendingPreview>();
@@ -231,6 +233,7 @@ export function App() {
       <Timeline
         activeSource={activeSource}
         libraryView={libraryView}
+        entrySearch={entrySearch}
         entries={entries}
         hasMoreEntries={hasMoreEntries}
         loadingMoreEntries={loadingMoreEntries}
@@ -240,6 +243,7 @@ export function App() {
         busy={busy}
         libraryCounts={libraryCounts}
         onClearNotice={() => setNotice(undefined)}
+        onEntrySearchChange={setEntrySearch}
         onUpdateEntry={updateEntry}
         onOpenEntry={openReader}
         onDismissEntry={dismissEntry}

@@ -18,4 +18,11 @@ describe("library view queries", () => {
     expect(entryQueryForLibrary("favorite", "source-1")).toEqual({ sourceId: "source-1", favorite: true });
     expect(entryQueryForLibrary("all")).toEqual({ sourceId: undefined });
   });
+
+  it("adds a keyword only to an explicitly selected source", () => {
+    expect(entryQueryForLibrary("all", "source-1", undefined, "vector database"))
+      .toEqual({ sourceId: "source-1", search: "vector database" });
+    expect(entryQueryForLibrary("unread", "source-1", undefined, "vector database"))
+      .toEqual({ sourceId: undefined, read: false });
+  });
 });

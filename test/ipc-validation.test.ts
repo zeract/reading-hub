@@ -39,11 +39,13 @@ describe("IPC input validation", () => {
     expect(() => requireEntityId(" ")).toThrow("项目无效");
     expect(() => requireText("x".repeat(21), "太长", 20)).toThrow("太长");
     const facet = { scheme: "feed:https://example.com:category", key: "systems", label: "系统" };
-    expect(parseEntryListQuery({ sourceId: "source-1", startAt: 1, endAt: 2, limit: 100, read: false, favorite: true, facetSelections: [facet] })).toEqual({ sourceId: "source-1", startAt: 1, endAt: 2, limit: 100, read: false, favorite: true, facetSelections: [{ scheme: facet.scheme, key: facet.key }] });
-    expect(parseEntryPageQuery({ sourceId: "source-1", pageSize: 100, cursor: { publishedAt: 10, observedAt: 9, createdAt: 8, id: "entry-1" } }))
-      .toEqual({ sourceId: "source-1", startAt: undefined, endAt: undefined, pageSize: 100, cursor: { publishedAt: 10, observedAt: 9, createdAt: 8, id: "entry-1" } });
+    expect(parseEntryListQuery({ sourceId: "source-1", search: "  vector   database  ", startAt: 1, endAt: 2, limit: 100, read: false, favorite: true, facetSelections: [facet] })).toEqual({ sourceId: "source-1", search: "vector database", startAt: 1, endAt: 2, limit: 100, read: false, favorite: true, facetSelections: [{ scheme: facet.scheme, key: facet.key }] });
+    expect(parseEntryPageQuery({ sourceId: "source-1", search: " feed ", pageSize: 100, cursor: { publishedAt: 10, observedAt: 9, createdAt: 8, id: "entry-1" } }))
+      .toEqual({ sourceId: "source-1", search: "feed", startAt: undefined, endAt: undefined, pageSize: 100, cursor: { publishedAt: 10, observedAt: 9, createdAt: 8, id: "entry-1" } });
     expect(() => parseEntryListQuery({ startAt: 2, endAt: 2 })).toThrow("时间筛选范围无效");
     expect(() => parseEntryListQuery({ facetSelections: [{ scheme: "", key: "bad" }] })).toThrow("文章分类筛选无效");
+    expect(() => parseEntryListQuery({ search: "vector" })).toThrow("请先选择一个来源再搜索");
+    expect(() => parseEntryListQuery({ sourceId: "source-1", search: "x".repeat(161) })).toThrow("关键词搜索无效");
     expect(() => parseEntryPageQuery({ cursor: { createdAt: 8, id: "entry-1" } })).toThrow("文章分页游标无效");
     expect(() => parseProfileSubscriptionInput({ title: "missing URL" })).toThrow("主页地址无效");
   });

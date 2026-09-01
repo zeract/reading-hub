@@ -50,9 +50,10 @@ export function SourceSidebar({ sources, groups, libraryView, activeSourceId, li
   </aside>;
 }
 
-export function Timeline({ activeSource, libraryView, entries, hasMoreEntries, loadingMoreEntries, sourceById, readingEntryId, notice, busy, libraryCounts, onClearNotice, onUpdateEntry, onOpenEntry, onDismissEntry, onLoadMore }: {
+export function Timeline({ activeSource, libraryView, entrySearch, entries, hasMoreEntries, loadingMoreEntries, sourceById, readingEntryId, notice, busy, libraryCounts, onClearNotice, onEntrySearchChange, onUpdateEntry, onOpenEntry, onDismissEntry, onLoadMore }: {
   activeSource?: Source;
   libraryView: LibraryView;
+  entrySearch: string;
   entries: Entry[];
   hasMoreEntries: boolean;
   loadingMoreEntries: boolean;
@@ -62,6 +63,7 @@ export function Timeline({ activeSource, libraryView, entries, hasMoreEntries, l
   busy: boolean;
   libraryCounts: LibraryCounts;
   onClearNotice: () => void;
+  onEntrySearchChange: (search: string) => void;
   onUpdateEntry: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>;
   onOpenEntry: (entry: Entry) => void;
   onDismissEntry: (entry: Entry) => Promise<void>;
@@ -74,7 +76,7 @@ export function Timeline({ activeSource, libraryView, entries, hasMoreEntries, l
   });
   const title = activeSource?.title || ({ all: "最新文章", today: "今日更新", unread: "未读文章", favorite: "收藏文章" } satisfies Record<LibraryView, string>)[libraryView];
   const count = activeSource
-    ? { value: hasMoreEntries ? `${entries.length}+` : entries.length, label: "篇内容" }
+    ? { value: hasMoreEntries ? `${entries.length}+` : entries.length, label: entrySearch.trim() ? "篇匹配" : "篇内容" }
     : libraryView === "today"
       ? { value: libraryCounts.today, label: "篇更新" }
       : libraryView === "favorite"
@@ -83,10 +85,27 @@ export function Timeline({ activeSource, libraryView, entries, hasMoreEntries, l
 
   return <section className="timeline" aria-label="文章列表">
     <header><div><p className="eyebrow">{activeSource ? "来源内容" : "阅读收件箱"}</p><h1>{title}</h1></div><span className="count">{count.value} {count.label}</span></header>
+    {activeSource && <form className="entry-search" role="search" onSubmit={(event) => event.preventDefault()}>
+      <AppIcon name="search" />
+      <input
+        type="search"
+        value={entrySearch}
+        maxLength={160}
+        autoComplete="off"
+        spellCheck={false}
+        aria-label={`搜索 ${activeSource.title} 中的帖子`}
+        placeholder={`搜索 ${activeSource.title} 中的帖子`}
+        onChange={(event) => onEntrySearchChange(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onEntrySearchChange("");
+        }}
+      />
+      {entrySearch && <button type="button" className="entry-search-clear" onClick={() => onEntrySearchChange("")} aria-label="清除关键词">×</button>}
+    </form>}
     {notice && <div className="notice">{notice}<button onClick={onClearNotice}>×</button></div>}
     <div className="entry-list">
       {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntryId === entry.id} onRead={onUpdateEntry} onOpen={onOpenEntry} onDismiss={onDismissEntry} busy={busy} />)}
-      {!visibleEntries.length && <div className="empty-state"><p className="eyebrow">READING DESK / 00</p><h2>{activeSource ? "该来源还没有内容" : libraryView === "today" ? "今天还没有更新" : libraryView === "unread" ? "没有未读文章" : libraryView === "favorite" ? "还没有收藏文章" : "还没有内容"}</h2><p>{activeSource ? "可以刷新来源，或使用“自动校准”重新识别内容列表。" : "添加 RSS、公开文章列表页，或粘贴小红书分享链接开始。"}</p></div>}
+      {!visibleEntries.length && <div className="empty-state"><p className="eyebrow">READING DESK / 00</p><h2>{activeSource ? entrySearch.trim() ? `没有匹配“${entrySearch.trim()}”的帖子` : "该来源还没有内容" : libraryView === "today" ? "今天还没有更新" : libraryView === "unread" ? "没有未读文章" : libraryView === "favorite" ? "还没有收藏文章" : "还没有内容"}</h2><p>{activeSource ? entrySearch.trim() ? "会在标题、作者和摘要中查找关键词；不会读取或保存文章全文。" : "可以刷新来源，或使用“自动校准”重新识别内容列表。" : "添加 RSS、公开文章列表页，或粘贴小红书分享链接开始。"}</p></div>}
       {hasMoreEntries && <div className="entry-load-more"><p>已加载 {entries.length} 篇内容</p><button type="button" onClick={onLoadMore} disabled={busy || loadingMoreEntries}>{loadingMoreEntries ? "正在加载…" : "加载更多"}</button></div>}
     </div>
   </section>;

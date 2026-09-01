@@ -34,9 +34,9 @@ describe("ReadingDatabase", () => {
     }));
     db.saveEntries(allEntries);
 
-    const first = db.listEntryPage({ sourceId: source.id, pageSize: 100 });
-    const second = db.listEntryPage({ sourceId: source.id, pageSize: 100, cursor: first.nextCursor! });
-    const third = db.listEntryPage({ sourceId: source.id, pageSize: 100, cursor: second.nextCursor! });
+    const first = db.listEntryPage({ sourceId: source.id, search: "文章", pageSize: 100 });
+    const second = db.listEntryPage({ sourceId: source.id, search: "文章", pageSize: 100, cursor: first.nextCursor! });
+    const third = db.listEntryPage({ sourceId: source.id, search: "文章", pageSize: 100, cursor: second.nextCursor! });
     const collected = [...first.entries, ...second.entries, ...third.entries];
 
     expect(first.entries).toHaveLength(100);
@@ -301,6 +301,52 @@ describe("ReadingDatabase", () => {
 
     expect(db.listEntryPage({ read: false }).entries.map((item) => item.title)).toEqual(["未读"]);
     expect(db.listEntryPage({ sourceId: source.id, favorite: true }).entries.map((item) => item.title)).toEqual(["已读收藏"]);
+    db.close();
+  });
+
+  it("searches only retained source card metadata and treats LIKE syntax literally", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/search", title: "Search", kind: "rss", pollingEnabled: true });
+    const anotherSource = db.createSource({ url: "https://another.example/search", title: "Another", kind: "rss", pollingEnabled: true });
+    db.saveEntries([
+      entry(source.id, "Vector database roadmap", {
+        canonicalUrl: "https://example.com/search/vector", url: "https://example.com/search/vector", author: "Ada Lovelace", summary: "A SQLite migration guide.",
+        facets: [{ scheme: "feed:https://example.com/search:category", key: "research", label: "Research" }]
+      }),
+      entry(source.id, "Metadata-only search", {
+        canonicalUrl: "https://example.com/search/metadata", url: "https://example.com/search/metadata", summary: "Vector cards without the database term.",
+        facets: [{ scheme: "feed:https://example.com/search:category", key: "updates", label: "Updates" }]
+      }),
+      entry(source.id, "100% reliable", {
+        canonicalUrl: "https://example.com/search/percent", url: "https://example.com/search/percent", summary: "A literal percent character."
+      }),
+      entry(source.id, "literal_underscore", {
+        canonicalUrl: "https://example.com/search/underscore", url: "https://example.com/search/underscore", summary: "An underscore is not a wildcard."
+      }),
+      entry(source.id, "Path C:\\models", {
+        canonicalUrl: "https://example.com/search/path", url: "https://example.com/search/path", summary: "A literal backslash is not a wildcard escape."
+      }),
+      entry(anotherSource.id, "Vector database from another source", {
+        canonicalUrl: "https://another.example/search/vector", url: "https://another.example/search/vector", summary: "It must not leak into a source-local search."
+      })
+    ]);
+
+    expect(db.listEntryPage({ sourceId: source.id, search: "VECTOR sqlite" }).entries.map((item) => item.title))
+      .toEqual(["Vector database roadmap"]);
+    expect(db.listEntryPage({ sourceId: source.id, search: "lovelace" }).entries.map((item) => item.title))
+      .toEqual(["Vector database roadmap"]);
+    expect(db.listEntryPage({ sourceId: source.id, search: "100%" }).entries.map((item) => item.title))
+      .toEqual(["100% reliable"]);
+    expect(db.listEntryPage({ sourceId: source.id, search: "_" }).entries.map((item) => item.title))
+      .toEqual(["literal_underscore"]);
+    expect(db.listEntryPage({ sourceId: source.id, search: "\\" }).entries.map((item) => item.title))
+      .toEqual(["Path C:\\models"]);
+    expect(db.listEntryPage({
+      sourceId: source.id,
+      search: "vector",
+      facetSelections: [{ scheme: "feed:https://example.com/search:category", key: "research" }]
+    }).entries.map((item) => item.title)).toEqual(["Vector database roadmap"]);
+    expect(db.listEntryPage({ search: "vector" }).entries).toEqual([]);
     db.close();
   });
 

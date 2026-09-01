@@ -67,6 +67,9 @@ export function parseEntryListQuery(value: unknown): EntryListQuery | undefined 
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new Error("文章列表筛选参数无效。");
   const sourceId = value.sourceId === undefined ? undefined : requireEntityId(value.sourceId, "来源筛选无效。");
+  const search = value.search === undefined
+    ? undefined
+    : optionalString(value.search, "关键词搜索无效。", 160)?.trim().replace(/\s+/gu, " ");
   const startAt = numericTimestamp(value.startAt, "开始时间无效。");
   const endAt = numericTimestamp(value.endAt, "结束时间无效。");
   const limit = value.limit === undefined ? undefined : boundedInteger(value.limit, 1, 1_000, "文章数量限制无效。");
@@ -74,8 +77,10 @@ export function parseEntryListQuery(value: unknown): EntryListQuery | undefined 
   const favorite = value.favorite === undefined ? undefined : requireBoolean(value.favorite, "收藏筛选无效。");
   const facetSelections = value.facetSelections === undefined ? undefined : parseFacetReferences(value.facetSelections, "文章分类筛选无效。");
   if (startAt !== undefined && endAt !== undefined && startAt >= endAt) throw new Error("时间筛选范围无效。");
+  if (search && !sourceId) throw new Error("请先选择一个来源再搜索。");
   return {
     sourceId,
+    ...(search ? { search } : {}),
     startAt,
     endAt,
     limit,
@@ -91,6 +96,7 @@ export function parseEntryPageQuery(value: unknown): EntryPageQuery | undefined 
   if (!isRecord(value)) throw new Error("文章分页参数无效。");
   const parsedBase = parseEntryListQuery({
     sourceId: value.sourceId,
+    search: value.search,
     startAt: value.startAt,
     endAt: value.endAt,
     read: value.read,

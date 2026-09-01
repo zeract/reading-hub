@@ -173,6 +173,12 @@ export interface Entry extends RawEntry {
  */
 export interface EntryListQuery {
   sourceId?: string;
+  /**
+   * Source-scoped local metadata search. The host matches normalized terms
+   * against retained card fields only; it never fetches or indexes article
+   * bodies just to satisfy a search.
+   */
+  search?: string;
   /** Match an entry that has at least one matching source-origin facet. */
   facetSelections?: FacetReference[];
   /** Restrict the server-side timeline to the requested local reading state. */
