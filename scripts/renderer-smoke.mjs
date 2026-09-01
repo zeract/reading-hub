@@ -7,7 +7,7 @@ const preload = path.join(root, "dist", "main", "main", "preload.js");
 const renderer = path.join(root, "dist", "renderer", "index.html");
 const channels = [
   ["source:list", () => []],
-  ["entry:list", () => []],
+  ["entry:list-page", () => ({ entries: [] })],
   ["entry:counts", () => ({ unread: 0, favorite: 0, today: 0 })],
   ["window:is-fullscreen", () => false]
 ];

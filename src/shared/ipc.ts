@@ -6,8 +6,8 @@ import type {
   AiStreamRequest,
   ArticleReadResult,
   CalibrationResult,
-  Entry,
-  EntryListQuery,
+  EntryPage,
+  EntryPageQuery,
   LibraryCounts,
   OpmlImportResult,
   ProbeResult,
@@ -44,7 +44,7 @@ export const IPC_CHANNELS = {
     loadIcon: "source:load-icon"
   },
   entry: {
-    list: "entry:list",
+    listPage: "entry:list-page",
     counts: "entry:counts",
     readContent: "entry:read-content",
     readLanguageVariant: "entry:read-language-variant",
@@ -89,7 +89,7 @@ export interface ReaderApi {
   updateRule(id: string, rule: Source["extractionRule"]): Promise<void>;
   calibrateSource(id: string): Promise<CalibrationResult>;
   subscribeXiaohongshuProfile(input: ProfileSubscriptionInput): Promise<Source>;
-  listEntries(query?: EntryListQuery): Promise<Entry[]>;
+  listEntryPage(query?: EntryPageQuery): Promise<EntryPage>;
   getLibraryCounts(): Promise<LibraryCounts>;
   readEntry(id: string): Promise<ArticleReadResult>;
   /** Opens only a language URL declared by the currently loaded article. */

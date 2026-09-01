@@ -22,6 +22,23 @@ const entry: Entry = {
 };
 
 describe("article reader extraction", () => {
+  it("prefers a named body over nested related-article cards", () => {
+    const body = "这个系列面向顶会阅读与工程判断，系统梳理数据库研究与工程实践。".repeat(18);
+    const result = extractReaderArticle(
+      `<html><body><div class="page">
+        <main class="post-body"><header><h1>数据库前沿理论研究</h1></header><p>${body}</p></main>
+        <section class="post-recommendations__grid"><article class="post-recommendation-card"><h2>推荐文章</h2><p>这不是当前文章的正文。</p></article></section>
+      </div></body></html>`,
+      "https://example.com/post/db-frontier/index.html",
+      { ...entry, title: "数据库前沿理论研究" }
+    );
+
+    expect(result?.article.title).toBe("数据库前沿理论研究");
+    expect(result?.article.contentHtml).toContain("这个系列面向顶会阅读与工程判断");
+    expect(result?.article.contentHtml).not.toContain("这不是当前文章的正文");
+    expect(result?.textLength).toBeGreaterThan(500);
+  });
+
   it("uses the same safe page-date parser as source collection", () => {
     const result = extractReaderArticle(
       `<article><header class="post-header"><h1>带发布日期的文章</h1><div class="post-byline"><span>作者</span><span>February 4, 2024</span></div></header><p>${"正文内容 ".repeat(30)}</p></article>`,

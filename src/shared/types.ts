@@ -175,10 +175,41 @@ export interface EntryListQuery {
   sourceId?: string;
   /** Match an entry that has at least one matching source-origin facet. */
   facetSelections?: FacetReference[];
+  /** Restrict the server-side timeline to the requested local reading state. */
+  read?: boolean;
+  /** Restrict the server-side timeline to saved entries. */
+  favorite?: boolean;
   startAt?: number;
   endAt?: number;
   /** Omit the limit for an explicitly bounded time-range query. */
   limit?: number;
+}
+
+/**
+ * Stable continuation point for the timeline's newest-first ordering.
+ *
+ * The cursor mirrors every order key (including the entry id tie-breaker), so
+ * a page cannot skip or duplicate items when several posts share a timestamp.
+ * `publishedAt` is intentionally absent for entries whose real publication
+ * time is unknown; those entries sort after dated content by observation time.
+ */
+export interface EntryPageCursor {
+  publishedAt?: number;
+  observedAt: number;
+  createdAt: number;
+  id: string;
+}
+
+/** A bounded, keyset-paginated timeline request. */
+export interface EntryPageQuery extends Omit<EntryListQuery, "limit"> {
+  pageSize?: number;
+  cursor?: EntryPageCursor;
+}
+
+/** One page of locally stored entry metadata. */
+export interface EntryPage {
+  entries: Entry[];
+  nextCursor?: EntryPageCursor;
 }
 
 /** Small local navigation counters; no article body or remote data is involved. */

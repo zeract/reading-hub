@@ -5,6 +5,8 @@ import type {
   AiQuestionRequest,
   AiSelectionContext,
   AiStreamRequest,
+  EntryPageCursor,
+  EntryPageQuery,
   EntryListQuery,
   ExtractionRule,
   SubscriptionScope,
@@ -68,9 +70,49 @@ export function parseEntryListQuery(value: unknown): EntryListQuery | undefined 
   const startAt = numericTimestamp(value.startAt, "开始时间无效。");
   const endAt = numericTimestamp(value.endAt, "结束时间无效。");
   const limit = value.limit === undefined ? undefined : boundedInteger(value.limit, 1, 1_000, "文章数量限制无效。");
+  const read = value.read === undefined ? undefined : requireBoolean(value.read, "已读筛选无效。");
+  const favorite = value.favorite === undefined ? undefined : requireBoolean(value.favorite, "收藏筛选无效。");
   const facetSelections = value.facetSelections === undefined ? undefined : parseFacetReferences(value.facetSelections, "文章分类筛选无效。");
   if (startAt !== undefined && endAt !== undefined && startAt >= endAt) throw new Error("时间筛选范围无效。");
-  return { sourceId, startAt, endAt, limit, ...(facetSelections === undefined ? {} : { facetSelections }) };
+  return {
+    sourceId,
+    startAt,
+    endAt,
+    limit,
+    ...(read === undefined ? {} : { read }),
+    ...(favorite === undefined ? {} : { favorite }),
+    ...(facetSelections === undefined ? {} : { facetSelections })
+  };
+}
+
+/** Validate a renderer cursor before it can become part of a keyset query. */
+export function parseEntryPageQuery(value: unknown): EntryPageQuery | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error("文章分页参数无效。");
+  const parsedBase = parseEntryListQuery({
+    sourceId: value.sourceId,
+    startAt: value.startAt,
+    endAt: value.endAt,
+    read: value.read,
+    favorite: value.favorite,
+    facetSelections: value.facetSelections
+  }) ?? {};
+  // A page endpoint owns its bounded size; never let the legacy unbounded
+  // list limit slip through this IPC surface.
+  const { limit: _ignoredLegacyLimit, ...base } = parsedBase;
+  const pageSize = value.pageSize === undefined ? undefined : boundedInteger(value.pageSize, 1, 200, "文章分页大小无效。");
+  const cursor = value.cursor === undefined ? undefined : parseEntryPageCursor(value.cursor);
+  return { ...base, ...(pageSize === undefined ? {} : { pageSize }), ...(cursor === undefined ? {} : { cursor }) };
+}
+
+function parseEntryPageCursor(value: unknown): EntryPageCursor {
+  if (!isRecord(value)) throw new Error("文章分页游标无效，请重新载入列表。");
+  const publishedAt = value.publishedAt === undefined ? undefined : numericTimestamp(value.publishedAt, "文章分页游标无效，请重新载入列表。");
+  const observedAt = numericTimestamp(value.observedAt, "文章分页游标无效，请重新载入列表。");
+  const createdAt = numericTimestamp(value.createdAt, "文章分页游标无效，请重新载入列表。");
+  const id = requireEntityId(value.id, "文章分页游标无效，请重新载入列表。");
+  if (observedAt === undefined || createdAt === undefined) throw new Error("文章分页游标无效，请重新载入列表。");
+  return { ...(publishedAt === undefined ? {} : { publishedAt }), observedAt, createdAt, id };
 }
 
 /** Validate the renderer-owned collection policy before it reaches SQLite. */

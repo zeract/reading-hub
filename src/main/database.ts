@@ -6,6 +6,9 @@ import type {
   ConnectorId,
   ContentOrigin,
   Entry,
+  EntryPage,
+  EntryPageCursor,
+  EntryPageQuery,
   EntryListQuery,
   Facet,
   FacetReference,
@@ -144,6 +147,62 @@ function finiteTimestamp(value: number | undefined): number | undefined {
 function boundedLimit(value: number | undefined): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   return Math.max(1, Math.min(10_000, Math.floor(value)));
+}
+
+const DEFAULT_ENTRY_PAGE_SIZE = 100;
+const MAX_ENTRY_PAGE_SIZE = 200;
+const NULL_PUBLICATION_CURSOR_VALUE = Number.MIN_SAFE_INTEGER;
+const ENTRY_PUBLICATION_GROUP = "CASE WHEN entries.published_at IS NULL THEN 1 ELSE 0 END";
+const ENTRY_PUBLICATION_VALUE = `COALESCE(entries.published_at, ${NULL_PUBLICATION_CURSOR_VALUE})`;
+const ENTRY_OBSERVED_VALUE = "COALESCE(entries.observed_at, entries.created_at)";
+const ENTRY_ORDER_BY = `${ENTRY_PUBLICATION_GROUP} ASC, ${ENTRY_PUBLICATION_VALUE} DESC, ${ENTRY_OBSERVED_VALUE} DESC, entries.created_at DESC, entries.id DESC`;
+
+function boundedPageSize(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_ENTRY_PAGE_SIZE;
+  return Math.max(1, Math.min(MAX_ENTRY_PAGE_SIZE, Math.floor(value)));
+}
+
+function entryPageCursor(entry: Entry): EntryPageCursor {
+  return {
+    ...(entry.publishedAt === undefined ? {} : { publishedAt: entry.publishedAt }),
+    observedAt: entry.observedAt ?? entry.createdAt,
+    createdAt: entry.createdAt,
+    id: entry.id
+  };
+}
+
+function afterEntryCursor(cursor: EntryPageCursor): { sql: string; parameters: Array<string | number> } {
+  const publicationGroup = cursor.publishedAt === undefined ? 1 : 0;
+  const publicationValue = cursor.publishedAt ?? NULL_PUBLICATION_CURSOR_VALUE;
+  return {
+    // The comparison is the exact inverse of ENTRY_ORDER_BY.  Keeping every
+    // tie-breaker here makes continuation stable even when many old feed
+    // items share a publication time or have no publication date at all.
+    sql: `(
+      ${ENTRY_PUBLICATION_GROUP} > ?
+      OR (${ENTRY_PUBLICATION_GROUP} = ? AND (
+        ${ENTRY_PUBLICATION_VALUE} < ?
+        OR (${ENTRY_PUBLICATION_VALUE} = ? AND (
+          ${ENTRY_OBSERVED_VALUE} < ?
+          OR (${ENTRY_OBSERVED_VALUE} = ? AND (
+            entries.created_at < ?
+            OR (entries.created_at = ? AND entries.id < ?)
+          ))
+        ))
+      ))
+    )`,
+    parameters: [
+      publicationGroup,
+      publicationGroup,
+      publicationValue,
+      publicationValue,
+      cursor.observedAt,
+      cursor.observedAt,
+      cursor.createdAt,
+      cursor.createdAt,
+      cursor.id
+    ]
+  };
 }
 
 function originIdentity(origin: Pick<OriginRow, "entry_id" | "source_id" | "provider_id" | "external_id">): string {
@@ -632,9 +691,54 @@ export class ReadingDatabase {
     const query: EntryListQuery = typeof sourceOrQuery === "string"
       ? { sourceId: sourceOrQuery, limit: legacyLimit }
       : sourceOrQuery ?? { limit: legacyLimit };
+    const filter = this.entryFilter(query);
+    if (!filter) return [];
+    const { conditions, parameters } = filter;
+    const limit = boundedLimit(query.limit);
+    const statement = this.db.prepare(`SELECT id, source_id, canonical_url, original_url, title, author, published_at, summary,
+      image_url, content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity
+      FROM entries${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""}
+      ORDER BY ${ENTRY_ORDER_BY}${limit ? " LIMIT ?" : ""}`);
+    if (limit) parameters.push(limit);
+    const rows = statement.all(...parameters) as EntryRow[];
+    return this.withOrigins(rows.map(entryFromRow));
+  }
+
+  /**
+   * The renderer's timeline never asks SQLite to materialise an arbitrary
+   * source history. It reads small, stable pages and offers an explicit
+   * continuation, preserving responsiveness for large feeds without a hidden
+   * 200-entry ceiling.
+   */
+  listEntryPage(query: EntryPageQuery = {}): EntryPage {
+    const filter = this.entryFilter(query);
+    if (!filter) return { entries: [] };
+    const { conditions, parameters } = filter;
+    if (query.cursor) {
+      const cursor = afterEntryCursor(query.cursor);
+      conditions.push(cursor.sql);
+      parameters.push(...cursor.parameters);
+    }
+    const pageSize = boundedPageSize(query.pageSize);
+    const rows = this.db.prepare(`SELECT id, source_id, canonical_url, original_url, title, author, published_at, summary,
+      image_url, content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity
+      FROM entries${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""}
+      ORDER BY ${ENTRY_ORDER_BY} LIMIT ?`)
+      .all(...parameters, pageSize + 1) as EntryRow[];
+    const pageRows = rows.slice(0, pageSize);
+    const entries = this.withOrigins(pageRows.map(entryFromRow));
+    const lastEntry = entries.at(-1);
+    return {
+      entries,
+      ...(rows.length > pageSize && lastEntry ? { nextCursor: entryPageCursor(lastEntry) } : {})
+    };
+  }
+
+  /** Shared filter compiler for bounded and legacy entry list reads. */
+  private entryFilter(query: Omit<EntryListQuery, "limit">): { conditions: string[]; parameters: Array<string | number> } | undefined {
     const startAt = finiteTimestamp(query.startAt);
     const endAt = finiteTimestamp(query.endAt);
-    if (startAt !== undefined && endAt !== undefined && endAt <= startAt) return [];
+    if (startAt !== undefined && endAt !== undefined && endAt <= startAt) return undefined;
 
     const conditions: string[] = [];
     const parameters: Array<string | number> = [];
@@ -679,14 +783,15 @@ export class ReadingDatabase {
       conditions.push(`${timelineTimestamp} < ?`);
       parameters.push(endAt);
     }
-    const limit = boundedLimit(query.limit);
-    const statement = this.db.prepare(`SELECT id, source_id, canonical_url, original_url, title, author, published_at, summary,
-      image_url, content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity
-      FROM entries${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""}
-      ORDER BY CASE WHEN published_at IS NULL THEN 1 ELSE 0 END ASC, published_at DESC, observed_at DESC, created_at DESC${limit ? " LIMIT ?" : ""}`);
-    if (limit) parameters.push(limit);
-    const rows = statement.all(...parameters) as EntryRow[];
-    return this.withOrigins(rows.map(entryFromRow));
+    if (query.read !== undefined) {
+      conditions.push("entries.is_read = ?");
+      parameters.push(query.read ? 1 : 0);
+    }
+    if (query.favorite !== undefined) {
+      conditions.push("entries.is_favorite = ?");
+      parameters.push(query.favorite ? 1 : 0);
+    }
+    return { conditions, parameters };
   }
 
   getLibraryCounts(now = Date.now()): LibraryCounts {

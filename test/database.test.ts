@@ -18,6 +18,37 @@ function entry(sourceId: string, title = "测试文章", options: Partial<Entry>
 }
 
 describe("ReadingDatabase", () => {
+  it("pages a large source without a 200-entry ceiling, skips, or duplicate timestamp ties", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+    const allEntries = Array.from({ length: 205 }, (_, index) => entry(source.id, `文章 ${index}`, {
+      id: `paged-entry-${String(index).padStart(3, "0")}`,
+      canonicalUrl: `https://example.com/paged/${index}`,
+      url: `https://example.com/paged/${index}`,
+      contentHash: `paged-hash-${index}`,
+      // The first 150 intentionally share every timestamp, forcing the
+      // keyset cursor to use the entry id as its stable final tie-breaker.
+      publishedAt: index < 150 ? 1_700_000_000_000 : undefined,
+      observedAt: index < 150 ? 1_600_000_000_000 : 1_500_000_000_000,
+      createdAt: 1_400_000_000_000
+    }));
+    db.saveEntries(allEntries);
+
+    const first = db.listEntryPage({ sourceId: source.id, pageSize: 100 });
+    const second = db.listEntryPage({ sourceId: source.id, pageSize: 100, cursor: first.nextCursor! });
+    const third = db.listEntryPage({ sourceId: source.id, pageSize: 100, cursor: second.nextCursor! });
+    const collected = [...first.entries, ...second.entries, ...third.entries];
+
+    expect(first.entries).toHaveLength(100);
+    expect(second.entries).toHaveLength(100);
+    expect(third.entries).toHaveLength(5);
+    expect(third.nextCursor).toBeUndefined();
+    expect(collected.map((item) => item.id)).toHaveLength(205);
+    expect(new Set(collected.map((item) => item.id))).toHaveLength(205);
+    expect(new Set(collected.map((item) => item.id))).toEqual(new Set(allEntries.map((item) => item.id)));
+    db.close();
+  });
+
   it("deduplicates canonical URLs without resetting read state", () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
@@ -254,6 +285,22 @@ describe("ReadingDatabase", () => {
     db.markFavorite(favourite!.id, true);
 
     expect(db.getLibraryCounts(new Date(2026, 7, 18, 16).getTime())).toEqual({ unread: 1, favorite: 1, today: 1 });
+    db.close();
+  });
+
+  it("filters unread and saved timelines before pagination", () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/state", title: "State", kind: "rss", pollingEnabled: true });
+    db.saveEntries([
+      entry(source.id, "未读", { canonicalUrl: "https://example.com/state/unread", url: "https://example.com/state/unread" }),
+      entry(source.id, "已读收藏", { canonicalUrl: "https://example.com/state/saved", url: "https://example.com/state/saved" })
+    ]);
+    const saved = db.listEntries({ sourceId: source.id, limit: 10 }).find((item) => item.title === "已读收藏")!;
+    db.markRead(saved.id, true);
+    db.markFavorite(saved.id, true);
+
+    expect(db.listEntryPage({ read: false }).entries.map((item) => item.title)).toEqual(["未读"]);
+    expect(db.listEntryPage({ sourceId: source.id, favorite: true }).entries.map((item) => item.title)).toEqual(["已读收藏"]);
     db.close();
   });
 

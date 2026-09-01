@@ -10,7 +10,7 @@ import {
   parseAcademicDraft,
   parseAiProviderConfiguration,
   parseAiProviderId,
-  parseEntryListQuery,
+  parseEntryPageQuery,
   parseExtractionRule,
   parseProfileSubscriptionInput,
   parseSubscriptionScope,
@@ -80,7 +80,7 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     }
   });
 
-  handle(IPC_CHANNELS.entry.list, (_event, query: unknown) => database.listEntries(parseEntryListQuery(query)));
+  handle(IPC_CHANNELS.entry.listPage, (_event, query: unknown) => database.listEntryPage(parseEntryPageQuery(query)));
   handle(IPC_CHANNELS.entry.counts, () => database.getLibraryCounts());
   handle(IPC_CHANNELS.entry.readContent, async (_event, entryId: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));

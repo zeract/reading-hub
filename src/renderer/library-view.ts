@@ -13,8 +13,10 @@ export function entryQueryForLibrary(view: LibraryView, sourceId?: string, now =
     const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
     return { sourceId, startAt: start.getTime(), endAt: end.getTime() };
   }
-  if (view === "unread") return { sourceId: undefined };
-  // Saved items may still be examined inside an individual source. The default
-  // all-items view stays bounded for responsiveness.
-  return { sourceId, ...(view === "all" ? { limit: 200 } : {}) };
+  // Reading-state filters belong in the database query rather than the first
+  // client page. Otherwise an old unread/saved item could disappear simply
+  // because newer unrelated entries filled the initial page.
+  if (view === "unread") return { sourceId: undefined, read: false };
+  if (view === "favorite") return { sourceId, favorite: true };
+  return { sourceId };
 }

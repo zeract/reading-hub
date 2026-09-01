@@ -13,9 +13,9 @@ describe("library view queries", () => {
   });
 
   it("does not silently trim unread or favourite history after removing date ranges", () => {
-    expect(entryQueryForLibrary("unread")).toEqual({ sourceId: undefined });
-    expect(entryQueryForLibrary("unread", "source-1")).toEqual({ sourceId: undefined });
-    expect(entryQueryForLibrary("favorite", "source-1")).toEqual({ sourceId: "source-1" });
-    expect(entryQueryForLibrary("all")).toEqual({ sourceId: undefined, limit: 200 });
+    expect(entryQueryForLibrary("unread")).toEqual({ sourceId: undefined, read: false });
+    expect(entryQueryForLibrary("unread", "source-1")).toEqual({ sourceId: undefined, read: false });
+    expect(entryQueryForLibrary("favorite", "source-1")).toEqual({ sourceId: "source-1", favorite: true });
+    expect(entryQueryForLibrary("all")).toEqual({ sourceId: undefined });
   });
 });

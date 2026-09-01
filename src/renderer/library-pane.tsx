@@ -50,10 +50,12 @@ export function SourceSidebar({ sources, groups, libraryView, activeSourceId, li
   </aside>;
 }
 
-export function Timeline({ activeSource, libraryView, entries, sourceById, readingEntryId, notice, busy, libraryCounts, onClearNotice, onUpdateEntry, onOpenEntry, onDismissEntry }: {
+export function Timeline({ activeSource, libraryView, entries, hasMoreEntries, loadingMoreEntries, sourceById, readingEntryId, notice, busy, libraryCounts, onClearNotice, onUpdateEntry, onOpenEntry, onDismissEntry, onLoadMore }: {
   activeSource?: Source;
   libraryView: LibraryView;
   entries: Entry[];
+  hasMoreEntries: boolean;
+  loadingMoreEntries: boolean;
   sourceById: Map<string, Source>;
   readingEntryId?: string;
   notice?: string;
@@ -63,6 +65,7 @@ export function Timeline({ activeSource, libraryView, entries, sourceById, readi
   onUpdateEntry: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>;
   onOpenEntry: (entry: Entry) => void;
   onDismissEntry: (entry: Entry) => Promise<void>;
+  onLoadMore: () => void;
 }) {
   const visibleEntries = entries.filter((entry) => {
     if (libraryView === "unread") return !entry.read;
@@ -71,7 +74,7 @@ export function Timeline({ activeSource, libraryView, entries, sourceById, readi
   });
   const title = activeSource?.title || ({ all: "最新文章", today: "今日更新", unread: "未读文章", favorite: "收藏文章" } satisfies Record<LibraryView, string>)[libraryView];
   const count = activeSource
-    ? { value: entries.length, label: "篇内容" }
+    ? { value: hasMoreEntries ? `${entries.length}+` : entries.length, label: "篇内容" }
     : libraryView === "today"
       ? { value: libraryCounts.today, label: "篇更新" }
       : libraryView === "favorite"
@@ -84,6 +87,7 @@ export function Timeline({ activeSource, libraryView, entries, sourceById, readi
     <div className="entry-list">
       {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntryId === entry.id} onRead={onUpdateEntry} onOpen={onOpenEntry} onDismiss={onDismissEntry} busy={busy} />)}
       {!visibleEntries.length && <div className="empty-state"><p className="eyebrow">READING DESK / 00</p><h2>{activeSource ? "该来源还没有内容" : libraryView === "today" ? "今天还没有更新" : libraryView === "unread" ? "没有未读文章" : libraryView === "favorite" ? "还没有收藏文章" : "还没有内容"}</h2><p>{activeSource ? "可以刷新来源，或使用“自动校准”重新识别内容列表。" : "添加 RSS、公开文章列表页，或粘贴小红书分享链接开始。"}</p></div>}
+      {hasMoreEntries && <div className="entry-load-more"><p>已加载 {entries.length} 篇内容</p><button type="button" onClick={onLoadMore} disabled={busy || loadingMoreEntries}>{loadingMoreEntries ? "正在加载…" : "加载更多"}</button></div>}
     </div>
   </section>;
 }

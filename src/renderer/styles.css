@@ -119,6 +119,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 5px 13px; padding: 9px 10px; border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 8px; background: var(--paper); color: var(--ink-soft); font-size: 11px; line-height: 1.45; }
 .notice button { border: 0; background: none; color: inherit; font-size: 17px; }
 .entry-list { display: grid; }
+.entry-load-more { display: grid; justify-items: start; gap: 7px; padding: 17px 10px 24px 22px; color: var(--muted); font-size: 11px; }
+.entry-load-more p { margin: 0; }
+.entry-load-more button { min-width: 96px; min-height: 30px; padding: 5px 11px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--paper-bright); color: var(--ink-soft); font: inherit; font-weight: 700; }
+.entry-load-more button:hover:not(:disabled) { border-color: var(--accent-ink); background: var(--hover); color: var(--ink); }
+.entry-load-more button:disabled { cursor: wait; opacity: .6; }
 .entry-card { position: relative; padding: 12px 10px 10px 22px; border-bottom: 1px solid var(--line); border-radius: 6px; transition: background-color .14s ease,color .14s ease,box-shadow .14s ease; }
 .entry-card::before { position: absolute; top: 20px; left: 9px; width: 6px; height: 6px; border-radius: 50%; background: transparent; content: ""; }
 .entry-card:not(.read)::before { background: var(--unread-dot); }

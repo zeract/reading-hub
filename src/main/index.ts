@@ -9,8 +9,8 @@ import { configureChromiumNetwork } from "./network";
 import { auditLocalReader, type ReaderAuditProgress, type ReaderAuditResult } from "./reader-audit";
 import { ScientificArticleVisualAuditor } from "./scientific-visual-audit";
 import { installDevelopmentSupervisorGuard } from "./dev-supervisor";
+import { MainWindowLifecycle } from "./main-window-lifecycle";
 
-let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let services: ApplicationServices | undefined;
 let quitting = false;
@@ -99,6 +99,11 @@ app.once("will-quit", closeApplicationServices);
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
+    // Startup has asynchronous disk/network work before its first render. A
+    // visible window would be activated when that work finishes, even if the
+    // user deliberately switched macOS Spaces in the meantime. The lifecycle
+    // controller decides whether this instance is shown inactive or focused.
+    show: false,
     width: 1180,
     height: 800,
     minWidth: 860,
@@ -139,10 +144,18 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
+const mainWindowLifecycle = new MainWindowLifecycle(createWindow);
+
 function showWindow(): void {
-  if (!mainWindow) mainWindow = createWindow();
-  mainWindow.show();
-  mainWindow.focus();
+  mainWindowLifecycle.presentForUser();
+}
+
+function showStartupWindow(): void {
+  // On macOS, automatic startup/restart must not jump from the user's current
+  // Space back to Reading Hub. Other platforms retain their conventional
+  // launch-to-foreground behaviour.
+  if (process.platform === "darwin") mainWindowLifecycle.presentOnStartup();
+  else mainWindowLifecycle.presentForUser();
 }
 
 function createTray(): void {
@@ -164,10 +177,10 @@ async function bootstrap(): Promise<void> {
   services = await createApplicationServices(path.join(app.getPath("userData"), "reading-hub.sqlite"));
   registerIpcHandlers(services);
   createTray();
-  showWindow();
+  showStartupWindow();
   services.sync.start();
 
-  app.on("activate", showWindow);
+  app.on("activate", () => mainWindowLifecycle.presentForApplicationActivation());
 }
 
 async function runReaderAudit(): Promise<void> {

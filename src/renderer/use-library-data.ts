@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Entry, LibraryCounts, Source } from "../shared/types";
+import type { Entry, EntryPageCursor, LibraryCounts, Source } from "../shared/types";
+import { firstEntryPageQuery, mergeEntryPages, nextEntryPageQuery } from "./entry-pagination";
 import { entryQueryForLibrary, type LibraryView } from "./library-view";
 import { groupSources } from "./source-groups";
 import { requiresSourceReload } from "./source-selection";
@@ -15,21 +16,28 @@ export function useLibraryData() {
   const [sources, setSources] = useState<Source[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [libraryCounts, setLibraryCounts] = useState<LibraryCounts>(EMPTY_LIBRARY_COUNTS);
+  const [nextEntryCursor, setNextEntryCursor] = useState<EntryPageCursor>();
+  const [loadingMoreEntries, setLoadingMoreEntries] = useState(false);
   const [activeSourceId, setActiveSourceId] = useState<string>();
   const [libraryView, setLibraryView] = useState<LibraryView>("today");
   const reloadSequence = useRef(0);
+  const pageGeneration = useRef(0);
+  const loadedBeyondFirstPage = useRef(false);
+  const loadingMore = useRef(false);
 
   const entriesQuery = useMemo(() => entryQueryForLibrary(libraryView, activeSourceId), [activeSourceId, libraryView]);
   const reload = useCallback(async () => {
     const sequence = ++reloadSequence.current;
-    const [nextSources, nextEntries, nextLibraryCounts] = await Promise.all([
+    const generation = pageGeneration.current;
+    const [nextSources, nextPage, nextLibraryCounts] = await Promise.all([
       window.reader.listSources(),
-      window.reader.listEntries(entriesQuery),
+      window.reader.listEntryPage(firstEntryPageQuery(entriesQuery)),
       window.reader.getLibraryCounts()
     ]);
-    if (sequence !== reloadSequence.current) return;
+    if (sequence !== reloadSequence.current || generation !== pageGeneration.current) return;
     setSources(nextSources);
-    setEntries(nextEntries);
+    setEntries((current) => loadedBeyondFirstPage.current ? mergeEntryPages(nextPage.entries, current) : nextPage.entries);
+    if (!loadedBeyondFirstPage.current) setNextEntryCursor(nextPage.nextCursor);
     setLibraryCounts(nextLibraryCounts);
   }, [entriesQuery]);
 
@@ -39,6 +47,15 @@ export function useLibraryData() {
     return () => window.clearInterval(timer);
   }, [reload]);
 
+  const resetEntryPages = useCallback(() => {
+    pageGeneration.current += 1;
+    loadedBeyondFirstPage.current = false;
+    loadingMore.current = false;
+    setLoadingMoreEntries(false);
+    setNextEntryCursor(undefined);
+    setEntries([]);
+  }, []);
+
   const selectSource = useCallback((sourceId?: string) => {
     setLibraryView("all");
     if (requiresSourceReload(activeSourceId, sourceId)) {
@@ -47,19 +64,40 @@ export function useLibraryData() {
       void reload();
       return;
     }
-    setEntries([]);
+    resetEntryPages();
     setActiveSourceId(sourceId);
-  }, [activeSourceId, reload]);
+  }, [activeSourceId, reload, resetEntryPages]);
 
   const selectLibrary = useCallback((view: LibraryView) => {
+    resetEntryPages();
     setActiveSourceId(undefined);
     setLibraryView(view);
-    setEntries([]);
-  }, []);
+  }, [resetEntryPages]);
+
+  const loadMoreEntries = useCallback(async () => {
+    const cursor = nextEntryCursor;
+    if (!cursor || loadingMore.current) return;
+    const generation = pageGeneration.current;
+    loadingMore.current = true;
+    setLoadingMoreEntries(true);
+    try {
+      const nextPage = await window.reader.listEntryPage(nextEntryPageQuery(entriesQuery, cursor));
+      if (generation !== pageGeneration.current) return;
+      setEntries((current) => mergeEntryPages(current, nextPage.entries));
+      setNextEntryCursor(nextPage.nextCursor);
+      loadedBeyondFirstPage.current = true;
+    } finally {
+      if (generation === pageGeneration.current) {
+        loadingMore.current = false;
+        setLoadingMoreEntries(false);
+      }
+    }
+  }, [entriesQuery, nextEntryCursor]);
 
   const clearActiveSource = useCallback(() => {
+    resetEntryPages();
     setActiveSourceId(undefined);
-  }, []);
+  }, [resetEntryPages]);
 
   const sourceById = useMemo(() => new Map(sources.map((source) => [source.id, source])), [sources]);
   const activeSource = activeSourceId ? sourceById.get(activeSourceId) : undefined;
@@ -68,6 +106,8 @@ export function useLibraryData() {
   return {
     sources,
     entries,
+    hasMoreEntries: Boolean(nextEntryCursor),
+    loadingMoreEntries,
     libraryCounts,
     activeSourceId,
     libraryView,
@@ -75,6 +115,7 @@ export function useLibraryData() {
     activeSource,
     sourceGroups,
     reload,
+    loadMoreEntries,
     selectSource,
     selectLibrary,
     clearActiveSource

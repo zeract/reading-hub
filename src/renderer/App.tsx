@@ -21,6 +21,8 @@ export function App() {
   const {
     sources,
     entries,
+    hasMoreEntries,
+    loadingMoreEntries,
     libraryCounts,
     activeSourceId,
     libraryView,
@@ -28,6 +30,7 @@ export function App() {
     activeSource,
     sourceGroups,
     reload,
+    loadMoreEntries,
     selectSource: selectLibrarySource,
     selectLibrary: selectLibraryView,
     clearActiveSource
@@ -229,6 +232,8 @@ export function App() {
         activeSource={activeSource}
         libraryView={libraryView}
         entries={entries}
+        hasMoreEntries={hasMoreEntries}
+        loadingMoreEntries={loadingMoreEntries}
         sourceById={sourceById}
         readingEntryId={readingEntry?.id}
         notice={notice}
@@ -238,6 +243,7 @@ export function App() {
         onUpdateEntry={updateEntry}
         onOpenEntry={openReader}
         onDismissEntry={dismissEntry}
+        onLoadMore={() => void loadMoreEntries().catch((error) => setNotice(errorMessage(error)))}
       />
       {readingEntry ? <ReaderView
         entry={readingEntry}

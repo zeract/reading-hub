@@ -19,7 +19,11 @@ import { RobotsDisallowedError } from "./robots";
 const CONTENT_SELECTORS = [
   { selector: "article", priority: 7 },
   { selector: "[itemprop='articleBody']", priority: 6 },
-  { selector: ".article-content, .article-body, .entry-content, .post-content, .post-body", priority: 5 },
+  // A named body container is more specific than a bare `<article>`. Modern
+  // sites commonly place small related/recommended cards in nested article
+  // elements, so letting the bare tag win can select a card that later gets
+  // removed as chrome and leave the reader empty.
+  { selector: ".article-content, .article-body, .entry-content, .post-content, .post-body", priority: 9 },
   { selector: ".RichContent-inner, .RichText", priority: 5 },
   { selector: "#content", priority: 4 },
   // Framer pages commonly expose their semantic section name in this
@@ -852,6 +856,12 @@ function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfil
   let best: { html: string; score: number; priority: number } | undefined;
   for (const [node, priority] of candidates) {
     if (!node) continue;
+    // Candidate discovery sees every `<article>`, including the small cards
+    // used by related/recommended grids. Do not let a known non-body subtree
+    // enter the competition simply because its tag happens to be semantic.
+    // This shares the same noise policy as final sanitisation, so a candidate
+    // can no longer score highly and then disappear from the reader.
+    if (isReaderNoiseCandidate($, node)) continue;
     const candidate = $(node).clone();
     // Keep semantic Math source and image noscript fallbacks while scoring;
     // the final extraction will consume them. All other chrome is removed
@@ -873,6 +883,11 @@ function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfil
   if (!best) return undefined;
   const root = load(`<article id="reader-clean-content">${best.html}</article>`)("#reader-clean-content");
   return { html: best.html, quality: readerContentQuality(root), priority: best.priority };
+}
+
+function isReaderNoiseCandidate($: ReturnType<typeof load>, node: any): boolean {
+  const candidate = $(node);
+  return candidate.is(BASE_NOISE_SELECTOR) || candidate.parents(BASE_NOISE_SELECTOR).length > 0;
 }
 
 function isZhihuContentUrl(rawUrl: string): boolean {

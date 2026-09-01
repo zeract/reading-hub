@@ -25,7 +25,7 @@ const IPC_CHANNELS = {
     loadIcon: "source:load-icon"
   },
   entry: {
-    list: "entry:list",
+    listPage: "entry:list-page",
     counts: "entry:counts",
     readContent: "entry:read-content",
     readLanguageVariant: "entry:read-language-variant",
@@ -67,7 +67,7 @@ const readerApi: ReaderApi = {
   updateRule: (id, rule) => ipcRenderer.invoke(IPC_CHANNELS.source.updateRule, id, rule),
   calibrateSource: (id) => ipcRenderer.invoke(IPC_CHANNELS.source.calibration, id),
   subscribeXiaohongshuProfile: (input) => ipcRenderer.invoke(IPC_CHANNELS.xiaohongshu.subscribeProfile, input),
-  listEntries: (query) => ipcRenderer.invoke(IPC_CHANNELS.entry.list, query),
+  listEntryPage: (query) => ipcRenderer.invoke(IPC_CHANNELS.entry.listPage, query),
   getLibraryCounts: () => ipcRenderer.invoke(IPC_CHANNELS.entry.counts),
   readEntry: (id) => ipcRenderer.invoke(IPC_CHANNELS.entry.readContent, id),
   readEntryLanguageVariant: (id, url) => ipcRenderer.invoke(IPC_CHANNELS.entry.readLanguageVariant, id, url),
