@@ -6,7 +6,6 @@
 export interface MainWindowHandle {
   isDestroyed(): boolean;
   isMinimized(): boolean;
-  isVisible(): boolean;
   restore(): void;
   show(): void;
   showInactive(): void;
@@ -22,31 +21,45 @@ export interface MainWindowHandle {
  */
 export class MainWindowLifecycle<Window extends MainWindowHandle> {
   private window?: Window;
+  private hiddenByUser = false;
+  private userRequestedForeground = false;
 
   constructor(private readonly createWindow: () => Window) {}
 
   presentOnStartup(): Window {
     const window = this.getOrCreate();
+    // A second-instance or tray action can race startup. Never downgrade an
+    // explicit foreground request into an inactive presentation.
+    if (this.userRequestedForeground) return window;
+    this.hiddenByUser = false;
     window.showInactive();
     return window;
   }
 
   presentForUser(): Window {
     const window = this.getOrCreate();
+    this.hiddenByUser = false;
+    this.userRequestedForeground = true;
     if (window.isMinimized()) window.restore();
     window.show();
     window.focus();
     return window;
   }
 
+  /** Records an explicit window close/hide so a later Dock activation may restore it. */
+  markHiddenByUser(window: Window): void {
+    if (this.window === window && !window.isDestroyed()) this.hiddenByUser = true;
+  }
+
   /**
-   * App activation may be emitted while macOS is processing a background
-   * native event. A visible, non-minimised reader needs no action: forcing it
-   * to the foreground here would turn that event into an unexpected Space
-   * switch. A hidden/minimised window still needs the usual Dock behaviour.
+   * `isVisible()` means "visible in the foreground", not "the app has no
+   * window". In particular, a window on another macOS Space can report false
+   * after the user switches away. Keep a startup-presented window untouched
+   * until it was explicitly hidden/minimised by the user; otherwise a delayed
+   * native `activate` event would turn into an unexpected Space switch.
    */
   presentForApplicationActivation(): Window {
-    if (this.window && !this.window.isDestroyed() && this.window.isVisible() && !this.window.isMinimized()) return this.window;
+    if (this.window && !this.window.isDestroyed() && !this.hiddenByUser && !this.window.isMinimized()) return this.window;
     return this.presentForUser();
   }
 

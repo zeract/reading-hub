@@ -39,12 +39,15 @@ describe("main window lifecycle", () => {
     expect(window.focus).toHaveBeenCalledTimes(1);
   });
 
-  it("does not re-focus a visible window for a non-user activation event", () => {
+  it("does not re-focus a startup window when macOS reports it off the current Space", () => {
     const window = new WindowStub();
     window.visible = true;
     const lifecycle = new MainWindowLifecycle(() => window);
     lifecycle.presentOnStartup();
     window.showInactive.mockClear();
+    // BrowserWindow.isVisible() describes the foreground Space. It can be
+    // false while the user has merely switched to another Desktop.
+    window.visible = false;
 
     lifecycle.presentForApplicationActivation();
 
@@ -53,16 +56,28 @@ describe("main window lifecycle", () => {
     expect(window.focus).not.toHaveBeenCalled();
   });
 
-  it("recovers a hidden window when the application is explicitly activated", () => {
+  it("restores a window only after the user explicitly hid it", () => {
     const window = new WindowStub();
     const lifecycle = new MainWindowLifecycle(() => window);
     lifecycle.presentOnStartup();
     window.visible = false;
     window.showInactive.mockClear();
+    lifecycle.markHiddenByUser(window);
 
     lifecycle.presentForApplicationActivation();
 
     expect(window.show).toHaveBeenCalledTimes(1);
     expect(window.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not downgrade a racing explicit foreground request during startup", () => {
+    const window = new WindowStub();
+    const lifecycle = new MainWindowLifecycle(() => window);
+
+    lifecycle.presentForUser();
+    lifecycle.presentOnStartup();
+
+    expect(window.focus).toHaveBeenCalledTimes(1);
+    expect(window.showInactive).not.toHaveBeenCalled();
   });
 });

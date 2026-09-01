@@ -20,6 +20,8 @@ const USER_DATA_DIRECTORY = "reading-hub";
 const readerAuditMode = process.env.READING_HUB_READER_AUDIT === "1";
 const scientificVisualAuditMode = readerAuditMode && process.env.READING_HUB_AUDIT_SCIENTIFIC_VISUAL === "1";
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
+const rendererLoadedWindows = new WeakSet<BrowserWindow>();
+let mainRendererReady = false;
 
 // A failed public-source request is represented in the source health UI and
 // scheduled for retry. Chromium also writes one low-level TLS line for every
@@ -127,9 +129,13 @@ function createWindow(): BrowserWindow {
   window.on("enter-full-screen", publishFullscreenState);
   window.on("leave-full-screen", publishFullscreenState);
   window.webContents.on("did-finish-load", publishFullscreenState);
-  const devUrl = process.env.VITE_DEV_SERVER_URL;
-  if (devUrl) void window.loadURL(devUrl);
-  else void window.loadFile(path.join(app.getAppPath(), "dist", "renderer", "index.html"));
+  if (mainRendererReady) loadMainRenderer(window);
+  window.on("minimize", () => {
+    if (!quitting) mainWindowLifecycle.markHiddenByUser(window);
+  });
+  window.on("hide", () => {
+    if (!quitting) mainWindowLifecycle.markHiddenByUser(window);
+  });
   window.on("close", (event) => {
     if (!quitting) {
       if (isDevelopment) {
@@ -138,6 +144,7 @@ function createWindow(): BrowserWindow {
         return;
       }
       event.preventDefault();
+      mainWindowLifecycle.markHiddenByUser(window);
       window.hide();
     }
   });
@@ -146,16 +153,31 @@ function createWindow(): BrowserWindow {
 
 const mainWindowLifecycle = new MainWindowLifecycle(createWindow);
 
+/** Load React only after the database and all renderer IPC handlers are ready. */
+function loadMainRenderer(window: BrowserWindow): void {
+  if (window.isDestroyed() || rendererLoadedWindows.has(window)) return;
+  rendererLoadedWindows.add(window);
+  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  const load = devUrl
+    ? window.loadURL(devUrl)
+    : window.loadFile(path.join(app.getAppPath(), "dist", "renderer", "index.html"));
+  void load.catch((error: unknown) => {
+    rendererLoadedWindows.delete(window);
+    console.error("Reading Hub renderer failed to load:", error instanceof Error ? error.message : String(error));
+  });
+}
+
 function showWindow(): void {
   mainWindowLifecycle.presentForUser();
 }
 
-function showStartupWindow(): void {
+function showStartupWindow(): BrowserWindow {
   // On macOS, automatic startup/restart must not jump from the user's current
   // Space back to Reading Hub. Other platforms retain their conventional
   // launch-to-foreground behaviour.
-  if (process.platform === "darwin") mainWindowLifecycle.presentOnStartup();
-  else mainWindowLifecycle.presentForUser();
+  return process.platform === "darwin"
+    ? mainWindowLifecycle.presentOnStartup()
+    : mainWindowLifecycle.presentForUser();
 }
 
 function createTray(): void {
@@ -172,15 +194,20 @@ function createTray(): void {
 }
 
 async function bootstrap(): Promise<void> {
+  // Establish a non-activating native window before any disk/network work.
+  // Showing it only after the awaited service boot can move macOS back to the
+  // original Space even without an explicit BrowserWindow.focus() call.
+  const startupWindow = showStartupWindow();
+  app.on("activate", () => mainWindowLifecycle.presentForApplicationActivation());
+
   const icon = applicationIcon();
   if (process.platform === "darwin" && !icon.isEmpty()) app.dock?.setIcon(icon);
   services = await createApplicationServices(path.join(app.getPath("userData"), "reading-hub.sqlite"));
   registerIpcHandlers(services);
+  mainRendererReady = true;
+  loadMainRenderer(startupWindow);
   createTray();
-  showStartupWindow();
   services.sync.start();
-
-  app.on("activate", () => mainWindowLifecycle.presentForApplicationActivation());
 }
 
 async function runReaderAudit(): Promise<void> {
