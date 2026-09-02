@@ -7,7 +7,7 @@ import { newAiRequestId, useAiStreamSubscription, useAiTextStream } from "./ai-s
 import { cancelScheduledAnimationFrame, scheduleAnimationFrame } from "./animation-frame";
 import { bilingualTranslationLabel, bilingualTranslationQuestion, bilingualTranslationTarget } from "./bilingual-translation";
 import { errorMessage } from "./errors";
-import { DEFAULT_IMMERSIVE_TRANSLATION_CONCURRENCY, ImmersiveTranslationRunController, applyImmersiveTranslationPatches, createImmersiveTranslationPlan, createImmersiveTranslationStreamParser, dispatchImmersiveTranslationBatches, missingCompletedImmersiveTranslationSegments, prioritiseImmersiveTranslationBatches, readImmersiveTranslationCache, translationSegmentsForBatch, writeImmersiveTranslationCache, type ImmersiveTranslationBatch, type ImmersiveTranslationSegment } from "./immersive-translation";
+import { DEFAULT_IMMERSIVE_TRANSLATION_CONCURRENCY, ImmersiveTranslationRunController, applyImmersiveTranslationPatches, createImmersiveTranslationPlan, createImmersiveTranslationStreamParser, discardImmersiveTranslationSegments, dispatchImmersiveTranslationBatches, indexImmersiveTranslationSourceElements, missingCompletedImmersiveTranslationSegments, prioritiseImmersiveTranslationBatches, prioritiseImmersiveTranslationSegmentsForViewport, readImmersiveTranslationCache, translationSegmentsForBatch, writeImmersiveTranslationCache, type ImmersiveTranslationBatch, type ImmersiveTranslationSegment } from "./immersive-translation";
 import { adjustReaderFontScale, loadReaderPreferences, saveReaderPreferences, type ReaderPreferences, type ReaderPreset } from "./reader-preferences";
 import { LatestRequestGuard } from "./request-guard";
 import { normaliseSelectedArticleText, selectedTextLabel, selectionActionQuestion, selectionContext, selectionOverlay, type SelectionOverlay, type SelectionRect } from "./selection-actions";
@@ -431,7 +431,6 @@ function ImmersiveTranslationBody({ article, preferredProviderId, onOpenSettings
 }) {
   const [providers, setProviders] = useState<AiProviderSettings[]>([]);
   const [providerError, setProviderError] = useState<string>();
-  const [translations, setTranslations] = useState<Map<string, string>>(new Map());
   const [busy, setBusy] = useState(false);
   const [retry, setRetry] = useState(0);
   const plan = useMemo(() => createImmersiveTranslationPlan(article.contentHtml), [article.contentHtml]);
@@ -439,6 +438,8 @@ function ImmersiveTranslationBody({ article, preferredProviderId, onOpenSettings
   const active = useRef(new Map<string, ActiveImmersiveTranslationRequest>());
   const translationRun = useRef(new ImmersiveTranslationRunController());
   const translationsRef = useRef(new Map<string, string>());
+  const sourceElements = useRef(new Map<string, HTMLElement>());
+  const pendingTranslationPatchIds = useRef(new Set<string>());
   const renderFrame = useRef<number | undefined>(undefined);
   const provider = useMemo(() => providers.find((item) => item.id === preferredProviderId && item.configured)
     || providers.find((item) => item.configured), [preferredProviderId, providers]);
@@ -469,27 +470,62 @@ function ImmersiveTranslationBody({ article, preferredProviderId, onOpenSettings
       cancelRunRequests(runId);
       cancelScheduledAnimationFrame(renderFrame.current);
       renderFrame.current = undefined;
+      pendingTranslationPatchIds.current.clear();
     };
   }, [cacheScope, cancelRunRequests, plan, retry, target]);
 
-  useEffect(() => {
+  // The reader body is static for one plan. Index source blocks exactly once
+  // after React mounts its sanitised HTML, then let stream frames touch only
+  // changed ids instead of making React reconcile a growing translation map.
+  useLayoutEffect(() => {
     const root = bodyRef.current;
-    if (root) applyImmersiveTranslationPatches(root, plan, translations, { targetLanguage: target });
-  }, [bodyRef, plan, target, translations]);
+    sourceElements.current = root ? indexImmersiveTranslationSourceElements(root, plan) : new Map();
+    return () => {
+      sourceElements.current = new Map();
+      pendingTranslationPatchIds.current.clear();
+    };
+  }, [bodyRef, plan]);
 
-  const publishTranslations = useCallback((next: ReadonlyMap<string, string>, immediate = false) => {
-    translationsRef.current = new Map(next);
+  const publishTranslationPatches = useCallback((changedIds?: Iterable<string>, immediate = false) => {
+    if (changedIds) {
+      for (const id of changedIds) pendingTranslationPatchIds.current.add(id);
+    } else {
+      // An initial cache restore or language switch must also remove any old
+      // sibling translation nodes that no longer belong to this plan.
+      for (const { id } of plan.segments) pendingTranslationPatchIds.current.add(id);
+    }
+    const flush = () => {
+      const root = bodyRef.current;
+      const ids = new Set(pendingTranslationPatchIds.current);
+      pendingTranslationPatchIds.current.clear();
+      if (!root || !ids.size) return;
+      applyImmersiveTranslationPatches(root, plan, translationsRef.current, {
+        targetLanguage: target,
+        changedIds: ids,
+        sourceElements: sourceElements.current
+      });
+    };
     if (immediate) {
       cancelScheduledAnimationFrame(renderFrame.current);
       renderFrame.current = undefined;
-      setTranslations(new Map(translationsRef.current));
+      flush();
       return;
     }
     if (renderFrame.current !== undefined) return;
     renderFrame.current = scheduleAnimationFrame(() => {
       renderFrame.current = undefined;
-      setTranslations(new Map(translationsRef.current));
+      flush();
     });
+  }, [bodyRef, plan, target]);
+
+  const mergeTranslationProgress = useCallback((progress: ReturnType<ReturnType<typeof createImmersiveTranslationStreamParser>["push"]>) => {
+    const changedIds = new Set<string>();
+    for (const [id, text] of progress.changedTranslations) {
+      if (translationsRef.current.get(id) === text) continue;
+      translationsRef.current.set(id, text);
+      changedIds.add(id);
+    }
+    return changedIds;
   }, []);
 
   useAiStreamSubscription((event) => {
@@ -502,32 +538,35 @@ function ImmersiveTranslationBody({ article, preferredProviderId, onOpenSettings
     }
     if (event.type === "delta") {
       const progress = current.parser.push(event.text);
-      const merged = new Map(translationsRef.current);
-      for (const [id, text] of progress.translations) merged.set(id, text);
+      const changedIds = mergeTranslationProgress(progress);
       if (!current.firstTranslationSeen && progress.translations.size > 0) {
         current.firstTranslationSeen = true;
         current.resolveFirstTranslation?.();
       }
-      publishTranslations(merged);
+      publishTranslationPatches(changedIds);
       return;
     }
     if (event.type === "complete") {
       current.parser.reset();
       const progress = current.parser.push(event.answer.text);
-      const merged = new Map(translationsRef.current);
-      for (const [id, text] of progress.translations) merged.set(id, text);
+      const changedIds = mergeTranslationProgress(progress);
       if (!current.firstTranslationSeen && progress.translations.size > 0) {
         current.firstTranslationSeen = true;
         current.resolveFirstTranslation?.();
       }
       writeImmersiveTranslationCache(current.cacheScope, current.target, current.segments, progress.translations, progress.completeIds);
-      publishTranslations(merged, true);
       const missingSegments = missingCompletedImmersiveTranslationSegments(current.segments, progress);
+      for (const id of discardImmersiveTranslationSegments(translationsRef.current, missingSegments)) {
+        changedIds.add(id);
+      }
+      publishTranslationPatches(changedIds, true);
       current.resolveFirstTranslation?.();
       active.current.delete(event.requestId);
       current.resolve({ ok: missingSegments.length === 0, missingSegments });
       return;
     }
+    const changedIds = discardImmersiveTranslationSegments(translationsRef.current, current.segments);
+    publishTranslationPatches(changedIds, true);
     setProviderError(event.message);
     current.resolveFirstTranslation?.();
     active.current.delete(event.requestId);
@@ -548,11 +587,19 @@ function ImmersiveTranslationBody({ article, preferredProviderId, onOpenSettings
     const belongsToCurrentRun = () => !cancelled && translationRun.current.owns(runId);
     const cached = readImmersiveTranslationCache(cacheScope, target, plan.segments);
     translationsRef.current = cached;
-    publishTranslations(cached, true);
+    publishTranslationPatches(undefined, true);
     setProviderError(undefined);
     setBusy(false);
     if (!provider) { setProviderError("尚未配置可用的 AI 服务。"); return; }
-    const dispatch = prioritiseImmersiveTranslationBatches(plan.segments.filter((segment) => !cached.has(segment.id)));
+    const scrollViewport = bodyRef.current?.closest(".reader-scroll")?.getBoundingClientRect();
+    const visibleFirst = scrollViewport
+      ? prioritiseImmersiveTranslationSegmentsForViewport(
+        plan.segments.filter((segment) => !cached.has(segment.id)),
+        sourceElements.current,
+        { top: scrollViewport.top, bottom: scrollViewport.bottom }
+      )
+      : plan.segments.filter((segment) => !cached.has(segment.id));
+    const dispatch = prioritiseImmersiveTranslationBatches(visibleFirst);
     if (!dispatch.foreground) {
       if (!plan.segments.length) setProviderError("当前文章没有可供翻译的正文段落。");
       return;
@@ -591,6 +638,8 @@ function ImmersiveTranslationBody({ article, preferredProviderId, onOpenSettings
         }).catch((reason) => {
           if (active.current.get(id) !== request) return;
           active.current.delete(id);
+          const changedIds = discardImmersiveTranslationSegments(translationsRef.current, request.segments);
+          publishTranslationPatches(changedIds, true);
           if (belongsToCurrentRun()) setProviderError(errorMessage(reason));
           resolveFirstTranslation?.();
           resolve({ ok: false, missingSegments: [] });
@@ -632,11 +681,12 @@ function ImmersiveTranslationBody({ article, preferredProviderId, onOpenSettings
       cancelRunRequests(runId);
       cancelScheduledAnimationFrame(renderFrame.current);
       renderFrame.current = undefined;
+      pendingTranslationPatchIds.current.clear();
     };
-  }, [cacheScope, cancelRunRequests, plan, provider?.id, retry, target, publishTranslations]);
+  }, [cacheScope, cancelRunRequests, plan, provider?.id, retry, target, publishTranslationPatches]);
 
   return <>
-    <p className="reader-immersive-status" role="status">{busy ? `正在快速生成${targetLabel}…` : providerError || (plan.truncated ? "较长段落已跳过，可继续阅读原文。" : "译文仅在本次阅读中显示。")} {providerError && <><button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button><button type="button" onClick={onOpenSettings}>AI 设置</button></>}</p>
+    <p className="reader-immersive-status" role="status">{busy ? `正在快速生成${targetLabel}…` : providerError || (plan.truncated ? `为保持流畅，已限制本页翻译范围（${plan.segments.length} 段）。` : "译文仅在本次阅读中显示。")} {providerError && <><button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button><button type="button" onClick={onOpenSettings}>AI 设置</button></>}</p>
     <div ref={bodyRef} className="article-body" {...handlers} dangerouslySetInnerHTML={{ __html: plan.annotatedHtml }} />
   </>;
 }

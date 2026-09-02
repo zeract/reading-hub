@@ -1,5 +1,5 @@
 import { JSDOM } from "jsdom";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE,
   IMMERSIVE_TRANSLATION_RESULT_ATTRIBUTE,
@@ -9,9 +9,12 @@ import {
   clearImmersiveTranslationCache,
   createImmersiveTranslationStreamParser,
   createImmersiveTranslationPlan,
+  discardImmersiveTranslationSegments,
   dispatchImmersiveTranslationBatches,
+  indexImmersiveTranslationSourceElements,
   missingCompletedImmersiveTranslationSegments,
   prioritiseImmersiveTranslationBatches,
+  prioritiseImmersiveTranslationSegmentsForViewport,
   readImmersiveTranslationCache,
   renderImmersiveTranslationHtml,
   translationSegmentsForBatch,
@@ -66,7 +69,8 @@ describe("immersive inline translation segments", () => {
     expect(plan.annotatedHtml).toContain("const ignored = true;");
     expect(plan.annotatedHtml).not.toContain("source-controlled");
     expect(plan.annotatedHtml.match(new RegExp(IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE, "g"))).toHaveLength(6);
-    expect(plan.segments.every(({ html, id }) => html.includes(`${IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE}="${id}"`))).toBe(true);
+    expect(plan.segments.every(({ id }) => plan.annotatedHtml.includes(`${IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE}="${id}"`))).toBe(true);
+    expect(plan.segments.every((segment) => !("html" in segment))).toBe(true);
     expect(plan.segments.map(({ sourceText }) => sourceText)).not.toContain("E = mc²");
     expect(plan.truncated).toBe(false);
   });
@@ -169,22 +173,77 @@ describe("immersive inline translation segments", () => {
     expect(root.querySelector("img")).toBe(originalImage);
   });
 
+  it("patches only dirty indexed stream nodes without rescanning the reader body", () => {
+    const plan = createImmersiveTranslationPlan("<p>First paragraph.</p><p>Second paragraph.</p>", { parser });
+    const document = new JSDOM(`<main>${plan.annotatedHtml}</main>`).window.document;
+    const root = document.querySelector("main")!;
+    const [first, second] = plan.segments;
+    const sourceElements = indexImmersiveTranslationSourceElements(root, plan);
+
+    applyImmersiveTranslationPatches(root, plan, new Map([
+      [first.id, "第一段。"],
+      [second.id, "第二段。"]
+    ]), { sourceElements, targetLanguage: "zh" });
+    const firstResult = root.querySelector(`[${IMMERSIVE_TRANSLATION_RESULT_ATTRIBUTE}="${first.id}"]`)!;
+    const secondResult = root.querySelector(`[${IMMERSIVE_TRANSLATION_RESULT_ATTRIBUTE}="${second.id}"]`)!;
+    const scan = vi.spyOn(root, "querySelectorAll");
+
+    applyImmersiveTranslationPatches(root, plan, new Map([
+      [first.id, "更新后的第一段。"],
+      [second.id, "不应重新写入第二段。"]
+    ]), {
+      sourceElements,
+      changedIds: [first.id],
+      targetLanguage: "zh"
+    });
+
+    expect(scan).not.toHaveBeenCalled();
+    expect(firstResult.textContent).toBe("更新后的第一段。");
+    expect(secondResult.textContent).toBe("第二段。");
+  });
+
+  it("removes a transient partial translation when its batch is incomplete", () => {
+    const plan = createImmersiveTranslationPlan("<p>First paragraph.</p><p>Second paragraph.</p>", { parser });
+    const document = new JSDOM(`<main>${plan.annotatedHtml}</main>`).window.document;
+    const root = document.querySelector("main")!;
+    const [first, second] = plan.segments;
+    const translations = new Map([[first.id, "完整译文。"], [second.id, "半句"]]);
+    const sourceElements = indexImmersiveTranslationSourceElements(root, plan);
+
+    applyImmersiveTranslationPatches(root, plan, translations, { sourceElements, targetLanguage: "zh" });
+    const changedIds = discardImmersiveTranslationSegments(translations, [second]);
+    applyImmersiveTranslationPatches(root, plan, translations, {
+      sourceElements,
+      changedIds,
+      targetLanguage: "zh"
+    });
+
+    expect(root.querySelector(`[${IMMERSIVE_TRANSLATION_RESULT_ATTRIBUTE}="${first.id}"]`)?.textContent).toBe("完整译文。");
+    expect(root.querySelector(`[${IMMERSIVE_TRANSLATION_RESULT_ATTRIBUTE}="${second.id}"]`)).toBeNull();
+  });
+
   it("parses progressive protocol tags across stream chunks without accepting unknown ids", () => {
     const stream = createImmersiveTranslationStreamParser(["first", "second"], { parser });
     const initial = stream.push("prefix <rh-translation id=\"first\">第一</rh-trans");
-    const middle = stream.push("lation><rh-translation id='second'>second <b>line</b>");
-    const final = stream.push(" done</rh-translation><rh-translation id=\"unknown\">ignored</rh-translation>");
 
     expect(initial.translations.get("first")).toBe("第一");
+    expect(initial.changedTranslations).toEqual(new Map([["first", "第一"]]));
     expect(initial.pendingIds).toEqual(new Set(["first"]));
+    const middle = stream.push("lation><rh-translation id='second'>second <b>line</b>");
+
     expect(middle.translations.get("first")).toBe("第一");
     expect(middle.translations.get("second")).toBe("second line");
+    expect(middle.changedTranslations).toEqual(new Map([["second", "second line"]]));
+    expect(middle.translations).toBe(initial.translations);
     expect(middle.completeIds).toEqual(new Set(["first"]));
     expect(middle.pendingIds).toEqual(new Set(["second"]));
+    const final = stream.push(" done</rh-translation><rh-translation id=\"unknown\">ignored</rh-translation>");
+
     expect(final.translations).toEqual(new Map([
       ["first", "第一"],
       ["second", "second line done"]
     ]));
+    expect(final.changedTranslations).toEqual(new Map([["second", "second line done"]]));
     expect(final.completeIds).toEqual(new Set(["first", "second"]));
     expect(final.pendingIds).toEqual(new Set());
   });
@@ -196,17 +255,19 @@ describe("immersive inline translation segments", () => {
     const stream = createImmersiveTranslationStreamParser(["line"], { parser: noDomParser });
 
     const partial = stream.push('<rh-translation id="line">A &am');
+    expect(partial.translations.get("line")).toBe("A");
+    expect(partial.changedTranslations).toEqual(new Map([["line", "A"]]));
     const final = stream.push('p; <b>bold</b> comparison x < y and x<y>z &copy;</rh-translation>');
 
-    expect(partial.translations.get("line")).toBe("A");
     expect(final.translations.get("line")).toBe("A & bold comparison x < y and x<y>z ©");
+    expect(final.changedTranslations).toEqual(new Map([["line", "A & bold comparison x < y and x<y>z ©"]]));
     expect(final.completeIds).toEqual(new Set(["line"]));
   });
 
   it("treats missing closed protocol blocks as incomplete rather than a successful batch", () => {
     const segments: ImmersiveTranslationSegment[] = [
-      { id: "first", kind: "paragraph", sourceText: "First", html: "<p>First</p>" },
-      { id: "second", kind: "paragraph", sourceText: "Second", html: "<p>Second</p>" }
+      { id: "first", kind: "paragraph", sourceText: "First" },
+      { id: "second", kind: "paragraph", sourceText: "Second" }
     ];
     const stream = createImmersiveTranslationStreamParser(segments.map((segment) => segment.id));
     const progress = stream.push('<rh-translation id="first">第一</rh-translation><rh-translation id="second">第');
@@ -216,9 +277,9 @@ describe("immersive inline translation segments", () => {
 
   it("keeps every provider payload bounded and structured without exposing original HTML", () => {
     const segments: ImmersiveTranslationSegment[] = [
-      { id: "one", kind: "paragraph", sourceText: "First short sentence.", html: "<p>First short sentence.</p>" },
-      { id: "two", kind: "paragraph", sourceText: "Second short sentence.", html: "<p>Second short sentence.</p>" },
-      { id: "three", kind: "paragraph", sourceText: "A deliberately much longer third segment.", html: "<p>A deliberately much longer third segment.</p>" }
+      { id: "one", kind: "paragraph", sourceText: "First short sentence." },
+      { id: "two", kind: "paragraph", sourceText: "Second short sentence." },
+      { id: "three", kind: "paragraph", sourceText: "A deliberately much longer third segment." }
     ];
     const batches = batchImmersiveTranslationSegments(segments, { maximumSegments: 2, maximumCharacters: 43 });
 
@@ -246,6 +307,19 @@ describe("immersive inline translation segments", () => {
     expect(plan.segments.map(({ sourceText }) => sourceText)).toEqual(["First."]);
     expect(plan.truncated).toBe(true);
     expect(plan.annotatedHtml.match(new RegExp(IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE, "g"))).toHaveLength(1);
+  });
+
+  it("bounds dense tables and lists before they can schedule unbounded provider work", () => {
+    const html = Array.from({ length: 12 }, (_, index) => `<p>Line ${index}.</p>`).join("");
+    const plan = createImmersiveTranslationPlan(html, {
+      parser,
+      maximumSegments: 3,
+      maximumCandidates: 5
+    });
+
+    expect(plan.segments.map(({ sourceText }) => sourceText)).toEqual(["Line 0.", "Line 1.", "Line 2."]);
+    expect(plan.truncated).toBe(true);
+    expect(plan.annotatedHtml.match(new RegExp(IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE, "g"))).toHaveLength(3);
   });
 
   it("skips a paragraph that cannot satisfy the per-segment IPC bound", () => {
@@ -276,7 +350,6 @@ describe("immersive inline translation segments", () => {
       id: `segment-${index}`,
       kind: "paragraph" as const,
       sourceText: `Source ${index}`,
-      html: `<p>Source ${index}</p>`
     }));
     const translations = new Map(initial.map((segment) => [segment.id, `译文 ${segment.id}`]));
 
@@ -284,7 +357,7 @@ describe("immersive inline translation segments", () => {
     // Refresh the first entry. A timestamp-only implementation can treat this
     // as tied with the other entries and evict the wrong paragraph.
     expect(readImmersiveTranslationCache("v1:cache-bound", "zh", [initial[0]])).toEqual(new Map([[initial[0].id, `译文 ${initial[0].id}`]]));
-    const extra = { id: "segment-extra", kind: "paragraph" as const, sourceText: "Source extra", html: "<p>Source extra</p>" };
+    const extra = { id: "segment-extra", kind: "paragraph" as const, sourceText: "Source extra" };
     writeImmersiveTranslationCache("v1:cache-bound", "zh", [extra], new Map([[extra.id, "译文 extra"]]));
 
     const cached = readImmersiveTranslationCache("v1:cache-bound", "zh", [...initial, extra]);
@@ -299,7 +372,7 @@ describe("immersive inline translation segments", () => {
   it("does not retain an unexpectedly oversized provider response in the session cache", () => {
     clearImmersiveTranslationCache();
     const segment: ImmersiveTranslationSegment = {
-      id: "oversized", kind: "paragraph", sourceText: "small source", html: "<p>small source</p>"
+      id: "oversized", kind: "paragraph", sourceText: "small source"
     };
 
     writeImmersiveTranslationCache("v1:cache-bound", "zh", [segment], new Map([[segment.id, "译".repeat(6_000)]]));
@@ -308,21 +381,21 @@ describe("immersive inline translation segments", () => {
     clearImmersiveTranslationCache();
   });
 
-  it("uses a larger bounded reading window to amortise local App Server turn setup", () => {
-    const segments = Array.from({ length: 9 }, (_, index) => ({ id: `p-${index}`, kind: "paragraph" as const, sourceText: "x".repeat(900), html: "<p />" }));
+  it("uses a bounded reading window that avoids long output tails", () => {
+    const segments = Array.from({ length: 9 }, (_, index) => ({ id: `p-${index}`, kind: "paragraph" as const, sourceText: "x".repeat(900) }));
     const batches = batchImmersiveTranslationSegments(segments);
 
-    expect(batches.map((batch) => batch.segments.length)).toEqual([6, 3]);
-    expect(batches.every((batch) => batch.characterCount <= 6_000)).toBe(true);
+    expect(batches.map((batch) => batch.segments.length)).toEqual([4, 4, 1]);
+    expect(batches.every((batch) => batch.characterCount <= 3_600)).toBe(true);
   });
 
   it("prioritises the first visible prose blocks before larger background batches", () => {
     const segments: ImmersiveTranslationSegment[] = [
-      { id: "one", kind: "paragraph", sourceText: "a".repeat(700), html: "<p />" },
-      { id: "two", kind: "paragraph", sourceText: "b".repeat(650), html: "<p />" },
-      { id: "three", kind: "paragraph", sourceText: "c".repeat(400), html: "<p />" },
-      { id: "four", kind: "paragraph", sourceText: "d".repeat(400), html: "<p />" },
-      { id: "five", kind: "paragraph", sourceText: "e".repeat(400), html: "<p />" }
+      { id: "one", kind: "paragraph", sourceText: "a".repeat(700) },
+      { id: "two", kind: "paragraph", sourceText: "b".repeat(650) },
+      { id: "three", kind: "paragraph", sourceText: "c".repeat(400) },
+      { id: "four", kind: "paragraph", sourceText: "d".repeat(400) },
+      { id: "five", kind: "paragraph", sourceText: "e".repeat(400) }
     ];
 
     const dispatch = prioritiseImmersiveTranslationBatches(segments, {
@@ -331,16 +404,17 @@ describe("immersive inline translation segments", () => {
 
     expect(dispatch.foreground).toMatchObject({
       index: 0,
-      characterCount: 1_350,
-      segments: [{ id: "one" }, { id: "two" }]
+      characterCount: 700,
+      segments: [{ id: "one" }]
     });
     expect(dispatch.background.map((batch) => ({
       index: batch.index,
       ids: batch.segments.map((segment) => segment.id),
       characterCount: batch.characterCount
     }))).toEqual([
-      { index: 1, ids: ["three", "four"], characterCount: 800 },
-      { index: 2, ids: ["five"], characterCount: 400 }
+      { index: 1, ids: ["two"], characterCount: 650 },
+      { index: 2, ids: ["three", "four"], characterCount: 800 },
+      { index: 3, ids: ["five"], characterCount: 400 }
     ]);
     expect([
       ...(dispatch.foreground?.segments || []),
@@ -348,10 +422,30 @@ describe("immersive inline translation segments", () => {
     ].map((segment) => segment.id)).toEqual(segments.map((segment) => segment.id));
   });
 
+  it("prioritises paragraphs nearest the current viewport while retaining source order for ties", () => {
+    const segments: ImmersiveTranslationSegment[] = [
+      { id: "top", kind: "paragraph", sourceText: "Top" },
+      { id: "visible-one", kind: "paragraph", sourceText: "Visible one" },
+      { id: "visible-two", kind: "paragraph", sourceText: "Visible two" },
+      { id: "later", kind: "paragraph", sourceText: "Later" }
+    ];
+    const element = (top: number, bottom: number) => ({
+      getBoundingClientRect: () => ({ top, bottom })
+    }) as unknown as Element;
+    const ordered = prioritiseImmersiveTranslationSegmentsForViewport(segments, new Map([
+      ["top", element(10, 40)],
+      ["visible-one", element(130, 180)],
+      ["visible-two", element(190, 230)],
+      ["later", element(500, 540)]
+    ]), { top: 120, bottom: 260 });
+
+    expect(ordered.map(({ id }) => id)).toEqual(["visible-one", "visible-two", "top", "later"]);
+  });
+
   it("still dispatches one oversized first source block immediately without reordering later prose", () => {
     const segments: ImmersiveTranslationSegment[] = [
-      { id: "long-first", kind: "paragraph", sourceText: "a".repeat(1_500), html: "<p />" },
-      { id: "later", kind: "paragraph", sourceText: "b".repeat(120), html: "<p />" }
+      { id: "long-first", kind: "paragraph", sourceText: "a".repeat(1_500) },
+      { id: "later", kind: "paragraph", sourceText: "b".repeat(120) }
     ];
 
     const dispatch = prioritiseImmersiveTranslationBatches(segments);
@@ -370,7 +464,6 @@ describe("immersive inline translation segments", () => {
       id,
       kind: "paragraph",
       sourceText: id,
-      html: `<p>${id}</p>`
     }));
     const dispatch = {
       foreground: { index: 0, segments: [segments[0]], characterCount: 10 },

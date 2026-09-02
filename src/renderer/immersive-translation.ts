@@ -10,13 +10,24 @@ export const IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE = "data-reader-translation-
 export const IMMERSIVE_TRANSLATION_RESULT_ATTRIBUTE = "data-reader-translation-for";
 /** Matches the current IPC contract; callers may opt into a larger reviewed bound. */
 export const DEFAULT_IMMERSIVE_TRANSLATION_SEGMENT_CHARACTERS = 1_600;
-export const DEFAULT_IMMERSIVE_TRANSLATION_BATCH_SEGMENTS = 6;
-export const DEFAULT_IMMERSIVE_TRANSLATION_BATCH_CHARACTERS = 6_000;
+/**
+ * A moderate batch avoids tail latency and output truncation on fast API
+ * models, while still amortising a local Codex App Server turn setup.
+ */
+export const DEFAULT_IMMERSIVE_TRANSLATION_BATCH_SEGMENTS = 4;
+export const DEFAULT_IMMERSIVE_TRANSLATION_BATCH_CHARACTERS = 3_600;
 /** Keep two turns in flight: enough to hide a slow first turn without overwhelming a local account. */
 export const DEFAULT_IMMERSIVE_TRANSLATION_CONCURRENCY = 2;
 /** A tiny foreground turn gets the first visible translation on screen quickly. */
-export const DEFAULT_IMMERSIVE_TRANSLATION_FOREGROUND_SEGMENTS = 2;
-export const DEFAULT_IMMERSIVE_TRANSLATION_FOREGROUND_CHARACTERS = 1_400;
+export const DEFAULT_IMMERSIVE_TRANSLATION_FOREGROUND_SEGMENTS = 1;
+export const DEFAULT_IMMERSIVE_TRANSLATION_FOREGROUND_CHARACTERS = 800;
+/**
+ * A page with thousands of tiny table cells must not turn into thousands of
+ * provider requests. Normal prose articles remain comfortably within this
+ * bound; unusually dense pages report that later blocks were skipped.
+ */
+export const DEFAULT_IMMERSIVE_TRANSLATION_PLAN_SEGMENTS = 64;
+const DEFAULT_IMMERSIVE_TRANSLATION_PLAN_CANDIDATES = DEFAULT_IMMERSIVE_TRANSLATION_PLAN_SEGMENTS * 4;
 
 const TRANSLATABLE_BLOCK_SELECTOR = [
   "h1", "h2", "h3", "h4", "h5", "h6",
@@ -59,10 +70,8 @@ export interface ImmersiveTranslationSegment {
    * Plain source prose for the translator. Formulae and code are represented
    * by inert placeholders, so model output cannot rewrite the reader's
    * rendered maths or executable-looking snippets.
-   */
+  */
   sourceText: string;
-  /** The original, already-sanitised semantic element after annotation. */
-  html: string;
 }
 
 export interface ImmersiveTranslationPlan {
@@ -87,6 +96,17 @@ export interface ImmersiveTranslationPlanOptions {
    * request that can only fail after the user has already enabled translation.
    */
   maximumSegmentCharacters?: number;
+  /**
+   * Bounds total provider work for dense tables/lists. Later prose remains
+   * untouched and the returned plan is marked truncated for a clear UI hint.
+   */
+  maximumSegments?: number;
+  /**
+   * Bounds DOM text extraction itself before an adversarially dense document
+   * can make planning expensive. This is intentionally higher than the
+   * segment limit so normal nested prose still retains its leaf structure.
+   */
+  maximumCandidates?: number;
   /** Test-only injection; production uses the browser's inert DOMParser. */
   parser?: ImmersiveTranslationHtmlParser;
 }
@@ -129,6 +149,11 @@ export interface ImmersiveTranslationDispatchOptions {
   runBackground: (batch: ImmersiveTranslationBatch) => Promise<boolean>;
 }
 
+export interface ImmersiveTranslationViewport {
+  top: number;
+  bottom: number;
+}
+
 /**
  * Owns the short-lived generation of one rendered translation plan. Keeping
  * this separate from request ids makes language/article changes explicit: a
@@ -163,6 +188,7 @@ const SESSION_TRANSLATION_CACHE_MAX_CHARACTERS = 1_500_000;
 const SESSION_TRANSLATION_CACHE_MAX_ENTRY_CHARACTERS = 6_000;
 const sessionTranslationCache = new Map<string, CachedTranslation>();
 let sessionTranslationCacheCharacters = 0;
+const planSegmentIds = new WeakMap<ImmersiveTranslationPlan, ReadonlySet<string>>();
 
 /**
  * Process-memory-only cache. It makes a close/reopen or language switch-back
@@ -217,11 +243,18 @@ export interface ImmersiveTranslationRenderOptions {
 }
 
 export interface ImmersiveTranslationProgress {
-  /** Latest safe plain-text translation for each recognised segment id. */
+  /**
+   * Latest safe plain-text translation for each recognised segment id.
+   * This is a live, read-only view owned by the parser. Consumers that need a
+   * durable snapshot should copy it explicitly; copying it for every token
+   * made a multi-paragraph stream needlessly quadratic.
+   */
   translations: ReadonlyMap<string, string>;
+  /** Only the segment values that changed while processing this delta. */
+  changedTranslations: ReadonlyMap<string, string>;
   /** IDs still receiving text because their closing protocol tag has not arrived. */
   pendingIds: ReadonlySet<string>;
-  /** IDs whose closing protocol tag has arrived. */
+  /** Live set of IDs whose closing protocol tag has arrived. */
   completeIds: ReadonlySet<string>;
 }
 
@@ -248,6 +281,14 @@ export function createImmersiveTranslationPlan(
     options.maximumSegmentCharacters,
     DEFAULT_IMMERSIVE_TRANSLATION_SEGMENT_CHARACTERS
   );
+  const maximumSegments = boundedPositiveInteger(
+    options.maximumSegments,
+    DEFAULT_IMMERSIVE_TRANSLATION_PLAN_SEGMENTS
+  );
+  const maximumCandidates = boundedPositiveInteger(
+    options.maximumCandidates,
+    DEFAULT_IMMERSIVE_TRANSLATION_PLAN_CANDIDATES
+  );
   const body = document.body;
 
   // Never trust a stale or source-provided annotation as a translation target.
@@ -255,8 +296,18 @@ export function createImmersiveTranslationPlan(
     element.removeAttribute(IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE);
   }
 
-  const candidates = Array.from(body.querySelectorAll<HTMLElement>(TRANSLATABLE_BLOCK_SELECTOR))
-    .filter((element) => !isWithinNonTranslatableContent(element));
+  const candidates: HTMLElement[] = [];
+  let truncated = false;
+  const candidateNodes = body.querySelectorAll<HTMLElement>(TRANSLATABLE_BLOCK_SELECTOR);
+  for (let index = 0; index < candidateNodes.length; index += 1) {
+    const element = candidateNodes[index];
+    if (isWithinNonTranslatableContent(element)) continue;
+    if (candidates.length >= maximumCandidates) {
+      truncated = true;
+      break;
+    }
+    candidates.push(element);
+  }
   // Work out viable source text before looking for nested candidates. A
   // formula-only child must not suppress a useful parent list item or quote.
   const candidateSourceText = new Map(
@@ -265,15 +316,26 @@ export function createImmersiveTranslationPlan(
       .filter(([, sourceText]) => hasTranslatableProse(sourceText))
   );
   const candidateSet = new Set(candidateSourceText.keys());
+  const candidatesWithEligibleDescendant = new Set<Element>();
+  for (const descendant of candidateSet) {
+    let ancestor = descendant.parentElement;
+    while (ancestor && ancestor !== body) {
+      if (candidateSet.has(ancestor)) candidatesWithEligibleDescendant.add(ancestor);
+      ancestor = ancestor.parentElement;
+    }
+  }
   const segments: ImmersiveTranslationSegment[] = [];
   const duplicateOccurrences = new Map<string, number>();
   let usedCharacters = 0;
-  let truncated = false;
 
   for (const element of candidates) {
-    if (hasEligibleCandidateDescendant(element, candidateSet)) continue;
+    if (candidatesWithEligibleDescendant.has(element)) continue;
     const sourceText = candidateSourceText.get(element);
     if (!sourceText) continue;
+    if (segments.length >= maximumSegments) {
+      truncated = true;
+      break;
+    }
     if (sourceText.length > maximumSegmentCharacters) {
       truncated = true;
       continue;
@@ -289,7 +351,7 @@ export function createImmersiveTranslationPlan(
     duplicateOccurrences.set(fingerprint, occurrence);
     const id = stableSegmentId(kind, sourceText, occurrence);
     element.setAttribute(IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE, id);
-    segments.push({ id, kind, sourceText, html: element.outerHTML });
+    segments.push({ id, kind, sourceText });
     usedCharacters += sourceText.length;
   }
 
@@ -367,6 +429,23 @@ export function prioritiseImmersiveTranslationBatches(
   const background = batchImmersiveTranslationSegments(segments.slice(foregroundSegments.length), options.background)
     .map((batch, index) => ({ ...batch, index: index + (foreground ? 1 : 0) }));
   return { foreground, background };
+}
+
+/**
+ * Keep visual reading responsive when translation is enabled mid-article.
+ * Visible blocks are requested first, then the remaining blocks retain their
+ * source order. DOM placement is still controlled by each segment id, so this
+ * only changes request order and never the article's reading order.
+ */
+export function prioritiseImmersiveTranslationSegmentsForViewport(
+  segments: readonly ImmersiveTranslationSegment[],
+  sourceElements: ReadonlyMap<string, Element>,
+  viewport: ImmersiveTranslationViewport
+): readonly ImmersiveTranslationSegment[] {
+  return segments
+    .map((segment, index) => ({ segment, index, distance: translationSegmentViewportDistance(sourceElements.get(segment.id), viewport) }))
+    .sort((left, right) => left.distance - right.distance || left.index - right.index)
+    .map(({ segment }) => segment);
 }
 
 /**
@@ -465,6 +544,37 @@ export function renderImmersiveTranslationHtml(
   return document.body.innerHTML;
 }
 
+export interface ImmersiveTranslationPatchOptions {
+  /** A language hint lets assistive technology announce the translated line correctly. */
+  targetLanguage?: "zh" | "en";
+  /**
+   * A streaming update normally changes just one protocol block. Passing its
+   * id avoids a full-document scan and avoids touching unrelated selections.
+   */
+  changedIds?: Iterable<string>;
+  /**
+   * Index the current, static reader DOM once after it mounts. The patcher
+   * validates entries before using them and falls back safely if React has
+   * replaced the reader body.
+   */
+  sourceElements?: ReadonlyMap<string, HTMLElement>;
+}
+
+/** Build a stable lookup after the sanitised reader body mounts. */
+export function indexImmersiveTranslationSourceElements(
+  root: Element,
+  plan: ImmersiveTranslationPlan
+): Map<string, HTMLElement> {
+  const allowedIds = immersiveTranslationPlanIds(plan);
+  const sourceElements = new Map<string, HTMLElement>();
+  for (const element of Array.from(root.querySelectorAll<HTMLElement>(`[${IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE}]`))) {
+    const id = element.getAttribute(IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE);
+    if (!id || !allowedIds.has(id) || sourceElements.has(id)) continue;
+    sourceElements.set(id, element);
+  }
+  return sourceElements;
+}
+
 /**
  * Update a live reader DOM without replacing the article body. This avoids
  * reparsing remote HTML, reloading images, and recreating mathematical DOM on
@@ -474,12 +584,19 @@ export function applyImmersiveTranslationPatches(
   root: Element,
   plan: ImmersiveTranslationPlan,
   translations: ReadonlyMap<string, string> | Readonly<Record<string, string | undefined>>,
-  options: Pick<ImmersiveTranslationRenderOptions, "targetLanguage"> = {}
+  options: ImmersiveTranslationPatchOptions = {}
 ): void {
-  const allowedIds = new Set(plan.segments.map(({ id }) => id));
-  for (const element of Array.from(root.querySelectorAll<HTMLElement>(`[${IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE}]`))) {
-    const id = element.getAttribute(IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE);
-    if (!id || !allowedIds.has(id)) continue;
+  const allowedIds = immersiveTranslationPlanIds(plan);
+  const sourceElements = options.sourceElements || indexImmersiveTranslationSourceElements(root, plan);
+  const targetIds = options.changedIds ? new Set(options.changedIds) : allowedIds;
+  for (const id of targetIds) {
+    if (!allowedIds.has(id)) continue;
+    const indexed = sourceElements.get(id);
+    const element = indexed && root.contains(indexed)
+      && indexed.getAttribute(IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE) === id
+      ? indexed
+      : translationSourceElementForId(root, id);
+    if (!element) continue;
     const translation = translationForId(translations, id);
     const existing = translationResultFor(element, id);
     if (!translation) {
@@ -504,6 +621,25 @@ export function applyImmersiveTranslationPatches(
     // layout/selection for a line whose streamed text did not change.
     if (result.textContent !== text) result.textContent = text;
   }
+}
+
+/**
+ * Clears transient text for a failed or incomplete request batch. The caller
+ * can pass the returned ids straight to `applyImmersiveTranslationPatches` so
+ * a half-generated line never remains visible after its stream ends.
+ */
+export function discardImmersiveTranslationSegments(
+  translations: Map<string, string>,
+  segments: readonly Pick<ImmersiveTranslationSegment, "id">[]
+): Set<string> {
+  const changedIds = new Set<string>();
+  for (const { id } of segments) {
+    translations.delete(id);
+    // Patch even when the map no longer contains the id. A prior rAF can have
+    // already inserted the DOM node before a provider error reaches us.
+    changedIds.add(id);
+  }
+  return changedIds;
 }
 
 /**
@@ -542,34 +678,41 @@ export function createImmersiveTranslationStreamParser(
   let activeText = createPlainTextStreamDecoder();
   let discarding = false;
 
-  const progress = (): ImmersiveTranslationProgress => ({
-    translations: new Map(translations),
+  const progress = (changedTranslations: ReadonlyMap<string, string>): ImmersiveTranslationProgress => ({
+    translations,
+    changedTranslations,
     pendingIds: activeId ? new Set([activeId]) : new Set(),
-    completeIds: new Set(completeIds)
+    completeIds
   });
 
-  const flushActive = () => {
+  const flushActive = (changedTranslations: Map<string, string>) => {
     if (!activeId) return;
     const text = activeText.value();
-    if (text) translations.set(activeId, text);
+    if (!text || translations.get(activeId) === text) return;
+    translations.set(activeId, text);
+    changedTranslations.set(activeId, text);
   };
 
   return {
     push(delta: string): ImmersiveTranslationProgress {
+      const changedTranslations = new Map<string, string>();
       buffer += delta;
       while (buffer) {
         if (activeId || discarding) {
           const closeAt = buffer.toLowerCase().indexOf("</rh-translation>");
           if (closeAt < 0) {
             const retained = incompleteProtocolPrefixLength(buffer, "</rh-translation>");
-            if (activeId) { activeText.push(buffer.slice(0, buffer.length - retained)); flushActive(); }
+            if (activeId) {
+              activeText.push(buffer.slice(0, buffer.length - retained));
+              flushActive(changedTranslations);
+            }
             buffer = retained ? buffer.slice(-retained) : "";
             break;
           }
           if (activeId) {
             activeText.push(buffer.slice(0, closeAt));
             activeText.finish();
-            flushActive();
+            flushActive(changedTranslations);
             completeIds.add(activeId);
           }
           buffer = buffer.slice(closeAt + "</rh-translation>".length);
@@ -596,7 +739,7 @@ export function createImmersiveTranslationStreamParser(
         discarding = !activeId;
         buffer = buffer.slice(openingEnd + 1);
       }
-      return progress();
+      return progress(changedTranslations);
     },
     reset(): void {
       translations.clear();
@@ -611,11 +754,6 @@ export function createImmersiveTranslationStreamParser(
 
 function isWithinNonTranslatableContent(element: Element): boolean {
   return element.matches(NON_TRANSLATABLE_SELECTOR) || Boolean(element.parentElement?.closest(NON_TRANSLATABLE_SELECTOR));
-}
-
-function hasEligibleCandidateDescendant(element: Element, candidates: ReadonlySet<Element>): boolean {
-  return Array.from(element.querySelectorAll(TRANSLATABLE_BLOCK_SELECTOR))
-    .some((descendant) => candidates.has(descendant));
 }
 
 function sourceTextForTranslation(element: Element): string {
@@ -680,13 +818,23 @@ function inlineTranslationContainer(element: Element): boolean {
 }
 
 function plainTranslationText(value: string): string {
-  // Preserve ordinary sentence spacing while removing control characters and
-  // a response's accidental leading/trailing blank lines.
+  // Most streamed deltas are already clean prose. Avoid allocating/scanning a
+  // growing paragraph on every token; only materialise a normalized string
+  // when a control character or boundary whitespace is actually present.
+  if (!value.includes("\u0000") && !/^\s|\s$/.test(value)) return value;
   return value.replace(/\u0000/g, "").trim();
 }
 
 function translationCacheKey(scope: string, target: "zh" | "en", id: string): string {
   return `${scope}\u0000${target}\u0000${id}`;
+}
+
+function immersiveTranslationPlanIds(plan: ImmersiveTranslationPlan): ReadonlySet<string> {
+  const cached = planSegmentIds.get(plan);
+  if (cached) return cached;
+  const ids = new Set(plan.segments.map(({ id }) => id));
+  planSegmentIds.set(plan, ids);
+  return ids;
 }
 
 function touchSessionTranslationCache(key: string, entry: CachedTranslation): void {
@@ -708,6 +856,19 @@ function translationResultFor(element: Element, id: string): HTMLElement | undef
   }
   const sibling = element.nextElementSibling;
   return sibling?.getAttribute(IMMERSIVE_TRANSLATION_RESULT_ATTRIBUTE) === id ? sibling as HTMLElement : undefined;
+}
+
+function translationSourceElementForId(root: Element, id: string): HTMLElement | undefined {
+  return Array.from(root.querySelectorAll<HTMLElement>(`[${IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE}]`))
+    .find((element) => element.getAttribute(IMMERSIVE_TRANSLATION_SEGMENT_ATTRIBUTE) === id);
+}
+
+function translationSegmentViewportDistance(element: Element | undefined, viewport: ImmersiveTranslationViewport): number {
+  if (!element) return Number.POSITIVE_INFINITY;
+  const rect = element.getBoundingClientRect();
+  if (rect.bottom < viewport.top) return viewport.top - rect.bottom;
+  if (rect.top > viewport.bottom) return rect.top - viewport.bottom;
+  return 0;
 }
 
 /**
