@@ -7,6 +7,7 @@ import { sourceFaviconCandidate } from "../shared/source-icon";
 import type { ApplicationServices } from "./app-services";
 import {
   parseAiStreamRequest,
+  parseAiStreamRequestId,
   parseAcademicDraft,
   parseAiProviderConfiguration,
   parseAiProviderId,
@@ -40,6 +41,9 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     articles,
     inAppArticleViewer
   } = services;
+  // Renderer requests are scoped to their owning WebContents. A malicious or
+  // stale renderer cannot cancel another window's AI turn by guessing an id.
+  const aiStreamControllers = new Map<number, Map<string, AbortController>>();
 
   handle(IPC_CHANNELS.source.preview, (_event, rawUrl: unknown) =>
     sources.preview(requireText(rawUrl, "来源地址无效，请重新填写。", 2_000)));
@@ -121,8 +125,16 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     learningAssistant.clear(parseAiProviderId(provider)));
   handle(IPC_CHANNELS.ai.askStream, (event, payload: unknown) => {
     const request = parseAiStreamRequest(payload);
-    startAiStream(event.sender, learningAssistant, request);
+    const controller = registerAiStreamController(aiStreamControllers, event.sender, request.requestId);
+    startAiStream(event.sender, learningAssistant, request, controller.signal, () => {
+      const streams = aiStreamControllers.get(event.sender.id);
+      if (streams?.get(request.requestId) === controller) streams.delete(request.requestId);
+    });
     return { requestId: request.requestId };
+  });
+  handle(IPC_CHANNELS.ai.cancelStream, (event, rawRequestId: unknown) => {
+    const requestId = parseAiStreamRequestId(rawRequestId);
+    aiStreamControllers.get(event.sender.id)?.get(requestId)?.abort(new Error("AI 请求已取消。"));
   });
 
   handle(IPC_CHANNELS.window.isFullscreen, (event) => BrowserWindow.fromWebContents(event.sender)?.isFullScreen() ?? false);
@@ -171,18 +183,48 @@ function findEntry(database: ApplicationServices["database"], id: string) {
   return entry;
 }
 
-function startAiStream(sender: Electron.WebContents, learningAssistant: ApplicationServices["learningAssistant"], payload: AiStreamRequest): void {
+function startAiStream(
+  sender: Electron.WebContents,
+  learningAssistant: ApplicationServices["learningAssistant"],
+  payload: AiStreamRequest,
+  signal: AbortSignal,
+  onSettled: () => void
+): void {
   const emit = (update: AiStreamEvent) => {
-    if (!sender.isDestroyed()) sender.send(IPC_CHANNELS.ai.streamEvent, update);
+    if (!signal.aborted && !sender.isDestroyed()) sender.send(IPC_CHANNELS.ai.streamEvent, update);
   };
   // Queue after invoke returns so the renderer has registered its request id.
   queueMicrotask(() => {
-    void learningAssistant.askStream(payload.request, (text) => emit({ type: "delta", requestId: payload.requestId, text }))
+    if (signal.aborted) { onSettled(); return; }
+    void learningAssistant.askStream(payload.request, (text) => emit({ type: "delta", requestId: payload.requestId, text }), signal)
       .then((answer) => emit({ type: "complete", requestId: payload.requestId, answer }))
       .catch((error: unknown) => emit({
         type: "error",
         requestId: payload.requestId,
         message: error instanceof Error && error.message ? error.message : "AI 学习助手暂时无法完成回答，请稍后重试。"
-      }));
+      }))
+      .finally(onSettled);
   });
+}
+
+function registerAiStreamController(
+  controllersByWebContents: Map<number, Map<string, AbortController>>,
+  sender: Electron.WebContents,
+  requestId: string
+): AbortController {
+  let controllers = controllersByWebContents.get(sender.id);
+  if (!controllers) {
+    controllers = new Map();
+    controllersByWebContents.set(sender.id, controllers);
+    sender.once("destroyed", () => {
+      for (const controller of controllers!.values()) controller.abort(new Error("阅读窗口已关闭。"));
+      controllersByWebContents.delete(sender.id);
+    });
+  }
+  // A duplicate id is invalid at the renderer level, but cancelling the older
+  // one is safer than allowing two provider requests to share an event key.
+  controllers.get(requestId)?.abort(new Error("AI 请求已被新的请求替代。"));
+  const controller = new AbortController();
+  controllers.set(requestId, controller);
+  return controller;
 }

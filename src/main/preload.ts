@@ -40,6 +40,7 @@ const IPC_CHANNELS = {
     configure: "ai:configure",
     clearProvider: "ai:clear-provider",
     askStream: "ai:ask-stream",
+    cancelStream: "ai:cancel-stream",
     streamEvent: "ai:stream"
   },
   window: {
@@ -81,6 +82,7 @@ const readerApi: ReaderApi = {
   configureAiProvider: (configuration) => ipcRenderer.invoke(IPC_CHANNELS.ai.configure, configuration),
   clearAiProvider: (provider) => ipcRenderer.invoke(IPC_CHANNELS.ai.clearProvider, provider),
   startAiStream: (request) => ipcRenderer.invoke(IPC_CHANNELS.ai.askStream, request),
+  cancelAiStream: (requestId) => ipcRenderer.invoke(IPC_CHANNELS.ai.cancelStream, requestId),
   onAiStream: (listener: (event: AiStreamEvent) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) => {
       if (isAiStreamEvent(value)) listener(value);

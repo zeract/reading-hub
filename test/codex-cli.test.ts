@@ -1,13 +1,139 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const access = vi.hoisted(() => vi.fn());
+
+vi.mock("node:fs/promises", () => ({ access }));
+
 import {
+  BoundedAsyncSemaphore,
+  CODEX_COMMAND_DISCOVERY_TTL_MS,
+  CodexCliError,
+  LocalCodexCli,
   codexAppServerAgentDelta,
   codexAppServerArguments,
   codexAppServerThreadStartParameters,
   codexAppServerTurnStartParameters,
-  codexExecArguments
+  codexExecArguments,
+  invalidateCodexCommandDiscovery,
+  throwIfCodexCancelled
 } from "../src/main/codex-cli";
 
+afterEach(() => {
+  invalidateCodexCommandDiscovery();
+  vi.useRealTimers();
+  vi.clearAllMocks();
+});
+
 describe("local Codex CLI invocation", () => {
+  it("atomically hands released App Server capacity to FIFO waiters", async () => {
+    const semaphore = new BoundedAsyncSemaphore(2);
+    let maxObservedActive = 0;
+    const observe = () => { maxObservedActive = Math.max(maxObservedActive, semaphore.activeCount); };
+
+    const releaseFirst = await semaphore.acquire();
+    observe();
+    const releaseSecond = await semaphore.acquire();
+    observe();
+    const third = semaphore.acquire();
+    const fourth = semaphore.acquire();
+    const fifth = semaphore.acquire();
+    expect(semaphore.activeCount).toBe(2);
+    expect(semaphore.queuedCount).toBe(3);
+
+    // While the third caller is being woken, a fresh fifth caller is already
+    // queued. The released slot must remain reserved for the third caller.
+    releaseFirst();
+    observe();
+    expect(semaphore.activeCount).toBe(2);
+    const releaseThird = await third;
+    observe();
+    expect(semaphore.activeCount).toBe(2);
+    expect(semaphore.queuedCount).toBe(2);
+
+    releaseSecond();
+    observe();
+    const releaseFourth = await fourth;
+    observe();
+    expect(semaphore.activeCount).toBe(2);
+    expect(semaphore.queuedCount).toBe(1);
+
+    releaseThird();
+    observe();
+    const releaseFifth = await fifth;
+    observe();
+    expect(semaphore.activeCount).toBe(2);
+    expect(semaphore.queuedCount).toBe(0);
+
+    releaseFourth();
+    releaseFifth();
+    observe();
+    expect(maxObservedActive).toBeLessThanOrEqual(2);
+    expect(semaphore.activeCount).toBe(0);
+  });
+
+  it("removes a cancelled queued caller without consuming a later slot", async () => {
+    const semaphore = new BoundedAsyncSemaphore(1);
+    const releaseFirst = await semaphore.acquire();
+    const controller = new AbortController();
+    const cancelled = semaphore.acquire({ signal: controller.signal, abortError: () => new CodexCliError("AI 请求已取消。") });
+    expect(semaphore.queuedCount).toBe(1);
+
+    controller.abort();
+    await expect(cancelled).rejects.toThrow("AI 请求已取消。");
+    expect(semaphore.queuedCount).toBe(0);
+
+    releaseFirst();
+    const releaseNext = await semaphore.acquire();
+    expect(semaphore.activeCount).toBe(1);
+    releaseNext();
+  });
+
+  it("identifies caller cancellation before creating a local App Server turn", () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    expect(() => throwIfCodexCancelled(controller.signal)).toThrow(CodexCliError);
+    expect(() => throwIfCodexCancelled(controller.signal)).toThrow("AI 请求已取消。");
+  });
+
+  it("shares short-lived command discovery across concurrent status checks, then rechecks after expiry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-03T00:00:00.000Z"));
+    access.mockResolvedValue(undefined);
+    const cli = new LocalCodexCli();
+
+    const [first, second] = await Promise.all([cli.status(), cli.status()]);
+    expect(first).toMatchObject({ available: true });
+    expect(second).toEqual(first);
+    // The first executable candidate succeeds, so one access proves that the
+    // two status calls joined the same in-flight PATH discovery.
+    expect(access).toHaveBeenCalledTimes(1);
+
+    await cli.status();
+    expect(access).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(CODEX_COMMAND_DISCOVERY_TTL_MS + 1);
+    await cli.status();
+    expect(access).toHaveBeenCalledTimes(2);
+  });
+
+  it("caches a missing command only for the same short discovery window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-03T00:00:00.000Z"));
+    access.mockRejectedValue(new Error("not installed"));
+    const cli = new LocalCodexCli();
+
+    await expect(cli.status()).resolves.toEqual({ available: false });
+    const firstScanAttempts = access.mock.calls.length;
+    expect(firstScanAttempts).toBeGreaterThan(0);
+    await expect(cli.status()).resolves.toEqual({ available: false });
+    expect(access).toHaveBeenCalledTimes(firstScanAttempts);
+
+    vi.advanceTimersByTime(CODEX_COMMAND_DISCOVERY_TTL_MS + 1);
+    await expect(cli.status()).resolves.toEqual({ available: false });
+    expect(access.mock.calls.length).toBeGreaterThan(firstScanAttempts);
+  });
+
   it("uses an explicit model and bounded effort in ephemeral, read-only mode", () => {
     const args = codexExecArguments("回答文章问题", { model: "gpt-5.6-sol", effort: "high" });
 

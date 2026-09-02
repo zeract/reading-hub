@@ -300,6 +300,14 @@ export function parseAiStreamRequest(value: unknown): AiStreamRequest {
   return { requestId: value.requestId, request: parsedRequest };
 }
 
+/** A cancellation may only address the renderer-generated opaque request id. */
+export function parseAiStreamRequestId(value: unknown): string {
+  if (typeof value !== "string" || !AI_STREAM_REQUEST_ID_PATTERN.test(value)) {
+    throw new Error("AI 请求标识无效，请重试。");
+  }
+  return value;
+}
+
 /**
  * The immersive path is intentionally segment-only: it cannot transport a
  * title, URL, source label or arbitrary page HTML to a provider.

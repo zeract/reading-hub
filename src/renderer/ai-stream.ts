@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AiStreamEvent, AiStreamRequest } from "../shared/types";
+import { cancelScheduledAnimationFrame, scheduleAnimationFrame } from "./animation-frame";
 import { errorMessage } from "./errors";
 
 /**
@@ -29,40 +30,71 @@ export function useAiTextStream() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const activeRequestId = useRef<string | undefined>(undefined);
+  const bufferedText = useRef("");
+  const renderFrame = useRef<number | undefined>(undefined);
 
-  useEffect(() => () => {
-    // The provider request may finish in the main process after this surface
-    // closes, but no late event or rejected invoke may update an unmounted UI.
+  const publishBufferedText = useCallback((immediate = false) => {
+    if (immediate) {
+      cancelScheduledAnimationFrame(renderFrame.current);
+      renderFrame.current = undefined;
+      setText(bufferedText.current);
+      return;
+    }
+    if (renderFrame.current !== undefined) return;
+    renderFrame.current = scheduleAnimationFrame(() => {
+      renderFrame.current = undefined;
+      setText(bufferedText.current);
+    });
+  }, []);
+
+  const cancel = useCallback(() => {
+    const requestId = activeRequestId.current;
     activeRequestId.current = undefined;
+    cancelScheduledAnimationFrame(renderFrame.current);
+    renderFrame.current = undefined;
+    if (requestId) void window.reader.cancelAiStream(requestId).catch(() => undefined);
+  }, []);
+
+  useEffect(() => () => cancel(), [cancel]);
+  useEffect(() => () => {
+    cancelScheduledAnimationFrame(renderFrame.current);
   }, []);
 
   useAiStreamSubscription((event) => {
     if (activeRequestId.current !== event.requestId) return;
     if (event.type === "delta") {
-      setText((current) => `${current}${event.text}`);
+      bufferedText.current = `${bufferedText.current}${event.text}`;
+      publishBufferedText();
       return;
     }
     activeRequestId.current = undefined;
     setBusy(false);
     if (event.type === "complete") {
-      setText(event.answer.text);
+      bufferedText.current = event.answer.text;
+      publishBufferedText(true);
       return;
     }
     setError(event.message);
   });
 
   const reset = useCallback(() => {
-    activeRequestId.current = undefined;
+    cancel();
+    bufferedText.current = "";
+    cancelScheduledAnimationFrame(renderFrame.current);
+    renderFrame.current = undefined;
     setText("");
     setBusy(false);
     setError(undefined);
-  }, []);
+  }, [cancel]);
 
   const start = useCallback(async (request: AiStreamRequest) => {
     // A double-click must not create two billable/provider requests for the
     // same visible answer surface. Explicit reset is required before retrying.
     if (activeRequestId.current) return;
     activeRequestId.current = request.requestId;
+    bufferedText.current = "";
+    cancelScheduledAnimationFrame(renderFrame.current);
+    renderFrame.current = undefined;
     setText("");
     setBusy(true);
     setError(undefined);
@@ -76,5 +108,5 @@ export function useAiTextStream() {
     }
   }, []);
 
-  return { text, busy, error, reset, start };
+  return { text, busy, error, reset, start, cancel };
 }

@@ -4,15 +4,131 @@ import { constants } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { AiReasoningEffort } from "../shared/types";
+import { awaitWithAbort } from "./cancellation";
 
 const CODEX_TIMEOUT_MS = 90_000;
 const CODEX_EXTENDED_TIMEOUT_MS = 180_000;
 const APP_SERVER_REQUEST_TIMEOUT_MS = 15_000;
 const APP_SERVER_IDLE_TIMEOUT_MS = 45_000;
+/** Never free a cancelled turn's slot while the App Server may still run it. */
+const APP_SERVER_INTERRUPT_DRAIN_TIMEOUT_MS = 15_000;
+/** Small multiplexing window improves translation throughput without flooding the local account. */
+const APP_SERVER_MAX_CONCURRENT_TURNS = 2;
 const MAX_OUTPUT_LENGTH = 40_000;
 const MAX_STDERR_LENGTH = 4_000;
 const DESKTOP_CODEX_COMMAND = "/Applications/ChatGPT.app/Contents/Resources/codex";
 const APP_SERVER_CLIENT_INFO = { name: "reading-hub", title: "Reading Hub", version: "0.1.0" };
+/**
+ * Provider settings and translation batches can ask for CLI status several
+ * times in quick succession.  Keep command discovery short-lived: it avoids
+ * repeatedly walking every PATH entry, while a newly installed or removed CLI
+ * is still noticed on the next short polling window.
+ */
+export const CODEX_COMMAND_DISCOVERY_TTL_MS = 5_000;
+
+/**
+ * A small FIFO semaphore for the App Server bridge.  A release transfers its
+ * permit directly to the oldest waiter instead of briefly returning it to the
+ * pool.  That detail is important: otherwise a newly arriving request can
+ * steal the permit between `release()` and the woken waiter's next microtask,
+ * allowing the active turn count to exceed the configured limit.
+ */
+export class BoundedAsyncSemaphore {
+  private available: number;
+  private closedError: Error | undefined;
+  private waiters: SemaphoreWaiter[] = [];
+
+  constructor(private readonly capacity: number) {
+    if (!Number.isInteger(capacity) || capacity < 1) {
+      throw new RangeError("BoundedAsyncSemaphore capacity must be a positive integer.");
+    }
+    this.available = capacity;
+  }
+
+  get activeCount(): number {
+    return this.capacity - this.available;
+  }
+
+  get queuedCount(): number {
+    return this.waiters.length;
+  }
+
+  acquire(options: { signal?: AbortSignal; abortError?: () => Error } = {}): Promise<() => void> {
+    if (this.closedError) return Promise.reject(this.closedError);
+    if (options.signal?.aborted) return Promise.reject(options.abortError?.() || new Error("Operation cancelled."));
+    if (this.available > 0) {
+      this.available -= 1;
+      return Promise.resolve(this.createLease());
+    }
+    return new Promise<() => void>((resolve, reject) => {
+      const waiter: SemaphoreWaiter = {
+        resolve: (release) => {
+          options.signal?.removeEventListener("abort", abort);
+          resolve(release);
+        },
+        reject: (error) => {
+          options.signal?.removeEventListener("abort", abort);
+          reject(error);
+        },
+        signal: options.signal,
+        abortError: options.abortError
+      };
+      const abort = () => {
+        const index = this.waiters.indexOf(waiter);
+        if (index < 0) return;
+        this.waiters.splice(index, 1);
+        waiter.reject(options.abortError?.() || new Error("Operation cancelled."));
+      };
+      if (options.signal) options.signal.addEventListener("abort", abort, { once: true });
+      this.waiters.push(waiter);
+    });
+  }
+
+  /** Rejects queued callers without revoking slots that have already started. */
+  close(error: Error): void {
+    if (this.closedError) return;
+    this.closedError = error;
+    for (const waiter of this.waiters.splice(0)) waiter.reject(error);
+  }
+
+  private createLease(): () => void {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.release();
+    };
+  }
+
+  private release(): void {
+    let waiter = this.waiters.shift();
+    while (waiter) {
+      if (waiter.signal?.aborted) {
+        waiter.reject(waiter.abortError?.() || new Error("Operation cancelled."));
+        waiter = this.waiters.shift();
+        continue;
+      }
+      // Keep `available` unchanged: this is an atomic ownership hand-off,
+      // so a concurrent acquire must queue behind the already-reserved slot.
+      waiter.resolve(this.createLease());
+      return;
+    }
+    this.available = Math.min(this.capacity, this.available + 1);
+  }
+}
+
+type SemaphoreWaiter = {
+  resolve: (release: () => void) => void;
+  reject: (error: Error) => void;
+  signal?: AbortSignal;
+  abortError?: () => Error;
+};
+
+type CachedCodexCommand = { command: string | undefined; expiresAt: number };
+
+let cachedCodexCommand: CachedCodexCommand | undefined;
+let pendingCodexCommandDiscovery: Promise<string | undefined> | undefined;
+let codexCommandDiscoveryGeneration = 0;
 
 export interface CodexCliStatus {
   available: boolean;
@@ -33,9 +149,9 @@ export type CodexCliDeltaListener = (text: string) => void;
  */
 export interface CodexCliRunner {
   status(): Promise<CodexCliStatus>;
-  ask(instruction: string, articleContext: string, options: CodexCliOptions): Promise<string>;
+  ask(instruction: string, articleContext: string, options: CodexCliOptions, signal?: AbortSignal): Promise<string>;
   /** The local Codex App Server exposes incremental agent-message events while a turn is running. */
-  askStream?(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener): Promise<string>;
+  askStream?(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener, signal?: AbortSignal): Promise<string>;
   /** Releases the local app-server bridge early when the host is shutting down. */
   dispose?(): void;
 }
@@ -48,22 +164,23 @@ export class LocalCodexCli implements CodexCliRunner {
     return command ? { available: true, command } : { available: false };
   }
 
-  async ask(instruction: string, articleContext: string, options: CodexCliOptions): Promise<string> {
-    return this.askStream(instruction, articleContext, options, () => undefined);
+  async ask(instruction: string, articleContext: string, options: CodexCliOptions, signal?: AbortSignal): Promise<string> {
+    return this.askStream(instruction, articleContext, options, () => undefined, signal);
   }
 
-  async askStream(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener): Promise<string> {
+  async askStream(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener, signal?: AbortSignal): Promise<string> {
+    throwIfCodexCancelled(signal);
     const { command } = await this.status();
     if (!command) throw new CodexCliError("未检测到本机 Codex。请安装官方 Codex，并在终端运行 codex 完成登录后重试。");
     try {
-      return await this.getAppServer(command).ask(instruction, articleContext, options, onDelta);
+      return await this.getAppServer(command).ask(instruction, articleContext, options, onDelta, signal);
     } catch (error) {
       if (error instanceof CodexAppServerTransportError) this.dispose();
       // `exec --json` is not token-streaming, but it remains a compatibility
       // fallback for an older CLI that has not shipped app-server yet.
       if (error instanceof CodexAppServerUnavailableError) {
         this.dispose();
-        return runCodexStream(command, instruction, articleContext, options, onDelta);
+        return runCodexStream(command, instruction, articleContext, options, onDelta, signal);
       }
       throw error;
     }
@@ -89,6 +206,11 @@ export class CodexCliError extends Error {
   }
 }
 
+/** Keep local cancellation distinct from an App Server transport failure. */
+export function throwIfCodexCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new CodexCliError("AI 请求已取消。");
+}
+
 class CodexAppServerUnavailableError extends Error {
   constructor() {
     super("本机 Codex 不支持实时 App Server 协议。");
@@ -104,7 +226,45 @@ class CodexAppServerTransportError extends Error {
   }
 }
 
-async function findCodexCommand(): Promise<string | undefined> {
+/**
+ * Shared, in-flight-aware command discovery used by every `status()` call.
+ * Negative results are cached too, otherwise a missing executable makes each
+ * render frame scan the entire PATH. Failures themselves are never cached.
+ */
+export async function findCodexCommand(): Promise<string | undefined> {
+  const now = Date.now();
+  if (cachedCodexCommand && cachedCodexCommand.expiresAt > now) return cachedCodexCommand.command;
+  if (pendingCodexCommandDiscovery) return pendingCodexCommandDiscovery;
+
+  const generation = codexCommandDiscoveryGeneration;
+  const discovery = findCodexCommandUncached().then((command) => {
+    // A caller may explicitly invalidate discovery while an old filesystem
+    // scan is in flight. Do not let that older result revive a stale command.
+    if (generation === codexCommandDiscoveryGeneration) {
+      cachedCodexCommand = { command, expiresAt: Date.now() + CODEX_COMMAND_DISCOVERY_TTL_MS };
+    }
+    return command;
+  });
+  pendingCodexCommandDiscovery = discovery;
+  void discovery.then(
+    () => { if (pendingCodexCommandDiscovery === discovery) pendingCodexCommandDiscovery = undefined; },
+    () => { if (pendingCodexCommandDiscovery === discovery) pendingCodexCommandDiscovery = undefined; }
+  );
+  return discovery;
+}
+
+/**
+ * Allow the main-process boundary to discard a stale executable path after a
+ * launch-level failure. It is also intentionally small enough for focused
+ * lifecycle tests; no article text, auth state, or answer data is cached.
+ */
+export function invalidateCodexCommandDiscovery(): void {
+  codexCommandDiscoveryGeneration += 1;
+  cachedCodexCommand = undefined;
+  pendingCodexCommandDiscovery = undefined;
+}
+
+async function findCodexCommandUncached(): Promise<string | undefined> {
   const namedCandidates = process.platform === "win32"
     ? ["codex.exe", "codex.cmd"]
     : ["codex"];
@@ -156,7 +316,9 @@ class PersistentCodexAppServer {
   private nextRequestId = 0;
   private pending = new Map<number, PendingAppServerRequest>();
   private activeTurns = new Map<string, ActiveAppServerTurn>();
-  private queue: Promise<void> = Promise.resolve();
+  /** A cancellation may arrive before turn/start returns its turn id. */
+  private pendingInterrupts = new Set<string>();
+  private turnSemaphore = new BoundedAsyncSemaphore(APP_SERVER_MAX_CONCURRENT_TURNS);
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(command: string) {
@@ -167,16 +329,21 @@ class PersistentCodexAppServer {
     return !this.disposed;
   }
 
-  async ask(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener): Promise<string> {
-    return this.enqueue(async () => {
-      this.clearIdleTimer();
-      try {
-        await this.ensureReady();
-        return await this.startEphemeralTurn(instruction, articleContext, options, onDelta);
-      } finally {
-        this.scheduleIdleDispose();
-      }
-    });
+  async ask(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener, signal?: AbortSignal): Promise<string> {
+    throwIfCodexCancelled(signal);
+    const releaseTurnSlot = await this.acquireTurnSlot(signal);
+    this.clearIdleTimer();
+    try {
+      throwIfCodexCancelled(signal);
+      await awaitWithAbort(this.ensureReady(), signal);
+      // Cancellation can happen while the shared bridge initializes. Do not
+      // create an otherwise orphaned ephemeral thread afterwards.
+      throwIfCodexCancelled(signal);
+      return await this.startEphemeralTurn(instruction, articleContext, options, onDelta, signal);
+    } finally {
+      releaseTurnSlot();
+      this.scheduleIdleDispose();
+    }
   }
 
   dispose(): void {
@@ -184,6 +351,7 @@ class PersistentCodexAppServer {
     this.disposed = true;
     this.clearIdleTimer();
     const failure = new CodexAppServerTransportError();
+    this.turnSemaphore.close(failure);
     this.failAll(failure);
     const child = this.child;
     this.child = undefined;
@@ -192,10 +360,9 @@ class PersistentCodexAppServer {
     if (!child.killed) child.kill("SIGTERM");
   }
 
-  private enqueue<T>(work: () => Promise<T>): Promise<T> {
-    const next = this.queue.then(work, work);
-    this.queue = next.then(() => undefined, () => undefined);
-    return next;
+  private acquireTurnSlot(signal?: AbortSignal): Promise<() => void> {
+    if (this.disposed) throw new CodexAppServerTransportError();
+    return this.turnSemaphore.acquire({ signal, abortError: () => new CodexCliError("AI 请求已取消。") });
   }
 
   private async ensureReady(): Promise<void> {
@@ -221,6 +388,7 @@ class PersistentCodexAppServer {
       capabilities: { experimentalApi: false, requestAttestation: false }
     }).then(() => {
       this.initialized = true;
+      this.notify("initialized", {});
     }).catch((error: unknown) => {
       if (error instanceof CodexCliError) throw error;
       throw new CodexAppServerUnavailableError();
@@ -233,18 +401,56 @@ class PersistentCodexAppServer {
     }
   }
 
-  private async startEphemeralTurn(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener): Promise<string> {
-    const threadResult = await this.request("thread/start", codexAppServerThreadStartParameters(instruction));
+  private async startEphemeralTurn(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener, signal?: AbortSignal): Promise<string> {
+    throwIfCodexCancelled(signal);
+    const threadResult = await awaitWithAbort(
+      this.request("thread/start", codexAppServerThreadStartParameters(instruction)),
+      signal
+    );
+    // A request can be cancelled while thread/start is in flight. The thread
+    // is ephemeral, but never start a model turn after the caller has gone.
+    throwIfCodexCancelled(signal);
     const threadId = appServerThreadId(threadResult);
     if (!threadId) throw new CodexCliError("本机 Codex App Server 返回的会话无效，请更新本机 Codex 后重试。");
 
     return new Promise<string>((resolve, reject) => {
+      let turnStartIssued = false;
       const timeout = setTimeout(() => {
-        this.finishTurn(threadId, { error: new CodexCliError("本机 Codex 回答超时，请稍后重试。") });
+        if (turnStartIssued) this.beginTurnDrain(threadId, new CodexCliError("本机 Codex 回答超时，请稍后重试。"));
       }, codexTimeout(options));
-      this.activeTurns.set(threadId, { answer: "", onDelta, resolve, reject, timeout });
-      void this.request("turn/start", codexAppServerTurnStartParameters(threadId, articleContext, options)).catch((error: unknown) => {
-        this.finishTurn(threadId, { error: asCodexError(error, this.stderr) });
+      const abort = () => {
+        if (turnStartIssued) this.beginTurnDrain(threadId, new CodexCliError("AI 请求已取消。"));
+      };
+      const abortListener = () => abort();
+      this.activeTurns.set(threadId, { answer: "", onDelta, resolve, reject, timeout, abortSignal: signal, abortListener });
+      if (signal?.aborted) {
+        // No turn/start request has been issued yet, so there is no remote
+        // model work to drain. Settle immediately instead of retaining this
+        // semaphore lease forever.
+        this.finishTurn(threadId, { error: new CodexCliError("AI 请求已取消。") });
+        return;
+      }
+      signal?.addEventListener("abort", abortListener, { once: true });
+      turnStartIssued = true;
+      void this.request("turn/start", codexAppServerTurnStartParameters(threadId, articleContext, options)).then((turnResult) => {
+        const turn = this.activeTurns.get(threadId);
+        const turnId = appServerTurnId(turnResult);
+        if (turn) turn.turnId = turnId;
+        if (turnId && this.pendingInterrupts.delete(threadId)) this.requestTurnInterrupt(threadId, turnId);
+      }).catch((error: unknown) => {
+        const turn = this.activeTurns.get(threadId);
+        // A transport timeout occurs after JSON-RPC was written to stdin, so
+        // the App Server may still create the turn after our local request
+        // expires. Do not release this turn's semaphore lease into a new
+        // model request. Killing the shared bridge is the only safe way to
+        // discard an unconfirmed turn (and it also handles a pending abort
+        // whose interrupt cannot yet name a turn id).
+        if (turn?.draining || error instanceof CodexAppServerTransportError) {
+          this.dispose();
+          return;
+        }
+        this.pendingInterrupts.delete(threadId);
+        this.finishTurn(threadId, { error: turn?.drainError || asCodexError(error, this.stderr) });
       });
     });
   }
@@ -319,8 +525,8 @@ class PersistentCodexAppServer {
       const turn = this.activeTurns.get(threadId);
       if (!turn) return;
       const completed = isRecord(message.params.turn) ? message.params.turn : undefined;
-      if (completed?.status !== "completed") {
-        this.finishTurn(threadId, { error: turnCompletionError(completed, this.stderr) });
+      if (turn.draining || completed?.status !== "completed") {
+        this.finishTurn(threadId, { error: turn.drainError || turnCompletionError(completed, this.stderr) });
       } else {
         const snapshot = appServerAgentMessageText(completed);
         if (snapshot) this.acceptTurnSnapshot(turn, snapshot);
@@ -330,6 +536,7 @@ class PersistentCodexAppServer {
   }
 
   private appendTurnDelta(turn: ActiveAppServerTurn, delta: string): void {
+    if (turn.draining) return;
     const remaining = MAX_OUTPUT_LENGTH - turn.answer.length;
     if (remaining <= 0) return;
     const accepted = delta.slice(0, remaining);
@@ -339,6 +546,7 @@ class PersistentCodexAppServer {
   }
 
   private acceptTurnSnapshot(turn: ActiveAppServerTurn, snapshot: string): void {
+    if (turn.draining) return;
     if (!snapshot) return;
     if (!turn.answer) {
       this.appendTurnDelta(turn, snapshot);
@@ -357,7 +565,10 @@ class PersistentCodexAppServer {
     const turn = this.activeTurns.get(threadId);
     if (!turn) return;
     this.activeTurns.delete(threadId);
+    this.pendingInterrupts.delete(threadId);
     clearTimeout(turn.timeout);
+    if (turn.drainTimeout) clearTimeout(turn.drainTimeout);
+    turn.abortSignal?.removeEventListener("abort", turn.abortListener!);
     if (result.error) {
       turn.reject(result.error);
       return;
@@ -391,25 +602,71 @@ class PersistentCodexAppServer {
     });
   }
 
+  /** Best-effort, stable App Server cancellation. Late events are ignored. */
+  private requestTurnInterrupt(threadId: string, knownTurnId?: string): void {
+    const turn = this.activeTurns.get(threadId);
+    const turnId = knownTurnId || turn?.turnId;
+    if (!turnId) {
+      this.pendingInterrupts.add(threadId);
+      return;
+    }
+    void this.request("turn/interrupt", { threadId, turnId }).catch(() => undefined);
+  }
+
+  /**
+   * Keep a semaphore lease while a cancelled/expired server turn is draining.
+   * Releasing it when merely sending `turn/interrupt` lets rapid tab switches
+   * briefly run more model turns than the configured cap. If the App Server
+   * cannot confirm completion in a bounded interval, dispose its bridge so no
+   * hidden local turn is left consuming capacity.
+   */
+  private beginTurnDrain(threadId: string, error: CodexCliError): void {
+    const turn = this.activeTurns.get(threadId);
+    if (!turn || turn.draining) return;
+    turn.draining = true;
+    turn.drainError = error;
+    turn.abortSignal?.removeEventListener("abort", turn.abortListener!);
+    this.requestTurnInterrupt(threadId);
+    turn.drainTimeout = setTimeout(() => {
+      if (!this.activeTurns.has(threadId)) return;
+      this.dispose();
+    }, APP_SERVER_INTERRUPT_DRAIN_TIMEOUT_MS);
+    turn.drainTimeout.unref();
+  }
+
+  /** JSON-RPC lifecycle acknowledgement; it has no response id and grants no capability. */
+  private notify(method: string, params: Record<string, unknown>): void {
+    const child = this.child;
+    if (!child?.stdin.writable || this.disposed) return;
+    try {
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
+    } catch {
+      this.handleDisconnect();
+    }
+  }
+
   private handleDisconnect(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.clearIdleTimer();
     this.child = undefined;
-    this.failAll(this.initialized ? new CodexAppServerTransportError() : new CodexAppServerUnavailableError());
+    const failure = this.initialized ? new CodexAppServerTransportError() : new CodexAppServerUnavailableError();
+    this.turnSemaphore.close(failure);
+    this.failAll(failure);
   }
 
   private failAll(error: Error): void {
+    this.pendingInterrupts.clear();
     for (const [id, pending] of this.pending) {
       this.pending.delete(id);
       clearTimeout(pending.timeout);
       pending.reject(error);
     }
-    for (const threadId of [...this.activeTurns.keys()]) this.finishTurn(threadId, { error });
+    for (const [threadId, turn] of this.activeTurns) this.finishTurn(threadId, { error: turn.drainError || error });
   }
 
   private scheduleIdleDispose(): void {
-    if (this.disposed || this.activeTurns.size > 0) return;
+    if (this.disposed || this.activeTurns.size > 0 || this.turnSemaphore.activeCount > 0) return;
     this.clearIdleTimer();
     this.idleTimer = setTimeout(() => this.dispose(), APP_SERVER_IDLE_TIMEOUT_MS);
     this.idleTimer.unref();
@@ -439,6 +696,13 @@ type ActiveAppServerTurn = {
   resolve: (answer: string) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
+  turnId?: string;
+  abortSignal?: AbortSignal;
+  abortListener?: () => void;
+  /** A cancelled turn remains active until the server confirms it stopped. */
+  draining?: boolean;
+  drainError?: CodexCliError;
+  drainTimeout?: ReturnType<typeof setTimeout>;
 };
 
 /**
@@ -446,8 +710,12 @@ type ActiveAppServerTurn = {
  * `exec --json` is structured, but may emit only a completed agent message;
  * only agent-message output is ever forwarded to the renderer.
  */
-function runCodexStream(command: string, instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener): Promise<string> {
+function runCodexStream(command: string, instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new CodexCliError("AI 请求已取消。"));
+      return;
+    }
     const child = spawn(command, codexExecArguments(instruction, options, true), {
       cwd: tmpdir(),
       shell: false,
@@ -458,6 +726,12 @@ function runCodexStream(command: string, instruction: string, articleContext: st
     let eventBuffer = "";
     let stderr = "";
     let timedOut = false;
+    let cancelled = false;
+    const abort = () => {
+      cancelled = true;
+      if (!child.killed) child.kill("SIGTERM");
+    };
+    signal?.addEventListener("abort", abort, { once: true });
     const timeout = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
@@ -489,14 +763,18 @@ function runCodexStream(command: string, instruction: string, articleContext: st
     child.stdin.once("error", () => undefined);
     child.once("error", () => {
       clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
       reject(new CodexCliError("无法启动本机 Codex。请重新安装后在终端执行 codex 登录。"));
     });
     child.once("close", (code) => {
       clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
       consumeLines(true);
       const finalAnswer = answer.trim();
       if (timedOut) {
         reject(new CodexCliError("本机 Codex 回答超时，请稍后重试。"));
+      } else if (cancelled) {
+        reject(new CodexCliError("AI 请求已取消。"));
       } else if (code === 0 && finalAnswer) {
         resolve(finalAnswer);
       } else {
@@ -564,6 +842,11 @@ function appServerInstruction(instruction: string): string {
 function appServerThreadId(result: unknown): string | undefined {
   if (!isRecord(result) || !isRecord(result.thread)) return undefined;
   return typeof result.thread.id === "string" ? result.thread.id : undefined;
+}
+
+function appServerTurnId(result: unknown): string | undefined {
+  if (!isRecord(result) || !isRecord(result.turn)) return undefined;
+  return typeof result.turn.id === "string" ? result.turn.id : undefined;
 }
 
 function appServerAgentMessageText(turn: Record<string, unknown>): string | undefined {

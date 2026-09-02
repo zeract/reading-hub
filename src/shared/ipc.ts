@@ -59,6 +59,7 @@ export const IPC_CHANNELS = {
     configure: "ai:configure",
     clearProvider: "ai:clear-provider",
     askStream: "ai:ask-stream",
+    cancelStream: "ai:cancel-stream",
     streamEvent: "ai:stream"
   },
   window: {
@@ -104,6 +105,8 @@ export interface ReaderApi {
   configureAiProvider(configuration: AiProviderConfiguration): Promise<AiProviderSettings>;
   clearAiProvider(provider: AiProviderId): Promise<void>;
   startAiStream(request: AiStreamRequest): Promise<{ requestId: string }>;
+  /** Best-effort cancellation for an in-flight request owned by this renderer. */
+  cancelAiStream(requestId: string): Promise<void>;
   onAiStream(listener: (event: AiStreamEvent) => void): () => void;
   isWindowFullscreen(): Promise<boolean>;
   onWindowFullscreenChange(listener: (fullscreen: boolean) => void): () => void;

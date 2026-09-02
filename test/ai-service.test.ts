@@ -266,6 +266,67 @@ describe("AI learning service", () => {
     expect(codexCli.ask).not.toHaveBeenCalled();
   });
 
+  it("uses a compact low-latency profile for bounded immersive translation", async () => {
+    const mockAsk = vi.fn().mockResolvedValue('<rh-translation id="line-one">第一行。</rh-translation>');
+    const codexCli: CodexCliRunner = {
+      status: vi.fn().mockResolvedValue({ available: true, command: "/usr/local/bin/codex" }),
+      ask: mockAsk
+    };
+    const service = new AiService(new MemorySecrets(), vi.fn(), codexCli);
+
+    const answer = await ask(service, {
+      provider: "codex-cli",
+      task: "immersive-translation",
+      translationTarget: "zh",
+      question: "将每段翻译为中文。",
+      translationSegments: [{ id: "line-one", text: "First line." }]
+    });
+
+    expect(answer.model).toBe("gpt-5.6-luna · low");
+    expect(mockAsk).toHaveBeenCalledWith(
+      expect.stringContaining("快速逐段翻译器"),
+      expect.stringContaining('<rh-translation id="输入 id">'),
+      { model: "gpt-5.6-luna", effort: "low" }
+    );
+    expect(String(mockAsk.mock.calls[0][0])).not.toContain("学习助手");
+  });
+
+  it("keeps external immersive translation requests concise and bounded", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ output_text: '<rh-translation id="line-one">第一行。</rh-translation>' }));
+    const service = new AiService(new MemorySecrets(), fetcher);
+    await configure(service, "openai");
+
+    await ask(service, {
+      provider: "openai",
+      task: "immersive-translation",
+      translationTarget: "zh",
+      question: "将每段翻译为中文。",
+      translationSegments: [{ id: "line-one", text: "First line." }]
+    });
+
+    const request = JSON.parse(String(fetcher.mock.calls[0][1].body));
+    expect(request).toMatchObject({ store: false, stream: true, text: { verbosity: "low" } });
+    expect(request.input[0].content[0].text).toContain("快速逐段翻译器");
+    expect(request.input[1].content[0].text).toContain('"id":"line-one"');
+  });
+
+  it("gives bounded immersive translation enough output room to finish tagged batches", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ choices: [{ message: { content: '<rh-translation id="line-one">第一行。</rh-translation>' } }] }));
+    const service = new AiService(new MemorySecrets(), fetcher);
+    await configure(service, "deepseek");
+
+    await ask(service, {
+      provider: "deepseek",
+      task: "immersive-translation",
+      translationTarget: "zh",
+      question: "将每段翻译为中文。",
+      translationSegments: [{ id: "line-one", text: "First line." }]
+    });
+
+    const request = JSON.parse(String(fetcher.mock.calls[0][1].body));
+    expect(request).toMatchObject({ stream: true, max_tokens: 2_400 });
+  });
+
   it("stores only Codex model preferences and passes them to the local CLI", async () => {
     const codexCli: CodexCliRunner = {
       status: vi.fn().mockResolvedValue({ available: true, command: "/usr/local/bin/codex" }),
