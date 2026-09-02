@@ -451,16 +451,37 @@ export interface AiArticleContext {
   url: string;
   sourceTitle?: string;
   text: string;
+  /**
+   * A bounded semantic Markdown serialisation of already-sanitised reader
+   * content. It is accepted only for the explicit full-article translation
+   * task; ordinary learning questions use `text` alone.
+   */
+  translationMarkdown?: string;
 }
+
+/**
+ * `answer` is the normal learning-assistant path. `article-translation` is a
+ * deliberate, full-article action and is intentionally distinct from the
+ * privacy-preserving selected-text translation path below.
+ */
+export type AiRequestTask = "answer" | "article-translation";
+
+/** The explicit output language for a full-article translation request. */
+export type AiTranslationTarget = "zh" | "en";
 
 export interface AiQuestionRequest {
   provider: AiProviderId;
   question: string;
+  /** Omitted requests preserve the existing learning-assistant behaviour. */
+  task?: AiRequestTask;
+  /** Required only when `task` is `article-translation`. */
+  translationTarget?: AiTranslationTarget;
   /** Present only after the reader deliberately invokes an action on selected article text. */
   selection?: AiSelectionContext;
   /**
-   * Translation carries no article context at all. Explanation and free-form
-   * questions carry the normal bounded article excerpt.
+   * Selected-text translation carries no article context at all. Explanation,
+   * free-form questions, and the explicit full-article translation task carry
+   * the normal bounded article excerpt.
    */
   article?: AiArticleContext;
 }

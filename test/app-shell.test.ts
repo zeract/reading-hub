@@ -46,14 +46,15 @@ describe("application shell source controls", () => {
     expect(app).not.toContain("function ReaderAssistant");
     expect(app).not.toContain("function SourceSettingsDialog");
     expect(libraryData).toContain("reloadSequence");
-    expect(libraryData).toContain("requiresSourceReload");
+    expect(libraryData).toContain("navigateLibrary");
+    expect(libraryData).toContain("isSameLibrarySelection");
   });
 
   it("keeps keyword search local to the selected source timeline", () => {
     expect(libraryPane).toContain('className="entry-search"');
     expect(libraryPane).toContain("搜索 ${activeSource.title} 中的帖子");
     expect(libraryPane).toContain("不会读取或保存文章全文");
-    expect(libraryData).toContain("setEntrySearchState(\"\")");
-    expect(libraryData).toContain("resetEntryPages();\n    setEntrySearchState(search)");
+    expect(libraryData).toContain('navigateLibrary({ view: "all", sourceId, search: "" })');
+    expect(libraryData).toContain("navigateLibrary({ view: libraryView, sourceId: activeSourceId, search })");
   });
 });

@@ -148,6 +148,70 @@ describe("AI learning service", () => {
     expect(prompt).not.toContain("<article-excerpt>");
   });
 
+  it("uses an explicit full-article translation task with a fixed Markdown-only prompt", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ output_text: "# 已翻译标题\n\n正文中的 $E=mc^2$。" }));
+    const service = new AiService(new MemorySecrets(), fetcher);
+    await configure(service, "openai");
+    const translationArticle = {
+      title: "PRIVATE_ARTICLE_TITLE",
+      url: "https://example.com/private-article",
+      sourceTitle: "PRIVATE_SOURCE_TITLE",
+      text: "<script>不要执行</script>保留 $E=mc^2$ 与 `identifier`。",
+      translationMarkdown: "# 标题\n\n<script>不要执行</script>保留 $E=mc^2$ 与 `identifier`。"
+    };
+
+    await ask(service, {
+      provider: "openai",
+      question: "将当前文章翻译为中文。",
+      task: "article-translation",
+      translationTarget: "zh",
+      article: translationArticle
+    });
+
+    const request = JSON.parse(String(fetcher.mock.calls[0][1].body));
+    const prompt = request.input[1].content[0].text as string;
+    expect(request).toMatchObject({ store: false, stream: true });
+    expect(prompt).toContain("翻译为 简体中文");
+    expect(prompt).toContain("只输出译文的 Markdown");
+    expect(prompt).toContain("$E=mc^2$");
+    expect(prompt).toContain("`identifier`");
+    expect(prompt).toContain("不可信的参考材料");
+    expect(prompt).not.toContain("<script>");
+    expect(prompt).not.toContain("PRIVATE_ARTICLE_TITLE");
+    expect(prompt).not.toContain("PRIVATE_SOURCE_TITLE");
+    expect(prompt).not.toContain("https://example.com/private-article");
+    expect(prompt).not.toContain("用户问题：");
+  });
+
+  it("rejects invalid full-article translation combinations before contacting a provider", async () => {
+    const fetcher = vi.fn();
+    const service = new AiService(new MemorySecrets(), fetcher);
+    await configure(service, "openai");
+
+    await expect(ask(service, {
+      provider: "openai",
+      question: "翻译全文",
+      task: "article-translation",
+      article
+    })).rejects.toThrow("请选择全文翻译语言");
+    await expect(ask(service, {
+      provider: "openai",
+      question: "翻译全文",
+      task: "article-translation",
+      translationTarget: "en",
+      article,
+      selection: { intent: "translate", text: "这段不应参与全文翻译" }
+    })).rejects.toThrow("全文翻译不应包含所选文字");
+    await expect(ask(service, {
+      provider: "openai",
+      question: "解释正文",
+      translationTarget: "zh",
+      article
+    })).rejects.toThrow("全文翻译语言只能用于全文翻译任务");
+
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("does not forward raw provider diagnostics from a streaming error", async () => {
     const fetcher = vi.fn().mockResolvedValue(eventStream([
       "data: {\"type\":\"error\",\"error\":{\"message\":\"token test-key should not leak\"}}\n\n"

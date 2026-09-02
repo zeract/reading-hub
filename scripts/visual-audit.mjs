@@ -46,6 +46,20 @@ function page(mathJaxSvg) {
   // intentionally hidden but still laid out, so the audit catches grid,
   // scrolling and 125%-zoom regressions without obscuring the reader fixture.
   const collectionScopeFixture = `<section class="dialog" id="collection-dialog" style="visibility:hidden;position:fixed;left:16px;top:16px"><form class="source-settings-form"><fieldset class="source-collection-scope" id="collection-scope"><legend>文章收集范围</legend><p class="source-settings-note">文章分类只采用 Feed 或公开归档中已声明的标签；不会根据标题猜测。</p><div class="source-collection-scope__heading"><strong>文章分类</strong><button type="button">读取可用分类</button></div><div class="facet-options" id="collection-facet-options"><label class="facet-option"><input type="checkbox" checked><span>Machine Learning and long scientific systems label</span><em>1,200 篇</em></label><label class="facet-option"><input type="checkbox"><span>系统与性能优化</span><em>682 篇</em></label><label class="facet-option"><input type="checkbox"><span>AI 工程</span><em>435 篇</em></label><label class="facet-option"><input type="checkbox"><span>分布式训练</span><em>221 篇</em></label><label class="facet-option"><input type="checkbox"><span>数据科学</span><em>128 篇</em></label><label class="facet-option"><input type="checkbox"><span>Rust</span><em>83 篇</em></label><label class="facet-option"><input type="checkbox"><span>GPU</span><em>71 篇</em></label><label class="facet-option"><input type="checkbox"><span>其它长分类名称</span><em>50 篇</em></label></div><div class="history-options" id="collection-history-options"><strong>历史文章</strong><label><input type="radio" name="history" checked>只收集当前 Feed（默认）</label><label><input type="radio" name="history">按所选分类补充公开历史</label><label><input type="radio" name="history">补充全部公开历史（不筛选分类）</label><label class="history-limit">最多导入<select><option>100 篇</option></select></label></div></fieldset></form></section>`;
+  // This fixture uses exactly the renderer's bilingual class contract. It is
+  // deliberately static: the visual audit is checking layout boundaries,
+  // rather than requiring an AI provider or a live translation request.
+  const bilingualFixture = `<article class="reader-article reader-article--bilingual" id="bilingual-fixture">
+    <header><p class="eyebrow">Bilingual layout fixture</p><h1>中英文对照在窄阅读列与宽阅读列中的布局</h1></header>
+    <div class="reader-bilingual-layout" id="bilingual-layout">
+      <section class="reader-bilingual-original"><div class="article-body" id="bilingual-original">
+        <p>Original article text remains in the left reading column. The paragraph is long enough to make its readable measure and wrapping visible in the static audit.</p>
+        <p>它与译文共用同一篇已净化文章，但两个栏目各自保持独立的最小宽度，不得把长单词、代码或公式挤出正文。</p>
+        <pre><code>very_long_identifier_that_must_not_force_the_bilingual_layout_to_overflow_0123456789</code></pre>
+      </div></section>
+      <section class="reader-bilingual-translation" id="bilingual-translation"><header><div><p class="eyebrow">AI translation</p><h2>中文译文</h2></div><label class="reader-bilingual-target">目标语言<select><option>中文</option><option>English</option></select></label></header><p class="reader-bilingual-note">译文仅在本次阅读中显示，正文不会写入本地数据库。</p><div class="reader-bilingual-actions"><button class="reader-bilingual-generate">重新生成译文</button><button class="reader-bilingual-settings">AI 设置</button></div><div class="reader-bilingual-answer"><div class="ai-message-content ai-markdown"><p>译文应当在窄列中自然堆叠，在宽列中和原文并排显示。长内容必须在自己的栏内换行。</p><pre class="ai-code-block"><code>translation_output_must_scroll_without_expanding_the_reader_column_0123456789</code></pre></div></div></section>
+    </div>
+  </article>`;
   return `<!doctype html><html><head><meta charset="utf-8"><style>${katexCss}\n${css}</style></head><body>
     <main class="shell" id="shell"><header class="app-titlebar" id="app-titlebar"><div class="app-titlebar-actions"><button class="app-titlebar-button" aria-label="收起来源"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16M12.5 9h4"/></svg></button><button class="app-titlebar-button" aria-label="刷新"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0 1.1 4M20 5v6h-6"/></svg></button><button class="app-titlebar-button app-titlebar-add" aria-label="添加来源"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div></header><aside class="sidebar" id="source-sidebar"><nav class="library-nav" id="library-nav"><div class="section-title" id="library-heading">阅读</div><button class="library-filter selected"><span><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/></svg>今日</span></button><button class="library-filter"><span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></svg>未读</span><em>12</em></button><button class="library-filter"><span><svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.8-5.4 2.8 1-6.1-4.4-4.3 6.1-.9Z"/></svg>收藏</span><em>6</em></button></nav><section class="source-section"><div class="section-title" id="source-heading">来源 <span>12</span></div><div class="source-list"><section class="source-group"><button class="source-group-heading"><span class="source-group-label"><svg viewBox="0 0 24 24"><path d="m7 9 5 5 5-5"/></svg><svg class="folder-icon" viewBox="0 0 24 24"><path d="M3.5 7.5h6l1.7 2H20.5v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></svg><span>网页与订阅</span></span><em>2</em></button><button class="source-filter selected"><span class="source-icon source-icon--rss"><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="1"/><path d="M5 11a8 8 0 0 1 8 8M5 5a14 14 0 0 1 14 14"/></svg></span><span class="source-title">测试来源名称应仅显示一行</span></button></section></div></section><footer class="sidebar-footer"><button class="sidebar-settings-button"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/></svg><span>设置</span></button></footer></aside><section class="timeline" id="entry-timeline"><header><div><p class="eyebrow">来源内容</p><h1>一个特别长的测试来源名称</h1></div><span class="count">12 篇内容</span></header><form class="entry-search" id="entry-search" role="search"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.75"/><path d="m15 15 4.25 4.25"/></svg><input type="search" value="a long keyword query that should stay inside the source timeline" aria-label="搜索测试来源中的帖子"><button type="button" class="entry-search-clear" aria-label="清除关键词">×</button></form><div class="entry-list"><article class="entry-card selected"><button class="entry-main"><div class="entry-copy"><p class="entry-source">科学空间 · 今天</p><h2>这是一个在窄窗口和大字号下仍必须限制为两行显示的非常长的文章标题测试样例</h2><p class="summary">这是用于验证文章摘要在时间线卡片内会随可用列宽安全截断的长文本；它不能越过卡片边界，也不能无限增高，而应在两行之后明确以省略效果收束，保持列表浏览时的视觉节奏和可读性。</p></div></button></article><article class="entry-card"><button class="entry-main"><div class="entry-copy"><p class="entry-source">测试来源 · 昨天</p><h2>另一篇待读文章</h2></div></button></article></div></section>
     <section class="reader-view reader--scientific" data-reader-preset="reading" style="--reader-font-scale: 1">
@@ -57,7 +71,7 @@ function page(mathJaxSvg) {
         ${mathJaxFormula}
         <img id="fixture-image" src="${largeImage}" alt="large fixture" />
         <table><thead><tr><th>来源</th><th>状态</th></tr></thead><tbody><tr><td>OpenAlex</td><td>正常</td></tr></tbody></table>
-      </div></article></div><div class="reader-selection-underlines" aria-hidden="true"><span id="selection-underline" style="left: 58vw; top: 302px; width: 124px"></span></div><section class="reader-selection-toolbar" id="selection-toolbar" style="left: 58vw; top: 308px"><button>翻译</button><button>解释</button><button>提问</button><button>×</button></section><aside class="selection-assistant-card" id="selection-card" data-placement="below" style="left: 56vw; top: 356px; width: min(330px,calc(100vw - 32px)); max-height: 250px"><header><div><p>解释所选文字</p><strong>本机 Codex CLI</strong></div><button>×</button></header><blockquote>“这段选中的文章文字会保留在就地回答旁边。”</blockquote><div class="selection-assistant-answer"><p>这是一个和正文紧邻的流式回答卡片，长内容将在卡片内滚动。</p><pre class="ai-code-block" id="selection-card-code"><code>selection_answer_must_not_expand_the_reading_workspace_0123456789</code></pre></div></aside><aside class="reader-ai-panel" id="assistant-panel"><header><div><strong>AI 学习助手</strong><p>提问时才会发送文章摘录。</p></div><div class="assistant-header-actions"><button class="panel-icon-button">−</button><button class="panel-icon-button">×</button></div></header><div class="ai-messages"><div class="ai-message" id="assistant-markdown"><strong>AI</strong><div class="ai-message-content ai-markdown"><h2 class="ai-markdown-heading">推导摘要</h2><p class="ai-markdown-paragraph">这是一段 <strong>Markdown</strong> 回答。</p><ul class="ai-markdown-list"><li>列表项</li><li><code class="ai-inline-code">inline_code</code></li></ul><pre class="ai-code-block" id="assistant-code"><code>very_long_identifier_that_must_scroll_instead_of_overflowing_the_assistant_sidebar_0123456789</code></pre><div class="ai-table-wrap"><table><thead><tr><th>方法</th><th>复杂度</th></tr></thead><tbody><tr><td>线性</td><td>O(n)</td></tr></tbody></table></div></div></div></div><form class="ai-question"><label>向文章提问</label><textarea>这个公式表达什么？</textarea><button class="primary">发送问题</button></form></aside></div>
+      </div></article>${bilingualFixture}</div><div class="reader-selection-underlines" aria-hidden="true"><span id="selection-underline" style="left: 58vw; top: 302px; width: 124px"></span></div><section class="reader-selection-toolbar" id="selection-toolbar" style="left: 58vw; top: 308px"><button>翻译</button><button>解释</button><button>提问</button><button>×</button></section><aside class="selection-assistant-card" id="selection-card" data-placement="below" style="left: 56vw; top: 356px; width: min(330px,calc(100vw - 32px)); max-height: 250px"><header><div><p>解释所选文字</p><strong>本机 Codex CLI</strong></div><button>×</button></header><blockquote>“这段选中的文章文字会保留在就地回答旁边。”</blockquote><div class="selection-assistant-answer"><p>这是一个和正文紧邻的流式回答卡片，长内容将在卡片内滚动。</p><pre class="ai-code-block" id="selection-card-code"><code>selection_answer_must_not_expand_the_reading_workspace_0123456789</code></pre></div></aside><aside class="reader-ai-panel" id="assistant-panel"><header><div><strong>AI 学习助手</strong><p>提问时才会发送文章摘录。</p></div><div class="assistant-header-actions"><button class="panel-icon-button">−</button><button class="panel-icon-button">×</button></div></header><div class="ai-messages"><div class="ai-message" id="assistant-markdown"><strong>AI</strong><div class="ai-message-content ai-markdown"><h2 class="ai-markdown-heading">推导摘要</h2><p class="ai-markdown-paragraph">这是一段 <strong>Markdown</strong> 回答。</p><ul class="ai-markdown-list"><li>列表项</li><li><code class="ai-inline-code">inline_code</code></li></ul><pre class="ai-code-block" id="assistant-code"><code>very_long_identifier_that_must_scroll_instead_of_overflowing_the_assistant_sidebar_0123456789</code></pre><div class="ai-table-wrap"><table><thead><tr><th>方法</th><th>复杂度</th></tr></thead><tbody><tr><td>线性</td><td>O(n)</td></tr></tbody></table></div></div></div></div><form class="ai-question"><label>向文章提问</label><textarea>这个公式表达什么？</textarea><button class="primary">发送问题</button></form></aside></div>
     </section></main><div class="modal-backdrop" style="visibility:hidden" aria-hidden="true"><section class="dialog dialog--preview" id="preview-dialog"><header><h2>确认来源</h2><button>×</button></header><div class="preview-dialog__body" id="preview-dialog-body"><p class="dialog-intro"><strong class="preview-source-title">一个特别长的来源名称，用于验证预览弹窗不会因为名称而出现横向滚动</strong></p><div class="preview-list preview-list--source" role="list">${previewItems}</div></div><div class="dialog-actions dialog-actions--fixed" id="preview-dialog-actions"><button>取消</button><button class="primary">保存来源</button></div></section></div>${collectionScopeFixture}<div class="reader-image-lightbox" id="image-lightbox" hidden><section class="reader-image-lightbox__frame"><button class="reader-image-lightbox__close">×</button><img id="lightbox-image" src="${largeImage}" alt="large fixture preview" /></section></div></body></html>`;
 }
 
@@ -196,6 +210,41 @@ async function auditViewport(window, viewport, mathJaxSvg) {
         const markdown = document.querySelector('#assistant-markdown')?.getBoundingClientRect();
         const code = document.querySelector('#assistant-code');
         return panelRect && workspaceRect && scrollRect && markdown ? { panel: { left: panelRect.left, right: panelRect.right, top: panelRect.top, bottom: panelRect.bottom }, workspace: { left: workspaceRect.left, right: workspaceRect.right, top: workspaceRect.top, bottom: workspaceRect.bottom }, scroll: { left: scrollRect.left, right: scrollRect.right }, markdown: { left: markdown.left, right: markdown.right }, code: code ? { scrollWidth: code.scrollWidth, clientWidth: code.clientWidth } : undefined } : undefined;
+      })(),
+      bilingual: (() => {
+        const shell = document.querySelector('#shell');
+        const workspace = document.querySelector('.reader-workspace');
+        const scroll = document.querySelector('.reader-scroll');
+        const layout = document.querySelector('#bilingual-layout');
+        const original = document.querySelector('#bilingual-original');
+        const translation = document.querySelector('#bilingual-translation');
+        if (!(shell instanceof HTMLElement) || !(workspace instanceof HTMLElement) || !(scroll instanceof HTMLElement) || !(layout instanceof HTMLElement) || !(original instanceof HTMLElement) || !(translation instanceof HTMLElement)) return undefined;
+        const snapshot = () => {
+          const scrollRect = scroll.getBoundingClientRect();
+          const layoutRect = layout.getBoundingClientRect();
+          const originalRect = original.getBoundingClientRect();
+          const translationRect = translation.getBoundingClientRect();
+          const scrollStyle = getComputedStyle(scroll);
+          const inlinePadding = Number.parseFloat(scrollStyle.paddingLeft) + Number.parseFloat(scrollStyle.paddingRight);
+          return {
+            containerWidth: Math.max(0, scrollRect.width - inlinePadding),
+            layout: { left: layoutRect.left, right: layoutRect.right, top: layoutRect.top, bottom: layoutRect.bottom, width: layoutRect.width, scrollWidth: layout.scrollWidth, clientWidth: layout.clientWidth },
+            original: { left: originalRect.left, right: originalRect.right, top: originalRect.top, bottom: originalRect.bottom, width: originalRect.width },
+            translation: { left: translationRect.left, right: translationRect.right, top: translationRect.top, bottom: translationRect.bottom, width: translationRect.width },
+            gridTemplateColumns: getComputedStyle(layout).gridTemplateColumns
+          };
+        };
+        const narrow = snapshot();
+        const hadReaderOnly = shell.classList.contains('shell--reader-only');
+        const hadAssistantLayout = workspace.classList.contains('reader-workspace--assistant');
+        shell.classList.add('shell--reader-only');
+        workspace.classList.remove('reader-workspace--assistant');
+        const wide = snapshot();
+        if (!hadAssistantLayout) workspace.classList.remove('reader-workspace--assistant');
+        else workspace.classList.add('reader-workspace--assistant');
+        if (!hadReaderOnly) shell.classList.remove('shell--reader-only');
+        else shell.classList.add('shell--reader-only');
+        return { narrow, wide };
       })(),
       toolbar: (() => {
         const toolbar = document.querySelector('.reader-toolbar')?.getBoundingClientRect();
@@ -397,6 +446,29 @@ async function auditViewport(window, viewport, mathJaxSvg) {
   }
   if (!geometry.assistant?.markdown || geometry.assistant.markdown.left < geometry.assistant.panel.left - 1 || geometry.assistant.markdown.right > geometry.assistant.panel.right + 1 || !geometry.assistant.code || geometry.assistant.code.scrollWidth <= geometry.assistant.code.clientWidth) {
     failures.push("AI Markdown 回答在侧栏中没有受宽度约束或长代码没有独立滚动");
+  }
+  if (!geometry.bilingual) {
+    failures.push("中英文对照静态夹具缺失");
+  } else {
+    const isStackedBilingual = (layout) => Math.abs(layout.original.left - layout.translation.left) <= 1
+      && Math.abs(layout.original.right - layout.translation.right) <= 1
+      && layout.translation.top >= layout.original.bottom + 8;
+    const isTwoColumnBilingual = (layout) => layout.translation.left >= layout.original.right + 16
+      && Math.abs(layout.original.top - layout.translation.top) <= 1
+      && layout.original.left >= layout.layout.left - 1
+      && layout.translation.right <= layout.layout.right + 1;
+    const assertBilingualLayout = (layout, name) => {
+      if (layout.layout.scrollWidth > layout.layout.clientWidth + 1) {
+        failures.push(`${name}: 中英文对照内容撑破了自身布局`);
+      }
+      if (layout.containerWidth >= 980) {
+        if (!isTwoColumnBilingual(layout)) failures.push(`${name}: 阅读列达到 980px 后中英文对照没有并排显示`);
+      } else if (!isStackedBilingual(layout)) {
+        failures.push(`${name}: 窄阅读列中的中英文对照没有安全堆叠`);
+      }
+    };
+    assertBilingualLayout(geometry.bilingual.narrow, "默认阅读列");
+    assertBilingualLayout(geometry.bilingual.wide, "全宽阅读列");
   }
   if (!geometry.toolbar || geometry.toolbar.controls.some((control) => control.left < geometry.toolbar.left - 1 || control.right > geometry.toolbar.right + 1)) {
     failures.push("阅读器工具栏按钮溢出");

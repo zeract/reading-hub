@@ -3,7 +3,7 @@ import type { Entry, EntryPageCursor, LibraryCounts, Source } from "../shared/ty
 import { firstEntryPageQuery, mergeEntryPages, nextEntryPageQuery } from "./entry-pagination";
 import { entryQueryForLibrary, type LibraryView } from "./library-view";
 import { groupSources } from "./source-groups";
-import { requiresSourceReload } from "./source-selection";
+import { isSameLibrarySelection, type LibrarySelection } from "./source-selection";
 
 const EMPTY_LIBRARY_COUNTS: LibraryCounts = { unread: 0, favorite: 0, today: 0 };
 
@@ -60,31 +60,32 @@ export function useLibraryData() {
     setEntries([]);
   }, []);
 
-  const selectSource = useCallback((sourceId?: string) => {
-    setLibraryView("all");
-    if (requiresSourceReload(activeSourceId, sourceId)) {
-      // A repeated click does not change activeSourceId, so the query effect
-      // cannot initiate a fresh request by itself.
+  const navigateLibrary = useCallback((requested: LibrarySelection) => {
+    const current: LibrarySelection = { view: libraryView, sourceId: activeSourceId, search: entrySearch };
+    if (isSameLibrarySelection(current, requested)) {
+      // A repeated click leaves React state unchanged, so the query effect
+      // will not run. Keep the current list visible while its refresh starts.
       void reload();
       return;
     }
     resetEntryPages();
-    setEntrySearchState("");
-    setActiveSourceId(sourceId);
-  }, [activeSourceId, reload, resetEntryPages]);
+    setEntrySearchState(requested.search);
+    setActiveSourceId(requested.sourceId);
+    setLibraryView(requested.view);
+  }, [activeSourceId, entrySearch, libraryView, reload, resetEntryPages]);
+
+  const selectSource = useCallback((sourceId?: string) => {
+    navigateLibrary({ view: "all", sourceId, search: "" });
+  }, [navigateLibrary]);
 
   const selectLibrary = useCallback((view: LibraryView) => {
-    resetEntryPages();
-    setEntrySearchState("");
-    setActiveSourceId(undefined);
-    setLibraryView(view);
-  }, [resetEntryPages]);
+    navigateLibrary({ view, sourceId: undefined, search: "" });
+  }, [navigateLibrary]);
 
   const setEntrySearch = useCallback((search: string) => {
     if (!activeSourceId || search === entrySearch) return;
-    resetEntryPages();
-    setEntrySearchState(search);
-  }, [activeSourceId, entrySearch, resetEntryPages]);
+    navigateLibrary({ view: libraryView, sourceId: activeSourceId, search });
+  }, [activeSourceId, entrySearch, libraryView, navigateLibrary]);
 
   const loadMoreEntries = useCallback(async () => {
     const cursor = nextEntryCursor;
@@ -107,10 +108,8 @@ export function useLibraryData() {
   }, [entriesQuery, nextEntryCursor]);
 
   const clearActiveSource = useCallback(() => {
-    resetEntryPages();
-    setEntrySearchState("");
-    setActiveSourceId(undefined);
-  }, [resetEntryPages]);
+    navigateLibrary({ view: libraryView, sourceId: undefined, search: "" });
+  }, [libraryView, navigateLibrary]);
 
   const sourceById = useMemo(() => new Map(sources.map((source) => [source.id, source])), [sources]);
   const activeSource = activeSourceId ? sourceById.get(activeSourceId) : undefined;

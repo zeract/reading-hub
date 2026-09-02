@@ -1,8 +1,10 @@
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AiArticleContext, AiProviderId, AiProviderSettings, AiSelectionContext, AiSelectionIntent, Entry, ReaderArticle, Source } from "../shared/types";
+import type { AiArticleContext, AiProviderId, AiProviderSettings, AiSelectionContext, AiSelectionIntent, AiTranslationTarget, Entry, ReaderArticle, Source } from "../shared/types";
 import { AiMarkdownContent } from "./ai-markdown";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
-import { buildAiArticleContext, collectAiArticleText } from "./ai-request";
+import { buildAiArticleContext, collectAiArticleText, serialiseArticleForTranslation } from "./ai-request";
+import { newAiRequestId, useAiStreamSubscription, useAiTextStream } from "./ai-stream";
+import { bilingualTranslationLabel, bilingualTranslationQuestion, bilingualTranslationTarget } from "./bilingual-translation";
 import { errorMessage } from "./errors";
 import { adjustReaderFontScale, loadReaderPreferences, saveReaderPreferences, type ReaderPreferences, type ReaderPreset } from "./reader-preferences";
 import { LatestRequestGuard } from "./request-guard";
@@ -14,12 +16,6 @@ type AssistantSelectionRequest = { id: string; question: string; selection: AiSe
 type ReaderTextSelection = { text: string; overlay: SelectionOverlay; asking: boolean; request?: AssistantSelectionRequest };
 type AiMessage = { id: string; role: "user" | "assistant"; text: string; error?: boolean; streaming?: boolean };
 type ActiveAiStream = { requestId: string; assistantMessageId: string };
-
-function newAiRequestId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
-  // This id only pairs same-renderer IPC events; it is never an auth token.
-  return `ai-${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
-}
 
 function toSelectionRect(rect: DOMRect): SelectionRect {
   return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
@@ -36,6 +32,20 @@ function toAiArticleContext(article: ReaderArticle, sourceTitle?: string): AiArt
     sourceTitle,
     plainText: collectAiArticleText(textNodeValues(document.body))
   });
+}
+
+/** Full translation retains safe semantic blocks from the same sanitised DOM. */
+function toAiTranslationArticleContext(article: ReaderArticle, sourceTitle?: string): AiArticleContext {
+  const document = new DOMParser().parseFromString(article.contentHtml, "text/html");
+  return {
+    ...buildAiArticleContext({
+      title: article.title,
+      url: article.url,
+      sourceTitle,
+      plainText: collectAiArticleText(textNodeValues(document.body))
+    }),
+    translationMarkdown: serialiseArticleForTranslation(document.body)
+  };
 }
 
 /**
@@ -84,6 +94,7 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   const [favoriteUpdating, setFavoriteUpdating] = useState(false);
   const [languageSwitching, setLanguageSwitching] = useState<string>();
   const [languageSwitchError, setLanguageSwitchError] = useState<string>();
+  const [bilingualOpen, setBilingualOpen] = useState(false);
   const articleBodyElement = useRef<HTMLDivElement>(null);
   const readerWorkspaceElement = useRef<HTMLDivElement>(null);
   const articleRequestGuard = useRef(new LatestRequestGuard());
@@ -124,6 +135,7 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
     setSelectionQuestion("");
     setLanguageSwitching(undefined);
     setLanguageSwitchError(undefined);
+    setBilingualOpen(false);
   }, [entry.id]);
   useEffect(() => {
     if (!imagePreview && !textSelection) return;
@@ -258,6 +270,7 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
       setImagePreview(undefined);
       setTextSelection(undefined);
       setSelectionQuestion("");
+      setBilingualOpen(false);
       // An answer may quote the previous-language document, so do not retain
       // a stale assistant panel across an article-version switch.
       setAssistantState("closed");
@@ -286,6 +299,11 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   const toggleAssistant = () => {
     if (!article) return;
     setAssistantState((state) => state === "open" ? "minimized" : "open");
+  };
+  const toggleBilingual = () => {
+    if (!article) return;
+    if (!bilingualOpen && assistantState === "open") setAssistantState("minimized");
+    setBilingualOpen((open) => !open);
   };
   const assistantVisible = assistantState === "open";
   const assistantMounted = assistantState !== "closed";
@@ -324,6 +342,7 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
         {languageSwitchError && <span className="reader-language-error" role="status" title={languageSwitchError}>{languageSwitchError}</span>}
       </div>
       <div className="reader-toolbar-actions">
+        <button type="button" className={`reader-bilingual-toggle${bilingualOpen ? " is-active" : ""}`} aria-pressed={bilingualOpen} aria-label={bilingualOpen ? "关闭中英文对照" : "打开中英文对照"} title={bilingualOpen ? "关闭中英文对照" : "打开中英文对照"} disabled={!article} onClick={toggleBilingual}>中英</button>
         <button type="button" className={`toolbar-icon-button favorite-button${entry.favorite ? " is-favorite" : ""}`} aria-pressed={entry.favorite} aria-label={entry.favorite ? "取消收藏" : "收藏文章"} title={entry.favorite ? "取消收藏" : "收藏文章"} disabled={favoriteUpdating} onClick={() => void toggleFavorite()}>{entry.favorite ? "★" : "☆"}</button>
         <button type="button" className="toolbar-icon-button ai-toggle" aria-pressed={assistantVisible} aria-label={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} title={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} disabled={!article} onClick={toggleAssistant}>✦</button>
         <button type="button" className="toolbar-icon-button reader-focus-toggle" aria-pressed={readerOnly} aria-label={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} title={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} onClick={onToggleReaderOnly}>⛶</button>
@@ -335,15 +354,26 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
         {loading && <div className="reader-loading" role="status"><span className="loading-mark" /><p>正在准备适合阅读的正文…</p></div>}
         {!loading && embedded && <div className="reader-embedded"><h1>{entry.title}</h1><p>该站点不允许自动提取正文，原文已在 Reading Hub 的受限窗口中打开。该窗口不使用外部浏览器，也不会复用登录态。</p><button type="button" className="primary-action" onClick={() => void loadArticle()}>重新打开原文</button></div>}
         {!loading && error && <div className="reader-failure"><h1>{entry.title}</h1><p>{error}</p><div><button type="button" className="primary-action" onClick={() => void loadArticle()}>重试</button><button type="button" onClick={openEmbedded}>在应用内打开原文</button></div></div>}
-        {!loading && article && <article className="reader-article">
+        {!loading && article && <article className={`reader-article${bilingualOpen ? " reader-article--bilingual" : ""}`}>
           <header><p className="eyebrow">{source?.title || "已保存内容"}</p><h1>{article.title}</h1>{(article.author || date) && <p className="reader-byline">{article.author}{article.author && date ? " · " : ""}{date}</p>}</header>
           {article.contentMode === "feed_body" && <aside className="reader-content-notice" role="note">正在显示订阅 Feed 提供的正文。该原页未被自动读取；请使用右上角 ↗ 查看完整原文。</aside>}
           {article.contentMode === "feed_summary" && <aside className="reader-content-notice" role="note">正在显示订阅 Feed 提供的内容摘要。该原页不允许自动读取；请使用右上角 ↗ 查看完整原文。</aside>}
-          {article.coverImageUrl && <button type="button" className="reader-cover-button" onClick={(event) => {
-            const image = event.currentTarget.querySelector("img");
-            if (image) previewImage(image);
-          }} aria-label="放大封面图片"><img className="reader-cover" src={article.coverImageUrl} alt="" onError={handleContentError} /></button>}
-          <div ref={articleBodyElement} className="article-body" onClick={handleContentClick} onKeyDown={handleContentKeyDown} onKeyUp={captureArticleSelection} onMouseUp={captureArticleSelection} onError={handleContentError} dangerouslySetInnerHTML={{ __html: article.contentHtml }} />
+          <div className={bilingualOpen ? "reader-bilingual-layout" : undefined}>
+            <div className="reader-bilingual-original">
+              {article.coverImageUrl && <button type="button" className="reader-cover-button" onClick={(event) => {
+                const image = event.currentTarget.querySelector("img");
+                if (image) previewImage(image);
+              }} aria-label="放大封面图片"><img className="reader-cover" src={article.coverImageUrl} alt="" onError={handleContentError} /></button>}
+              <div ref={articleBodyElement} className="article-body" onClick={handleContentClick} onKeyDown={handleContentKeyDown} onKeyUp={captureArticleSelection} onMouseUp={captureArticleSelection} onError={handleContentError} dangerouslySetInnerHTML={{ __html: article.contentHtml }} />
+            </div>
+            {bilingualOpen && <ReaderBilingualTranslation
+              key={article.url}
+              article={article}
+              sourceTitle={source?.title}
+              preferredProviderId={preferredAiProviderId}
+              onOpenSettings={onOpenSettings}
+            />}
+          </div>
         </article>}
       </div>
       {textSelection && <div className="reader-selection-underlines" aria-hidden="true">{textSelection.overlay.underlines.map((underline, index) => <span key={`${underline.left}-${underline.top}-${index}`} style={{ left: underline.left, top: underline.top, width: underline.width }} />)}</div>}
@@ -384,6 +414,84 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   </section>;
 }
 
+function ReaderBilingualTranslation({ article, sourceTitle, preferredProviderId, onOpenSettings }: {
+  article: ReaderArticle;
+  sourceTitle?: string;
+  preferredProviderId: AiProviderId;
+  onOpenSettings: () => void;
+}) {
+  const [providers, setProviders] = useState<AiProviderSettings[]>([]);
+  const [providerError, setProviderError] = useState<string>();
+  const [target, setTarget] = useState<AiTranslationTarget>(() => bilingualTranslationTarget(article.activeLanguage));
+  const { text, busy, error: streamError, reset, start } = useAiTextStream();
+  const provider = useMemo(() => providers.find((item) => item.id === preferredProviderId && item.configured)
+    || providers.find((item) => item.configured), [preferredProviderId, providers]);
+  const targetLabel = bilingualTranslationLabel(target);
+  const error = providerError || streamError;
+
+  useEffect(() => {
+    let current = true;
+    void window.reader.listAiProviders()
+      .then((next) => { if (current) setProviders(next); })
+      .catch((reason) => { if (current) setProviderError(errorMessage(reason)); });
+    return () => { current = false; };
+  }, []);
+
+  function translateArticle() {
+    if (!provider) {
+      setProviderError("尚未配置可用的 AI 服务。请先在 AI 学习中完成设置。");
+      return;
+    }
+    const context = toAiTranslationArticleContext(article, sourceTitle);
+    if (!context.text || !context.translationMarkdown) {
+      setProviderError("当前文章没有可供翻译的正文。");
+      return;
+    }
+    setProviderError(undefined);
+    void start({
+      requestId: newAiRequestId(),
+      request: {
+        provider: provider.id,
+        task: "article-translation",
+        translationTarget: target,
+        question: bilingualTranslationQuestion(target),
+        article: context
+      }
+    });
+  }
+
+  return <section className="reader-bilingual-translation" aria-label={targetLabel}>
+    <header>
+      <div>
+        <p className="eyebrow">BILINGUAL READING</p>
+        <h2>{targetLabel}</h2>
+      </div>
+      <label className="reader-bilingual-target" htmlFor="reader-bilingual-target">
+        <span>目标语言</span>
+        <select id="reader-bilingual-target" value={target} disabled={busy} onChange={(event) => {
+          reset();
+          setProviderError(undefined);
+          setTarget(event.target.value as AiTranslationTarget);
+        }}>
+          <option value="zh">中文</option>
+          <option value="en">English</option>
+        </select>
+      </label>
+    </header>
+    <p className="reader-bilingual-note">点击生成时，才会将当前已净化正文的有限摘录发送给 {provider?.label || "已选 AI 服务"}；译文仅保留在本次阅读中。</p>
+    <div className="reader-bilingual-actions">
+      <button type="button" className="reader-bilingual-generate" disabled={busy} onClick={translateArticle}>{busy ? "翻译中…" : `生成${targetLabel}`}</button>
+      {!provider && <button type="button" className="reader-bilingual-settings" onClick={onOpenSettings}>打开 AI 设置</button>}
+    </div>
+    <div className="reader-bilingual-answer" aria-live="polite" aria-busy={busy}>
+      {!text && !error && <p>生成后会在这里显示与左侧原文对应的 Markdown 译文。</p>}
+      {busy && !text && <p className="ai-streaming-status">正在生成{targetLabel}…</p>}
+      {text && <AiMarkdownContent text={text} />}
+      {error && <p className="reader-bilingual-error">{error}</p>}
+    </div>
+  </section>;
+}
+
 function SelectionAssistantCard({ request, overlay, article, sourceTitle, preferredProviderId, onClose, onOpenSettings }: {
   request: AssistantSelectionRequest;
   overlay: SelectionOverlay;
@@ -394,11 +502,9 @@ function SelectionAssistantCard({ request, overlay, article, sourceTitle, prefer
   onOpenSettings: () => void;
 }) {
   const [providers, setProviders] = useState<AiProviderSettings[]>([]);
-  const [answer, setAnswer] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const activeRequestId = useRef<string | undefined>(undefined);
+  const [providerError, setProviderError] = useState<string>();
   const startedSelectionRequest = useRef<string | undefined>(undefined);
+  const { text: answer, busy, error: streamError, reset, start } = useAiTextStream();
   const provider = useMemo(() => providers.find((item) => item.id === preferredProviderId && item.configured)
     || providers.find((item) => item.configured), [preferredProviderId, providers]);
   const cardStyle: CSSProperties = {
@@ -412,39 +518,21 @@ function SelectionAssistantCard({ request, overlay, article, sourceTitle, prefer
     let current = true;
     void window.reader.listAiProviders()
       .then((next) => { if (current) setProviders(next); })
-      .catch((reason) => { if (current) setError(errorMessage(reason)); });
+      .catch((reason) => { if (current) setProviderError(errorMessage(reason)); });
     return () => { current = false; };
   }, []);
-  useEffect(() => window.reader.onAiStream((event) => {
-    if (activeRequestId.current !== event.requestId) return;
-    if (event.type === "delta") {
-      setAnswer((current) => `${current}${event.text}`);
-      return;
-    }
-    activeRequestId.current = undefined;
-    setBusy(false);
-    if (event.type === "complete") {
-      setAnswer(event.answer.text);
-      return;
-    }
-    setError(event.message);
-  }), []);
   useEffect(() => {
     if (startedSelectionRequest.current === request.id || !providers.length) return;
     if (!provider) {
       startedSelectionRequest.current = request.id;
-      setAnswer("");
-      setBusy(false);
-      setError("尚未配置可用的 AI 服务。请先在 AI 学习中完成设置。");
+      reset();
+      setProviderError("尚未配置可用的 AI 服务。请先在 AI 学习中完成设置。");
       return;
     }
     startedSelectionRequest.current = request.id;
     const requestId = newAiRequestId();
-    activeRequestId.current = requestId;
-    setAnswer("");
-    setBusy(true);
-    setError(undefined);
-    void window.reader.startAiStream({
+    setProviderError(undefined);
+    void start({
       requestId,
       request: {
         provider: provider.id,
@@ -452,15 +540,11 @@ function SelectionAssistantCard({ request, overlay, article, sourceTitle, prefer
         selection: request.selection,
         ...articlePayloadForAiRequest(article, sourceTitle, request.selection)
       }
-    }).catch((reason) => {
-      if (activeRequestId.current !== requestId) return;
-      activeRequestId.current = undefined;
-      setBusy(false);
-      setError(errorMessage(reason));
     });
-  }, [article.contentHtml, article.title, article.url, provider, providers.length, request, sourceTitle]);
+  }, [article.contentHtml, article.title, article.url, provider, providers.length, request, reset, sourceTitle, start]);
 
   const excerpt = request.selection.text.length > 260 ? `${request.selection.text.slice(0, 260)}…` : request.selection.text;
+  const error = providerError || streamError;
   return <aside className="selection-assistant-card" data-placement={overlay.placement} data-intent={request.selection.intent} style={cardStyle} aria-label={`${selectedTextLabel(request.selection.intent)}结果`}>
     <header>
       <div><p>{selectedTextLabel(request.selection.intent)}</p><strong>{provider?.label || "AI 学习"}</strong></div>
@@ -515,29 +599,27 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
     }
   }, [controlledProviderId, onProviderChange]);
   useEffect(() => { void reloadProviders().catch((reason) => setError(errorMessage(reason))); }, [reloadProviders]);
-  useEffect(() => {
-    return window.reader.onAiStream((event) => {
-      const active = activeStream.current;
-      if (!active || active.requestId !== event.requestId) return;
-      if (event.type === "delta") {
-        setMessages((current) => current.map((message) => message.id === active.assistantMessageId
-          ? { ...message, text: `${message.text}${event.text}` }
-          : message));
-        return;
-      }
-      activeStream.current = undefined;
-      setBusy(false);
-      if (event.type === "complete") {
-        setMessages((current) => current.map((message) => message.id === active.assistantMessageId
-          ? { ...message, text: event.answer.text, streaming: false }
-          : message));
-        return;
-      }
+  useAiStreamSubscription((event) => {
+    const active = activeStream.current;
+    if (!active || active.requestId !== event.requestId) return;
+    if (event.type === "delta") {
       setMessages((current) => current.map((message) => message.id === active.assistantMessageId
-        ? { ...message, text: message.text ? `${message.text}\n\n生成中断：${event.message}` : event.message, error: true, streaming: false }
+        ? { ...message, text: `${message.text}${event.text}` }
         : message));
-    });
-  }, []);
+      return;
+    }
+    activeStream.current = undefined;
+    setBusy(false);
+    if (event.type === "complete") {
+      setMessages((current) => current.map((message) => message.id === active.assistantMessageId
+        ? { ...message, text: event.answer.text, streaming: false }
+        : message));
+      return;
+    }
+    setMessages((current) => current.map((message) => message.id === active.assistantMessageId
+      ? { ...message, text: message.text ? `${message.text}\n\n生成中断：${event.message}` : event.message, error: true, streaming: false }
+      : message));
+  });
   useEffect(() => {
     const element = messagesElement.current;
     if (element) element.scrollTop = element.scrollHeight;
