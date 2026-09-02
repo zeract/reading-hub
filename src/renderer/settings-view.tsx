@@ -36,7 +36,7 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
   useEffect(() => { void reloadProviders().catch((reason) => setError(errorMessage(reason))); }, [reloadProviders]);
 
   const selected = providers.find((provider) => provider.id === providerId);
-  const usingCodexCli = selected?.id === "codex-cli";
+  const usingLocalCodex = selected?.id === "codex-cli";
   const requiresApiKey = selected?.requiresApiKey === true;
 
   function switchProvider(nextId: AiProviderId) {
@@ -57,7 +57,7 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
         provider: providerId,
         apiKey,
         model,
-        effort: usingCodexCli ? effort : undefined
+        effort: usingLocalCodex ? effort : undefined
       });
       setApiKey("");
       await reloadProviders();
@@ -70,8 +70,8 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
 
   async function clearAiSettings() {
     if (!selected) return;
-    const message = usingCodexCli
-      ? "恢复本机 Codex CLI 的默认模型与推理强度？"
+    const message = usingLocalCodex
+      ? "恢复本机 Codex 的默认模型与推理强度？"
       : `清除 ${selected.label} 的 API Key？`;
     if (!window.confirm(message)) return;
     setBusy(true); setError(undefined);
@@ -118,7 +118,7 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
         <form className="settings-card settings-ai-form" onSubmit={(event) => void saveAiSettings(event)}>
           <h2>AI 服务</h2>
           <label>服务<select value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={busy}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
-          {usingCodexCli ? <>
+          {usingLocalCodex ? <>
             <label>模型<select value={model} onChange={(event) => setModel(event.target.value)} disabled={busy}>{CODEX_CLI_MODEL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
             <label>推理强度<select value={effort} onChange={(event) => setEffort(event.target.value as AiReasoningEffort)} disabled={busy}>{CODEX_EFFORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
             <p className="settings-help">模型可用性取决于 Codex/ChatGPT 账户；较高推理强度会延长回答时间。</p>
@@ -128,7 +128,7 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
           </>}
           {selected?.availabilityMessage && <p className="settings-help">{selected.availabilityMessage}</p>}
           {error && <p className="error">{error}</p>}
-          <div className="settings-actions"><button type="submit" className="primary" disabled={!selected || busy}>{busy ? "正在保存…" : "保存设置"}</button>{selected?.configured && <button type="button" className="danger" onClick={() => void clearAiSettings()} disabled={busy}>{usingCodexCli ? "恢复默认" : "清除密钥"}</button>}</div>
+          <div className="settings-actions"><button type="submit" className="primary" disabled={!selected || busy}>{busy ? "正在保存…" : "保存设置"}</button>{selected?.configured && <button type="button" className="danger" onClick={() => void clearAiSettings()} disabled={busy}>{usingLocalCodex ? "恢复默认" : "清除密钥"}</button>}</div>
         </form>
       </>}
     </section>

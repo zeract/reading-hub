@@ -290,7 +290,7 @@ describe("AI learning service", () => {
     };
     const service = new AiService(new MemorySecrets(), vi.fn(), codexCli);
 
-    await expect(service.configure({ provider: "codex-cli", model: "arbitrary-model", effort: "medium" })).rejects.toThrow("请选择 Reading Hub 提供的 Codex CLI 模型");
+    await expect(service.configure({ provider: "codex-cli", model: "arbitrary-model", effort: "medium" })).rejects.toThrow("请选择 Reading Hub 提供的 Codex 模型");
   });
 
   it("reports a local Codex login failure without leaking CLI details", async () => {

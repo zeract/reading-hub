@@ -12,5 +12,5 @@ export function bilingualTranslationLabel(target: AiTranslationTarget): string {
 
 /** The main process ignores this display string for translation prompts. */
 export function bilingualTranslationQuestion(target: AiTranslationTarget): string {
-  return target === "zh" ? "将当前文章翻译为中文。" : "Translate the current article into English.";
+  return target === "zh" ? "快速翻译当前阅读段落为中文。" : "Quickly translate the current reading segments into English.";
 }

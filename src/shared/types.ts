@@ -411,7 +411,7 @@ export type AiProviderId = "openai" | "deepseek" | "codex-cli";
 
 /** The built-in selector only presents verified Codex model identifiers. */
 export const CODEX_CLI_MODEL_OPTIONS = [
-  { id: "default", label: "跟随 Codex CLI 默认模型" },
+  { id: "default", label: "跟随本机 Codex 默认模型" },
   { id: "gpt-5.6", label: "GPT-5.6 Sol（推荐）" },
   { id: "gpt-5.6-sol", label: "GPT-5.6 Sol（固定版本）" },
   { id: "gpt-5.6-terra", label: "GPT-5.6 Terra（均衡）" },
@@ -461,21 +461,39 @@ export interface AiArticleContext {
 
 /**
  * `answer` is the normal learning-assistant path. `article-translation` is a
- * deliberate, full-article action and is intentionally distinct from the
+ * deliberate, full-article action. `immersive-translation` sends short,
+ * independent semantic blocks so translated text can appear while the rest
+ * of the article is still being processed. Both remain distinct from the
  * privacy-preserving selected-text translation path below.
  */
-export type AiRequestTask = "answer" | "article-translation";
+export type AiRequestTask = "answer" | "article-translation" | "immersive-translation";
 
 /** The explicit output language for a full-article translation request. */
 export type AiTranslationTarget = "zh" | "en";
+
+/**
+ * A small, renderer-derived unit for immersive reading translation. The
+ * source HTML never crosses IPC: only inert text from an already-sanitised
+ * semantic block is sent after the reader explicitly enables the feature.
+ */
+export interface AiTranslationSegment {
+  /** Stable only for the currently mounted reader document; never persisted. */
+  id: string;
+  text: string;
+}
 
 export interface AiQuestionRequest {
   provider: AiProviderId;
   question: string;
   /** Omitted requests preserve the existing learning-assistant behaviour. */
   task?: AiRequestTask;
-  /** Required only when `task` is `article-translation`. */
+  /** Required only when `task` is a full or immersive translation task. */
   translationTarget?: AiTranslationTarget;
+  /**
+   * Bounded batches used exclusively by the immersive translation path.
+   * They deliberately exclude article title, source, URL, HTML and metadata.
+   */
+  translationSegments?: AiTranslationSegment[];
   /** Present only after the reader deliberately invokes an action on selected article text. */
   selection?: AiSelectionContext;
   /**

@@ -68,12 +68,10 @@ describe("reader display-equation layout", () => {
     expect(styles).toMatch(/\.reader-language-switcher button\.selected\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--accent-ink\)/s);
   });
 
-  it("keeps bilingual reading inside the reader column and stacks safely before a wide viewport", () => {
-    expect(styles).toMatch(/\.reader-toolbar\s+\.reader-bilingual-toggle\s*\{[^}]*border:\s*1px\s+solid\s+var\(--line-strong\)/s);
-    expect(styles).toMatch(/\.reader-article--bilingual\s*\{[^}]*width:\s*min\(100%,86em\)/s);
-    expect(styles).toMatch(/\.reader-bilingual-layout\s*\{[^}]*display:\s*grid;[^}]*min-width:\s*0/s);
-    expect(styles).toMatch(/@container\s*\(min-width:\s*980px\)\s*\{[^}]*\.reader-article--bilingual\s+\.reader-bilingual-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\)\s+minmax\(0,1fr\)/s);
-    expect(styles).toMatch(/\.reader-bilingual-answer\s*\{[^}]*min-height:\s*104px;[^}]*overflow-wrap:\s*anywhere/s);
+  it("keeps immersive translations immediately below the matching source paragraph", () => {
+    expect(styles).toMatch(/\.reader-toolbar\s+\.reader-immersive-translation-toggle\s*\{[^}]*width:\s*28px;[^}]*height:\s*28px;[^}]*border-radius:\s*50%/s);
+    expect(styles).toMatch(/\.article-body\s+\.reader-immersive-translation\s*\{[^}]*border-left:\s*2px\s+solid\s+var\(--accent\);[^}]*white-space:\s*pre-wrap;[^}]*overflow-wrap:\s*anywhere/s);
+    expect(styles).not.toContain("reader-bilingual-layout");
   });
 
   it("uses a restrained native-blue palette for selection and keeps translation as a separate soft signal", () => {

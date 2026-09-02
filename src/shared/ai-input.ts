@@ -17,6 +17,11 @@ export const MAX_AI_ARTICLE_MARKDOWN_LENGTH = MAX_AI_ARTICLE_TEXT_LENGTH;
 export const MAX_AI_ARTICLE_RAW_TEXT_LENGTH = MAX_AI_ARTICLE_TEXT_LENGTH * 8;
 export const MAX_AI_SOURCE_TITLE_LENGTH = 200;
 export const MAX_AI_SELECTION_TEXT_LENGTH = 2_000;
+/** Keep immersive batches small enough for low-latency local-model turns. */
+export const MAX_AI_IMMERSIVE_TRANSLATION_SEGMENTS = 4;
+export const MAX_AI_IMMERSIVE_TRANSLATION_SEGMENT_LENGTH = 1_600;
+export const MAX_AI_IMMERSIVE_TRANSLATION_BATCH_LENGTH = 4_800;
+export const AI_TRANSLATION_SEGMENT_ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
 
 /**
  * Normalise a renderer-produced article excerpt before crossing IPC. The main

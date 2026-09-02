@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { codexAppServerAgentDelta, codexAppServerArguments, codexExecArguments } from "../src/main/codex-cli";
+import {
+  codexAppServerAgentDelta,
+  codexAppServerArguments,
+  codexAppServerThreadStartParameters,
+  codexAppServerTurnStartParameters,
+  codexExecArguments
+} from "../src/main/codex-cli";
 
 describe("local Codex CLI invocation", () => {
   it("uses an explicit model and bounded effort in ephemeral, read-only mode", () => {
@@ -38,5 +44,28 @@ describe("local Codex CLI invocation", () => {
     }, "thread-1")).toBe("正在");
     expect(codexAppServerAgentDelta({ method: "item/agentMessage/delta", params: { threadId: "other", delta: "忽略" } }, "thread-1")).toBeUndefined();
     expect(codexAppServerAgentDelta({ method: "item/started", params: { threadId: "thread-1" } }, "thread-1")).toBeUndefined();
+  });
+
+  it("creates a fresh read-only ephemeral thread for every local reader question", () => {
+    const parameters = codexAppServerThreadStartParameters("解释这个段落");
+
+    expect(parameters).toMatchObject({
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      ephemeral: true,
+      baseInstructions: expect.stringContaining("解释这个段落")
+    });
+    expect(parameters.baseInstructions).toContain("不得调用工具、读取或写入文件、运行命令或访问网络");
+    expect(JSON.stringify(parameters)).not.toContain("danger-full-access");
+  });
+
+  it("sends article text through an isolated turn while preserving the chosen model and effort", () => {
+    expect(codexAppServerTurnStartParameters("thread-1", "文章摘录", { model: "gpt-5.6-luna", effort: "low" })).toEqual({
+      threadId: "thread-1",
+      input: [{ type: "text", text: "文章摘录", text_elements: [] }],
+      model: "gpt-5.6-luna",
+      effort: "low"
+    });
+    expect(codexAppServerTurnStartParameters("thread-1", "文章摘录", { effort: "medium" })).not.toHaveProperty("model");
   });
 });

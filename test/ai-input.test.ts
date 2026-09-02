@@ -65,7 +65,7 @@ describe("AI article IPC input", () => {
     expect(reader).toContain('if (selection?.intent === "translate") return {};');
     expect([...reader.matchAll(/\.\.\.articlePayloadForAiRequest\(article, sourceTitle,/g)]).toHaveLength(2);
     expect(reader).toContain("collectAiArticleText(textNodeValues(document.body))");
-    expect(reader).toContain("serialiseArticleForTranslation(document.body)");
+    expect(reader).toContain("translationSegmentsForBatch(batch)");
     expect(reader).not.toContain("document.body.textContent");
   });
 });
