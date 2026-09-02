@@ -63,7 +63,10 @@ export class SourceProbe {
 
     let extraction = extractGenericPage(page.text, page.url);
     let usedRenderer = page.fromRenderer;
-    if (!usedRenderer && extraction.entries.length < 2 && this.renderer) {
+    // A named, high-confidence semantic section can legitimately contain one
+    // newly published post. Rendering it again is costly and cannot improve a
+    // stable static card; retain Chromium only for uncertain sparse pages.
+    if (!usedRenderer && extraction.entries.length < 2 && extraction.confidence < 0.75 && this.renderer) {
       try {
         const rendered = await this.renderer.render(page.url);
         const renderedExtraction = extractGenericPage(rendered, page.url);

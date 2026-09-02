@@ -23,7 +23,7 @@ export function extractGenericPage(html: string, pageUrl: string, existingRule?:
     const entries = extractUsingRule($, pageUrl, existingRule);
     const detected = detectRepeatedItems($, pageUrl);
     if (shouldReplaceNarrowAutomaticRule(existingRule, entries, detected)) {
-      return { title: pageTitle, ...detected, fallback: false };
+      return extractionResultFromDetected(pageTitle, detected);
     }
     if (entries.length) return { title: pageTitle, entries, rule: withAutomaticRuleRevision(existingRule), confidence: 0.88, fallback: false };
     const fallback = openGraphFallback($, pageUrl, pageTitle);
@@ -31,7 +31,7 @@ export function extractGenericPage(html: string, pageUrl: string, existingRule?:
   }
 
   const detected = detectRepeatedItems($, pageUrl);
-  if (detected.entries.length) return { title: pageTitle, ...detected, fallback: false };
+  if (detected.entries.length) return extractionResultFromDetected(pageTitle, detected);
 
   const fallback = openGraphFallback($, pageUrl, pageTitle);
   return { title: pageTitle, entries: fallback ? [fallback] : [], confidence: fallback ? 0.2 : 0, fallback: true };
@@ -39,12 +39,14 @@ export function extractGenericPage(html: string, pageUrl: string, existingRule?:
 
 /**
  * Early versions could save a narrow link-path rule (for example only
- * `/openstack/` posts on a blog archive). On later refreshes that rule used
- * to prevent the now-better detector from seeing the complete archive. A
- * calibrated rule has field-level selectors and is deliberately left alone;
- * only simple automatically-generated roots may self-heal.
+ * `/openstack/` posts on a blog archive), or a broad `li` rule that captures
+ * a publication bibliography before a named Blog Posts section. On later
+ * refreshes that rule used to prevent the now-better detector from seeing the
+ * intended archive. A calibrated rule has field-level selectors and is
+ * deliberately left alone; only simple automatically-generated roots may
+ * self-heal.
  */
-export const AUTOMATIC_RULE_REVISION = 3;
+export const AUTOMATIC_RULE_REVISION = 4;
 /**
  * Bump this only when the page-level publish-date parser gains a new safe
  * capability. Generic sources then make one unconditional request so entries
@@ -64,10 +66,15 @@ export function withPublicationDateRevision(rule?: ExtractionRule): ExtractionRu
 function shouldReplaceNarrowAutomaticRule(
   rule: ExtractionRule,
   current: RawEntry[],
-  detected: Pick<ExtractionResult, "entries" | "rule" | "confidence">
+  detected: DetectedItems
 ): boolean {
-  if (!detected.rule || detected.entries.length < 2 || detected.confidence < 0.7) return false;
+  if (!detected.rule || detected.confidence < 0.7) return false;
   if (rule.rendererRequired || rule.titleSelector || rule.timeSelector || rule.authorSelector || rule.imageSelector || rule.summarySelector) return false;
+  // A saved automatic broad list (`li`, for example) may accidentally
+  // collect a bibliography from a personal homepage.  A named Blog Posts
+  // section is a more specific replacement even while it has one post.
+  if (detected.semanticSection === "blog") return true;
+  if (detected.entries.length < 2) return false;
   return detected.entries.length >= Math.max(current.length + 10, current.length * 2);
 }
 
@@ -110,33 +117,253 @@ function visitJsonLd(value: any, results: any[]): void {
   if (value.itemListElement) visitJsonLd(value.itemListElement.map((item: any) => item.item || item), results);
 }
 
-type CandidateGroup = { label: string; rule: ExtractionRule; entries: RawEntry[]; score: number };
+type CandidateGroup = {
+  label: string;
+  rule: ExtractionRule;
+  entries: RawEntry[];
+  score: number;
+  /**
+   * A named Blog Posts section is materially stronger evidence than a page-
+   * wide repeated list.  Personal academic homepages often contain both a
+   * long publication bibliography and a short blog list; selecting the
+   * latter must not depend on it already having two posts.
+   */
+  semanticSection?: "blog";
+};
+
+type DetectedItems = Pick<ExtractionResult, "entries" | "rule" | "confidence"> & {
+  semanticSection?: CandidateGroup["semanticSection"];
+};
+
+function extractionResultFromDetected(title: string, detected: DetectedItems): ExtractionResult {
+  return {
+    title,
+    entries: detected.entries,
+    rule: detected.rule,
+    confidence: detected.confidence,
+    fallback: false
+  };
+}
 
 /** Produces human-readable candidates so people can repair a source without knowing CSS. */
 export function extractCalibrationCandidates(html: string, pageUrl: string): CalibrationCandidate[] {
   const $ = load(html);
   // A new or deliberately sparse blog can legitimately have one published
-  // card. It is still safe to offer it for *user-confirmed* calibration when
-  // that card has strong article evidence; automatic probing continues to
-  // require a repeated group to avoid mistaking page chrome for content.
-  return collectCandidateGroups($, pageUrl, 1)
+  // card. It remains a user-confirmed calibration candidate by default; only
+  // a named Blog Posts section has enough additional structure to auto-enable
+  // a single card without mistaking page chrome for content.
+  return orderedCandidates([
+    ...collectSemanticBlogCandidates($, pageUrl),
+    ...collectCandidateGroups($, pageUrl, 1)
+  ])
     .slice(0, 5)
     .map((candidate) => ({
       label: candidate.label,
       rule: candidate.rule,
       preview: candidate.entries.slice(0, 4),
-      confidence: Math.min(0.98, 0.45 + Math.min(candidate.entries.length, 8) * 0.05 + Math.min(candidate.score, 3) * 0.08)
+      confidence: candidateConfidence(candidate, true)
     }));
 }
 
-function detectRepeatedItems($: ReturnType<typeof load>, pageUrl: string): Pick<ExtractionResult, "entries" | "rule" | "confidence"> {
+function detectRepeatedItems($: ReturnType<typeof load>, pageUrl: string): DetectedItems {
+  const semantic = collectSemanticBlogCandidates($, pageUrl)[0];
+  if (semantic) {
+    return {
+      entries: semantic.entries,
+      rule: semantic.rule,
+      confidence: candidateConfidence(semantic),
+      semanticSection: semantic.semanticSection
+    };
+  }
   const best = collectCandidateGroups($, pageUrl)[0];
   if (!best) return { entries: [], confidence: 0 };
   return {
     entries: best.entries,
     rule: best.rule,
-    confidence: Math.min(0.89, 0.45 + Math.min(best.entries.length, 8) * 0.05 + Math.min(best.score, 3) * 0.08)
+    confidence: candidateConfidence(best)
   };
+}
+
+function candidateConfidence(candidate: CandidateGroup, calibration = false): number {
+  if (candidate.semanticSection === "blog") {
+    // A direct, named Blog Posts section with a same-origin permalink and a
+    // card-shaped item is sufficiently specific to monitor even when the
+    // author has published only one post.  Keep ordinary one-card lists on
+    // the existing confirmation-only path.
+    const base = calibration ? 0.8 : 0.78;
+    return Math.min(0.94, base + Math.min(candidate.entries.length, 6) * 0.025 + Math.min(candidate.score, 3) * 0.03);
+  }
+  return Math.min(0.89, 0.45 + Math.min(candidate.entries.length, 8) * 0.05 + Math.min(candidate.score, 3) * 0.08);
+}
+
+function orderedCandidates(candidates: CandidateGroup[]): CandidateGroup[] {
+  return candidates.sort((left, right) => {
+    const semanticDifference = Number(Boolean(right.semanticSection)) - Number(Boolean(left.semanticSection));
+    return semanticDifference || right.score - left.score;
+  });
+}
+
+/**
+ * Finds a list of post cards immediately following an explicitly named blog
+ * section.  This is intentionally narrower than accepting every single card:
+ * a generic page title such as "Technical Blog" still requires calibration,
+ * while a dedicated "Blog Posts" / `#blogs` section can safely win over a
+ * publication bibliography elsewhere on the same page.
+ */
+function collectSemanticBlogCandidates($: ReturnType<typeof load>, pageUrl: string): CandidateGroup[] {
+  const groups = new Map<string, { label: string; rule: ExtractionRule; nodes: any[] }>();
+  $("h1,h2,h3,h4,h5,h6").each((_index, heading) => {
+    if (!isExplicitBlogSection($, heading)) return;
+    for (const scope of sectionSiblings($, heading)) {
+      const scopeRoot = $(scope);
+      const rootSelectors = new Map<string, any[]>();
+      const links = scopeRoot.is("a[href]") ? scopeRoot.add(scopeRoot.find("a[href]")) : scopeRoot.find("a[href]");
+      links.each((_linkIndex, link) => {
+        if (!isSameOriginContentLink($, link, pageUrl)) return;
+        const root = semanticCardRoot($, link, scope);
+        if (!root || isTaxonomyOrNavigation($, root)) return;
+        const selector = semanticCardSelector($, heading, scope, root);
+        if (!selector) return;
+        const roots = rootSelectors.get(selector) ?? [];
+        if (!roots.includes(root)) roots.push(root);
+        rootSelectors.set(selector, roots);
+      });
+
+      for (const [selector, nodes] of rootSelectors) {
+        const rule: ExtractionRule = {
+          version: 1,
+          autoRepairRevision: AUTOMATIC_RULE_REVISION,
+          itemRootSelector: selector
+        };
+        const entries = uniqueEntries(
+          nodes
+            .map((node) => entryFromElement($, node, pageUrl, rule))
+            .filter((item): item is RawEntry => Boolean(item))
+        );
+        if (!entries.length) continue;
+        const score = nodes.reduce((sum, node) => sum + semanticCardScore($, node), 0) / nodes.length + Math.min(entries.length, 10) * 0.08;
+        // A semantic heading alone is not enough: require a title/link plus a
+        // description, date, image, or substantial card text.
+        if (score < 2.35) continue;
+        const group = groups.get(selector) ?? {
+          label: `“博客文章”分区（${entries.length} ${entries.length === 1 ? "篇，单篇监测" : "篇"}）`,
+          rule,
+          nodes: []
+        };
+        for (const node of nodes) if (!group.nodes.includes(node)) group.nodes.push(node);
+        groups.set(selector, group);
+      }
+    }
+  });
+
+  return orderedCandidates([...groups.values()].map((group) => {
+    const entries = uniqueEntries(
+      group.nodes
+        .map((node) => entryFromElement($, node, pageUrl, group.rule))
+        .filter((item): item is RawEntry => Boolean(item))
+    );
+    const score = group.nodes.reduce((sum, node) => sum + semanticCardScore($, node), 0) / group.nodes.length + Math.min(entries.length, 10) * 0.08;
+    return { label: group.label, rule: group.rule, entries, score, semanticSection: "blog" };
+  }));
+}
+
+function isExplicitBlogSection($: ReturnType<typeof load>, heading: any): boolean {
+  const root = $(heading);
+  const text = compactText(root.text(), 120)?.toLowerCase() || "";
+  const identity = `${root.attr("id") || ""} ${root.attr("class") || ""}`.toLowerCase();
+  const namedList = /\b(?:blog\s+(?:posts?|entries|archive)|(?:latest|recent)\s+(?:blog\s+)?posts?|posts?\s+(?:and|&)\s+notes)\b/.test(text);
+  const explicitIdentity = /(?:^|[-_\s])blogs?(?:$|[-_\s])/.test(identity);
+  return namedList || explicitIdentity;
+}
+
+function sectionSiblings($: ReturnType<typeof load>, heading: any): any[] {
+  const level = Number((heading.tagName || heading.name || "h6").slice(1)) || 6;
+  const siblings: any[] = [];
+  for (const sibling of $(heading).nextAll().toArray()) {
+    const tag = sibling.tagName || sibling.name || "";
+    if (/^h[1-6]$/i.test(tag)) {
+      const siblingLevel = Number(tag.slice(1));
+      if (siblingLevel <= level) break;
+    }
+    siblings.push(sibling);
+  }
+  return siblings;
+}
+
+function isSameOriginContentLink($: ReturnType<typeof load>, link: any, pageUrl: string): boolean {
+  if (isTaxonomyOrNavigation($, link)) return false;
+  const url = toAbsoluteUrl($(link).attr("href"), pageUrl);
+  const title = compactText($(link).text(), 240);
+  if (!url || !title || url === pageUrl || isTaxonomyUrl(url)) return false;
+  try {
+    const target = new URL(url);
+    const page = new URL(pageUrl);
+    if (target.origin !== page.origin) return false;
+    if (/^\/assets\//i.test(target.pathname) || /\.(?:pdf|png|jpe?g|gif|svg|zip)$/i.test(target.pathname)) return false;
+    return target.pathname !== "/";
+  } catch {
+    return false;
+  }
+}
+
+function semanticCardRoot($: ReturnType<typeof load>, link: any, scope: any): any | undefined {
+  let current = $(link);
+  while (current.length) {
+    const node = current.get(0);
+    if (isSemanticCardRoot(current)) return node;
+    if (node === scope) break;
+    current = current.parent();
+  }
+  return undefined;
+}
+
+function isSemanticCardRoot(root: any): boolean {
+  const tag = root.get(0)?.tagName || root.get(0)?.name || "";
+  if (["article", "li", "tr"].includes(tag.toLowerCase())) return true;
+  const identity = `${root.attr("class") || ""} ${root.attr("data-kind") || ""}`
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .toLowerCase();
+  return /(?:^|\s)(?:post|entry|article|story|card|item|row|note)(?:s)?(?:$|\s)/.test(identity);
+}
+
+function semanticCardSelector($: ReturnType<typeof load>, heading: any, scope: any, root: any): string | undefined {
+  const rootSelector = semanticSelectorPart($, root);
+  if (!rootSelector) return undefined;
+  const headingNode = $(heading);
+  const headingTag = heading.tagName || heading.name;
+  const headingId = headingNode.attr("id");
+  const scopeSelector = semanticSelectorPart($, scope);
+  if (headingTag && headingId && scopeSelector) {
+    // Direct sibling cards need `~`: a blog may render one card per sibling,
+    // whereas a wrapper list can stay on the tighter adjacent-sibling path.
+    if (root === scope) return `${headingTag}#${cssEscape(headingId)} ~ ${rootSelector}`;
+    return `${headingTag}#${cssEscape(headingId)} + ${scopeSelector} ${rootSelector}`;
+  }
+  // Without a named heading, only retain a selector if the containing block
+  // itself advertises a blog/post identity.  This prevents a generic one-card
+  // page from becoming an automatic source merely because it has a heading.
+  const scopeIdentity = `${$(scope).attr("class") || ""} ${$(scope).attr("id") || ""}`.toLowerCase();
+  if (!scopeSelector || !/(?:^|[-_\s])blogs?(?:$|[-_\s])|(?:^|[-_\s])posts?(?:$|[-_\s])/.test(scopeIdentity)) return undefined;
+  return root === scope ? scopeSelector : `${scopeSelector} ${rootSelector}`;
+}
+
+function semanticSelectorPart($: ReturnType<typeof load>, element: any): string | undefined {
+  const stable = stableSelector($, element);
+  if (stable) return stable;
+  const tag = element.tagName || element.name;
+  return ["article", "li", "tr", "ul", "ol", "table"].includes(String(tag).toLowerCase()) ? String(tag).toLowerCase() : undefined;
+}
+
+function semanticCardScore($: ReturnType<typeof load>, element: any): number {
+  const root = $(element);
+  const titleNode = preferredTitleNode($, root);
+  const title = compactText(titleNode.text(), 240);
+  const text = compactText(root.text(), 800) || "";
+  const hasDate = Boolean(root.find("time,[datetime]").length || /(20\d{2}|\d{1,2}[月./-]\d{1,2}|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\.?\s+20\d{2}\b)/i.test(text));
+  const summary = preferredSummaryNode($, root, title || "");
+  const hasSummary = (compactText(summary.text(), 500)?.length ?? 0) >= 24;
+  return scoreItem($, element) + (title ? 0.35 : 0) + (hasDate ? 0.15 : 0) + (hasSummary ? 0.2 : 0);
 }
 
 function collectCandidateGroups($: ReturnType<typeof load>, pageUrl: string, minimumEntries = 2): CandidateGroup[] {
@@ -201,8 +428,8 @@ function collectCandidateGroups($: ReturnType<typeof load>, pageUrl: string, min
     // A title-only link list is commonly a tag cloud or navigation. Require
     // article evidence (heading, summary, date, image, or sufficiently rich text)
     // before making it eligible for automatic extraction.
-    // A one-item candidate is never auto-enabled; it must clear a higher
-    // article-evidence threshold before being shown in the calibration UI.
+    // Generic one-item candidates are never auto-enabled; they must clear a
+    // higher article-evidence threshold before appearing in calibration.
     const threshold = entries.length === 1 ? 2.35 : 1.9;
     if (score >= threshold) candidates.push({
       label: `${group.label}（${entries.length} ${entries.length === 1 ? "篇，单篇监测" : "篇"}）`,

@@ -37,6 +37,39 @@ describe("SourceProbe platform boundaries", () => {
     });
   });
 
+  it("accepts a single card in an explicit Blog Posts section without falling back to a publication list", async () => {
+    const html = `<section>
+      <h2 id="selected-publications">Selected Publications</h2>
+      <ol class="bibliography">
+        <li><div class="title"><a href="https://papers.example/one">A long publication title that should not become a blog card</a></div></li>
+        <li><div class="title"><a href="https://papers.example/two">Another long publication title that should not become a blog card</a></div></li>
+      </ol>
+      <h2 id="blogs">Blog Posts</h2>
+      <div class="blogs"><div class="blog-row"><div class="blog-content">
+        <div class="blog-title"><a href="/blog/2026/08/27/beyond-RL/">A Gallery of Methods Beyond RL — Part I: Sampling Methods</a></div>
+        <div class="blog-description">A tour of methods beyond reinforcement learning.</div>
+      </div><div class="blog-date">Aug 2026</div></div></div>
+    </section>`;
+    const http = {
+      getText: vi.fn().mockResolvedValue({
+        url: "https://shengyu-feng.github.io/",
+        status: 200,
+        contentType: "text/html",
+        text: html
+      })
+    };
+    const renderer = { render: vi.fn() };
+    const probe = new SourceProbe(http as any, renderer as any);
+
+    await expect(probe.probe("https://shengyu-feng.github.io/")).resolves.toMatchObject({
+      kind: "generic",
+      requiresReview: false,
+      extractionRule: { itemRootSelector: "h2#blogs + div.blogs div.blog-row" },
+      preview: [expect.objectContaining({ url: "https://shengyu-feng.github.io/blog/2026/08/27/beyond-RL/" })]
+    });
+    expect(renderer.render).not.toHaveBeenCalled();
+  });
+
   it("records an explicit archive descriptor without downloading history during Feed preview", async () => {
     const http = {
       getText: vi.fn(async (url: string) => {

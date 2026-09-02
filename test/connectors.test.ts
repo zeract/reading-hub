@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { GenericConnector, RssConnector } from "../src/main/connectors";
-import { PUBLICATION_DATE_REVISION } from "../src/main/extractor";
+import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION } from "../src/main/extractor";
 import { FEED_DISCOVERY_REVISION, RSS_METADATA_REVISION } from "../src/main/feed";
 import { ResponseTooLargeError } from "../src/main/http";
 import type { Source } from "../src/shared/types";
@@ -113,6 +113,56 @@ describe("GenericConnector", () => {
     ]));
     expect(requests).toContain("https://example.com/one");
     expect(requests).not.toContain("https://example.com/2026-08-18/two");
+  });
+
+  it("repairs an automatic bibliography rule in favour of a named one-post blog section", async () => {
+    const requests: Array<{ url: string; options: unknown }> = [];
+    const http = {
+      getText: async (url: string, options: unknown) => {
+        requests.push({ url, options });
+        return {
+          url,
+          status: 200,
+          contentType: "text/html",
+          text: `<section>
+            <h2 id="selected-publications">Selected Publications</h2>
+            <ol class="bibliography">
+              <li><div class="title"><a href="https://papers.example/one">A long publication title that should not become a blog card</a></div></li>
+              <li><div class="title"><a href="https://papers.example/two">Another long publication title that should not become a blog card</a></div></li>
+            </ol>
+            <h2 id="blogs">Blog Posts</h2>
+            <div class="blogs"><div class="blog-row"><div class="blog-content">
+              <div class="blog-title"><a href="/blog/2026/08/27/beyond-RL/">A Gallery of Methods Beyond RL — Part I: Sampling Methods</a></div>
+              <div class="blog-description">A tour of methods beyond reinforcement learning.</div>
+            </div><div class="blog-date">Aug 2026</div></div></div>
+          </section>`
+        };
+      }
+    };
+    const source: Source = {
+      id: "source", url: "https://shengyu-feng.github.io/", title: "Shengyu Feng", kind: "generic", status: "active",
+      pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1,
+      extractionRule: {
+        version: 1,
+        itemRootSelector: "li",
+        autoRepairRevision: AUTOMATIC_RULE_REVISION - 1,
+        publicationDateRevision: PUBLICATION_DATE_REVISION,
+        feedDiscoveryRevision: FEED_DISCOVERY_REVISION
+      }
+    };
+    const connector = new GenericConnector(http as any);
+
+    const outcome = await connector.fetchWithMetadata(source);
+
+    expect(outcome.entries).toEqual([
+      expect.objectContaining({
+        url: "https://shengyu-feng.github.io/blog/2026/08/27/beyond-RL/",
+        title: "A Gallery of Methods Beyond RL — Part I: Sampling Methods",
+        publishedAt: Date.UTC(2026, 7, 27)
+      })
+    ]);
+    expect(outcome.extractionRule?.itemRootSelector).toBe("h2#blogs + div.blogs div.blog-row");
+    expect(requests).toEqual([{ url: "https://shengyu-feng.github.io/", options: undefined }]);
   });
 
   it("upgrades an existing web source to a verified footer Feed", async () => {

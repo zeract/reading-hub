@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractCalibrationCandidates, extractGenericPage, extractPagePublishedAt, extractPublicationDateFromUrl } from "../src/main/extractor";
+import { AUTOMATIC_RULE_REVISION, extractCalibrationCandidates, extractGenericPage, extractPagePublishedAt, extractPublicationDateFromUrl } from "../src/main/extractor";
 import { load } from "cheerio";
 import { assertPublicUrl, canonicalizeContentUrl, canonicalizeUrl } from "../src/shared/url";
 
@@ -137,6 +137,70 @@ describe("generic-page extractor", () => {
         preview: [expect.objectContaining({ title: "A complete technical post title with enough useful detail", url: "https://jinyansu1.github.io/blog/2026/07/agent-harness/" })]
       })
     ]));
+  });
+
+  it("prioritizes an explicit one-post blog section over a publication bibliography", () => {
+    const publications = ["one", "two", "three"].map((suffix) => `<li><div class="pub-row">
+      <div class="title"><a href="https://papers.example/${suffix}">A long publication title that is not a blog article ${suffix}</a></div>
+      <div class="periodical">A research venue in 2026 with publication metadata.</div>
+    </div></li>`).join("");
+    const html = `<section>
+      <h2 id="selected-publications">Selected Publications</h2>
+      <details class="pub-details"><ol class="bibliography">${publications}</ol></details>
+      <h2 id="blogs">Blog Posts</h2>
+      <div class="blogs"><div class="blog-row">
+        <div class="blog-content">
+          <div class="blog-title"><a href="/blog/2026/08/27/beyond-RL/">A Gallery of Methods Beyond RL — Part I: Sampling Methods</a></div>
+          <div class="blog-description">A tour of methods beyond reinforcement learning.</div>
+        </div>
+        <div class="blog-date">Aug 2026</div>
+      </div></div>
+    </section>`;
+
+    const detected = extractGenericPage(html, "https://shengyu-feng.github.io/");
+    const repaired = extractGenericPage(html, "https://shengyu-feng.github.io/", {
+      version: 1,
+      autoRepairRevision: AUTOMATIC_RULE_REVISION,
+      itemRootSelector: "li"
+    });
+    const candidates = extractCalibrationCandidates(html, "https://shengyu-feng.github.io/");
+
+    expect(detected).toMatchObject({
+      fallback: false,
+      confidence: expect.any(Number),
+      rule: { itemRootSelector: "h2#blogs + div.blogs div.blog-row" },
+      entries: [{
+        title: "A Gallery of Methods Beyond RL — Part I: Sampling Methods",
+        url: "https://shengyu-feng.github.io/blog/2026/08/27/beyond-RL/",
+        summary: "A tour of methods beyond reinforcement learning."
+      }]
+    });
+    expect(detected.confidence).toBeGreaterThanOrEqual(0.75);
+    expect(repaired.entries).toEqual(detected.entries);
+    expect(repaired.rule?.itemRootSelector).toBe("h2#blogs + div.blogs div.blog-row");
+    expect(candidates[0]).toMatchObject({
+      rule: { itemRootSelector: "h2#blogs + div.blogs div.blog-row" },
+      preview: [expect.objectContaining({ url: "https://shengyu-feng.github.io/blog/2026/08/27/beyond-RL/" })]
+    });
+  });
+
+  it("keeps every direct sibling card in a named Blog Posts section", () => {
+    const html = `<main>
+      <h2 id="blog-posts">Blog Posts</h2>
+      <article><h3><a href="/posts/one">A first direct card with a descriptive title</a></h3><time datetime="2026-08-21">Aug 21, 2026</time><p>A sufficiently substantial first post summary for reliable extraction.</p></article>
+      <article><h3><a href="/posts/two">A second direct card with a descriptive title</a></h3><time datetime="2026-08-22">Aug 22, 2026</time><p>A sufficiently substantial second post summary for reliable extraction.</p></article>
+    </main>`;
+
+    const result = extractGenericPage(html, "https://example.com/");
+
+    expect(result).toMatchObject({
+      fallback: false,
+      rule: { itemRootSelector: "h2#blog-posts ~ article" },
+      entries: [
+        expect.objectContaining({ url: "https://example.com/posts/one" }),
+        expect.objectContaining({ url: "https://example.com/posts/two" })
+      ]
+    });
   });
 
   it("rejects tag clouds and takes the article heading instead of a nested tag link", () => {
