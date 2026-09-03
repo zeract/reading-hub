@@ -180,8 +180,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .reader-toolbar .reader-focus-toggle[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-wash); color: var(--accent-deep); }
 .reader-toolbar .ai-toggle { border-color: var(--line-strong); background: transparent; }
 .reader-toolbar .ai-toggle[aria-pressed="true"] { border-color: var(--ink); background: var(--ink); color: var(--paper-bright); }
-.reader-toolbar .reader-immersive-translation-toggle { display: grid; width: 28px; height: 28px; min-height: 28px; place-items: center; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; background: var(--paper); color: var(--accent-ink); font-size: 10px; letter-spacing: .03em; }
-.reader-toolbar .reader-immersive-translation-toggle:hover:not(:disabled), .reader-toolbar .reader-immersive-translation-toggle.is-active { border-color: var(--accent); background: var(--accent-wash); color: var(--accent-ink); }
 .reader-toolbar-settings { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: center; gap: 5px; }
 .reader-language-switcher { display: inline-flex; min-width: 0; max-width: 100%; align-items: center; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); }
 .reader-language-switcher button { min-width: 0; max-width: 7.5em; overflow: hidden; padding: 3px 7px; color: var(--ink-soft); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
@@ -199,10 +197,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .reader-article h1 { margin: 0; color: var(--ink); font-family: "Iowan Old Style","Songti SC","STSong",Georgia,serif; font-size: 2em; font-weight: 650; line-height: 1.16; letter-spacing: -.032em; overflow-wrap: anywhere; text-wrap: balance; }
 .reader-byline { margin: 15px 0 0; color: var(--muted); font-family: -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; font-size: .76em; line-height: 1.6; }
 .reader-content-notice { margin: 0 0 28px; padding: 11px 13px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 4px 8px 8px 4px; background: var(--selection-surface); color: var(--ink-soft); font-family: -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; font-size: .72em; font-weight: 600; line-height: 1.65; }
-.reader-immersive-status { margin: 0 0 18px; color: var(--muted); font: 600 .65em/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; }
-.reader-immersive-status button { margin-left: 8px; padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px; background: transparent; color: var(--accent-ink); font: inherit; }
-.article-body .reader-immersive-translation { margin: .32em 0 1.12em; padding-left: .78em; border-left: 2px solid var(--accent); color: var(--accent-ink); font-family: -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC",sans-serif; font-size: .84em; line-height: 1.72; white-space: pre-wrap; overflow-wrap: anywhere; }
-.article-body li > .reader-immersive-translation, .article-body td > .reader-immersive-translation, .article-body th > .reader-immersive-translation { display: block; margin: .42em 0 0; }
 
 .article-body::selection { background: rgba(79,126,168,.20); color: var(--ink); }
 .reader-selection-underlines { position: fixed; z-index: 23; pointer-events: none; }

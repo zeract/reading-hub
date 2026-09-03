@@ -68,13 +68,7 @@ describe("reader display-equation layout", () => {
     expect(styles).toMatch(/\.reader-language-switcher button\.selected\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--accent-ink\)/s);
   });
 
-  it("keeps immersive translations immediately below the matching source paragraph", () => {
-    expect(styles).toMatch(/\.reader-toolbar\s+\.reader-immersive-translation-toggle\s*\{[^}]*width:\s*28px;[^}]*height:\s*28px;[^}]*border-radius:\s*50%/s);
-    expect(styles).toMatch(/\.article-body\s+\.reader-immersive-translation\s*\{[^}]*border-left:\s*2px\s+solid\s+var\(--accent\);[^}]*white-space:\s*pre-wrap;[^}]*overflow-wrap:\s*anywhere/s);
-    expect(styles).not.toContain("reader-bilingual-layout");
-  });
-
-  it("uses a restrained native-blue palette for selection and keeps translation as a separate soft signal", () => {
+  it("uses a restrained native-blue palette for selection and local reader actions", () => {
     expect(styles).toContain("--accent: #4f7ea8;");
     expect(styles).toContain("--selection-surface: #dce8f5;");
     expect(styles).toMatch(/\.entry-card\.selected,\s*\.entry-card\.selected:hover\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--ink\)/s);

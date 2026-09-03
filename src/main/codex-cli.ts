@@ -12,14 +12,14 @@ const APP_SERVER_REQUEST_TIMEOUT_MS = 15_000;
 const APP_SERVER_IDLE_TIMEOUT_MS = 45_000;
 /** Never free a cancelled turn's slot while the App Server may still run it. */
 const APP_SERVER_INTERRUPT_DRAIN_TIMEOUT_MS = 15_000;
-/** Small multiplexing window improves translation throughput without flooding the local account. */
+/** Small multiplexing window improves local AI responsiveness without flooding the local account. */
 const APP_SERVER_MAX_CONCURRENT_TURNS = 2;
 const MAX_OUTPUT_LENGTH = 40_000;
 const MAX_STDERR_LENGTH = 4_000;
 const DESKTOP_CODEX_COMMAND = "/Applications/ChatGPT.app/Contents/Resources/codex";
 const APP_SERVER_CLIENT_INFO = { name: "reading-hub", title: "Reading Hub", version: "0.1.0" };
 /**
- * Provider settings and translation batches can ask for CLI status several
+ * Provider settings and concurrent AI requests can ask for CLI status several
  * times in quick succession.  Keep command discovery short-lived: it avoids
  * repeatedly walking every PATH entry, while a newly installed or removed CLI
  * is still noticed on the next short polling window.

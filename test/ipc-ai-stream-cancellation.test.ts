@@ -50,10 +50,12 @@ function streamPayload(requestId: string) {
     requestId,
     request: {
       provider: "codex-cli" as const,
-      task: "immersive-translation" as const,
-      translationTarget: "zh" as const,
       question: requestId,
-      translationSegments: [{ id: `segment-${requestId}`, text: "A short source paragraph." }]
+      article: {
+        title: "Test article",
+        url: "https://example.com/post",
+        text: "A short source paragraph."
+      }
     }
   };
 }

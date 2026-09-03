@@ -1102,7 +1102,7 @@ describe("article reader extraction", () => {
   it("switches only to a short-lived, author-declared language variant", async () => {
     const englishUrl = "https://xihuai18.github.io/reinforcement-learning/2025/12/01/kl-estimators-en.html";
     const chineseUrl = "https://xihuai18.github.io/reinforcement-learning/2025/12/01/kl-estimators-zh.html";
-    const bilingualEntry: Entry = { ...entry, url: englishUrl, canonicalUrl: englishUrl };
+    const languageVariantEntry: Entry = { ...entry, url: englishUrl, canonicalUrl: englishUrl };
     const getText = vi.fn(async (url: string) => {
       if (url === englishUrl) {
         return {
@@ -1123,8 +1123,8 @@ describe("article reader extraction", () => {
       { render: async () => { throw new Error("renderer must not be used"); } }
     );
 
-    const initial = await reader.read(bilingualEntry);
-    const switched = await reader.readLanguageVariant(bilingualEntry, undefined, chineseUrl);
+    const initial = await reader.read(languageVariantEntry);
+    const switched = await reader.readLanguageVariant(languageVariantEntry, undefined, chineseUrl);
 
     expect(initial.activeLanguage).toBe("en");
     expect(switched.url).toBe(chineseUrl);
@@ -1135,7 +1135,7 @@ describe("article reader extraction", () => {
       expect.objectContaining({ url: chineseUrl, language: "zh" })
     ]));
     const callsBeforeRejectedSwitch = getText.mock.calls.length;
-    await expect(reader.readLanguageVariant(bilingualEntry, undefined, "https://untrusted.example/translation")).rejects.toThrow("语言版本已过期或不可用");
+    await expect(reader.readLanguageVariant(languageVariantEntry, undefined, "https://untrusted.example/translation")).rejects.toThrow("语言版本已过期或不可用");
     expect(getText).toHaveBeenCalledTimes(callsBeforeRejectedSwitch);
   });
 

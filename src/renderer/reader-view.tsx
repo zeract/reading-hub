@@ -1,13 +1,10 @@
-import { type CSSProperties, type FormEvent, type KeyboardEvent, type RefObject, type SyntheticEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type FormEvent, type KeyboardEvent, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AiArticleContext, AiProviderId, AiProviderSettings, AiSelectionContext, AiSelectionIntent, Entry, ReaderArticle, Source } from "../shared/types";
 import { AiMarkdownContent } from "./ai-markdown";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { buildAiArticleContext, collectAiArticleText } from "./ai-request";
 import { newAiRequestId, useAiStreamSubscription, useAiTextStream } from "./ai-stream";
-import { cancelScheduledAnimationFrame, scheduleAnimationFrame } from "./animation-frame";
-import { bilingualTranslationLabel, bilingualTranslationQuestion, bilingualTranslationTarget } from "./bilingual-translation";
 import { errorMessage } from "./errors";
-import { DEFAULT_IMMERSIVE_TRANSLATION_CONCURRENCY, ImmersiveTranslationRunController, applyImmersiveTranslationPatches, createImmersiveTranslationPlan, createImmersiveTranslationStreamParser, discardImmersiveTranslationSegments, dispatchImmersiveTranslationBatches, indexImmersiveTranslationSourceElements, missingCompletedImmersiveTranslationSegments, prioritiseImmersiveTranslationBatches, prioritiseImmersiveTranslationSegmentsForViewport, readImmersiveTranslationCache, translationSegmentsForBatch, writeImmersiveTranslationCache, type ImmersiveTranslationBatch, type ImmersiveTranslationSegment } from "./immersive-translation";
 import { adjustReaderFontScale, loadReaderPreferences, saveReaderPreferences, type ReaderPreferences, type ReaderPreset } from "./reader-preferences";
 import { LatestRequestGuard } from "./request-guard";
 import { normaliseSelectedArticleText, selectedTextLabel, selectionActionQuestion, selectionContext, selectionOverlay, type SelectionOverlay, type SelectionRect } from "./selection-actions";
@@ -82,7 +79,6 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   const [favoriteUpdating, setFavoriteUpdating] = useState(false);
   const [languageSwitching, setLanguageSwitching] = useState<string>();
   const [languageSwitchError, setLanguageSwitchError] = useState<string>();
-  const [bilingualOpen, setBilingualOpen] = useState(false);
   const articleBodyElement = useRef<HTMLDivElement>(null);
   const readerWorkspaceElement = useRef<HTMLDivElement>(null);
   const articleRequestGuard = useRef(new LatestRequestGuard());
@@ -123,7 +119,6 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
     setSelectionQuestion("");
     setLanguageSwitching(undefined);
     setLanguageSwitchError(undefined);
-    setBilingualOpen(false);
   }, [entry.id]);
   useEffect(() => {
     if (!imagePreview && !textSelection) return;
@@ -258,7 +253,6 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
       setImagePreview(undefined);
       setTextSelection(undefined);
       setSelectionQuestion("");
-      setBilingualOpen(false);
       // An answer may quote the previous-language document, so do not retain
       // a stale assistant panel across an article-version switch.
       setAssistantState("closed");
@@ -287,11 +281,6 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   const toggleAssistant = () => {
     if (!article) return;
     setAssistantState((state) => state === "open" ? "minimized" : "open");
-  };
-  const toggleBilingual = () => {
-    if (!article) return;
-    if (!bilingualOpen && assistantState === "open") setAssistantState("minimized");
-    setBilingualOpen((open) => !open);
   };
   const assistantVisible = assistantState === "open";
   const assistantMounted = assistantState !== "closed";
@@ -330,7 +319,6 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
         {languageSwitchError && <span className="reader-language-error" role="status" title={languageSwitchError}>{languageSwitchError}</span>}
       </div>
       <div className="reader-toolbar-actions">
-        <button type="button" className={`reader-immersive-translation-toggle${bilingualOpen ? " is-active" : ""}`} aria-pressed={bilingualOpen} aria-label={bilingualOpen ? "关闭沉浸翻译" : "打开沉浸翻译"} title={bilingualOpen ? "关闭沉浸翻译" : "打开沉浸翻译"} disabled={!article} onClick={toggleBilingual}>译</button>
         <button type="button" className={`toolbar-icon-button favorite-button${entry.favorite ? " is-favorite" : ""}`} aria-pressed={entry.favorite} aria-label={entry.favorite ? "取消收藏" : "收藏文章"} title={entry.favorite ? "取消收藏" : "收藏文章"} disabled={favoriteUpdating} onClick={() => void toggleFavorite()}>{entry.favorite ? "★" : "☆"}</button>
         <button type="button" className="toolbar-icon-button ai-toggle" aria-pressed={assistantVisible} aria-label={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} title={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} disabled={!article} onClick={toggleAssistant}>✦</button>
         <button type="button" className="toolbar-icon-button reader-focus-toggle" aria-pressed={readerOnly} aria-label={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} title={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} onClick={onToggleReaderOnly}>⛶</button>
@@ -351,14 +339,7 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
                 const image = event.currentTarget.querySelector("img");
                 if (image) previewImage(image);
               }} aria-label="放大封面图片"><img className="reader-cover" src={article.coverImageUrl} alt="" onError={handleContentError} /></button>}
-              {bilingualOpen ? <ImmersiveTranslationBody
-              key={article.url}
-              article={article}
-              preferredProviderId={preferredAiProviderId}
-              onOpenSettings={onOpenSettings}
-              bodyRef={articleBodyElement}
-              onClick={handleContentClick} onKeyDown={handleContentKeyDown} onKeyUp={captureArticleSelection} onMouseUp={captureArticleSelection} onError={handleContentError}
-            /> : <div ref={articleBodyElement} className="article-body" onClick={handleContentClick} onKeyDown={handleContentKeyDown} onKeyUp={captureArticleSelection} onMouseUp={captureArticleSelection} onError={handleContentError} dangerouslySetInnerHTML={{ __html: article.contentHtml }} />}
+              <div ref={articleBodyElement} className="article-body" onClick={handleContentClick} onKeyDown={handleContentKeyDown} onKeyUp={captureArticleSelection} onMouseUp={captureArticleSelection} onError={handleContentError} dangerouslySetInnerHTML={{ __html: article.contentHtml }} />
           </div>
         </article>}
       </div>
@@ -398,297 +379,6 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
     </div>
     {imagePreview && <ImagePreview image={imagePreview} onClose={() => setImagePreview(undefined)} />}
   </section>;
-}
-
-type ImmersiveTranslationBatchResult = {
-  ok: boolean;
-  missingSegments: readonly ImmersiveTranslationSegment[];
-};
-
-type ActiveImmersiveTranslationRequest = {
-  parser: ReturnType<typeof createImmersiveTranslationStreamParser>;
-  resolve: (result: ImmersiveTranslationBatchResult) => void;
-  /** Releases background work only after the first source line can be shown. */
-  resolveFirstTranslation?: () => void;
-  firstTranslationSeen: boolean;
-  segments: readonly ImmersiveTranslationSegment[];
-  /** Immutable ownership stops a late old-language event from reaching a new run. */
-  runId: number;
-  cacheScope: string;
-  target: "zh" | "en";
-};
-
-function ImmersiveTranslationBody({ article, preferredProviderId, onOpenSettings, bodyRef, ...handlers }: {
-  article: ReaderArticle;
-  preferredProviderId: AiProviderId;
-  onOpenSettings: () => void;
-  bodyRef: RefObject<HTMLDivElement | null>;
-  onClick: (event: SyntheticEvent<HTMLElement>) => void;
-  onKeyDown: (event: KeyboardEvent<HTMLElement>) => void;
-  onKeyUp: () => void;
-  onMouseUp: () => void;
-  onError: (event: SyntheticEvent<HTMLElement>) => void;
-}) {
-  const [providers, setProviders] = useState<AiProviderSettings[]>([]);
-  const [providerError, setProviderError] = useState<string>();
-  const [busy, setBusy] = useState(false);
-  const [retry, setRetry] = useState(0);
-  const plan = useMemo(() => createImmersiveTranslationPlan(article.contentHtml), [article.contentHtml]);
-  const target = bilingualTranslationTarget(article.activeLanguage);
-  const active = useRef(new Map<string, ActiveImmersiveTranslationRequest>());
-  const translationRun = useRef(new ImmersiveTranslationRunController());
-  const translationsRef = useRef(new Map<string, string>());
-  const sourceElements = useRef(new Map<string, HTMLElement>());
-  const pendingTranslationPatchIds = useRef(new Set<string>());
-  const renderFrame = useRef<number | undefined>(undefined);
-  const provider = useMemo(() => providers.find((item) => item.id === preferredProviderId && item.configured)
-    || providers.find((item) => item.configured), [preferredProviderId, providers]);
-  const cacheScope = provider ? `v1:${provider.id}:${provider.model}:${provider.effort || "default"}` : "v1:unconfigured";
-  const targetLabel = bilingualTranslationLabel(target);
-
-  const cancelRunRequests = useCallback((runId: number) => {
-    for (const [requestId, request] of active.current) {
-      if (request.runId !== runId) continue;
-      // This promise is only the renderer's local coordination point. The
-      // main process independently drains a local Codex turn before releasing
-      // its provider capacity.
-      active.current.delete(requestId);
-      void window.reader.cancelAiStream(requestId).catch(() => undefined);
-      request.resolve({ ok: false, missingSegments: [] });
-    }
-  }, []);
-
-  // Passive-effect cleanup happens after React has already installed the
-  // listener for the next render. Invalidate and cancel synchronously during
-  // the layout phase so an old article/language event cannot write into the
-  // newly selected provider/language cache in that narrow interval.
-  useLayoutEffect(() => {
-    const runId = translationRun.current.begin();
-    return () => {
-      if (!translationRun.current.owns(runId)) return;
-      translationRun.current.invalidate(runId);
-      cancelRunRequests(runId);
-      cancelScheduledAnimationFrame(renderFrame.current);
-      renderFrame.current = undefined;
-      pendingTranslationPatchIds.current.clear();
-    };
-  }, [cacheScope, cancelRunRequests, plan, retry, target]);
-
-  // The reader body is static for one plan. Index source blocks exactly once
-  // after React mounts its sanitised HTML, then let stream frames touch only
-  // changed ids instead of making React reconcile a growing translation map.
-  useLayoutEffect(() => {
-    const root = bodyRef.current;
-    sourceElements.current = root ? indexImmersiveTranslationSourceElements(root, plan) : new Map();
-    return () => {
-      sourceElements.current = new Map();
-      pendingTranslationPatchIds.current.clear();
-    };
-  }, [bodyRef, plan]);
-
-  const publishTranslationPatches = useCallback((changedIds?: Iterable<string>, immediate = false) => {
-    if (changedIds) {
-      for (const id of changedIds) pendingTranslationPatchIds.current.add(id);
-    } else {
-      // An initial cache restore or language switch must also remove any old
-      // sibling translation nodes that no longer belong to this plan.
-      for (const { id } of plan.segments) pendingTranslationPatchIds.current.add(id);
-    }
-    const flush = () => {
-      const root = bodyRef.current;
-      const ids = new Set(pendingTranslationPatchIds.current);
-      pendingTranslationPatchIds.current.clear();
-      if (!root || !ids.size) return;
-      applyImmersiveTranslationPatches(root, plan, translationsRef.current, {
-        targetLanguage: target,
-        changedIds: ids,
-        sourceElements: sourceElements.current
-      });
-    };
-    if (immediate) {
-      cancelScheduledAnimationFrame(renderFrame.current);
-      renderFrame.current = undefined;
-      flush();
-      return;
-    }
-    if (renderFrame.current !== undefined) return;
-    renderFrame.current = scheduleAnimationFrame(() => {
-      renderFrame.current = undefined;
-      flush();
-    });
-  }, [bodyRef, plan, target]);
-
-  const mergeTranslationProgress = useCallback((progress: ReturnType<ReturnType<typeof createImmersiveTranslationStreamParser>["push"]>) => {
-    const changedIds = new Set<string>();
-    for (const [id, text] of progress.changedTranslations) {
-      if (translationsRef.current.get(id) === text) continue;
-      translationsRef.current.set(id, text);
-      changedIds.add(id);
-    }
-    return changedIds;
-  }, []);
-
-  useAiStreamSubscription((event) => {
-    const current = active.current.get(event.requestId);
-    if (!current) return;
-    if (!translationRun.current.owns(current.runId)) {
-      active.current.delete(event.requestId);
-      current.resolve({ ok: false, missingSegments: [] });
-      return;
-    }
-    if (event.type === "delta") {
-      const progress = current.parser.push(event.text);
-      const changedIds = mergeTranslationProgress(progress);
-      if (!current.firstTranslationSeen && progress.translations.size > 0) {
-        current.firstTranslationSeen = true;
-        current.resolveFirstTranslation?.();
-      }
-      publishTranslationPatches(changedIds);
-      return;
-    }
-    if (event.type === "complete") {
-      current.parser.reset();
-      const progress = current.parser.push(event.answer.text);
-      const changedIds = mergeTranslationProgress(progress);
-      if (!current.firstTranslationSeen && progress.translations.size > 0) {
-        current.firstTranslationSeen = true;
-        current.resolveFirstTranslation?.();
-      }
-      writeImmersiveTranslationCache(current.cacheScope, current.target, current.segments, progress.translations, progress.completeIds);
-      const missingSegments = missingCompletedImmersiveTranslationSegments(current.segments, progress);
-      for (const id of discardImmersiveTranslationSegments(translationsRef.current, missingSegments)) {
-        changedIds.add(id);
-      }
-      publishTranslationPatches(changedIds, true);
-      current.resolveFirstTranslation?.();
-      active.current.delete(event.requestId);
-      current.resolve({ ok: missingSegments.length === 0, missingSegments });
-      return;
-    }
-    const changedIds = discardImmersiveTranslationSegments(translationsRef.current, current.segments);
-    publishTranslationPatches(changedIds, true);
-    setProviderError(event.message);
-    current.resolveFirstTranslation?.();
-    active.current.delete(event.requestId);
-    current.resolve({ ok: false, missingSegments: [] });
-  });
-
-  useEffect(() => {
-    let current = true;
-    void window.reader.listAiProviders()
-      .then((next) => { if (current) setProviders(next); })
-      .catch((reason) => { if (current) setProviderError(errorMessage(reason)); });
-    return () => { current = false; };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const runId = translationRun.current.current;
-    const belongsToCurrentRun = () => !cancelled && translationRun.current.owns(runId);
-    const cached = readImmersiveTranslationCache(cacheScope, target, plan.segments);
-    translationsRef.current = cached;
-    publishTranslationPatches(undefined, true);
-    setProviderError(undefined);
-    setBusy(false);
-    if (!provider) { setProviderError("尚未配置可用的 AI 服务。"); return; }
-    const scrollViewport = bodyRef.current?.closest(".reader-scroll")?.getBoundingClientRect();
-    const visibleFirst = scrollViewport
-      ? prioritiseImmersiveTranslationSegmentsForViewport(
-        plan.segments.filter((segment) => !cached.has(segment.id)),
-        sourceElements.current,
-        { top: scrollViewport.top, bottom: scrollViewport.bottom }
-      )
-      : plan.segments.filter((segment) => !cached.has(segment.id));
-    const dispatch = prioritiseImmersiveTranslationBatches(visibleFirst);
-    if (!dispatch.foreground) {
-      if (!plan.segments.length) setProviderError("当前文章没有可供翻译的正文段落。");
-      return;
-    }
-    setBusy(true);
-    void (async () => {
-      const runBatch = async (
-        batch: ImmersiveTranslationBatch,
-        resolveFirstTranslation?: () => void
-      ): Promise<ImmersiveTranslationBatchResult> => new Promise<ImmersiveTranslationBatchResult>((resolve) => {
-        if (!belongsToCurrentRun()) {
-          resolve({ ok: false, missingSegments: [] });
-          return;
-        }
-        const id = newAiRequestId();
-        const request: ActiveImmersiveTranslationRequest = {
-          parser: createImmersiveTranslationStreamParser(batch.segments.map((segment) => segment.id)),
-          resolve,
-          resolveFirstTranslation,
-          firstTranslationSeen: false,
-          segments: batch.segments,
-          runId,
-          cacheScope,
-          target
-        };
-        active.current.set(id, request);
-        void window.reader.startAiStream({
-          requestId: id,
-          request: {
-            provider: provider.id,
-            task: "immersive-translation",
-            translationTarget: target,
-            question: bilingualTranslationQuestion(target),
-            translationSegments: translationSegmentsForBatch(batch)
-          }
-        }).catch((reason) => {
-          if (active.current.get(id) !== request) return;
-          active.current.delete(id);
-          const changedIds = discardImmersiveTranslationSegments(translationsRef.current, request.segments);
-          publishTranslationPatches(changedIds, true);
-          if (belongsToCurrentRun()) setProviderError(errorMessage(reason));
-          resolveFirstTranslation?.();
-          resolve({ ok: false, missingSegments: [] });
-        });
-      });
-
-      // A provider may terminate a long tagged response early. Keep already
-      // complete lines, then retry only missing ids one at a time. This is
-      // rare on the fast path and prevents silently marking a partial article
-      // as translated when an output-token cap is reached.
-      const runBatchWithRecovery = async (
-        batch: ImmersiveTranslationBatch,
-        resolveFirstTranslation?: () => void
-      ): Promise<boolean> => {
-        const initial = await runBatch(batch, resolveFirstTranslation);
-        if (initial.ok || !initial.missingSegments.length || !belongsToCurrentRun()) return initial.ok;
-        for (const segment of initial.missingSegments) {
-          const retry: ImmersiveTranslationBatch = {
-            index: batch.index,
-            segments: [segment],
-            characterCount: segment.sourceText.length
-          };
-          const recovered = await runBatch(retry);
-          if (!recovered.ok || !belongsToCurrentRun()) return false;
-        }
-        return true;
-      };
-      const completed = await dispatchImmersiveTranslationBatches(dispatch, {
-        concurrency: DEFAULT_IMMERSIVE_TRANSLATION_CONCURRENCY,
-        isCancelled: () => !belongsToCurrentRun(),
-        runForeground: (batch, onFirstTranslation) => runBatchWithRecovery(batch, onFirstTranslation),
-        runBackground: (batch) => runBatchWithRecovery(batch)
-      });
-      if (belongsToCurrentRun() && !completed) setProviderError((current) => current || "沉浸翻译暂时中断，缺失段落可点击重试。");
-      if (belongsToCurrentRun()) setBusy(false);
-    })();
-    return () => {
-      cancelled = true;
-      cancelRunRequests(runId);
-      cancelScheduledAnimationFrame(renderFrame.current);
-      renderFrame.current = undefined;
-      pendingTranslationPatchIds.current.clear();
-    };
-  }, [cacheScope, cancelRunRequests, plan, provider?.id, retry, target, publishTranslationPatches]);
-
-  return <>
-    <p className="reader-immersive-status" role="status">{busy ? `正在快速生成${targetLabel}…` : providerError || (plan.truncated ? `为保持流畅，已限制本页翻译范围（${plan.segments.length} 段）。` : "译文仅在本次阅读中显示。")} {providerError && <><button type="button" onClick={() => setRetry((value) => value + 1)}>重试</button><button type="button" onClick={onOpenSettings}>AI 设置</button></>}</p>
-    <div ref={bodyRef} className="article-body" {...handlers} dangerouslySetInnerHTML={{ __html: plan.annotatedHtml }} />
-  </>;
 }
 
 function SelectionAssistantCard({ request, overlay, article, sourceTitle, preferredProviderId, onClose, onOpenSettings }: {

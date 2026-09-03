@@ -95,48 +95,9 @@ describe("IPC input validation", () => {
       request: { ...translation.request, article: { title: "文章标题", text: "不应上传的正文" } }
     };
     expect(() => parseAiStreamRequest(withArticleContext)).toThrow("翻译请求不应包含文章上下文");
-  });
-
-  it("accepts only an explicit, bounded full-article translation task", () => {
-    const translation = {
-      requestId: "article_translation_123",
-      request: {
-        provider: "codex-cli",
-        question: "将当前文章翻译为中文。",
-        task: "article-translation",
-        translationTarget: "zh",
-        article: { title: "文章", url: "https://example.com/post", text: "正文", translationMarkdown: "# 正文" }
-      }
-    };
-
-    expect(parseAiStreamRequest(translation)).toEqual(translation);
     expect(() => parseAiStreamRequest({
       ...translation,
-      request: { ...translation.request, translationTarget: undefined }
-    })).toThrow("请选择全文翻译语言");
-    expect(() => parseAiStreamRequest({
-      ...translation,
-      request: { ...translation.request, translationTarget: "fr" }
-    })).toThrow("全文翻译语言无效");
-    expect(() => parseAiStreamRequest({
-      ...translation,
-      request: { ...translation.request, article: undefined }
-    })).toThrow("AI 文章上下文无效");
-    expect(() => parseAiStreamRequest({
-      ...translation,
-      request: { ...translation.request, article: { ...translation.request.article, translationMarkdown: undefined } }
-    })).toThrow("全文翻译正文无效");
-    expect(() => parseAiStreamRequest({
-      ...translation,
-      request: { ...translation.request, selection: { intent: "translate", text: "不应携带所选文字" } }
-    })).toThrow("全文翻译不应包含所选文字");
-    expect(() => parseAiStreamRequest({
-      ...translation,
-      request: { ...translation.request, task: "unknown" }
-    })).toThrow("AI 任务无效");
-    expect(() => parseAiStreamRequest({
-      ...translation,
-      request: { ...translation.request, task: "answer" }
-    })).toThrow("全文翻译语言只能用于全文翻译任务");
+      request: { ...translation.request, task: "immersive-translation", translationTarget: "zh", translationSegments: [{ id: "line-1", text: "旧请求" }] }
+    })).toThrow("内置双语翻译已移除");
   });
 });
