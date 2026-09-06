@@ -9,6 +9,7 @@ import {
 } from "../shared/ai-input";
 import { CodexCliError, LocalCodexCli, type CodexCliRunner } from "./codex-cli";
 import { abortError, combineAbortSignals, throwIfAborted } from "./cancellation";
+import { KeyedTaskQueue } from "./keyed-task-queue";
 import { CODEX_CLI_MODEL_OPTIONS } from "../shared/types";
 import type {
   AiAnswer,
@@ -51,6 +52,8 @@ export type AiDeltaListener = (text: string) => void;
  * bounded plain-text article excerpt to the selected provider.
  */
 export class AiService {
+  private readonly configurationTasks = new KeyedTaskQueue();
+
   constructor(
     private readonly secrets: AiSecretStore,
     private readonly fetcher: AiFetch = fetch,
@@ -87,6 +90,11 @@ export class AiService {
   }
 
   async configure(input: AiProviderConfiguration): Promise<AiProviderSettings> {
+    const configuration = { ...input };
+    return this.configurationTasks.run(configuration.provider, () => this.configureProvider(configuration));
+  }
+
+  private async configureProvider(input: AiProviderConfiguration): Promise<AiProviderSettings> {
     const provider = getProvider(input.provider);
     if (!provider.requiresApiKey) {
       const status = await this.codexCli.status();
@@ -104,7 +112,7 @@ export class AiService {
         availabilityMessage: status.available ? "本机 Codex App Server 使用自己的登录会话；模型与推理强度只会传给本机 Codex。" : "未检测到本机 Codex。"
       };
     }
-    const previous = await this.getStoredConfiguration(input.provider);
+    const previous = await this.readStoredConfiguration(input.provider);
     const apiKey = input.apiKey?.trim() || previous?.apiKey;
     const model = normaliseModel(input.model || previous?.model || provider.defaultModel);
     if (!apiKey) throw new AiServiceError("请先输入 API Key；密钥只会保存到 macOS Keychain。");
@@ -113,7 +121,8 @@ export class AiService {
   }
 
   async clear(providerId: AiProviderId): Promise<void> {
-    await this.secrets.clearConnectorSecret(this.keychainAccount(providerId));
+    getProvider(providerId);
+    await this.configurationTasks.run(providerId, () => this.secrets.clearConnectorSecret(this.keychainAccount(providerId)));
   }
 
   /** The sole answer path emits text only, never provider events or diagnostics. */
@@ -126,7 +135,8 @@ export class AiService {
     const instruction = learningInstruction();
     if (request.provider === "codex-cli") {
       try {
-        const configuration = await this.getCodexConfiguration();
+        const configuration = await this.getCodexConfiguration(signal);
+        throwIfAborted(signal, "AI 请求已取消。");
         const options = codexOptions(configuration);
         const text = this.codexCli.askStream
           ? await callCodexStream(this.codexCli, instruction, prompt, options, onDelta, signal)
@@ -134,12 +144,14 @@ export class AiService {
         if (!text.trim()) throw new AiServiceError("本机 Codex 没有返回可显示的回答，请调整问题后重试。");
         return { provider: request.provider, model: describeCodexSelection(configuration), text: text.trim() };
       } catch (error) {
+        throwIfAborted(signal, "AI 请求已取消。");
         if (error instanceof AiServiceError) throw error;
         if (error instanceof CodexCliError) throw new AiServiceError(error.message);
         throw new AiServiceError("本机 Codex 未能完成回答，请稍后重试。");
       }
     }
-    const configuration = await this.getStoredConfiguration(request.provider);
+    const configuration = await this.getStoredConfiguration(request.provider, signal);
+    throwIfAborted(signal, "AI 请求已取消。");
     if (!configuration?.apiKey) throw new AiServiceError(`请先配置 ${provider.label} 的 API Key。`);
     const answer = request.provider === "openai"
       ? await this.askOpenAiStream(requiredEndpoint(provider), configuration, prompt, instruction, onDelta, signal)
@@ -226,7 +238,12 @@ export class AiService {
     }
   }
 
-  private async getStoredConfiguration(provider: AiProviderId): Promise<StoredAiConfiguration | undefined> {
+  private getStoredConfiguration(provider: AiProviderId, signal?: AbortSignal): Promise<StoredAiConfiguration | undefined> {
+    return this.configurationTasks.run(provider, () => this.readStoredConfiguration(provider), signal);
+  }
+
+  /** Call only while holding this provider's configuration queue slot. */
+  private async readStoredConfiguration(provider: AiProviderId): Promise<StoredAiConfiguration | undefined> {
     const value = await this.secrets.getConnectorSecret(this.keychainAccount(provider));
     if (!value) return undefined;
     try {
@@ -238,14 +255,16 @@ export class AiService {
     }
   }
 
-  private async getCodexConfiguration(): Promise<StoredCodexConfiguration> {
-    const value = await this.secrets.getConnectorSecret(this.keychainAccount("codex-cli"));
-    if (!value) return { model: CODEX_DEFAULT_MODEL, effort: CODEX_DEFAULT_EFFORT };
-    try {
-      return normaliseCodexConfiguration(JSON.parse(value) as Partial<StoredCodexConfiguration>);
-    } catch {
-      return { model: CODEX_DEFAULT_MODEL, effort: CODEX_DEFAULT_EFFORT };
-    }
+  private getCodexConfiguration(signal?: AbortSignal): Promise<StoredCodexConfiguration> {
+    return this.configurationTasks.run("codex-cli", async () => {
+      const value = await this.secrets.getConnectorSecret(this.keychainAccount("codex-cli"));
+      if (!value) return { model: CODEX_DEFAULT_MODEL, effort: CODEX_DEFAULT_EFFORT };
+      try {
+        return normaliseCodexConfiguration(JSON.parse(value) as Partial<StoredCodexConfiguration>);
+      } catch {
+        return { model: CODEX_DEFAULT_MODEL, effort: CODEX_DEFAULT_EFFORT };
+      }
+    }, signal);
   }
 
   private keychainAccount(provider: AiProviderId): string {
