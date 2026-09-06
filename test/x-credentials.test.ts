@@ -19,7 +19,7 @@ function fixture(fetcher: (url: string, init?: RequestInit) => Promise<Response>
   };
   const connector = new XConnector(database, secrets, async () => undefined, fetcher);
   const context = { source, subscription: database.getSubscriptionForSource(source.id)!, account };
-  return { database, account, secrets, connector, context, replace: (value: object) => { raw = JSON.stringify(value); } };
+  return { database, account, secrets, connector, context, replace: (value: unknown) => { raw = JSON.stringify(value); } };
 }
 
 const refreshed = () => new Response(JSON.stringify({ access_token: "fixture-new", refresh_token: "fixture-next", expires_in: 3600 }));
@@ -196,4 +196,123 @@ describe("X account credentials", () => {
       expect(f.database.getAccount(f.account.id)).toMatchObject({ displayName: "X · @new-name", config: { clientId: "fixture-new-client" }, status: "active" });
     } finally { f.database.close(); }
   });
+
+  it.each([
+    { access_token: 123, refresh_token: "fixture-next", expires_in: 3600 },
+    { access_token: "fixture-new", refresh_token: {}, expires_in: 3600 },
+    { access_token: "fixture-new", expires_in: -1 },
+    { access_token: "fixture-new", expires_in: "3600" },
+    null, [], {}, { access_token: "fixture-new", expires_in: null },
+    { access_token: "fixture-new", expires_in: Number.MAX_SAFE_INTEGER },
+    { access_token: "fixture-new", expires_in: 1.5 },
+    { access_token: "fixture-new", refresh_token: null },
+    { access_token: "fixture-new", token_type: "unexpected" },
+    { access_token: "fixture-new", error: "fixture-private-details" },
+    { access_token: "fixture-token with whitespace" }
+  ])("does not overwrite usable refresh credentials with malformed HTTP 200 data: %j", async (payload) => {
+    const fetcher = vi.fn(async (url: string) => url.endsWith("/oauth2/token") ? new Response(JSON.stringify(payload)) : empty());
+    const f = fixture(fetcher);
+    try {
+      const before = await f.secrets.getConnectorSecret();
+      await expect(f.connector.sync(f.context)).rejects.toThrow("令牌响应无效");
+      expect(f.secrets.setConnectorSecret).not.toHaveBeenCalled();
+      expect(await f.secrets.getConnectorSecret()).toBe(before);
+      expect(f.database.getAccount(f.account.id)?.status).toBe("active");
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally { f.database.close(); }
+  });
+
+  it("retains the current refresh token when a successful refresh does not rotate it", async () => {
+    const f = fixture(async (url) => url.endsWith("/oauth2/token")
+      ? new Response(JSON.stringify({ access_token: "fixture-new", expires_in: 3600 })) : empty());
+    try {
+      await f.connector.sync(f.context);
+      expect(JSON.parse((await f.secrets.getConnectorSecret())!)).toMatchObject({ accessToken: "fixture-new", refreshToken: "fixture-refresh" });
+    } finally { f.database.close(); }
+  });
+
+  it("treats an explicit zero expiry as expired instead of an unlimited token", async () => {
+    const fetcher = vi.fn(async (url: string) => url.endsWith("/oauth2/token") ? refreshed() : empty());
+    const f = fixture(fetcher);
+    f.replace({ accessToken: "fixture-old", refreshToken: "fixture-refresh", expiresAt: 0 });
+    try {
+      await f.connector.sync(f.context);
+      expect(f.secrets.setConnectorSecret).toHaveBeenCalledTimes(1);
+      expect(fetcher.mock.calls[0][0]).toContain("/oauth2/token");
+    } finally { f.database.close(); }
+  });
+
+
+  it.each([
+    null, [], "fixture-private-details", {}, { accessToken: 123 },
+    { accessToken: "fixture-old", refreshToken: {} }, { accessToken: "fixture-old", expiresAt: "invalid" },
+    { accessToken: "fixture-old", expiresAt: null }, { accessToken: "fixture-old", expiresAt: -1 },
+    { accessToken: "fixture-token with whitespace" }
+  ])("rejects malformed stored credentials before any network request: %j", async (stored) => {
+    const fetcher = vi.fn(async () => empty());
+    const f = fixture(fetcher);
+    f.replace(stored);
+    try {
+      const before = await f.secrets.getConnectorSecret();
+      const error = await f.connector.sync(f.context).catch((failure) => failure);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toBe("X 本地授权信息无法读取，请重新连接 X。");
+      expect(error.cause).toBeUndefined();
+      expect(error.stack).not.toContain("fixture-private-details");
+      expect(f.database.getAccount(f.account.id)?.status).toBe("error");
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(f.secrets.setConnectorSecret).not.toHaveBeenCalled();
+      expect(await f.secrets.getConnectorSecret()).toBe(before);
+    } finally { f.database.close(); }
+  });
+
+  it("stores a zero lifetime as an explicit deadline", async () => {
+    const f = fixture(async (url) => url.endsWith("/oauth2/token")
+      ? new Response(JSON.stringify({ access_token: "fixture-new", token_type: "Bearer", expires_in: 0 })) : empty());
+    try {
+      const started = Date.now();
+      await f.connector.sync(f.context);
+      const stored = JSON.parse((await f.secrets.getConnectorSecret())!);
+      expect(stored.expiresAt).toBeGreaterThanOrEqual(started);
+      expect(stored.expiresAt).toBeLessThanOrEqual(Date.now());
+      expect(stored.refreshToken).toBe("fixture-refresh");
+    } finally { f.database.close(); }
+  });
+
+  it("reuses a retained refresh token after connector restart and replaces it only on rotation", async () => {
+    let refreshes = 0;
+    const fetcher = async (url: string, init?: RequestInit) => {
+      if (!url.endsWith("/oauth2/token")) return empty();
+      expect((init?.body as URLSearchParams).get("refresh_token")).toBe("fixture-refresh");
+      refreshes += 1;
+      return refreshes === 1 ? new Response(JSON.stringify({ access_token: "fixture-first", expires_in: 3600 })) : refreshed();
+    };
+    const f = fixture(fetcher);
+    try {
+      await f.connector.sync(f.context);
+      f.replace({ ...JSON.parse((await f.secrets.getConnectorSecret())!), expiresAt: 0 });
+      const restarted = new XConnector(f.database, f.secrets, async () => undefined, fetcher);
+      await restarted.sync(f.context);
+      expect(refreshes).toBe(2);
+      expect(JSON.parse((await f.secrets.getConnectorSecret())!)).toMatchObject({ accessToken: "fixture-new", refreshToken: "fixture-next" });
+    } finally { f.database.close(); }
+  });
+
+  it("recovers after a malformed token response without persisting remote diagnostic fields", async () => {
+    let requests = 0;
+    const f = fixture(async (url) => url.endsWith("/oauth2/token")
+      ? ++requests === 1 ? new Response(JSON.stringify({ access_token: { detail: "fixture-private-details" } })) : refreshed()
+      : empty());
+    try {
+      const error = await f.connector.sync(f.context).catch((failure) => failure);
+      expect(error.message).toContain("令牌响应无效");
+      expect(error.message).not.toContain("fixture-private-details");
+      expect(error.cause).toBeUndefined();
+      expect(error.status).toBeUndefined();
+      await f.connector.sync(f.context);
+      expect(f.secrets.setConnectorSecret).toHaveBeenCalledTimes(1);
+      expect(f.database.getAccount(f.account.id)?.status).toBe("active");
+    } finally { f.database.close(); }
+  });
+
 });

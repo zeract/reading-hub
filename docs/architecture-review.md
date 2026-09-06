@@ -170,3 +170,13 @@ OPML 先验证并整理合法输入，再将接受的全部订阅作为一个事
 这一边界参考 [X 分页文档](https://docs.x.com/x-api/fundamentals/pagination)、[时间线零结果分页说明](https://docs.x.com/x-api/posts/timelines/integrate)和 [HTTP 200 部分错误说明](https://docs.x.com/x-api/fundamentals/response-codes-and-errors)。当前请求未使用额外资源展开；含部分错误的响应按整页失败处理并保留原断点。如果远端持续返回部分错误，来源会继续退避，不会自动跳过受影响记录。固定格式错误不携带远端字段或 HTTP 401 状态，避免泄露响应内容或误使账号失效。
 
 验证：新增 27 项确定性测试，覆盖关注流/单作者待续页、缓存列表保留、部分错误、畸形记录/元数据、真实空页及带游标的零结果页、无效授权响应不写 Keychain，以及临时 SQLite 中失败退避、重启后原断点续传和恢复成功。既有新增、去重、排序、分页恢复、取消和令牌并发测试随全量运行通过。全量 `npm test` 为 68 个文件、543 项通过；`npm run build`、`git diff --check` 通过，既有 renderer chunk 提示保留。测试没有真实令牌或外部账号请求；未修改阅读器、布局或正文处理，未重复执行 reader、style、visual 审计。无需数据库迁移，需要重启开发应用。
+
+## 后续迭代：X 令牌结构与可选轮换
+
+2026-09-07 检查令牌生命周期发现，OAuth 200 响应仅检查 access token 的真假值，就可能把错误类型的 access/refresh token 或非法到期时间写入 Keychain；本地 JSON 读取也只做类型断言。刷新响应没有返回新 refresh token 时，原刷新令牌会被覆盖丢失；`expiresAt: 0` 与 `expires_in: 0` 又因真假值判断被误当成未声明期限。6 项回归在旧实现上均失败。
+
+本地读取和远端响应现在共用存储令牌结构校验：令牌须为非空、无空白或控制字符的可见 ASCII 字符串；到期时间须为非负安全整数，秒数换算后仍须通过该边界。响应明确给出的 token_type 必须为 Bearer，错误字段与非法生命周期被拒绝。无效本地数据提示重新连接并标记账号错误；无效远端响应保留原 Keychain 数据，不把账号误标为授权过期。零期限保持明确到期语义；未声明期限继续沿用既有行为，不猜测服务端有效期。
+
+刷新令牌只在远端明确返回新值时轮换，否则保留本次使用的旧值；这一行为依据 [OAuth 2.0 RFC 6749 第 6 节](https://www.rfc-editor.org/rfc/rfc6749.html#section-6)，X 刷新入口参考 [官方 OAuth 指南](https://docs.x.com/fundamentals/authentication/oauth-2-0/user-access-token)。原有账号级串行队列与 Keychain 写入期间的取消保护保持不变。
+
+验证：新增 29 项测试，覆盖错误响应类型、空值、期限溢出、错误 token_type、损坏本地记录、零期限、刷新令牌保留与真实轮换、连接器重新创建后继续刷新，以及异常后恢复。既有并发刷新、取消、授权覆盖、400/401 失效与 503 临时故障回归随全量测试通过。全量 `npm test` 为 68 个文件、572 项通过；`npm run build` 与 `git diff --check` 通过，既有 renderer chunk 提示保留。仅使用模拟 Keychain、合成凭据与内存 SQLite，没有读写真实令牌；未修改内容、排序、数据库结构或阅读器，未重复执行 reader、style、visual 审计。无需数据库迁移，需要重启开发应用。

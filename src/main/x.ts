@@ -280,13 +280,14 @@ export class XConnector implements ConnectorAdapter {
     }
     let token: XToken;
     try {
-      token = JSON.parse(raw) as XToken;
+      const decoded = decodeXToken(JSON.parse(raw));
+      if (!decoded) throw new Error("Invalid stored token");
+      token = decoded;
     } catch {
       this.database.updateAccountStatus(account.id, "error");
       throw new Error("X 本地授权信息无法读取，请重新连接 X。");
     }
-    if (!token.accessToken) throw new Error("X 授权信息不完整，请重新连接 X。");
-    if (!token.expiresAt || token.expiresAt > Date.now() + 60_000) return token;
+    if (token.expiresAt === undefined || token.expiresAt > Date.now() + 60_000) return token;
     const clientId = stringValue(account.config?.clientId);
     if (!clientId || !token.refreshToken) {
       this.database.updateAccountStatus(account.id, "expired");
@@ -354,11 +355,14 @@ export class XConnector implements ConnectorAdapter {
   }
 
   private async refreshToken(clientId: string, refreshToken: string, signal?: AbortSignal): Promise<XToken> {
-    return this.exchangeToken(new URLSearchParams({ grant_type: "refresh_token", client_id: clientId, refresh_token: refreshToken }), signal);
+    const refreshed = await this.exchangeToken(new URLSearchParams({ grant_type: "refresh_token", client_id: clientId, refresh_token: refreshToken }), signal);
+    // OAuth permits a successful refresh without issuing a replacement refresh
+    // token. Only a newly issued token supersedes the current one.
+    return { ...refreshed, refreshToken: refreshed.refreshToken ?? refreshToken };
   }
 
   private async exchangeToken(body: URLSearchParams, signal?: AbortSignal): Promise<XToken> {
-    let result: { response: Response; payload: { access_token?: string; refresh_token?: string; expires_in?: number } };
+    let result: { response: Response; payload: unknown };
     try {
       result = await requestJsonWithTimeout(this.fetchX, X_TOKEN_URL, {
         method: "POST",
@@ -373,7 +377,7 @@ export class XConnector implements ConnectorAdapter {
       throw new XApiError("无法连接到 X OAuth 令牌服务。请检查系统代理、VPN、DNS 或网络访问后重试。");
     }
     const { response, payload } = result;
-    if (!response.ok || !payload.access_token) {
+    if (!response.ok) {
       throw new XApiError(
         response.status === 400
           ? "X OAuth 配置或授权码无效。请确认已启用 OAuth 2.0、回调地址完全匹配，然后重新授权。"
@@ -381,11 +385,9 @@ export class XConnector implements ConnectorAdapter {
         response.status
       );
     }
-    return {
-      accessToken: payload.access_token,
-      refreshToken: payload.refresh_token,
-      expiresAt: payload.expires_in ? Date.now() + payload.expires_in * 1000 : undefined
-    };
+    const token = decodeXTokenResponse(payload);
+    if (!token) throw new XApiError("X OAuth 令牌响应无效，请稍后重试；本地授权信息未被覆盖。");
+    return token;
   }
 
   private async requestJson<T>(path: string, accessToken: string, signal?: AbortSignal): Promise<T> {
@@ -410,6 +412,33 @@ export class XConnector implements ConnectorAdapter {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Keep opaque credentials unchanged, but never accept values unsafe in headers. */
+function isTokenString(value: unknown): value is string {
+  return typeof value === "string" && /^[\x21-\x7e]+$/.test(value);
+}
+
+/** The same stored-token contract applies to Keychain reads and new responses. */
+function decodeXToken(value: unknown): XToken | undefined {
+  if (!isRecord(value)) return undefined;
+  const { accessToken, refreshToken, expiresAt } = value;
+  if (!isTokenString(accessToken)
+    || (refreshToken !== undefined && !isTokenString(refreshToken))
+    || (expiresAt !== undefined && (typeof expiresAt !== "number" || !Number.isSafeInteger(expiresAt) || expiresAt < 0))) return undefined;
+  return { accessToken, refreshToken, expiresAt };
+}
+
+function decodeXTokenResponse(value: unknown): XToken | undefined {
+  if (!isRecord(value) || value.error !== undefined
+    || (value.token_type !== undefined && (typeof value.token_type !== "string" || value.token_type.toLowerCase() !== "bearer"))) return undefined;
+  const lifetime = value.expires_in;
+  if (lifetime !== undefined && (typeof lifetime !== "number" || !Number.isSafeInteger(lifetime) || lifetime < 0)) return undefined;
+  return decodeXToken({
+    accessToken: value.access_token,
+    refreshToken: value.refresh_token,
+    expiresAt: lifetime === undefined ? undefined : Date.now() + lifetime * 1000
+  });
 }
 
 function invalidXResponse(): XApiError {
