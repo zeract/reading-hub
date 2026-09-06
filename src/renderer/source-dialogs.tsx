@@ -1,5 +1,5 @@
 import { isRetiredXPublicProfile, sourceCapabilities, sourceHealthLabel } from "../shared/source-capabilities";
-import { type FormEvent, type ReactNode, useCallback, useEffect, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import type {
   CalibrationResult,
   OpmlImportResult,
@@ -167,19 +167,27 @@ function AcademicSourcePane({ onSaved }: { onSaved: () => Promise<void> }) {
   const [results, setResults] = useState<SubscriptionDraft[]>([]);
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const searchVersion = useRef(0);
   async function search(event: FormEvent) {
     event.preventDefault();
-    if (!query.trim()) return;
-    setBusy(true); setError(undefined);
-    try { setResults(await window.reader.searchAcademicAuthors(query.trim())); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
+    if (busy || !query.trim()) return;
+    const version = ++searchVersion.current;
+    setBusy(true); setError(undefined); setResults([]);
+    try {
+      const found = await window.reader.searchAcademicAuthors(query.trim());
+      if (version === searchVersion.current) setResults(found);
+    } catch (reason) {
+      if (version === searchVersion.current) setError(errorMessage(reason));
+    } finally { setBusy(false); }
   }
   async function choose(draft: SubscriptionDraft) {
+    if (busy) return;
     setBusy(true); setError(undefined);
     try { await window.reader.subscribeAcademicAuthor(draft); await onSaved(); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   }
   return <section className="source-method-pane">
     <p className="dialog-intro">从 OpenAlex、Semantic Scholar 与可公开读取的 ORCID works 中聚合论文；卡片会保留实际来源。它不是 Google Scholar 页面同步，也不读取 Scholar 登录态或邮件。</p>
-    <form className="connector-form" onSubmit={(event) => void search(event)}><label htmlFor="academic-query">作者姓名</label><div className="connector-search"><input id="academic-query" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如 Geoffrey Hinton" /><button className="primary" disabled={busy}>搜索</button></div></form>
+    <form className="connector-form" onSubmit={(event) => void search(event)}><label htmlFor="academic-query">作者姓名</label><div className="connector-search"><input id="academic-query" value={query} onChange={(event) => { searchVersion.current += 1; setQuery(event.target.value); setResults([]); setError(undefined); }} placeholder="例如 Geoffrey Hinton" /><button className="primary" disabled={busy}>搜索</button></div></form>
     {results.length > 0 && <div className="academic-results">{results.map((draft, index) => <button type="button" key={`${draft.targetId}-${index}`} onClick={() => void choose(draft)} disabled={busy}><strong>{draft.title}</strong><span>{draft.config?.orcid ? `ORCID ${String(draft.config.orcid)}` : "确认此作者"}</span></button>)}</div>}
     {error && <p className="error">{error}</p>}
   </section>;

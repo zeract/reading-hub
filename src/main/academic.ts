@@ -32,11 +32,13 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
   async discover(input: string): Promise<SubscriptionDraft[]> {
     const query = input.trim();
     if (!query) return [];
-    const [openAlex, semantic] = await Promise.allSettled([this.searchOpenAlex(query), this.searchSemantic(query)]);
-    const drafts: SubscriptionDraft[] = [];
-    if (openAlex.status === "fulfilled") drafts.push(...openAlex.value);
-    if (semantic.status === "fulfilled") drafts.push(...semantic.value);
-    return mergeDrafts(drafts);
+    const results = await Promise.allSettled([this.searchOpenAlex(query), this.searchSemantic(query)]);
+    const drafts = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    // An empty result is authoritative only when both searches succeeded.
+    // Useful results from a healthy provider remain available during an outage.
+    if (!drafts.length && failure) throw failure.reason;
+    return mergeAuthorIdentities(drafts);
   }
 
   async sync(context: SyncContext): Promise<SyncResult> {
@@ -66,12 +68,14 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
     const url = new URL("/authors", OPENALEX_ROOT);
     url.search = new URLSearchParams({ search: query, per_page: "10" }).toString();
     const payload = await this.requestJson<{ results?: Array<{ id?: string; display_name?: string; orcid?: string; works_count?: number }> }>(url);
-    return (payload.results || []).flatMap((author) => {
+    if (!Array.isArray(payload?.results)) throw new Error("OpenAlex 作者搜索响应无效，请稍后重试。");
+    return payload.results.flatMap((author) => {
+      if (!author || typeof author !== "object") return [];
       const id = normalOpenAlexId(author.id);
       const name = compactText(author.display_name, 160);
       if (!id || !name) return [];
       return [{
-        title: `${name} · OpenAlex`,
+        title: authorSearchTitle(name, "OpenAlex", id, author.works_count),
         targetId: `openalex:${id}`,
         config: { authorName: name, openAlexId: id, orcid: normalOrcid(author.orcid) }
       }];
@@ -81,13 +85,15 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
   private async searchSemantic(query: string): Promise<SubscriptionDraft[]> {
     const url = new URL("author/search", `${SEMANTIC_ROOT}/`);
     url.search = new URLSearchParams({ query, limit: "10", fields: "name,paperCount,externalIds" }).toString();
-    const payload = await this.requestJson<{ data?: Array<{ authorId?: string; name?: string; externalIds?: { ORCID?: string } }> }>(url);
-    return (payload.data || []).flatMap((author) => {
-      const id = author.authorId;
+    const payload = await this.requestJson<{ data?: Array<{ authorId?: string; name?: string; paperCount?: number; externalIds?: { ORCID?: string } }> }>(url);
+    if (!Array.isArray(payload?.data)) throw new Error("Semantic Scholar 作者搜索响应无效，请稍后重试。");
+    return payload.data.flatMap((author) => {
+      if (!author || typeof author !== "object") return [];
+      const id = stringValue(author.authorId);
       const name = compactText(author.name, 160);
       if (!id || !name) return [];
       return [{
-        title: `${name} · Semantic Scholar`,
+        title: authorSearchTitle(name, "Semantic Scholar", id, author.paperCount),
         targetId: `semantic:${id}`,
         config: { authorName: name, semanticScholarId: id, orcid: normalOrcid(author.externalIds?.ORCID) }
       }];
@@ -213,18 +219,39 @@ function readAuthorConfig(input: Record<string, unknown>): AuthorConfig {
   };
 }
 
-function mergeDrafts(drafts: SubscriptionDraft[]): SubscriptionDraft[] {
-  const merged = new Map<string, SubscriptionDraft>();
+function authorSearchTitle(name: string, provider: string, id: string, count: unknown): string {
+  const works = typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? ` · ${count} 篇` : "";
+  return `${name} · ${provider} ${id}${works}`;
+}
+
+function mergeAuthorIdentities(drafts: SubscriptionDraft[]): SubscriptionDraft[] {
+  const groups = new Map<string, SubscriptionDraft[]>();
+  const seen = new Set<string>();
   for (const draft of drafts) {
-    const config = draft.config || {};
-    const key = stringValue(config.orcid) || String(config.authorName || draft.title).trim().toLocaleLowerCase();
-    const previous = merged.get(key);
-    if (previous) {
-      previous.config = { ...previous.config, ...config };
-      previous.title = String(config.authorName || previous.title);
-    } else merged.set(key, { ...draft, config: { ...config } });
+    // Both search adapters assign provider-scoped IDs. A name is display data,
+    // never evidence that two records describe the same person.
+    if (!draft.targetId || seen.has(draft.targetId)) continue;
+    seen.add(draft.targetId);
+    const orcid = stringValue(draft.config?.orcid);
+    const key = orcid ? `orcid:${orcid}` : draft.targetId;
+    const group = groups.get(key) ?? [];
+    group.push(draft);
+    groups.set(key, group);
   }
-  return [...merged.values()];
+  return [...groups.values()].flatMap((group) => {
+    if (group.length === 1) return group;
+    // The subscription model holds one ID per provider. Conflicting records
+    // must remain selectable instead of silently replacing a provider's ID.
+    const ids = (field: keyof AuthorConfig) => new Set(group.map((draft) => stringValue(draft.config?.[field])).filter(Boolean));
+    if (ids("openAlexId").size > 1 || ids("semanticScholarId").size > 1) return group;
+    const config = Object.assign({}, ...group.map((draft) => draft.config)) as Record<string, unknown>;
+    config.authorName = group[0].config?.authorName;
+    const providers = [
+      config.openAlexId ? `OpenAlex ${config.openAlexId}` : "",
+      config.semanticScholarId ? `Semantic Scholar ${config.semanticScholarId}` : ""
+    ].filter(Boolean).join(" / ");
+    return [{ ...group[0], title: `${config.authorName} · ${providers}`, config }];
+  });
 }
 
 function normalOpenAlexId(value: unknown): string | undefined {
@@ -237,7 +264,14 @@ function normalOrcid(value: unknown): string | undefined {
   const source = stringValue(value);
   if (!source) return undefined;
   const id = source.replace(/^https?:\/\/orcid\.org\//i, "").trim();
-  return /^\d{4}-\d{4}-\d{4}-[\dX]{4}$/i.test(id) ? id.toUpperCase() : undefined;
+  if (!/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/i.test(id)) return undefined;
+  const digits = id.replaceAll("-", "").toUpperCase();
+  // ORCID's ISO 7064 MOD 11-2 check digit prevents malformed identifiers
+  // from becoming cross-provider identity evidence.
+  let total = 0;
+  for (const digit of digits.slice(0, 15)) total = (total + Number(digit)) * 2;
+  const check = (12 - total % 11) % 11;
+  return digits[15] === (check === 10 ? "X" : String(check)) ? id.toUpperCase() : undefined;
 }
 
 function normalDoi(value: unknown): string | undefined {

@@ -205,7 +205,7 @@ describe("connector platform", () => {
       source: academicSource,
       subscription: {
         id: "subscription", sourceId: academicSource.id, connectorId: "academic", config: {
-          authorName: "Researcher", openAlexId: "A1", semanticScholarId: "S1", orcid: "0000-0000-0000-0000"
+          authorName: "Researcher", openAlexId: "A1", semanticScholarId: "S1", orcid: "0000-0002-1825-0097"
         }, createdAt: 1, updatedAt: 1
       }
     });
@@ -213,7 +213,7 @@ describe("connector platform", () => {
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual(expect.arrayContaining([
       expect.stringContaining("https://api.openalex.org/works"),
       expect.stringContaining("https://api.semanticscholar.org/graph/v1/author/S1/papers"),
-      expect.stringContaining("https://pub.orcid.org/v3.0/0000-0000-0000-0000/works")
+      expect.stringContaining("https://pub.orcid.org/v3.0/0000-0002-1825-0097/works")
     ]));
   });
 });

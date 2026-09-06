@@ -26,6 +26,11 @@ const channels = [
   ["entry:restore", (_event, id) => database.restoreEntry(id)],
   ["source:set-subscribed", (_event, id, subscribed) => database.setSubscribed(id, subscribed)],
   ["source:collection-settings", (_event, id) => database.getSourceCollectionSettings(id)],
+  ["academic:search", () => Array.from({ length: 20 }, (_, index) => ({
+    targetId: `openalex:A${index + 1}`,
+    title: `Alexander Long-Name 同名作者 · OpenAlex A${index + 1} · ${index + 1} 篇`,
+    config: { authorName: "Alexander Long-Name 同名作者", openAlexId: `A${index + 1}` }
+  }))],
   ["entry:read-content", (_event, id) => {
     if (id === "failure") throw new Error("Deterministic offline fixture");
     return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", contentHtml: "<p>This is a deterministic reader fixture.</p>" } };
@@ -135,7 +140,26 @@ try {
     assert(!geometry.overflow && geometry.navBottom < geometry.footerTop && geometry.sourcesHeight > 20, `Library navigation does not fit ${width}px at ${scale}.`);
     await writeFile(path.join(tmpdir(), `reading-hub-workflow-${width}.png`), (await window.capturePage()).toPNG());
   }
-  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/unsubscribe/restore and three actual React layouts verified.");
+  await evaluate("document.querySelector('[aria-label=\"添加来源\"]').click()");
+  await clickText('[role="tab"]', "学术作者");
+  await evaluate(`const query = document.querySelector('#academic-query'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(query, 'Alexander'); query.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await evaluate("document.querySelector('.connector-form').requestSubmit()");
+  await waitFor(window, "document.querySelectorAll('.academic-results button').length === 20");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    window.setSize(width, height); window.webContents.setZoomFactor(scale);
+    await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    const fits = await evaluate(`(() => {
+      const dialog = document.querySelector('.dialog');
+      const bounds = dialog.getBoundingClientRect();
+      const buttons = [...document.querySelectorAll('.academic-results button')];
+      return bounds.left >= 0 && bounds.right <= innerWidth + 1 && bounds.top >= 0 && bounds.bottom <= innerHeight + 1
+        && dialog.scrollWidth <= dialog.clientWidth + 1 && dialog.scrollHeight > dialog.clientHeight
+        && buttons.every((button) => button.scrollWidth <= button.clientWidth + 1);
+    })()`);
+    assert(fits, `Academic identities or result scrolling do not fit ${width}px at ${scale}.`);
+    await writeFile(path.join(tmpdir(), `reading-hub-academic-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/unsubscribe/restore, library layouts and four academic search layouts verified.");
 } catch (error) {
   failure = error;
   console.error(error);
