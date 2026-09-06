@@ -34,9 +34,11 @@ export async function discoverPublicArchiveUrl(http: PublicHttpClient, rawHomepa
  * save article content and callers must still ask the user before importing
  * any history.
  */
-export async function inspectPublicArchiveFacets(http: PublicHttpClient, rawArchiveUrl: string): Promise<ArchiveFacetCatalog> {
+export async function inspectPublicArchiveFacets(http: PublicHttpClient, rawArchiveUrl: string, signal?: AbortSignal): Promise<ArchiveFacetCatalog> {
+  throwIfAborted(signal);
   const archiveUrl = assertPublicUrl(rawArchiveUrl).toString();
-  const archive = await http.getText(archiveUrl, undefined, { maxBytes: MAX_ARCHIVE_DOCUMENT_BYTES });
+  const archive = await http.getText(archiveUrl, undefined, { maxBytes: MAX_ARCHIVE_DOCUMENT_BYTES, signal });
+  throwIfAborted(signal);
   const entries = parsePublishedArchive(archive.text, archive.url);
   return { url: archive.url, facets: archiveFacets(entries), totalEntries: entries.length };
 }

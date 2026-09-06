@@ -99,8 +99,10 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     sources.getCollectionSettings(requireEntityId(id)));
   handle(IPC_CHANNELS.source.updateCollectionScope, (_event, id: unknown, scope: unknown) =>
     sources.updateCollectionScope(requireEntityId(id), parseSubscriptionScope(scope)));
-  handle(IPC_CHANNELS.source.inspectCollectionFacets, (_event, id: unknown) =>
-    sources.inspectCollectionFacets(requireEntityId(id)));
+  handle(IPC_CHANNELS.source.inspectCollectionFacets, (event, id: unknown) => {
+    const sourceId = requireEntityId(id);
+    return foregroundRequests.run(event.sender, (signal) => sources.inspectCollectionFacets(sourceId, signal));
+  });
   handle(IPC_CHANNELS.source.updateRule, (_event, id: unknown, rule: unknown) =>
     database.updateRule(requireEntityId(id), parseExtractionRule(rule)));
   handle(IPC_CHANNELS.source.calibration, (event, id: unknown) => {

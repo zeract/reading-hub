@@ -1,6 +1,6 @@
 import { throwIfAborted } from "./cancellation";
 import { load } from "cheerio";
-import type { ConnectorAdapter, Entry, ExtractionRule, Facet, RawEntry, Source, Subscription, SyncCheckpoint, SyncContext, SyncResult } from "../shared/types";
+import type { ConnectorAdapter, DiscoveryContext, Entry, ExtractionRule, Facet, RawEntry, Source, Subscription, SyncCheckpoint, SyncContext, SyncResult } from "../shared/types";
 import { normaliseFacets } from "../shared/subscription-scope";
 import { assertPublicUrl, canonicalizeContentUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 import { inspectPublicArchiveFacets, MAX_ARCHIVE_DOCUMENT_BYTES, parsePublishedArchive, type ArchiveFacetCatalog } from "./archive-backfill";
@@ -38,9 +38,10 @@ export class RssConnector extends BaseConnector implements ConnectorAdapter {
    * configured public archive's metadata through PublicHttpClient; it does
    * not create entries or start a history import.
    */
-  async inspectFacets(source: Source): Promise<ArchiveFacetCatalog | undefined> {
+  async inspectFacets(source: Source, context?: DiscoveryContext): Promise<ArchiveFacetCatalog | undefined> {
+    throwIfAborted(context?.signal);
     const catalog = archiveCatalogConfig(source);
-    return catalog ? inspectPublicArchiveFacets(this.http, catalog.url) : undefined;
+    return catalog ? inspectPublicArchiveFacets(this.http, catalog.url, context?.signal) : undefined;
   }
 
   supportsHistoricalCollection(source: Source): boolean {

@@ -347,7 +347,7 @@ export interface ConnectorAdapter {
   authorize?(context: AuthorizationContext): Promise<Account>;
   discover?(input: string, context: DiscoveryContext): Promise<SubscriptionDraft[]>;
   /** Optional metadata-only taxonomy discovery for the shared collection UI. */
-  inspectFacets?(source: Source): Promise<FacetCatalog | undefined>;
+  inspectFacets?(source: Source, context?: DiscoveryContext): Promise<FacetCatalog | undefined>;
   /** Whether this concrete source has an explicit, safely readable history catalogue. */
   supportsHistoricalCollection?(source: Source): boolean;
   sync(context: SyncContext): Promise<SyncResult>;

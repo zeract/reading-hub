@@ -16,7 +16,7 @@ class Sender extends EventEmitter {
   isDestroyed() { return this.destroyed; }
   destroy() { this.destroyed = true; this.emit("destroyed"); }
 }
-function setup(authorize: (client: string, signal: AbortSignal) => Promise<unknown>, discover = async (_query: string, _context: { signal: AbortSignal }): Promise<unknown[]> => [], sourceOverrides: Partial<Pick<SourceService, "preview" | "calibrate">> = {}) {
+function setup(authorize: (client: string, signal: AbortSignal) => Promise<unknown>, discover = async (_query: string, _context: { signal: AbortSignal }): Promise<unknown[]> => [], sourceOverrides: Partial<Pick<SourceService, "preview" | "calibrate" | "inspectCollectionFacets">> = {}) {
   const x = { authorizeWithClientId: vi.fn(authorize) };
   const sources = { ensureXSource: vi.fn(() => ({ id: "fixture-source" })), ...sourceOverrides };
   const sync = { syncSource: vi.fn(async () => ({ inserted: 0 })) };
@@ -26,6 +26,21 @@ function setup(authorize: (client: string, signal: AbortSignal) => Promise<unkno
 }
 beforeEach(() => electron.handlers.clear());
 describe("IPC foreground request lifetime", () => {
+  it.each(["window", "shutdown"])("cancels collection catalogue inspection on %s", async (cause) => {
+    let signal!: AbortSignal;
+    const run = setup(async () => ({}), undefined, { inspectCollectionFacets: async (_id, value) => {
+      signal = value!;
+      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    } });
+    const sender = new Sender();
+    const outcome = electron.handlers.get(IPC_CHANNELS.source.inspectCollectionFacets)!({ sender }, "fixture-source").catch((error) => error);
+    if (cause === "window") sender.destroy();
+    await run.drain();
+    expect(signal.aborted).toBe(true);
+    expect(await outcome).toBe(signal.reason);
+    expect(sender.listenerCount("destroyed")).toBe(0);
+  });
+
   it.each(["window", "shutdown"])("cancels Zhihu login preparation on %s through the source service", async (cause) => {
     let signal!: AbortSignal;
     const login = { beginLogin: vi.fn(async (value: AbortSignal) => {

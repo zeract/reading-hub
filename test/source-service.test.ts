@@ -171,7 +171,7 @@ describe("SourceService initial acquisition", () => {
     await expect(service.inspectCollectionFacets(source.id)).resolves.toEqual([
       { sourceId: source.id, entryCount: 0, scheme: "feed:https://example.com:category", key: "kubernetes", label: "Kubernetes" }
     ]);
-    expect(rss.inspectFacets).toHaveBeenCalledWith(expect.objectContaining({ id: source.id }));
+    expect(rss.inspectFacets).toHaveBeenCalledWith(expect.objectContaining({ id: source.id }), { signal: undefined });
     expect(connectors.get).toHaveBeenCalledWith("rss");
     expect(sync.syncSource).not.toHaveBeenCalled();
     expect(db.listEntries(source.id, 100)).toEqual([]);

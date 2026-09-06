@@ -270,13 +270,15 @@ export class SourceService {
    * collection controls.  The adapter returns metadata labels/counts only;
    * no article body or historical card is written here.
    */
-  async inspectCollectionFacets(sourceId: string): Promise<SourceFacet[]> {
+  async inspectCollectionFacets(sourceId: string, signal?: AbortSignal): Promise<SourceFacet[]> {
+    throwIfAborted(signal);
     const source = this.db.getSource(sourceId);
     if (!source) throw new Error("来源不存在。");
     const local = this.db.listSourceFacets(sourceId);
     const adapter = this.collectionAdapter(source);
     if (!adapter?.inspectFacets) return local;
-    const catalog = await adapter.inspectFacets(source);
+    const catalog = await adapter.inspectFacets(source, { signal });
+    throwIfAborted(signal);
     if (!catalog) return local;
     const merged = new Map<string, SourceFacet>();
     for (const facet of local) merged.set(facetIdentity(facet), facet);
