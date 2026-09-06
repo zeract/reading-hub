@@ -1,3 +1,4 @@
+import { throwIfAborted } from "./cancellation";
 import { load, type CheerioAPI } from "cheerio";
 import type { Facet, FacetCatalog, RawEntry } from "../shared/types";
 import { compactText, parsePublishedAt } from "../shared/text";
@@ -19,9 +20,11 @@ export interface ArchiveFacetCatalog extends FacetCatalog {
  * safe to use during source preview: it preserves the publisher's declared
  * history capability without downloading a potentially large back catalogue.
  */
-export async function discoverPublicArchiveUrl(http: PublicHttpClient, rawHomepageUrl: string): Promise<string | undefined> {
+export async function discoverPublicArchiveUrl(http: PublicHttpClient, rawHomepageUrl: string, signal?: AbortSignal): Promise<string | undefined> {
+  throwIfAborted(signal);
   const homepageUrl = assertPublicUrl(rawHomepageUrl).toString();
-  const homepage = await http.getText(homepageUrl);
+  const homepage = signal ? await http.getText(homepageUrl, undefined, { signal }) : await http.getText(homepageUrl);
+  throwIfAborted(signal);
   return explicitArchiveUrls(homepage.text, homepage.url)[0];
 }
 

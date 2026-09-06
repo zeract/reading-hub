@@ -1,3 +1,4 @@
+import { throwIfAborted } from "./cancellation";
 import { isRetiredXPublicProfile } from "../shared/source-capabilities";
 import { randomUUID } from "node:crypto";
 import type {
@@ -37,8 +38,10 @@ export class SourceService {
     private readonly connectors?: Pick<ConnectorRegistry, "get" | "has">
   ) {}
 
-  async preview(url: string): Promise<{ token: string; probe: ProbeResult }> {
-    const detected = await this.probeService.probe(url);
+  async preview(url: string, signal?: AbortSignal): Promise<{ token: string; probe: ProbeResult }> {
+    throwIfAborted(signal);
+    const detected = await this.probeService.probe(url, signal);
+    throwIfAborted(signal);
     const probe = isXiaohongshuUrl(detected.url) ? manualProbe(detected.url, detected.preview, detected.title) : detected;
     const token = randomUUID();
     this.pending.set(token, { expiresAt: Date.now() + 10 * 60_000, probe });
@@ -213,11 +216,14 @@ export class SourceService {
     await this.zhihuFollow.beginLogin();
   }
 
-  async calibrate(sourceId: string): Promise<CalibrationResult> {
+  async calibrate(sourceId: string, signal?: AbortSignal): Promise<CalibrationResult> {
+    throwIfAborted(signal);
     const source = this.db.getSource(sourceId);
     if (!source) throw new Error("来源不存在。");
     if (source.kind !== "generic") throw new Error("只有普通网页来源需要校准。");
-    return this.probeService.calibrate(source.url);
+    const result = await this.probeService.calibrate(source.url, signal);
+    throwIfAborted(signal);
+    return result;
   }
 
   updateSettings(sourceId: string, settings: SourceSettings): Source {

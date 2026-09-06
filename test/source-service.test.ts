@@ -217,4 +217,26 @@ describe("SourceService initial acquisition", () => {
     expect(sync.syncSource).not.toHaveBeenCalled();
     db.close();
   });
+
+  it("does not retain a confirmable preview when a cancelled probe returns late", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const controller = new AbortController();
+    let cancel = true;
+    const probe = { probe: vi.fn(async (_url: string, signal?: AbortSignal) => {
+      if (cancel) { expect(signal).toBe(controller.signal); controller.abort(new Error("cancel preview")); }
+      return probeResult();
+    }) };
+    const service = new SourceService(db, probe as never, {} as never, {} as never);
+    try {
+      await expect(service.preview("https://example.com/feed.xml", controller.signal)).rejects.toThrow("cancel preview");
+      const pending = (service as unknown as { pending: Map<string, unknown> }).pending;
+      expect(pending.size).toBe(0);
+      expect(db.listSources()).toEqual([]);
+      cancel = false;
+      const retry = await service.preview("https://example.com/feed.xml");
+      expect(pending.has(retry.token)).toBe(true);
+      expect(pending.size).toBe(1);
+    } finally { db.close(); }
+  });
+
 });

@@ -69,8 +69,10 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     });
   }
 
-  handle(IPC_CHANNELS.source.preview, (_event, rawUrl: unknown) =>
-    sources.preview(requireText(rawUrl, "来源地址无效，请重新填写。", 2_000)));
+  handle(IPC_CHANNELS.source.preview, (event, rawUrl: unknown) => {
+    const url = requireText(rawUrl, "来源地址无效，请重新填写。", 2_000);
+    return foregroundRequests.run(event.sender, (signal) => sources.preview(url, signal));
+  });
   handle(IPC_CHANNELS.source.confirm, (_event, token: unknown) =>
     sources.confirm(requireEntityId(token, "预览已过期，请重新添加来源。")));
   handle(IPC_CHANNELS.source.importOpml, async (event): Promise<OpmlImportResult> => {
@@ -101,7 +103,10 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     sources.inspectCollectionFacets(requireEntityId(id)));
   handle(IPC_CHANNELS.source.updateRule, (_event, id: unknown, rule: unknown) =>
     database.updateRule(requireEntityId(id), parseExtractionRule(rule)));
-  handle(IPC_CHANNELS.source.calibration, (_event, id: unknown) => sources.calibrate(requireEntityId(id)));
+  handle(IPC_CHANNELS.source.calibration, (event, id: unknown) => {
+    const sourceId = requireEntityId(id);
+    return foregroundRequests.run(event.sender, (signal) => sources.calibrate(sourceId, signal));
+  });
   handle(IPC_CHANNELS.source.loadIcon, async (_event, sourceId: unknown) => {
     const source = database.getSource(requireEntityId(sourceId));
     if (!source) return undefined;

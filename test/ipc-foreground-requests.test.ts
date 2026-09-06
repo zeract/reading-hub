@@ -7,6 +7,8 @@ const electron = vi.hoisted(() => {
 vi.mock("electron", () => electron);
 import { registerIpcHandlers } from "../src/main/ipc-handlers";
 import { IPC_CHANNELS } from "../src/shared/ipc";
+import { SourceService } from "../src/main/source-service";
+import { SourceProbe } from "../src/main/source-probe";
 import type { ApplicationServices } from "../src/main/app-services";
 class Sender extends EventEmitter {
   id = 1;
@@ -14,9 +16,9 @@ class Sender extends EventEmitter {
   isDestroyed() { return this.destroyed; }
   destroy() { this.destroyed = true; this.emit("destroyed"); }
 }
-function setup(authorize: (client: string, signal: AbortSignal) => Promise<unknown>, discover = async (_query: string, _context: { signal: AbortSignal }): Promise<unknown[]> => []) {
+function setup(authorize: (client: string, signal: AbortSignal) => Promise<unknown>, discover = async (_query: string, _context: { signal: AbortSignal }): Promise<unknown[]> => [], sourceOverrides: Partial<Pick<SourceService, "preview" | "calibrate">> = {}) {
   const x = { authorizeWithClientId: vi.fn(authorize) };
-  const sources = { ensureXSource: vi.fn(() => ({ id: "fixture-source" })) };
+  const sources = { ensureXSource: vi.fn(() => ({ id: "fixture-source" })), ...sourceOverrides };
   const sync = { syncSource: vi.fn(async () => ({ inserted: 0 })) };
   const drain = registerIpcHandlers({ x, sources, sync, academic: { discover } } as unknown as ApplicationServices);
   const connect = (sender: Sender) => electron.handlers.get(IPC_CHANNELS.x.connect)!({ sender }, "fixture-client");
@@ -112,6 +114,26 @@ describe("IPC foreground request lifetime", () => {
     await rejected;
     expect(sender.listenerCount("destroyed")).toBe(0);
     await run.drain();
+  });
+
+
+  it.each(["preview", "calibration"] as const)("cancels the %s transport before IPC shutdown finishes", async (kind) => {
+    let requestSignal: AbortSignal | undefined;
+    const http = { getText: vi.fn(async (_url: string, _cached, options) => {
+      requestSignal = options?.signal;
+      return new Promise((_resolve, reject) => requestSignal?.addEventListener("abort", () => reject(requestSignal!.reason), { once: true }));
+    }) };
+    const service = new SourceService({ getSource: () => ({ kind: "generic", url: "https://example.com/" }) } as never, new SourceProbe(http as never), {} as never, {} as never);
+    const run = setup(async () => ({}), async () => [], { preview: service.preview.bind(service), calibrate: service.calibrate.bind(service) });
+    const sender = new Sender();
+    const channel = kind === "preview" ? IPC_CHANNELS.source.preview : IPC_CHANNELS.source.calibration;
+    const pending = electron.handlers.get(channel)!({ sender }, kind === "preview" ? "https://example.com/" : "fixture-source");
+    const rejected = expect(pending).rejects.toThrow("应用正在退出");
+    expect(requestSignal).toBeDefined();
+    await run.drain();
+    await rejected;
+    expect(requestSignal?.aborted).toBe(true);
+    expect(sender.listenerCount("destroyed")).toBe(0);
   });
 
 });

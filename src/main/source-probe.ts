@@ -1,3 +1,4 @@
+import { throwIfAborted } from "./cancellation";
 import { extractCalibrationCandidates, extractGenericPage } from "./extractor";
 import { discoverFeedUrls, parseFeed, looksLikeFeed } from "./feed";
 import { discoverPublicArchiveUrl, findPublicArchiveUrls } from "./archive-backfill";
@@ -10,16 +11,20 @@ import { assertFeedSubscriptionUrl, assertPublicUrl, isTrustedLoopbackFeedUrl } 
 export class SourceProbe {
   constructor(private readonly http: PublicHttpClient, private readonly renderer?: PageRenderer) {}
 
-  async probe(rawUrl: string): Promise<ProbeResult> {
+  async probe(rawUrl: string, signal?: AbortSignal): Promise<ProbeResult> {
+    throwIfAborted(signal);
     const localFeed = isTrustedLoopbackFeedUrl(rawUrl);
     const input = localFeed ? assertFeedSubscriptionUrl(rawUrl, true).toString() : assertPublicUrl(rawUrl).toString();
     assertSupportedPublicProbeUrl(input);
     const page = localFeed
-      ? await this.localFeedPage(input)
-      : await loadGenericPage(this.http, this.renderer, input);
+      ? await this.localFeedPage(input, signal)
+      : await loadGenericPage(this.http, this.renderer, input, { signal });
+    throwIfAborted(signal);
     if (looksLikeFeed(page.contentType, page.text)) {
       const feed = await parseFeed(page.text, page.url);
-      const archiveUrl = localFeed ? undefined : await this.discoverFeedArchive(feed.siteUrl);
+      throwIfAborted(signal);
+      const archiveUrl = localFeed ? undefined : await this.discoverFeedArchive(feed.siteUrl, signal);
+      throwIfAborted(signal);
       return {
         kind: "rss",
         title: feed.title,
@@ -37,15 +42,19 @@ export class SourceProbe {
     if (localFeed) throw new Error("本机地址只支持 RSS、Atom 或 JSON Feed，不能用于网页结构提取。");
 
     for (const feedUrl of discoverFeedUrls(page.text, page.url)) {
+      throwIfAborted(signal);
       try {
-        const feedResponse = await this.http.getText(feedUrl);
+        const feedResponse = await this.http.getText(feedUrl, undefined, signal ? { signal } : undefined);
+        throwIfAborted(signal);
         if (!looksLikeFeed(feedResponse.contentType, feedResponse.text)) continue;
         const feed = await parseFeed(feedResponse.text, feedResponse.url);
+        throwIfAborted(signal);
         // The source page is already available during this probe, so prefer
         // its archive link only when it belongs to the Feed's declared site.
         // An aggregator can legally link to a third-party Feed; its own
         // archive must never become that Feed's history catalogue.
-        const archiveUrl = archiveUrlForFeedHomepage(page.text, page.url, feed.siteUrl) ?? await this.discoverFeedArchive(feed.siteUrl);
+        const archiveUrl = archiveUrlForFeedHomepage(page.text, page.url, feed.siteUrl) ?? await this.discoverFeedArchive(feed.siteUrl, signal);
+        throwIfAborted(signal);
         return {
           kind: "rss",
           title: feed.title,
@@ -57,6 +66,7 @@ export class SourceProbe {
           message: archiveUrl ? archiveDiscoveryMessage() : undefined
         };
       } catch {
+        throwIfAborted(signal);
         // A broken alternate link should not prevent the generic-page fallback.
       }
     }
@@ -68,7 +78,8 @@ export class SourceProbe {
     // stable static card; retain Chromium only for uncertain sparse pages.
     if (!usedRenderer && extraction.entries.length < 2 && extraction.confidence < 0.75 && this.renderer) {
       try {
-        const rendered = await this.renderer.render(page.url);
+        const rendered = await this.renderer.render(page.url, signal ? { signal } : undefined);
+        throwIfAborted(signal);
         const renderedExtraction = extractGenericPage(rendered, page.url);
         if (renderedExtraction.entries.length > extraction.entries.length) {
           extraction = {
@@ -78,6 +89,7 @@ export class SourceProbe {
           usedRenderer = true;
         }
       } catch {
+        throwIfAborted(signal);
         // Rendering is best-effort and never grants access to an authenticated browser session.
       }
     }
@@ -95,10 +107,12 @@ export class SourceProbe {
     };
   }
 
-  async calibrate(rawUrl: string): Promise<CalibrationResult> {
+  async calibrate(rawUrl: string, signal?: AbortSignal): Promise<CalibrationResult> {
+    throwIfAborted(signal);
     const input = assertPublicUrl(rawUrl).toString();
     assertSupportedPublicProbeUrl(input);
-    const page = await loadGenericPage(this.http, this.renderer, input);
+    const page = await loadGenericPage(this.http, this.renderer, input, { signal });
+    throwIfAborted(signal);
     const html = page.text;
     const pageUrl = page.url;
     let candidates = extractCalibrationCandidates(html, pageUrl);
@@ -110,13 +124,15 @@ export class SourceProbe {
     }
     if (!page.fromRenderer && candidates.length < 2 && this.renderer) {
       try {
-        const rendered = await this.renderer.render(pageUrl);
+        const rendered = await this.renderer.render(pageUrl, signal ? { signal } : undefined);
+        throwIfAborted(signal);
         const renderedCandidates = extractCalibrationCandidates(rendered, pageUrl).map((candidate) => ({
           ...candidate,
           rule: { ...candidate.rule, rendererRequired: true }
         }));
         if (renderedCandidates.length > candidates.length) candidates = renderedCandidates;
       } catch {
+        throwIfAborted(signal);
         // Static candidates are still useful if a page blocks the isolated renderer.
       }
     }
@@ -129,16 +145,18 @@ export class SourceProbe {
     };
   }
 
-  private async localFeedPage(input: string) {
-    const response = await this.http.getText(input, undefined, { allowTrustedLoopbackFeed: true });
+  private async localFeedPage(input: string, signal?: AbortSignal) {
+    const response = await this.http.getText(input, undefined, { allowTrustedLoopbackFeed: true, ...(signal ? { signal } : {}) });
     return { url: response.url, text: response.text, contentType: response.contentType, fromRenderer: false };
   }
 
-  private async discoverFeedArchive(siteUrl: string | undefined): Promise<string | undefined> {
+  private async discoverFeedArchive(siteUrl: string | undefined, signal?: AbortSignal): Promise<string | undefined> {
+    throwIfAborted(signal);
     if (!siteUrl) return undefined;
     try {
-      return await discoverPublicArchiveUrl(this.http, siteUrl);
+      return await discoverPublicArchiveUrl(this.http, siteUrl, signal);
     } catch {
+      throwIfAborted(signal);
       // Archive catalogue discovery is an optional enhancement. A temporary
       // failure must never prevent a valid Feed from being added or refreshed.
       return undefined;
