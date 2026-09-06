@@ -1,3 +1,4 @@
+import { redactDiagnosticMessage } from "./diagnostic-redaction";
 import type { Source } from "../shared/types";
 import { ReadingDatabase } from "./database";
 
@@ -60,16 +61,15 @@ export class ContentMaintenance {
         continue;
       }
       try {
-        const result = this.applySourceMaintenance(source);
+        const result = this.afterSuccessfulSync(source);
         addToReport(report, result);
-        this.database.markSourceMaintenanceRevision(source.id, SOURCE_CONTENT_MAINTENANCE_REVISION);
         report.maintainedSources += 1;
       } catch (error) {
         // A malformed legacy row should not keep the reader from starting.
         // Do not stamp the marker: a later release can retry the repair.
         report.failures.push({
           sourceId: source.id,
-          message: error instanceof Error ? error.message.slice(0, 300) : "维护本地历史内容时发生未知错误。"
+          message: error instanceof Error ? redactDiagnosticMessage(error.message).slice(0, 300) : "维护本地历史内容时发生未知错误。"
         });
       }
     }
@@ -91,30 +91,31 @@ export class ContentMaintenance {
    * safety ordering for databases opened outside the normal app bootstrap.
    */
   afterSuccessfulSync(source: Source): SourceMaintenanceResult {
-    const result = this.applySourceMaintenance(source);
-    if (!result.skipped) this.database.markSourceMaintenanceRevision(source.id, SOURCE_CONTENT_MAINTENANCE_REVISION);
-    return result;
+    return this.applySourceMaintenance(source, true);
   }
 
-  private applySourceMaintenance(source: Source): SourceMaintenanceResult {
+  private applySourceMaintenance(source: Source, complete = false): SourceMaintenanceResult {
     if (!requiresMaintenance(source)) return emptyResult(source.id, true);
     if ((this.database.getSourceMaintenanceRevision(source.id) ?? 0) >= SOURCE_CONTENT_MAINTENANCE_REVISION) {
       return emptyResult(source.id, true);
     }
-    const result = emptyResult(source.id, false);
-    const connectorId = source.connectorId ?? source.kind;
-    if (connectorId === "generic") {
-      result.taxonomyEntriesRemoved = this.database.deleteTaxonomyEntries(source.id);
-      result.homepageUrlsRepaired = this.database.repairGenericHomepageEntryUrls(source);
-    }
-    if (connectorId === "rss") {
-      result.scourEntriesMerged = this.database.repairScourRedirectEntries(source.id);
-    }
-    if (source.kind === "zhihu_follow") {
-      result.zhihuIdeasRemoved = this.database.deleteUnsupportedZhihuFollowEntries(source.id);
-      result.zhihuPromotionsRemoved = this.database.deletePromotedZhihuFollowEntries(source.id);
-    }
-    return result;
+    return this.database.writeTransaction(() => {
+      const result = emptyResult(source.id, false);
+      const connectorId = source.connectorId ?? source.kind;
+      if (connectorId === "generic") {
+        result.taxonomyEntriesRemoved = this.database.deleteTaxonomyEntries(source.id);
+        result.homepageUrlsRepaired = this.database.repairGenericHomepageEntryUrls(source);
+      }
+      if (connectorId === "rss") {
+        result.scourEntriesMerged = this.database.repairScourRedirectEntries(source.id);
+      }
+      if (source.kind === "zhihu_follow") {
+        result.zhihuIdeasRemoved = this.database.deleteUnsupportedZhihuFollowEntries(source.id);
+        result.zhihuPromotionsRemoved = this.database.deletePromotedZhihuFollowEntries(source.id);
+      }
+      if (complete) this.database.markSourceMaintenanceRevision(source.id, SOURCE_CONTENT_MAINTENANCE_REVISION);
+      return result;
+    });
   }
 }
 

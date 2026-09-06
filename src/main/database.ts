@@ -1023,6 +1023,7 @@ export class ReadingDatabase {
   }
 
   restoreEntry(entryId: string): void {
+    if (!this.db.prepare("SELECT 1 FROM entries WHERE id = ?").get(entryId)) throw new Error("这篇内容已合并或不存在，请从最近删除列表中重新选择。");
     this.db.prepare("DELETE FROM dismissed_contents WHERE canonical_identity IN (SELECT COALESCE(canonical_identity, canonical_url) FROM entries WHERE id = ?)").run(entryId);
   }
 
@@ -1084,7 +1085,7 @@ export class ReadingDatabase {
       provider_label = COALESCE(excluded.provider_label, entries.provider_label),
       external_id = COALESCE(excluded.external_id, entries.external_id),
       canonical_identity = COALESCE(excluded.canonical_identity, entries.canonical_identity)`);
-    const exists = this.db.prepare("SELECT 1 FROM entries WHERE canonical_url = ?");
+    const exists = this.db.prepare("SELECT canonical_identity FROM entries WHERE canonical_url = ?");
     const isDismissed = this.db.prepare("SELECT 1 FROM dismissed_contents WHERE canonical_identity = ?");
     const entryIdForCanonical = this.db.prepare("SELECT id FROM entries WHERE canonical_url = ?");
     const upsertOrigin = this.db.prepare(`INSERT INTO entry_origins (entry_id, source_id, provider_id, provider_label, external_id, original_url, observed_at)
@@ -1100,8 +1101,9 @@ export class ReadingDatabase {
     const transaction = this.db.transaction((records: Entry[]) => {
       for (const entry of records) {
         const identity = entry.canonicalIdentity ?? entry.canonicalUrl;
-        if (isDismissed.get(identity)) continue;
-        const isNew = !exists.get(entry.canonicalUrl);
+        const existing = exists.get(entry.canonicalUrl) as { canonical_identity: string | null } | undefined;
+        if (isDismissed.get(identity) || (existing && isDismissed.get(existing.canonical_identity ?? entry.canonicalUrl))) continue;
+        const isNew = !existing;
         const providerId = entry.providerId ?? this.getSource(entry.sourceId)?.connectorId ?? "generic";
         const externalId = entry.externalId ?? "";
         const observedAt = entry.observedAt ?? entry.createdAt;

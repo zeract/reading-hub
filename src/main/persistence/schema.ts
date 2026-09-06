@@ -1,3 +1,5 @@
+import { normalizeLegacyDismissedIdentities } from "./dismissed-content";
+import { repairScourRedirectEntries } from "./legacy-content-repair";
 import type Database from "better-sqlite3";
 import { MAX_FUTURE_PUBLICATION_SKEW_MS } from "../../shared/publication-date";
 
@@ -6,7 +8,7 @@ import { MAX_FUTURE_PUBLICATION_SKEW_MS } from "../../shared/publication-date";
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 6;
+export const CURRENT_SCHEMA_VERSION = 7;
 
 type SqliteDatabase = Database.Database;
 
@@ -288,6 +290,15 @@ const MIGRATIONS: readonly SchemaMigration[] = [
           END;
         `);
       }
+    }
+  },
+  {
+    version: 7,
+    name: "retain-library-state-through-identity-repairs",
+    up: (database) => {
+      normalizeLegacyDismissedIdentities(database);
+      const owners = database.prepare("SELECT DISTINCT source_id FROM entries").all() as Array<{ source_id: string }>;
+      for (const owner of owners) repairScourRedirectEntries(database, owner.source_id);
     }
   }
 

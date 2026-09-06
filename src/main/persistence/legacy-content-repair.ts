@@ -1,3 +1,4 @@
+import { rekeyDismissedContent } from "./dismissed-content";
 import type Database from "better-sqlite3";
 import type { Source } from "../../shared/types";
 import { canonicalizeContentUrl, isScourRssRedirectUrl, isTaxonomyUrl, isZhihuBusinessPromotionUrl } from "../../shared/url";
@@ -18,6 +19,7 @@ type RepairEntryRow = {
   is_read: number;
   is_favorite: number;
   created_at: number;
+  ingestion_kind: "current" | "history";
   observed_at: number | null;
   provider_id: string | null;
   external_id: string | null;
@@ -90,7 +92,7 @@ export function deletePromotedZhihuFollowEntries(database: SqliteDatabase, sourc
  */
 export function repairScourRedirectEntries(database: SqliteDatabase, sourceId: string): number {
   const sourceRows = database.prepare(`SELECT id, source_id, canonical_url, original_url, title, author, published_at, summary, image_url,
-    content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity
+    content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity, ingestion_kind
     FROM entries WHERE source_id = ?`).all(sourceId) as RepairEntryRow[];
   const repairs = sourceRows.flatMap((row) => {
     try {
@@ -110,7 +112,7 @@ export function repairScourRedirectEntries(database: SqliteDatabase, sourceId: s
     groups.set(repair.canonicalUrl, group);
   }
   const findByCanonicalUrl = database.prepare(`SELECT id, source_id, canonical_url, original_url, title, author, published_at, summary, image_url,
-    content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity
+    content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity, ingestion_kind
     FROM entries WHERE canonical_url = ?`);
   const originsForEntry = database.prepare(`SELECT source_id, provider_id, provider_label, external_id, original_url, observed_at
     FROM entry_origins WHERE entry_id = ?`);
@@ -123,7 +125,7 @@ export function repairScourRedirectEntries(database: SqliteDatabase, sourceId: s
   const deleteOrigins = database.prepare("DELETE FROM entry_origins WHERE entry_id = ?");
   const deleteEntry = database.prepare("DELETE FROM entries WHERE id = ?");
   const updateWinner = database.prepare(`UPDATE entries SET canonical_url = ?, canonical_identity = ?,
-    is_read = ?, is_favorite = ?, author = ?, published_at = ?, summary = ?, image_url = ?, created_at = ?, observed_at = ? WHERE id = ?`);
+    is_read = ?, is_favorite = ?, author = ?, published_at = ?, summary = ?, image_url = ?, created_at = ?, observed_at = ?, ingestion_kind = ? WHERE id = ?`);
   const originOwner = database.prepare("SELECT source_id FROM entry_origins WHERE entry_id = ? ORDER BY observed_at ASC LIMIT 1");
   const updateOwner = database.prepare("UPDATE entries SET source_id = ? WHERE id = ?");
 
@@ -146,7 +148,8 @@ export function repairScourRedirectEntries(database: SqliteDatabase, sourceId: s
         deleteEntry.run(loser.id);
       }
       const state = mergeEntryState(rows, winner);
-      updateWinner.run(canonicalUrl, canonicalUrl, state.read, state.favorite, state.author, state.publishedAt, state.summary, state.imageUrl, state.createdAt, state.observedAt, winner.id);
+      updateWinner.run(canonicalUrl, canonicalUrl, state.read, state.favorite, state.author, state.publishedAt, state.summary, state.imageUrl, state.createdAt, state.observedAt, state.ingestionKind, winner.id);
+      rekeyDismissedContent(database, rows.flatMap((row) => [row.canonical_identity ?? row.canonical_url, row.canonical_url]), canonicalUrl);
       const owner = originOwner.get(winner.id) as { source_id: string } | undefined;
       if (owner) updateOwner.run(owner.source_id, winner.id);
     }
@@ -179,7 +182,7 @@ export function repairGenericHomepageEntryUrls(database: SqliteDatabase, source:
       if (!isSourceHomepage || targetUrl.origin !== sourceUrl.origin || target === sourceUrl.toString() || usedCanonicalUrls.has(target)) return [];
       if (exists.get(target, entry.id)) return [];
       usedCanonicalUrls.add(target);
-      return [{ id: entry.id, target }];
+      return [{ id: entry.id, target, previous: [entry.canonical_identity, entry.canonical_url] }];
     } catch {
       return [];
     }
@@ -189,22 +192,24 @@ export function repairGenericHomepageEntryUrls(database: SqliteDatabase, source:
     for (const repair of repairs) {
       updateEntry.run(repair.target, repair.target, repair.target, repair.id);
       updateOrigin.run(repair.target, repair.id, source.id);
+      rekeyDismissedContent(database, repair.previous, repair.target);
     }
   })();
   return repairs.length;
 }
 
 function choosePreferredEntry(entries: RepairEntryRow[]): RepairEntryRow {
-  return [...entries].sort((left, right) => entryQuality(right) - entryQuality(left))[0]!;
-}
-
-function entryQuality(entry: RepairEntryRow): number {
-  return Number(Boolean(entry.is_favorite)) * 1_000_000
-    + Number(Boolean(entry.is_read)) * 100_000
-    + Number(Boolean(entry.published_at)) * 10_000
-    + (entry.summary?.length ?? 0) * 10
-    + Number(Boolean(entry.image_url)) * 100
-    + (entry.observed_at ?? entry.created_at);
+  // State has explicit precedence. Adding epoch milliseconds to quality scores
+  // let a newer observation overwhelm even a saved or previously read card.
+  return [...entries].sort((left, right) =>
+    right.is_favorite - left.is_favorite
+    || right.is_read - left.is_read
+    || Number(Boolean(right.published_at)) - Number(Boolean(left.published_at))
+    || (right.summary?.length ?? 0) - (left.summary?.length ?? 0)
+    || Number(Boolean(right.image_url)) - Number(Boolean(left.image_url))
+    || (right.observed_at ?? right.created_at) - (left.observed_at ?? left.created_at)
+    || left.id.localeCompare(right.id)
+  )[0]!;
 }
 
 function mergeEntryState(entries: RepairEntryRow[], preferred: RepairEntryRow): {
@@ -216,7 +221,9 @@ function mergeEntryState(entries: RepairEntryRow[], preferred: RepairEntryRow): 
   imageUrl: string | null;
   createdAt: number;
   observedAt: number;
+  ingestionKind: "current" | "history";
 } {
+  const earliest = [...entries].sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id))[0]!;
   const first = <T>(value: (entry: RepairEntryRow) => T | null | undefined): T | null => entries.map(value).find((item): item is T => item !== null && item !== undefined) ?? null;
   const longest = (value: (entry: RepairEntryRow) => string | null): string | null => entries
     .map(value)
@@ -230,6 +237,7 @@ function mergeEntryState(entries: RepairEntryRow[], preferred: RepairEntryRow): 
     summary: longest((entry) => entry.summary),
     imageUrl: preferred.image_url ?? first((entry) => entry.image_url),
     createdAt: Math.min(...entries.map((entry) => entry.created_at)),
-    observedAt: Math.max(...entries.map((entry) => entry.observed_at ?? entry.created_at))
+    ingestionKind: earliest.ingestion_kind,
+    observedAt: Math.min(...entries.map((entry) => entry.observed_at ?? entry.created_at))
   };
 }
