@@ -300,6 +300,7 @@ export interface AuthorizationContext {
 
 export interface DiscoveryContext {
   account?: Account;
+  signal?: AbortSignal;
 }
 
 export interface SubscriptionDraft {

@@ -1,5 +1,5 @@
 import { InvalidJsonResponseError, requestJsonWithTimeout, throwIfAborted } from "./cancellation";
-import type { ConnectorAdapter, RawEntry, Source, SubscriptionDraft, SyncContext, SyncResult } from "../shared/types";
+import type { ConnectorAdapter, DiscoveryContext, RawEntry, Source, SubscriptionDraft, SyncContext, SyncResult } from "../shared/types";
 import { compactText } from "../shared/text";
 import { builtInManifest } from "./connector-registry";
 import { contentNormalizer } from "./content-normalizer";
@@ -29,10 +29,13 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
 
   constructor(private readonly fetchJson: AcademicFetch = chromiumFetch) {}
 
-  async discover(input: string): Promise<SubscriptionDraft[]> {
+  async discover(input: string, context?: DiscoveryContext): Promise<SubscriptionDraft[]> {
+    const signal = context?.signal;
+    throwIfAborted(signal);
     const query = input.trim();
     if (!query) return [];
-    const results = await Promise.allSettled([this.searchOpenAlex(query), this.searchSemantic(query)]);
+    const results = await Promise.allSettled([this.searchOpenAlex(query, signal), this.searchSemantic(query, signal)]);
+    throwIfAborted(signal);
     const drafts = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     // An empty result is authoritative only when both searches succeeded.
@@ -67,10 +70,10 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
     return contentNormalizer.normalize(item, source, ACADEMIC_CONTENT_NORMALIZATION);
   }
 
-  private async searchOpenAlex(query: string): Promise<SubscriptionDraft[]> {
+  private async searchOpenAlex(query: string, signal?: AbortSignal): Promise<SubscriptionDraft[]> {
     const url = new URL("/authors", OPENALEX_ROOT);
     url.search = new URLSearchParams({ search: query, per_page: "10" }).toString();
-    const payload = await this.requestJson<{ results?: Array<{ id?: string; display_name?: string; orcid?: string; works_count?: number }> }>(url);
+    const payload = await this.requestJson<{ results?: Array<{ id?: string; display_name?: string; orcid?: string; works_count?: number }> }>(url, {}, signal);
     if (!Array.isArray(payload?.results)) throw new Error("OpenAlex 作者搜索响应无效，请稍后重试。");
     return payload.results.flatMap((author) => {
       if (!author || typeof author !== "object") return [];
@@ -85,10 +88,10 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
     });
   }
 
-  private async searchSemantic(query: string): Promise<SubscriptionDraft[]> {
+  private async searchSemantic(query: string, signal?: AbortSignal): Promise<SubscriptionDraft[]> {
     const url = new URL("author/search", `${SEMANTIC_ROOT}/`);
     url.search = new URLSearchParams({ query, limit: "10", fields: "name,paperCount,externalIds" }).toString();
-    const payload = await this.requestJson<{ data?: Array<{ authorId?: string; name?: string; paperCount?: number; externalIds?: { ORCID?: string } }> }>(url);
+    const payload = await this.requestJson<{ data?: Array<{ authorId?: string; name?: string; paperCount?: number; externalIds?: { ORCID?: string } }> }>(url, {}, signal);
     if (!Array.isArray(payload?.data)) throw new Error("Semantic Scholar 作者搜索响应无效，请稍后重试。");
     return payload.data.flatMap((author) => {
       if (!author || typeof author !== "object") return [];

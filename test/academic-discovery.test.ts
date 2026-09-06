@@ -73,4 +73,23 @@ describe("academic author discovery", () => {
     expect(await new AcademicAuthorConnector(fetcher).discover("  ")).toEqual([]);
     expect(fetcher).not.toHaveBeenCalled();
   });
+
+  it("does not start provider searches after discovery is cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("cancel search"));
+    const fetcher = vi.fn(async () => json({ results: [], data: [] }));
+    await expect(new AcademicAuthorConnector(fetcher).discover("Chen", { signal: controller.signal })).rejects.toThrow("cancel search");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("does not return a partial author result after cancellation", async () => {
+    const controller = new AbortController();
+    const search = new AcademicAuthorConnector(async (url) => {
+      if (url.includes("openalex.org")) return json({ results: [{ id: "A1", display_name: "Chen" }] });
+      controller.abort(new Error("cancel search"));
+      return json({ data: [] });
+    });
+    await expect(search.discover("Chen", { signal: controller.signal })).rejects.toThrow("cancel search");
+  });
+
 });

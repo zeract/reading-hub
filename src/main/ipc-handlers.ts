@@ -2,6 +2,7 @@ import { lstat, readFile } from "node:fs/promises";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { throwIfAborted } from "./cancellation";
+import { WindowRequestScope } from "./window-request-scope";
 import { assertPublicUrl } from "../shared/url";
 import type { AiStreamEvent, AiStreamRequest, OpmlImportResult } from "../shared/types";
 import { sourceFaviconCandidate } from "../shared/source-icon";
@@ -45,7 +46,7 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
   // Renderer requests are scoped to their owning WebContents. A malicious or
   // stale renderer cannot cancel another window's AI turn by guessing an id.
   const aiStreamControllers = new Map<number, Map<string, AbortController>>();
-  const xAuthorizationControllers = new Set<AbortController>();
+  const foregroundRequests = new WindowRequestScope();
   const observers = new Map<number, Electron.WebContents>();
   const unsubscribeChanges = database?.onLibraryChanged?.((revision) => {
     for (const [id, sender] of observers) {
@@ -175,29 +176,22 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     return sync.syncSource(sources.connectZhihu().id);
   });
   handle(IPC_CHANNELS.zhihu.followLogin, () => sources.beginZhihuFollowLogin());
-  handle(IPC_CHANNELS.x.connect, async (event, rawClientId: unknown) => {
+  handle(IPC_CHANNELS.x.connect, (event, rawClientId: unknown) => {
     const clientId = requireText(rawClientId, "X Client ID 无效。", 500);
-    const controller = new AbortController();
-    const onDestroyed = () => controller.abort(new Error("授权窗口已关闭，已取消 X 授权。"));
-    xAuthorizationControllers.add(controller);
-    event.sender.once("destroyed", onDestroyed);
-    try {
-      if (event.sender.isDestroyed()) onDestroyed();
-      throwIfAborted(controller.signal);
-      const account = await x.authorizeWithClientId(clientId, controller.signal);
-      throwIfAborted(controller.signal);
-      return await sync.syncSource(sources.ensureXSource(account).id);
-    } finally {
-      event.sender.removeListener("destroyed", onDestroyed);
-      xAuthorizationControllers.delete(controller);
-    }
+    return foregroundRequests.run(event.sender, async (signal) => {
+      const account = await x.authorizeWithClientId(clientId, signal);
+      throwIfAborted(signal);
+      return sync.syncSource(sources.ensureXSource(account).id);
+    });
   });
   handle(IPC_CHANNELS.xiaohongshu.subscribeProfile, async (_event, input: unknown) => {
     const source = sources.createXiaohongshuProfileSource(parseProfileSubscriptionInput(input));
     return (await sync.syncSource(source.id)).source;
   });
-  handle(IPC_CHANNELS.academic.search, (_event, query: unknown) =>
-    academic.discover(requireText(query, "学术作者搜索词无效。", 500)));
+  handle(IPC_CHANNELS.academic.search, (event, query: unknown) => {
+    const text = requireText(query, "学术作者搜索词无效。", 500);
+    return foregroundRequests.run(event.sender, (signal) => academic.discover(text, { signal }));
+  });
   handle(IPC_CHANNELS.academic.subscribe, async (_event, draft: unknown) =>
     sync.syncSource(sources.createAcademicSource(parseAcademicDraft(draft)).id));
 
@@ -206,7 +200,7 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     unsubscribeChanges?.();
     observers.clear();
     for (const channel of channels) ipcMain.removeHandler(channel);
-    for (const controller of xAuthorizationControllers) controller.abort(new Error("应用正在退出，已取消 X 授权。"));
+    foregroundRequests.close();
     for (const streams of aiStreamControllers.values()) {
       for (const controller of streams.values()) controller.abort(new Error("应用正在退出。"));
     }
