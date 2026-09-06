@@ -1,7 +1,7 @@
-import { InvalidJsonResponseError, requestJsonWithTimeout, throwIfAborted } from "./cancellation";
+import { abortError, InvalidJsonResponseError, requestJsonWithTimeout, throwIfAborted } from "./cancellation";
 import { KeyedTaskQueue } from "./keyed-task-queue";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { shell } from "electron";
 import type { Account, ConnectorAdapter, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
 import { compactText } from "../shared/text";
@@ -68,7 +68,8 @@ export class XConnector implements ConnectorAdapter {
    * X requires the user to create an approved developer App. Only its public
    * client ID is entered here; access/refresh tokens stay in Keychain.
    */
-  async authorizeWithClientId(clientId: string): Promise<Account> {
+  async authorizeWithClientId(clientId: string, signal?: AbortSignal): Promise<Account> {
+    throwIfAborted(signal);
     const safeClientId = clientId.trim();
     if (!safeClientId) throw new Error("请先填写 X Developer App 的 Client ID。");
     const verifier = base64Url(randomBytes(48));
@@ -85,16 +86,17 @@ export class XConnector implements ConnectorAdapter {
       code_challenge_method: "S256"
     }).toString();
 
-    const code = await this.waitForAuthorizationCode(authorizationUrl.toString(), state);
-    const token = await this.exchangeAuthorizationCode(safeClientId, code, verifier);
-    const user = await this.requestJson<XResponse<XUser>>("/users/me", token.accessToken).then((response) => response.data);
+    const code = await this.waitForAuthorizationCode(authorizationUrl.toString(), state, signal);
+    const token = await this.exchangeAuthorizationCode(safeClientId, code, verifier, signal);
+    const user = await this.requestJson<XResponse<XUser>>("/users/me", token.accessToken, signal).then((response) => response.data);
     if (!isXUser(user)) throw new Error("X 授权成功，但未返回有效账号身份。");
 
     // This lightweight request verifies the permission that makes the
     // following-feed connector possible before a source is created.
-    readXPage(await this.requestJson<XResponse<XUser[]>>(`/users/${encodeURIComponent(user.id)}/following?max_results=5`, token.accessToken), isXUser);
+    readXPage(await this.requestJson<XResponse<XUser[]>>(`/users/${encodeURIComponent(user.id)}/following?max_results=5`, token.accessToken, signal), isXUser);
 
     return this.credentials.run(user.id, async () => {
+      throwIfAborted(signal);
       const existing = this.database.findAccount("x", user.id);
       const accountId = existing?.id ?? randomUUID();
       const keychainAccount = await this.secrets.setConnectorSecret("x", accountId, JSON.stringify(token));
@@ -108,7 +110,7 @@ export class XConnector implements ConnectorAdapter {
         status: "active",
         config: { clientId: safeClientId, username: user.username }
       });
-    });
+    }, signal);
   }
 
   async sync(context: SyncContext): Promise<SyncResult> {
@@ -305,53 +307,72 @@ export class XConnector implements ConnectorAdapter {
     }
   }
 
-  private async waitForAuthorizationCode(url: string, expectedState: string): Promise<string> {
-    const code = await new Promise<string>((resolve, reject) => {
+  private async waitForAuthorizationCode(url: string, expectedState: string, signal?: AbortSignal): Promise<string> {
+    throwIfAborted(signal);
+    return new Promise<string>((resolve, reject) => {
       let settled = false;
-      const finish = (callback: () => void) => {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const finish = (complete: () => void, response?: ServerResponse) => {
         if (settled) return;
         settled = true;
-        callback();
+        clearTimeout(timeout);
+        signal?.removeEventListener("abort", onAbort);
+        server.close();
+        // Allow the tiny callback response to flush before closing other
+        // connections. Failed/cancelled waits have no response to preserve.
+        if (response && !response.writableFinished) {
+          response.once("finish", () => server.closeAllConnections());
+          response.once("close", () => server.closeAllConnections());
+        } else server.closeAllConnections();
+        complete();
+      };
+      const onAbort = () => finish(() => reject(abortError(signal!)));
+      const reply = (response: ServerResponse, status: number, message: string) => {
+        response.writeHead(status, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", connection: "close" });
+        response.end(message);
       };
       const server = createServer((request, response) => {
-        const callback = new URL(request.url || "/", REDIRECT_URI);
-        if (callback.pathname !== "/x/callback") {
-          response.writeHead(404).end();
-          return;
+        if (settled) { reply(response, 410, "授权请求已结束。"); return; }
+        let callback: URL;
+        try { callback = new URL(request.url || "/", REDIRECT_URI); }
+        catch { reply(response, 400, "授权回调地址无效。"); return; }
+        if (callback.origin !== new URL(REDIRECT_URI).origin || callback.pathname !== "/x/callback") {
+          reply(response, 404, "未找到授权回调。"); return;
         }
-        const providerError = callback.searchParams.get("error");
-        const state = callback.searchParams.get("state");
-        const receivedCode = callback.searchParams.get("code");
-        response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-        response.end("<p>Reading Hub 已收到 X 授权。你可以关闭此页面并回到应用。</p>");
-        finish(() => {
-          server.close();
-          if (state !== expectedState) reject(new Error("X 授权状态校验失败，请重试。"));
-          else if (providerError) reject(new Error(`X 授权被取消或拒绝：${providerError}`));
-          else if (!receivedCode) reject(new Error("X 未返回授权码，请重试。"));
-          else resolve(receivedCode);
+        if (request.method !== "GET") { reply(response, 405, "授权回调需要 GET 请求。"); return; }
+        const params = callback.searchParams;
+        if (params.getAll("state").length !== 1 || params.get("state") !== expectedState) {
+          // Unrelated local traffic must not consume the user's real login.
+          reply(response, 400, "授权状态校验失败。"); return;
+        }
+        const code = params.get("code");
+        let failure: string | undefined;
+        if (params.getAll("code").length > 1 || params.getAll("error").length > 1 || (params.has("error") && params.has("code"))) failure = "X 授权回调参数无效，请重试。";
+        else if (params.has("error")) failure = "X 授权被取消或拒绝，请重新授权。";
+        else if (!code?.trim()) failure = "X 未返回授权码，请重试。";
+        reply(response, failure ? 400 : 200, failure || "Reading Hub 已收到 X 授权。你可以关闭此页面并回到应用。");
+        finish(() => failure ? reject(new Error(failure)) : resolve(code!), response);
+      });
+      const onServerError = (error: NodeJS.ErrnoException) => finish(() => reject(new Error(
+        error.code === "EADDRINUSE" ? "X 授权回调端口已被占用，请关闭其他授权请求后重试。" : "无法启动 X 授权回调，请稍后重试。"
+      )));
+      server.on("error", onServerError);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      timeout = setTimeout(() => finish(() => reject(new Error("等待 X 授权超时，请重试。"))), 5 * 60_000);
+      try {
+        server.listen(43119, "127.0.0.1", () => {
+          if (settled) { server.close(); return; }
+          void Promise.resolve().then(() => settled ? undefined : this.openExternal(url)).catch(() =>
+            finish(() => reject(new Error("无法打开 X 授权页面，请稍后重试。"))));
         });
-      });
-      server.once("error", (error) => finish(() => reject(new Error(`无法启动 X 授权回调：${error.message}`))));
-      server.listen(43119, "127.0.0.1", () => {
-        void this.openExternal(url).catch((error) => finish(() => {
-          server.close();
-          reject(error instanceof Error ? error : new Error("无法打开 X 授权页面。"));
-        }));
-      });
-      const timeout = setTimeout(() => finish(() => {
-        server.close();
-        reject(new Error("等待 X 授权超时，请重试。"));
-      }), 5 * 60_000);
-      server.once("close", () => clearTimeout(timeout));
+      } catch (error) { onServerError(error as NodeJS.ErrnoException); }
     });
-    return code;
   }
 
-  private async exchangeAuthorizationCode(clientId: string, code: string, verifier: string): Promise<XToken> {
+  private async exchangeAuthorizationCode(clientId: string, code: string, verifier: string, signal?: AbortSignal): Promise<XToken> {
     return this.exchangeToken(new URLSearchParams({
       grant_type: "authorization_code", client_id: clientId, code, redirect_uri: REDIRECT_URI, code_verifier: verifier
-    }));
+    }), signal);
   }
 
   private async refreshToken(clientId: string, refreshToken: string, signal?: AbortSignal): Promise<XToken> {
