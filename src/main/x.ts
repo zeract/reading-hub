@@ -25,7 +25,7 @@ type XToken = {
   expiresAt?: number;
 };
 
-type XUser = { id: string; name: string; username: string };
+type XUser = { id: string; name?: string; username: string };
 type XPostPage = { cursor: string; highWaterId: string };
 type XPost = {
   id: string;
@@ -88,11 +88,11 @@ export class XConnector implements ConnectorAdapter {
     const code = await this.waitForAuthorizationCode(authorizationUrl.toString(), state);
     const token = await this.exchangeAuthorizationCode(safeClientId, code, verifier);
     const user = await this.requestJson<XResponse<XUser>>("/users/me", token.accessToken).then((response) => response.data);
-    if (!user?.id) throw new Error("X 授权成功，但未返回账号身份。");
+    if (!isXUser(user)) throw new Error("X 授权成功，但未返回有效账号身份。");
 
     // This lightweight request verifies the permission that makes the
     // following-feed connector possible before a source is created.
-    await this.requestJson<XResponse<XUser[]>>(`/users/${encodeURIComponent(user.id)}/following?max_results=5`, token.accessToken);
+    readXPage(await this.requestJson<XResponse<XUser[]>>(`/users/${encodeURIComponent(user.id)}/following?max_results=5`, token.accessToken), isXUser);
 
     return this.credentials.run(user.id, async () => {
       const existing = this.database.findAccount("x", user.id);
@@ -191,7 +191,7 @@ export class XConnector implements ConnectorAdapter {
       `/users/by/username/${encodeURIComponent(username)}?user.fields=name,username`,
       accessToken, signal
     ).then((response) => response.data);
-    if (!profile?.id || !profile.username) throw new Error("未找到该 X 博主，或该主页目前不可公开读取。");
+    if (!isXUser(profile)) throw new Error("未找到该 X 博主，或该主页目前不可公开读取。");
     const fetched = await this.fetchUserPosts(profile, accessToken, checkpoint?.sinceId, decodePostPage(checkpoint?.data?.pendingPosts), signal);
     return {
       entries: fetched.entries,
@@ -228,7 +228,8 @@ export class XConnector implements ConnectorAdapter {
     }
     let nextSinceId = latestId([sinceId ?? "", pending?.highWaterId ?? ""]);
     const entries: RawEntry[] = [];
-    for (const post of response.data ?? []) {
+    const page = readXPage(response, isXPost);
+    for (const post of page.items) {
       // Advance across filtered replies/reposts too, otherwise a busy author
       // can keep an unwanted page at the front of every poll.
       if (!nextSinceId || isNewerId(post.id, nextSinceId)) nextSinceId = post.id;
@@ -236,7 +237,7 @@ export class XConnector implements ConnectorAdapter {
       const raw = postToEntry(post, user);
       if (raw) entries.push(raw);
     }
-    const cursor = stringValue(response.meta?.next_token);
+    const cursor = page.cursor;
     if (sinceId && cursor) {
       if (cursor === pending?.cursor) throw new Error("X 帖子分页未前进，已保留同步进度，请稍后重试。");
       return { entries, sinceId, pending: { cursor, highWaterId: nextSinceId ?? sinceId } };
@@ -256,8 +257,9 @@ export class XConnector implements ConnectorAdapter {
       const query = new URLSearchParams({ max_results: "1000", "user.fields": "name,username" });
       if (cursor) query.set("pagination_token", cursor);
       const response = await this.requestJson<XResponse<XUser[]>>(`/users/${encodeURIComponent(userId)}/following?${query}`, accessToken, signal);
-      for (const user of response.data ?? []) if (user.id && user.username) users.set(user.id, user);
-      cursor = stringValue(response.meta?.next_token);
+      const page = readXPage(response, isXUser);
+      for (const user of page.items) users.set(user.id, user);
+      cursor = page.cursor;
       if (cursor && users.size < DEFAULT_FOLLOW_LIMIT) {
         if (visited.has(cursor) || visited.size >= DEFAULT_FOLLOW_LIMIT) throw new Error("X 关注列表分页未完成，已保留原有列表，请稍后重试。");
         visited.add(cursor);
@@ -401,8 +403,50 @@ export class XConnector implements ConnectorAdapter {
     }
     const { response, payload } = result;
     if (!response.ok) throw new XApiError(xHttpFailureMessage(response.status, path), response.status);
+    assertCompleteXResponse(payload);
     return payload;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function invalidXResponse(): XApiError {
+  // A successful HTTP response with an invalid shape is not evidence of
+  // expired credentials. Do not attach a status or any remote response text.
+  return new XApiError("X 接口返回的数据不完整或格式错误，已保留同步进度，请稍后重试。");
+}
+
+function assertCompleteXResponse(value: unknown): asserts value is Record<string, unknown> {
+  if (!isRecord(value) || (value.errors !== undefined && (!Array.isArray(value.errors) || value.errors.length > 0))) {
+    throw invalidXResponse();
+  }
+}
+
+/** Validate a whole page before allowing any of its records to advance a cursor. */
+function readXPage<T>(value: unknown, isItem: (item: unknown) => item is T): { items: T[]; cursor?: string } {
+  assertCompleteXResponse(value);
+  const meta = value.meta === undefined ? {} : value.meta;
+  if (!isRecord(meta)) throw invalidXResponse();
+  const count = meta.result_count;
+  if (count !== undefined && (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0)) throw invalidXResponse();
+  const cursor = stringValue(meta.next_token);
+  if (meta.next_token !== undefined && !cursor) throw invalidXResponse();
+  // X can omit data on a confirmed zero-result page. Such a page may still
+  // carry a next_token; an empty result alone never ends pagination.
+  const items = value.data === undefined && count === 0 ? [] : value.data;
+  if (!Array.isArray(items) || !items.every(isItem) || (count !== undefined && count !== items.length)) throw invalidXResponse();
+  return { items, cursor };
+}
+
+function isXUser(value: unknown): value is XUser {
+  return isRecord(value) && Boolean(stringValue(value.id)) && Boolean(stringValue(value.username))
+    && (value.name === undefined || typeof value.name === "string");
+}
+
+function isXPost(value: unknown): value is XPost {
+  return isRecord(value) && typeof value.id === "string" && /^\d+$/.test(value.id) && Boolean(stringValue(value.text));
 }
 
 const X_CONTENT_NORMALIZATION = {

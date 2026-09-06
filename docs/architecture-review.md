@@ -160,3 +160,13 @@ OPML 先验证并整理合法输入，再将接受的全部订阅作为一个事
 接口边界参考 [OpenAlex 分页文档](https://help.openalex.org/api/paging/)、[Semantic Scholar 官方 API 教程](https://webflow.semanticscholar.org/product/api/tutorial)及 [ORCID 3.0 works 示例](https://github.com/ORCID/orcid-model/blob/master/src/main/resources/record_3.0/samples/read_samples/works-3.0.xml)。测试使用合成响应，不请求真实作者记录或凭证。
 
 验证：新增 30 项测试，覆盖三个平台的缺失/null/错误类型列表与合法空结果、混合失败、有效部分结果，以及临时 SQLite 中失败退避、成功时间与 checkpoint 保留、重启恢复、恢复后新增/去重/发布时间排序。全量 `npm test` 为 67 个文件、516 项通过；`npm run build` 与 `git diff --check` 通过，既有 renderer chunk 提示保留。本轮未修改鉴权、阅读器、正文处理或布局，未重复执行 reader、style、visual 审计；上一轮记录的远端阅读限制仍存在。无需数据库迁移，需要重启开发应用。
+
+## 后续迭代：X 分页完整性与游标提交
+
+2026-09-07 检查 X 增量分页发现，`response.data ?? []` 将缺失列表的 HTTP 200 响应视为空页。在存在待续页时，这会清除待续游标并提交较高水位，后续请求可能跳过尚未获取的帖子；关注列表刷新也可能缓存不真实的空列表。HTTP 200 中的 `errors` 原先被忽略。4 项通过真实 SyncManager 与内存 SQLite 的回归在旧实现上均失败。
+
+帖子、关注列表与授权后的关注权限检查现在共用整页校验：校验顶层对象、错误集合、列表及关键记录字段、计数与游标类型，再允许记录参与游标推进。无列表仅在 `result_count: 0` 时作为空页接受；空页仍按下一页游标继续读取。有效空列表继续缓存，初次采集范围、分页断点、重复页保护和 HTTP 400 失效游标重放保持原行为。账号身份也须通过统一字段检查才可入库。
+
+这一边界参考 [X 分页文档](https://docs.x.com/x-api/fundamentals/pagination)、[时间线零结果分页说明](https://docs.x.com/x-api/posts/timelines/integrate)和 [HTTP 200 部分错误说明](https://docs.x.com/x-api/fundamentals/response-codes-and-errors)。当前请求未使用额外资源展开；含部分错误的响应按整页失败处理并保留原断点。如果远端持续返回部分错误，来源会继续退避，不会自动跳过受影响记录。固定格式错误不携带远端字段或 HTTP 401 状态，避免泄露响应内容或误使账号失效。
+
+验证：新增 27 项确定性测试，覆盖关注流/单作者待续页、缓存列表保留、部分错误、畸形记录/元数据、真实空页及带游标的零结果页、无效授权响应不写 Keychain，以及临时 SQLite 中失败退避、重启后原断点续传和恢复成功。既有新增、去重、排序、分页恢复、取消和令牌并发测试随全量运行通过。全量 `npm test` 为 68 个文件、543 项通过；`npm run build`、`git diff --check` 通过，既有 renderer chunk 提示保留。测试没有真实令牌或外部账号请求；未修改阅读器、布局或正文处理，未重复执行 reader、style、visual 审计。无需数据库迁移，需要重启开发应用。
