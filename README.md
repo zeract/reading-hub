@@ -24,6 +24,7 @@ npm run rebuild:electron
 - 通用网页只访问公开 HTTP/HTTPS 地址，阻止 localhost/私有地址，遵守 robots 规则并对同域名串行限速。
 - 无 Feed 的公开网页会自动识别内容列表；需要复核时，只需在“自动校准”中选择正确的文章卡片组，无需编写 CSS 选择器。
 - X 使用官方 API 的 OAuth 2.0 PKCE 授权。请先在 X Developer Console 配置回调地址 `http://127.0.0.1:43119/x/callback`，然后在应用中输入 Client ID；访问与刷新令牌只保存在 macOS Keychain。默认收集所关注账号的原创帖与文章型外链，不读取浏览器 Cookie。
+- X 最多跟踪 200 个关注账号，关注列表每 6 小时刷新。首次收集每位作者最新一页（最多 20 条）；后续增量超过一页时，每轮继续一页并保存进度，读完后才推进增量起点，不自动导入完整历史。
 - “学术作者更新”聚合 OpenAlex、Semantic Scholar 及可公开读取的 ORCID works，并在卡片中保留实际数据来源；它不是 Google Scholar 登录态、页面或邮件的同步。
 
 ## 收集与阅读

@@ -25,6 +25,7 @@ type XToken = {
 };
 
 type XUser = { id: string; name: string; username: string };
+type XPostPage = { cursor: string; highWaterId: string };
 type XPost = {
   id: string;
   text?: string;
@@ -155,19 +156,23 @@ export class XConnector implements ConnectorAdapter {
     const checkpointData = checkpoint?.data ?? {};
     const now = Date.now();
     let followed = decodeFollowed(checkpointData.followed);
-    const refreshedAt = numberValue(checkpointData.followingRefreshedAt);
-    if (!followed.length || !refreshedAt || now - refreshedAt >= FOLLOW_REFRESH_MS) {
+    let refreshedAt = numberValue(checkpointData.followingRefreshedAt);
+    if (!Array.isArray(checkpointData.followed) || !refreshedAt || refreshedAt > now || now - refreshedAt >= FOLLOW_REFRESH_MS) {
       followed = await this.fetchFollowing(accountUserId, accessToken, signal);
+      refreshedAt = now;
     }
     const configuredLimit = numberValue(config.maxFollowees);
     const limit = Math.max(1, Math.min(configuredLimit || DEFAULT_FOLLOW_LIMIT, DEFAULT_FOLLOW_LIMIT));
     const tracked = followed.slice(0, limit);
     const sinceByUser = objectValue(checkpointData.sinceByUser);
     const nextSinceByUser: Record<string, string> = { ...stringRecord(sinceByUser) };
+    const pendingByUser = objectValue(checkpointData.pendingByUser);
+    const nextPendingByUser: Record<string, XPostPage> = {};
     const entries: RawEntry[] = [];
     for (const user of tracked) {
-      const fetched = await this.fetchUserPosts(user, accessToken, nextSinceByUser[user.id], signal);
+      const fetched = await this.fetchUserPosts(user, accessToken, nextSinceByUser[user.id], decodePostPage(pendingByUser[user.id]), signal);
       if (fetched.sinceId) nextSinceByUser[user.id] = fetched.sinceId;
+      if (fetched.pending) nextPendingByUser[user.id] = fetched.pending;
       entries.push(...fetched.entries);
     }
     return {
@@ -175,7 +180,7 @@ export class XConnector implements ConnectorAdapter {
       emptyIsHealthy: true,
       checkpoint: {
         sinceId: latestId(Object.values(nextSinceByUser)),
-        data: { followed, followingRefreshedAt: now, sinceByUser: nextSinceByUser }
+        data: { followed, followingRefreshedAt: refreshedAt, sinceByUser: nextSinceByUser, pendingByUser: nextPendingByUser }
       }
     };
   }
@@ -186,29 +191,41 @@ export class XConnector implements ConnectorAdapter {
       accessToken, signal
     ).then((response) => response.data);
     if (!profile?.id || !profile.username) throw new Error("未找到该 X 博主，或该主页目前不可公开读取。");
-    const fetched = await this.fetchUserPosts(profile, accessToken, checkpoint?.sinceId, signal);
+    const fetched = await this.fetchUserPosts(profile, accessToken, checkpoint?.sinceId, decodePostPage(checkpoint?.data?.pendingPosts), signal);
     return {
       entries: fetched.entries,
       emptyIsHealthy: true,
       checkpoint: {
         sinceId: fetched.sinceId,
-        data: { username: profile.username, userId: profile.id }
+        data: { username: profile.username, userId: profile.id, pendingPosts: fetched.pending }
       }
     };
   }
 
-  private async fetchUserPosts(user: XUser, accessToken: string, sinceId?: string, signal?: AbortSignal): Promise<{ entries: RawEntry[]; sinceId?: string }> {
+  private async fetchUserPosts(user: XUser, accessToken: string, sinceId?: string, pending?: XPostPage, signal?: AbortSignal): Promise<{ entries: RawEntry[]; sinceId?: string; pending?: XPostPage }> {
     const query = new URLSearchParams({
       max_results: "20",
       exclude: "replies,retweets",
       "tweet.fields": "created_at,entities,referenced_tweets,in_reply_to_user_id"
     });
     if (sinceId) query.set("since_id", sinceId);
-    const response = await this.requestJson<XResponse<XPost[]>>(
-      `/users/${encodeURIComponent(user.id)}/tweets?${query}`,
-      accessToken, signal
-    );
-    let nextSinceId = sinceId;
+    // Initial collection retains the existing latest-page scope. Incremental
+    // runs keep their committed lower bound until the entire gap is consumed.
+    if (!sinceId) pending = undefined;
+    if (pending) query.set("pagination_token", pending.cursor);
+    const request = () => this.requestJson<XResponse<XPost[]>>(`/users/${encodeURIComponent(user.id)}/tweets?${query}`, accessToken, signal);
+    let response: XResponse<XPost[]>;
+    try { response = await request(); }
+    catch (error) {
+      throwIfAborted(signal);
+      if (!pending || !(error instanceof XApiError) || error.status !== 400) throw error;
+      // A saved pagination token may expire. Restart from the unchanged lower
+      // bound; database deduplication makes replay safe without skipping posts.
+      query.delete("pagination_token");
+      pending = undefined;
+      response = await request();
+    }
+    let nextSinceId = latestId([sinceId ?? "", pending?.highWaterId ?? ""]);
     const entries: RawEntry[] = [];
     for (const post of response.data ?? []) {
       // Advance across filtered replies/reposts too, otherwise a busy author
@@ -218,6 +235,11 @@ export class XConnector implements ConnectorAdapter {
       const raw = postToEntry(post, user);
       if (raw) entries.push(raw);
     }
+    const cursor = stringValue(response.meta?.next_token);
+    if (sinceId && cursor) {
+      if (cursor === pending?.cursor) throw new Error("X 帖子分页未前进，已保留同步进度，请稍后重试。");
+      return { entries, sinceId, pending: { cursor, highWaterId: nextSinceId ?? sinceId } };
+    }
     return { entries, sinceId: nextSinceId };
   }
 
@@ -226,16 +248,21 @@ export class XConnector implements ConnectorAdapter {
   }
 
   private async fetchFollowing(userId: string, accessToken: string, signal?: AbortSignal): Promise<XUser[]> {
-    const users: XUser[] = [];
+    const users = new Map<string, XUser>();
+    const visited = new Set<string>();
     let cursor: string | undefined;
     do {
       const query = new URLSearchParams({ max_results: "1000", "user.fields": "name,username" });
       if (cursor) query.set("pagination_token", cursor);
       const response = await this.requestJson<XResponse<XUser[]>>(`/users/${encodeURIComponent(userId)}/following?${query}`, accessToken, signal);
-      users.push(...(response.data ?? []).filter((item) => item.id && item.username));
-      cursor = response.meta?.next_token;
-    } while (cursor && users.length < DEFAULT_FOLLOW_LIMIT);
-    return users.slice(0, DEFAULT_FOLLOW_LIMIT);
+      for (const user of response.data ?? []) if (user.id && user.username) users.set(user.id, user);
+      cursor = stringValue(response.meta?.next_token);
+      if (cursor && users.size < DEFAULT_FOLLOW_LIMIT) {
+        if (visited.has(cursor) || visited.size >= DEFAULT_FOLLOW_LIMIT) throw new Error("X 关注列表分页未完成，已保留原有列表，请稍后重试。");
+        visited.add(cursor);
+      }
+    } while (cursor && users.size < DEFAULT_FOLLOW_LIMIT);
+    return [...users.values()].slice(0, DEFAULT_FOLLOW_LIMIT);
   }
 
   /** Serialize credential reads/writes per X identity, independently of source hosts. */
@@ -453,6 +480,13 @@ function stringRecord(value: Record<string, unknown>): Record<string, string> {
 function decodeFollowed(value: unknown): XUser[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is XUser => Boolean(item) && typeof item === "object" && typeof (item as XUser).id === "string" && typeof (item as XUser).username === "string");
+}
+
+function decodePostPage(value: unknown): XPostPage | undefined {
+  const record = objectValue(value);
+  const cursor = stringValue(record.cursor);
+  const highWaterId = stringValue(record.highWaterId);
+  return cursor && highWaterId ? { cursor, highWaterId } : undefined;
 }
 
 function isNewerId(left: string, right: string): boolean {
