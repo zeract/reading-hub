@@ -5,34 +5,13 @@ import { redactDiagnosticMessage } from "./diagnostic-redaction";
 import { ContentMaintenance } from "./content-maintenance";
 import { ReadingDatabase } from "./database";
 import { ConnectorRegistry } from "./connector-registry";
+import { KeyedTaskQueue } from "./keyed-task-queue";
 
 const BACKGROUND_SYNC_CONCURRENCY = 2;
 type SourceSyncResult = { inserted: number; source: Source };
 
-class HostGate {
-  private readonly tails = new Map<string, Promise<void>>();
-
-  async run<T>(url: string, task: () => Promise<T>): Promise<T> {
-    const host = new URL(url).hostname;
-    const previous = this.tails.get(host) ?? Promise.resolve();
-    let release: () => void = () => undefined;
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const tail = previous.then(() => current);
-    this.tails.set(host, tail);
-    await previous;
-    try {
-      return await task();
-    } finally {
-      release();
-      if (this.tails.get(host) === tail) this.tails.delete(host);
-    }
-  }
-}
-
 export class SyncManager {
-  private readonly gate = new HostGate();
+  private readonly gate = new KeyedTaskQueue();
   private timer?: NodeJS.Timeout;
   private dueRun?: Promise<void>;
   private readonly inFlight = new Map<string, Promise<SourceSyncResult>>();
@@ -118,7 +97,7 @@ export class SyncManager {
   private async syncOnce(sourceId: string, signal: AbortSignal): Promise<SourceSyncResult> {
     const queuedSource = this.db.getSource(sourceId);
     if (!queuedSource) throw new Error("来源不存在。");
-    return this.gate.run(queuedSource.url, async () => {
+    return this.gate.run(new URL(queuedSource.url).hostname, async () => {
       this.assertOpen();
       throwIfAborted(signal);
       const source = this.db.getSource(sourceId);
@@ -182,7 +161,7 @@ export class SyncManager {
         const updated = this.db.markFailure(currentSource, userSafeError(error));
         throw new SyncFailure(updated.lastError || "同步失败");
       }
-    });
+    }, signal);
   }
 
   savePreview(source: Source, entries: RawEntry[]): number {

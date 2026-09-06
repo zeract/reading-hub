@@ -9,6 +9,36 @@ import { SyncCancelledError, SyncManager } from "../src/main/sync-manager";
 import type { ConnectorAdapter, Entry, RawEntry, Source } from "../src/shared/types";
 
 describe("SyncManager", () => {
+  it("cancels a queued source before another source on the same host finishes", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const first = db.createSource({ url: "https://example.com/one", title: "One", kind: "rss", pollingEnabled: true });
+    const second = db.createSource({ url: "https://example.com/two", title: "Two", kind: "rss", pollingEnabled: true });
+    const gate = deferred();
+    const sync = vi.fn(async () => { gate.started(); await gate.wait; return { entries: [], emptyIsHealthy: true }; });
+    const registry = new ConnectorRegistry();
+    registry.register({ ...replayAdapter(), sync });
+    const manager = new SyncManager(db, registry);
+    const active = manager.syncSource(first.id);
+    let cancelled = false;
+    const queued = manager.syncSource(second.id).catch((error) => {
+      expect(error).toBeInstanceOf(SyncCancelledError);
+      cancelled = true;
+    });
+    try {
+      await gate.startedPromise;
+      manager.cancelSource(second.id);
+      await vi.waitFor(() => expect(cancelled).toBe(true), { timeout: 150 });
+      expect(sync).toHaveBeenCalledTimes(1);
+      expect(db.getSource(second.id)?.failureCount).toBe(0);
+      expect(db.getCheckpoint(second.id)).toBeUndefined();
+    } finally {
+      gate.release();
+      await Promise.allSettled([active, queued]);
+      await manager.close();
+      db.close();
+    }
+  });
+
   it("starts a fresh refresh after a cancelled predecessor drains", async () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });

@@ -1,4 +1,5 @@
-import { awaitWithAbort, requestJsonWithTimeout, throwIfAborted } from "./cancellation";
+import { requestJsonWithTimeout, throwIfAborted } from "./cancellation";
+import { KeyedTaskQueue } from "./keyed-task-queue";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { shell } from "electron";
@@ -52,7 +53,7 @@ export class XApiError extends Error {
  */
 export class XConnector implements ConnectorAdapter {
   readonly manifest = builtInManifest("x", "X", ["oauth"], ["api.x.com", "x.com"]);
-  private readonly credentialTurns = new Map<string, Promise<void>>();
+  private readonly credentials = new KeyedTaskQueue();
 
   constructor(
     private readonly database: Pick<ReadingDatabase, "getAccount" | "findAccount" | "saveAccount" | "updateAccountStatus">,
@@ -93,7 +94,7 @@ export class XConnector implements ConnectorAdapter {
     // following-feed connector possible before a source is created.
     await this.requestJson<XResponse<XUser[]>>(`/users/${encodeURIComponent(user.id)}/following?max_results=5`, token.accessToken);
 
-    return this.withCredentials(user.id, async () => {
+    return this.credentials.run(user.id, async () => {
       const existing = this.database.findAccount("x", user.id);
       const accountId = existing?.id ?? randomUUID();
       const keychainAccount = await this.secrets.setConnectorSecret("x", accountId, JSON.stringify(token));
@@ -116,7 +117,7 @@ export class XConnector implements ConnectorAdapter {
     if (!account?.subjectId) throw new Error("X 来源缺少有效的授权账号，请重新连接 X。");
     let token: XToken | undefined;
     try {
-      token = await this.withCredentials(account.subjectId, () => this.tokenFor(account.id, context.signal), context.signal);
+      token = await this.credentials.run(account.subjectId, () => this.tokenFor(account.id, context.signal), context.signal);
       throwIfAborted(context.signal);
       if (context.subscription.config.mode === "profile") {
         if (!profileUsername) throw new Error("X 博主来源缺少用户名，请删除后重新添加。");
@@ -130,7 +131,7 @@ export class XConnector implements ConnectorAdapter {
       // safe reason to invalidate the saved account.
       if (token && error instanceof XApiError && error.status === 401) {
         const rejectedToken = token.accessToken;
-        await this.withCredentials(account.subjectId, async () => {
+        await this.credentials.run(account.subjectId, async () => {
           const current = this.database.getAccount(account.id);
           if (!current) return;
           const raw = await this.secrets.getConnectorSecret(current.keychainAccount);
@@ -263,26 +264,6 @@ export class XConnector implements ConnectorAdapter {
       }
     } while (cursor && users.size < DEFAULT_FOLLOW_LIMIT);
     return [...users.values()].slice(0, DEFAULT_FOLLOW_LIMIT);
-  }
-
-  /** Serialize credential reads/writes per X identity, independently of source hosts. */
-  private async withCredentials<T>(subjectId: string, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    throwIfAborted(signal);
-    const previous = this.credentialTurns.get(subjectId) ?? Promise.resolve();
-    let release!: () => void;
-    const turn = new Promise<void>((resolve) => { release = resolve; });
-    // Even a cancelled waiter stays ordered behind its predecessor; later
-    // callers must never overtake an operation still writing to Keychain.
-    const tail = previous.then(() => turn);
-    this.credentialTurns.set(subjectId, tail);
-    void tail.then(() => {
-      if (this.credentialTurns.get(subjectId) === tail) this.credentialTurns.delete(subjectId);
-    });
-    try {
-      await awaitWithAbort(previous, signal);
-      throwIfAborted(signal);
-      return await operation();
-    } finally { release(); }
   }
 
   /** Must be called while holding the account's credential turn. */
