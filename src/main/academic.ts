@@ -53,9 +53,12 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
     ]);
     throwIfAborted(context.signal);
     const entries = result.flatMap((item) => item.status === "fulfilled" ? item.value : []);
-    if (!entries.length && result.every((item) => item.status === "rejected")) {
-      const message = result.find((item): item is PromiseRejectedResult => item.status === "rejected")?.reason;
-      throw message instanceof Error ? message : new Error("学术数据源暂时不可用。");
+    const failure = result.find((item): item is PromiseRejectedResult => item.status === "rejected");
+    // Empty is authoritative only when every configured provider succeeded.
+    // Preserve useful partial results, but never hide an outage behind an
+    // unrelated provider's empty collection.
+    if (!entries.length && failure) {
+      throw failure.reason instanceof Error ? failure.reason : new Error("学术数据源暂时不可用。");
     }
     return { entries, emptyIsHealthy: true, checkpoint: { data: { lastProviderCheckAt: Date.now() } } };
   }
@@ -109,7 +112,7 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
       select: "id,doi,title,publication_date,authorships,primary_location,type"
     }).toString();
     const payload = await this.requestJson<{ results?: Array<any> }>(url, {}, signal);
-    return (payload.results || []).flatMap((work) => {
+    return academicRecords(payload?.results, "OpenAlex").flatMap((work) => {
       const doi = normalDoi(work.doi);
       const landing = work.primary_location?.landing_page_url || work.id;
       const title = compactText(work.title, 500);
@@ -134,7 +137,7 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
     const url = new URL(`author/${id}/papers`, `${SEMANTIC_ROOT}/`);
     url.search = new URLSearchParams({ limit: "100", fields: "paperId,title,abstract,publicationDate,externalIds,openAccessPdf,url" }).toString();
     const payload = await this.requestJson<{ data?: Array<any> }>(url, {}, signal);
-    return (payload.data || []).flatMap((paper) => {
+    return academicRecords(payload?.data, "Semantic Scholar").flatMap((paper) => {
       const doi = normalDoi(paper.externalIds?.DOI);
       const arxiv = stringValue(paper.externalIds?.ArXiv);
       const landing = paper.url || paper.openAccessPdf?.url || (doi ? `https://doi.org/${doi}` : undefined);
@@ -157,9 +160,8 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
 
   private async fetchOrcid(config: AuthorConfig, signal?: AbortSignal): Promise<RawEntry[]> {
     const id = encodeURIComponent(config.orcid || "");
-    const payload = await this.requestJson<any>(new URL(`${id}/works`, `${ORCID_ROOT}/`), { accept: "application/json" }, signal);
-    const groups = payload.group || [];
-    return groups.flatMap((group: any) => {
+    const payload = await this.requestJson<{ group?: Array<any> }>(new URL(`${id}/works`, `${ORCID_ROOT}/`), { accept: "application/json" }, signal);
+    return academicRecords(payload?.group, "ORCID").flatMap((group) => {
       const summary = group["work-summary"]?.[0];
       const title = compactText(summary?.title?.title?.value, 500);
       const external = summary?.["external-ids"]?.["external-id"] || [];
@@ -196,6 +198,16 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
       throw new Error("无法连接到学术数据源。请检查网络、代理或 DNS 设置后重试。");
     }
   }
+}
+
+/** Validate collection shape before mapping; omitted data is not an empty list. */
+function academicRecords<T extends object>(value: T[] | undefined, provider: string): T[] {
+  if (!Array.isArray(value) || value.some((item) => !item || typeof item !== "object" || Array.isArray(item))) {
+    // Only local labels reach the error. Never retain remote fields or parser
+    // exceptions in a message that SyncManager can persist to SQLite.
+    throw new Error(`${provider} 论文响应无效，请稍后重试。`);
+  }
+  return value;
 }
 
 const ACADEMIC_CONTENT_NORMALIZATION = {
