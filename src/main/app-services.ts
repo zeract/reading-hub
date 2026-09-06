@@ -31,6 +31,7 @@ export interface ApplicationServices {
   learningAssistant: AiService;
   articles: ArticleReader;
   inAppArticleViewer: InAppArticleViewer;
+  beginShutdown(): void;
   close(): Promise<void>;
 }
 
@@ -92,6 +93,10 @@ export async function createApplicationServices(databasePath: string): Promise<A
   });
 
   let closePromise: Promise<void> | undefined;
+  const beginShutdown = () => {
+    zhihuFollow.close();
+    sync.beginShutdown();
+  };
   return {
     database,
     http,
@@ -104,10 +109,9 @@ export async function createApplicationServices(databasePath: string): Promise<A
     learningAssistant,
     articles,
     inAppArticleViewer,
+    beginShutdown,
     close: () => {
-      // Login recognition can finish after its window has closed. Detach its
-      // source-creation callback before draining the already-running syncs.
-      zhihuFollow.setOnAuthenticated(async () => undefined);
+      beginShutdown();
       closePromise ??= sync.close().then(() => database.close());
       return closePromise;
     }

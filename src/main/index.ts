@@ -78,7 +78,7 @@ function quitApplication(): void {
  */
 async function closeApplicationServices(): Promise<void> {
   const activeServices = services;
-  activeServices?.sync.beginShutdown();
+  activeServices?.beginShutdown();
   await drainIpc?.();
   await activeServices?.close();
   services = undefined;

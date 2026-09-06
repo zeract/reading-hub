@@ -212,8 +212,8 @@ export class SourceService {
     });
   }
 
-  async beginZhihuFollowLogin(): Promise<void> {
-    await this.zhihuFollow.beginLogin();
+  async beginZhihuFollowLogin(signal?: AbortSignal): Promise<void> {
+    await this.zhihuFollow.beginLogin(signal);
   }
 
   async calibrate(sourceId: string, signal?: AbortSignal): Promise<CalibrationResult> {

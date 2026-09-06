@@ -202,7 +202,8 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     await secrets.setZhihuAccessSecret(requireText(rawSecret, "知乎 Access Secret 无效。", 2_000));
     return sync.syncSource(sources.connectZhihu().id);
   });
-  handle(IPC_CHANNELS.zhihu.followLogin, () => sources.beginZhihuFollowLogin());
+  handle(IPC_CHANNELS.zhihu.followLogin, (event) =>
+    foregroundRequests.run(event.sender, (signal) => sources.beginZhihuFollowLogin(signal)));
   handle(IPC_CHANNELS.x.connect, (event, rawClientId: unknown) => {
     const clientId = requireText(rawClientId, "X Client ID 无效。", 500);
     return foregroundRequests.run(event.sender, async (signal) => {

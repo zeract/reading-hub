@@ -3,13 +3,21 @@ import { assertPublicUrl } from "../shared/url";
 import type { ConnectorAdapter, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
 import { builtInManifest } from "./connector-registry";
 import { contentNormalizer } from "./content-normalizer";
-import { awaitWithAbort, delayWithAbort, throwIfAborted } from "./cancellation";
+import { abortError, awaitWithAbort, delayWithAbort, throwIfAborted } from "./cancellation";
 import { extractZhihuFollowPage } from "./zhihu-follow-parser";
 import { configureChromiumSession } from "./network";
 import { createBackgroundWindow } from "./background-window";
 
 const FOLLOW_URL = "https://www.zhihu.com/follow";
 const PARTITION = "persist:reading-hub-zhihu-follow";
+
+type LoginAttempt = {
+  controller: AbortController;
+  opening: Promise<void>;
+  window?: BrowserWindow;
+  completing?: Promise<void>;
+  dispose?: () => void;
+};
 
 /**
  * Uses a dedicated Electron session. It never imports the user's browser cookies
@@ -18,37 +26,62 @@ const PARTITION = "persist:reading-hub-zhihu-follow";
 export class ZhihuFollowConnector implements ConnectorAdapter {
   readonly manifest = builtInManifest("zhihu_follow", "知乎关注动态", ["oauth"], ["www.zhihu.com"]);
 
-  private loginWindow?: BrowserWindow;
+  private login?: LoginAttempt;
   private onAuthenticated?: () => Promise<void>;
-  private completing?: Promise<void>;
+  private clearing?: Promise<void>;
+  private closed = false;
 
   setOnAuthenticated(callback: () => Promise<void>): void {
     this.onAuthenticated = callback;
   }
 
-  async beginLogin(): Promise<void> {
-    if (this.loginWindow && !this.loginWindow.isDestroyed()) {
-      this.loginWindow.show();
-      this.loginWindow.focus();
-      return;
+  async beginLogin(signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
+    if (this.closed) throw new Error("应用正在退出，无法打开知乎登录窗口。");
+    if (this.login) {
+      this.login.window?.show();
+      this.login.window?.focus();
+      return awaitWithAbort(this.login.opening, signal);
     }
-    const loginWindow = await this.createWindow(true);
-    this.loginWindow = loginWindow;
+    const attempt: LoginAttempt = { controller: new AbortController(), opening: Promise.resolve() };
+    this.login = attempt;
+    const cancel = () => this.cancelLogin(attempt);
+    signal?.addEventListener("abort", cancel, { once: true });
+    attempt.opening = this.openLogin(attempt).catch(() => {
+      const error = attempt.controller.signal.aborted
+        ? abortError(attempt.controller.signal)
+        : new Error("无法打开知乎登录窗口，请检查网络后重试。");
+      this.cancelLogin(attempt);
+      throw error;
+    }).finally(() => signal?.removeEventListener("abort", cancel));
+    return attempt.opening;
+  }
+
+  private async openLogin(attempt: LoginAttempt): Promise<void> {
+    const signal = attempt.controller.signal;
+    while (this.clearing) await awaitWithAbort(this.clearing, signal);
+    throwIfAborted(signal);
+    const loginWindow = await this.createWindow(true, signal);
+    attempt.window = loginWindow;
+    throwIfAborted(signal);
     const recognizeLogin = (url: string) => {
-      void this.maybeCompleteLogin(loginWindow, url).catch((error: unknown) => {
-        console.error("Zhihu follow login sync failed:", error instanceof Error ? error.message : "unknown error");
+      void this.maybeCompleteLogin(attempt, url).catch(() => {
+        if (!signal.aborted) console.error("知乎登录识别或首次同步失败，请重新登录后重试。");
       });
     };
     const cookieStore = session.fromPartition(PARTITION).cookies;
-    const recognizeCookie = () => recognizeLogin(loginWindow.webContents.getURL());
+    const recognizeCookie = () => {
+      if (this.isActiveLogin(attempt)) recognizeLogin(loginWindow.webContents.getURL());
+    };
     loginWindow.webContents.on("did-navigate", (_event, url) => recognizeLogin(url));
     loginWindow.webContents.on("did-navigate-in-page", (_event, url) => recognizeLogin(url));
     cookieStore.on("changed", recognizeCookie);
-    loginWindow.once("closed", () => {
+    attempt.dispose = () => {
       cookieStore.removeListener("changed", recognizeCookie);
-      if (this.loginWindow === loginWindow) this.loginWindow = undefined;
-    });
-    await loginWindow.loadURL(FOLLOW_URL);
+    };
+    loginWindow.once("closed", () => this.cancelLogin(attempt));
+    await awaitWithAbort(loginWindow.loadURL(FOLLOW_URL), signal);
+    throwIfAborted(signal);
     recognizeLogin(loginWindow.webContents.getURL());
   }
 
@@ -112,11 +145,31 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
     }
   }
 
-  async clearSession(): Promise<void> {
-    if (this.loginWindow && !this.loginWindow.isDestroyed()) this.loginWindow.close();
-    await session.fromPartition(PARTITION).clearStorageData({
+  clearSession(): Promise<void> {
+    if (this.login) this.cancelLogin(this.login);
+    // A new login must not race a still-running deletion of its session data.
+    const clearing = (this.clearing ?? Promise.resolve()).catch(() => undefined).then(() => session.fromPartition(PARTITION).clearStorageData({
       storages: ["cookies", "localstorage", "indexdb", "serviceworkers", "cachestorage"]
+    })).catch(() => { throw new Error("知乎会话清理失败，请重试取消订阅。"); }).finally(() => {
+      if (this.clearing === clearing) this.clearing = undefined;
     });
+    this.clearing = clearing;
+    return clearing;
+  }
+
+  /** Stop login callbacks before shutdown drains syncs and closes SQLite. */
+  close(): void {
+    this.closed = true;
+    if (this.login) this.cancelLogin(this.login);
+    this.onAuthenticated = undefined;
+  }
+
+  private cancelLogin(attempt: LoginAttempt): void {
+    if (this.login === attempt) this.login = undefined;
+    attempt.controller.abort(new Error("知乎登录已取消。"));
+    attempt.dispose?.();
+    attempt.dispose = undefined;
+    if (attempt.window && !attempt.window.isDestroyed()) attempt.window.destroy();
   }
 
   private async createWindow(show: boolean, signal?: AbortSignal): Promise<BrowserWindow> {
@@ -156,22 +209,29 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
     return window;
   }
 
-  private async completeLogin(loginWindow: BrowserWindow): Promise<void> {
-    if (this.completing) return this.completing;
-    this.completing = (async () => {
+  private async completeLogin(attempt: LoginAttempt): Promise<void> {
+    if (attempt.completing) return attempt.completing;
+    attempt.completing = (async () => {
       // Let the Follow feed finish its post-login transition before it is rendered offscreen.
-      await new Promise((resolve) => setTimeout(resolve, 800));
+      await delayWithAbort(800, attempt.controller.signal);
+      if (!this.isActiveLogin(attempt) || !isFollowUrl(attempt.window!.webContents.getURL())) return;
       await this.onAuthenticated?.();
-      if (!loginWindow.isDestroyed()) loginWindow.close();
+      this.cancelLogin(attempt);
     })().finally(() => {
-      this.completing = undefined;
+      attempt.completing = undefined;
     });
-    return this.completing;
+    return attempt.completing;
   }
 
-  private async maybeCompleteLogin(loginWindow: BrowserWindow, url: string): Promise<void> {
-    if (!isFollowUrl(url) || !(await this.hasAuthenticatedSession())) return;
-    await this.completeLogin(loginWindow);
+  private isActiveLogin(attempt: LoginAttempt): boolean {
+    return this.login === attempt && !attempt.controller.signal.aborted && Boolean(attempt.window && !attempt.window.isDestroyed());
+  }
+
+  private async maybeCompleteLogin(attempt: LoginAttempt, url: string): Promise<void> {
+    if (!this.isActiveLogin(attempt) || !isFollowUrl(url)) return;
+    const authenticated = await awaitWithAbort(this.hasAuthenticatedSession(), attempt.controller.signal);
+    if (!authenticated || !this.isActiveLogin(attempt)) return;
+    await this.completeLogin(attempt);
   }
 
   private async hasAuthenticatedSession(): Promise<boolean> {
