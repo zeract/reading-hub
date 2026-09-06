@@ -8,7 +8,8 @@ import {
   normaliseAiText
 } from "../shared/ai-input";
 import { CodexCliError, LocalCodexCli, type CodexCliRunner } from "./codex-cli";
-import { abortError, combineAbortSignals, throwIfAborted } from "./cancellation";
+import { abortError, awaitWithAbort, throwIfAborted, withRequestTimeout } from "./cancellation";
+import { discardResponseBody, readResponseBytes } from "./byte-limit";
 import { KeyedTaskQueue } from "./keyed-task-queue";
 import { CODEX_CLI_MODEL_OPTIONS } from "../shared/types";
 import type {
@@ -23,6 +24,8 @@ import type {
 } from "../shared/types";
 
 const REQUEST_TIMEOUT_MS = 45_000;
+// Bound protocol metadata and unfinished events as well as displayed text.
+const MAX_AI_RESPONSE_BYTES = 8_000_000;
 
 type ProviderDefinition = { label: string; defaultModel: string; requiresApiKey: boolean; endpoint?: string };
 type StoredAiConfiguration = { apiKey: string; model: string };
@@ -179,8 +182,8 @@ export class AiService {
         { role: "user", content: [{ type: "input_text", text: prompt }] }
       ]
     };
-    return this.postStreaming(endpoint, configuration.apiKey, payload, "OpenAI", signal, async (response) => {
-      const output = await readServerSentEvents(response, onDelta, readOpenAiStreamDelta, (body) => readOpenAiOutput(body as OpenAiResponse));
+    return this.postStreaming(endpoint, configuration.apiKey, payload, "OpenAI", signal, async (response, requestSignal) => {
+      const output = await readServerSentEvents(response, onDelta, readOpenAiStreamDelta, (body) => readOpenAiOutput(body as OpenAiResponse), requestSignal);
       if (!output) throw new AiServiceError("OpenAI 没有返回可显示的回答，请调整问题后重试。");
       return output;
     });
@@ -196,45 +199,54 @@ export class AiService {
         { role: "user", content: prompt }
       ]
     };
-    return this.postStreaming(endpoint, configuration.apiKey, payload, "DeepSeek", signal, async (response) => {
+    return this.postStreaming(endpoint, configuration.apiKey, payload, "DeepSeek", signal, async (response, requestSignal) => {
       const output = await readServerSentEvents(response, onDelta, readDeepSeekStreamDelta, (body) => {
         const parsed = body as DeepSeekResponse;
         return typeof parsed.choices?.[0]?.message?.content === "string" ? parsed.choices[0].message.content.trim() : "";
-      });
+      }, requestSignal);
       if (!output) throw new AiServiceError("DeepSeek 没有返回可显示的回答，请调整问题后重试。");
       return output;
     });
   }
 
-  private async postStreaming<T>(endpoint: string, apiKey: string, body: unknown, providerLabel: string, parentSignal: AbortSignal | undefined, consume: (response: Response) => Promise<T>): Promise<T> {
-    const timeout = new AbortController();
-    const timeoutId = setTimeout(() => timeout.abort(new Error(`${providerLabel} 请求超时，请稍后重试。`)), REQUEST_TIMEOUT_MS);
-    const combined = combineAbortSignals(parentSignal, timeout.signal);
+  private async postStreaming<T>(endpoint: string, apiKey: string, body: unknown, providerLabel: string, parentSignal: AbortSignal | undefined, consume: (response: Response, signal: AbortSignal) => Promise<T>): Promise<T> {
+    const request = withRequestTimeout(parentSignal, REQUEST_TIMEOUT_MS, `${providerLabel} 请求超时，请稍后重试。`);
     try {
       let response: Response;
       try {
-        response = await this.fetcher(endpoint, {
+        const fetching = this.fetcher(endpoint, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
           body: JSON.stringify(body),
-          signal: combined.signal
+          signal: request.signal
+        }).then((result) => {
+          // A transport may resolve after cancellation won the wait. Release
+          // that otherwise unowned response without inspecting its contents.
+          if (request.signal.aborted) discardResponseBody(result);
+          throwIfAborted(request.signal);
+          return result;
         });
+        response = await awaitWithAbort(fetching, request.signal);
       } catch {
         if (parentSignal?.aborted) throw abortError(parentSignal, "AI 请求已取消。");
-        if (timeout.signal.aborted) throw new AiServiceError(`${providerLabel} 请求超时，请稍后重试。`);
+        if (request.signal.aborted) throw new AiServiceError(`${providerLabel} 请求超时，请稍后重试。`);
         throw new AiServiceError(`无法连接 ${providerLabel}，请检查网络后重试。`);
       }
-      if (!response.ok) throw new AiServiceError(providerFailureMessage(providerLabel, response.status));
+      if (!response.ok) {
+        discardResponseBody(response);
+        throw new AiServiceError(providerFailureMessage(providerLabel, response.status));
+      }
       try {
-        return await consume(response);
+        return await consume(response, request.signal);
       } catch (error) {
+        discardResponseBody(response);
         if (parentSignal?.aborted) throw abortError(parentSignal, "AI 请求已取消。");
-        if (timeout.signal.aborted) throw new AiServiceError(`${providerLabel} 请求超时，请稍后重试。`);
-        throw error;
+        if (request.signal.aborted) throw new AiServiceError(`${providerLabel} 请求超时，请稍后重试。`);
+        if (error instanceof AiServiceError) throw error;
+        throw new AiServiceError("读取 AI 回答失败，请稍后重试。");
       }
     } finally {
-      clearTimeout(timeoutId);
-      combined.dispose();
+      request.dispose();
     }
   }
 
@@ -459,17 +471,29 @@ type StreamDeltaReader = (event: Record<string, unknown>) => string | undefined;
  * that do not negotiate SSE (for example a test double or a proxy fallback)
  * still complete safely as one text update.
  */
-async function readServerSentEvents(response: Response, onDelta: AiDeltaListener, readDelta: StreamDeltaReader, readFallback: (body: unknown) => string): Promise<string> {
+async function readServerSentEvents(response: Response, onDelta: AiDeltaListener, readDelta: StreamDeltaReader, readFallback: (body: unknown) => string, signal: AbortSignal): Promise<string> {
+  throwIfAborted(signal);
   const contentType = response.headers?.get("content-type") || "";
   if (!response.body || !/text\/event-stream/i.test(contentType)) {
-    const output = readFallback(await response.json());
-    if (output) onDelta(output);
-    return output;
+    try {
+      const body = response.body
+        ? JSON.parse(new TextDecoder().decode(await readResponseBytes(response, (_chunk, bytes) => checkAiResponseSize(bytes), signal)))
+        : await awaitWithAbort(response.json(), signal);
+      throwIfAborted(signal);
+      const output = readFallback(body);
+      if (output) onDelta(output);
+      return output;
+    } catch (error) {
+      throwIfAborted(signal);
+      if (error instanceof AiServiceError) throw error;
+      throw new AiServiceError("AI 服务返回的数据格式无效，请稍后重试。");
+    }
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let answer = "";
+  let receivedBytes = 0;
   const acceptEvent = (block: string) => {
     const data = block
       .split(/\r?\n/)
@@ -496,7 +520,10 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
   };
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await awaitWithAbort(reader.read(), signal);
+      throwIfAborted(signal);
+      receivedBytes += value?.byteLength ?? 0;
+      checkAiResponseSize(receivedBytes);
       buffer += decoder.decode(value, { stream: !done });
       const blocks = buffer.split(/\r?\n\r?\n/);
       buffer = blocks.pop() || "";
@@ -504,10 +531,19 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
       if (done) break;
     }
     if (buffer.trim()) acceptEvent(buffer);
+  } catch (error) {
+    // A failed parse, cancelled caller, or oversized body must stop the
+    // unread stream, without waiting for a stalled transport to acknowledge.
+    void reader.cancel().catch(() => undefined);
+    throw error;
   } finally {
     reader.releaseLock();
   }
   return answer.trim();
+}
+
+function checkAiResponseSize(bytes: number): void {
+  if (bytes > MAX_AI_RESPONSE_BYTES) throw new AiServiceError("AI 服务返回的数据过大，请缩短问题后重试。");
 }
 
 function readOpenAiStreamDelta(event: Record<string, unknown>): string | undefined {
