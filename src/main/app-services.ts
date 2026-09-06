@@ -42,6 +42,7 @@ export interface ApplicationServices {
 export async function createApplicationServices(databasePath: string): Promise<ApplicationServices> {
   await configureChromiumNetwork();
   const database = new ReadingDatabase(databasePath);
+  database.beginLibrarySession();
   const resumedAutomaticSources = database.resumeLegacyAutoPausedSources();
   const http = new PublicHttpClient();
   const renderer = new IsolatedPageRenderer();

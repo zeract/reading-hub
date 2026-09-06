@@ -106,3 +106,19 @@ export function delayWithAbort(milliseconds: number, signal?: AbortSignal): Prom
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
+
+/** Keep timeout/cancellation alive through body consumption, then release listeners. */
+export async function requestJsonWithTimeout<T>(
+  fetcher: (url: string, init?: RequestInit) => Promise<Response>,
+  url: string, init: RequestInit, signal: AbortSignal | undefined, timeoutMs: number
+): Promise<{ response: Response; payload: T }> {
+  throwIfAborted(signal);
+  const request = withRequestTimeout(signal, timeoutMs, "请求响应超时。");
+  try {
+    const response = await awaitWithAbort(fetcher(url, { ...init, signal: request.signal }), request.signal);
+    const payload = await awaitWithAbort(response.json().catch(() => ({})), request.signal) as T;
+    return { response, payload };
+  } finally {
+    request.dispose();
+  }
+}

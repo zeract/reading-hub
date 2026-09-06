@@ -77,7 +77,6 @@ describe("reader display-equation layout", () => {
     expect(styles).toContain(".reader-selection-underlines span { position: fixed; height: 1px; background: rgba(79,126,168,.60);");
     expect(styles).toMatch(/\.selection-assistant-card\s*\{[^}]*border-radius:\s*10px;[^}]*box-shadow:\s*0\s+16px\s+38px\s+rgba\(27,32,39,\.12\)/s);
     expect(styles).toMatch(/\.selection-assistant-card\[data-intent="translate"\]\s*>\s*header\s+p\s*\{[^}]*color:\s*var\(--danger\)/s);
-    expect(styles).toMatch(/\.status\.active\s*\{[^}]*color:\s*var\(--ink\)/s);
     expect(styles).not.toContain("#dc3c22");
     expect(styles).not.toContain("#d9ed72");
     expect(styles).not.toContain("#c7dd65");

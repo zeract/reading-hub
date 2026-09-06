@@ -1,3 +1,4 @@
+import { sourceCapabilities } from "../shared/source-capabilities";
 import { useCallback, useEffect, useState } from "react";
 import type { Entry, OpmlImportResult, ProbeResult, Source } from "../shared/types";
 import { errorMessage } from "./errors";
@@ -41,6 +42,7 @@ export function App() {
   } = useLibraryData();
   const [pending, setPending] = useState<PendingPreview>();
   const [notice, setNotice] = useState<string>();
+  const [deletedEntry, setDeletedEntry] = useState<Entry>();
   const [busy, setBusy] = useState(false);
   const [showAddSource, setShowAddSource] = useState(false);
   const [activeRuleSource, setActiveRuleSource] = useState<Source>();
@@ -62,6 +64,10 @@ export function App() {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    setEditingSource((current) => current ? sources.find((source) => source.id === current.id) : current);
+  }, [sources]);
 
   useEffect(() => {
     if (!readingEntry) setReaderOnly(false);
@@ -148,8 +154,7 @@ export function App() {
 
   const openReader = useCallback((entry: Entry) => {
     setReadingEntry(entry);
-    if (!entry.read) void updateEntry(entry, "read", true);
-  }, [updateEntry]);
+  }, []);
 
   const selectSource = useCallback((sourceId?: string) => {
     setReadingEntry(undefined);
@@ -162,13 +167,11 @@ export function App() {
   }, [selectLibraryView]);
 
   const deleteSource = useCallback(async (source: Source): Promise<boolean> => {
-    if (!window.confirm(`删除「${source.title}」及其已收集内容？此操作无法撤销。`)) return false;
     setBusy(true);
     try {
-      await window.reader.deleteSource(source.id);
+      await window.reader.setSourceSubscribed(source.id, source.subscribed === false);
       if (activeSourceId === source.id) clearActiveSource();
-      if (readingEntry?.sourceId === source.id) setReadingEntry(undefined);
-      setNotice(`已删除「${source.title}」。`);
+      setNotice(source.subscribed === false ? `已重新订阅「${source.title}」。` : `已取消订阅「${source.title}」，已有内容与收藏已保留。`);
       await reload();
       return true;
     } catch (error) {
@@ -180,10 +183,10 @@ export function App() {
   }, [activeSourceId, clearActiveSource, readingEntry?.sourceId, reload]);
 
   const dismissEntry = useCallback(async (entry: Entry) => {
-    if (!window.confirm(`删除收集的「${entry.title}」？该内容不会在后续同步中再次出现。`)) return;
     setBusy(true);
     try {
       await window.reader.dismissEntry(entry.id);
+      setDeletedEntry(entry);
       if (readingEntry?.id === entry.id) setReadingEntry(undefined);
       setNotice(`已删除「${entry.title}」。`);
       await reload();
@@ -215,7 +218,7 @@ export function App() {
       <header className="app-titlebar">
         <div className="app-titlebar-actions">
           <button type="button" className="app-titlebar-button" onClick={() => readerOnly ? setReaderOnly(false) : setSidebarCollapsed((collapsed) => !collapsed)} aria-label={readerOnly ? "退出沉浸阅读" : sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"} title={readerOnly ? "退出沉浸阅读" : sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"}><AppIcon name={readerOnly ? "expand" : "sidebar"} /></button>
-          {!readerOnly && <button type="button" className="app-titlebar-button" onClick={refreshCurrentView} disabled={busy || isRetiredXPublicProfile(activeSource)} aria-label={activeSource ? `刷新 ${activeSource.title}` : "重新载入收件箱"} title={isRetiredXPublicProfile(activeSource) ? "此旧 X 公开来源已停止刷新" : activeSource ? "刷新当前来源" : "重新载入收件箱"}><AppIcon name="refresh" /></button>}
+          {!readerOnly && <button type="button" className="app-titlebar-button" onClick={refreshCurrentView} disabled={busy || Boolean(activeSource && !sourceCapabilities(activeSource).canRefresh)} aria-label={activeSource ? `刷新 ${activeSource.title}` : "重新载入收件箱"} title={isRetiredXPublicProfile(activeSource) ? "此旧 X 公开来源已停止刷新" : activeSource ? "刷新当前来源" : "重新载入收件箱"}><AppIcon name="refresh" /></button>}
           {!readerOnly && <button type="button" className="app-titlebar-button app-titlebar-add" onClick={() => setShowAddSource(true)} aria-label="添加来源" title="添加来源"><AppIcon name="add" /></button>}
         </div>
       </header>
@@ -243,8 +246,20 @@ export function App() {
         readingEntryId={readingEntry?.id}
         notice={reloadError ?? notice}
         busy={busy}
-        libraryCounts={libraryCounts}
-        onClearNotice={() => { setNotice(undefined); clearReloadError(); }}
+        onUndo={deletedEntry && notice === `已删除「${deletedEntry.title}」。` && !reloadError ? () => {
+          setBusy(true);
+          void window.reader.restoreEntry(deletedEntry.id).then(async () => {
+            setDeletedEntry(undefined); setNotice("内容已恢复。"); await reload();
+          }).catch((error) => setNotice(errorMessage(error))).finally(() => setBusy(false));
+        } : undefined}
+        onRestoreEntry={async (entry) => {
+          setBusy(true);
+          try { await window.reader.restoreEntry(entry.id); setDeletedEntry(undefined); setNotice("内容已恢复。"); await reload(); }
+          catch (error) { setNotice(errorMessage(error)); }
+          finally { setBusy(false); }
+        }}
+        onEditSource={setEditingSource}
+        onClearNotice={() => { setNotice(undefined); setDeletedEntry(undefined); clearReloadError(); }}
         onEntrySearchChange={setEntrySearch}
         onUpdateEntry={updateEntry}
         onOpenEntry={openReader}

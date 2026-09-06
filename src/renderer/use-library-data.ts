@@ -21,7 +21,7 @@ export function useLibraryData() {
   const [loadingMoreEntries, setLoadingMoreEntries] = useState(false);
   const [reloadError, setReloadError] = useState<string>();
   const [activeSourceId, setActiveSourceId] = useState<string>();
-  const [libraryView, setLibraryView] = useState<LibraryView>("today");
+  const [libraryView, setLibraryView] = useState<LibraryView>("collected");
   const [entrySearch, setEntrySearchState] = useState("");
   const reloadSequence = useRef(0);
   const pageGeneration = useRef(0);
@@ -29,6 +29,7 @@ export function useLibraryData() {
   const loadedQuery = useRef<EntryListQuery | undefined>(undefined);
   const loadingMore = useRef(false);
   const reloading = useRef(false);
+  const lastRevision = useRef<number | undefined>(undefined);
 
   const reload = useCallback(async () => {
     const sequence = ++reloadSequence.current;
@@ -41,12 +42,15 @@ export function useLibraryData() {
     loadingMore.current = false;
     setLoadingMoreEntries(false);
     try {
+      const revision = await window.reader.getLibraryRevision?.();
+      if (!isCurrent()) return;
       const [nextSources, nextPage, nextLibraryCounts] = await Promise.all([
         window.reader.listSources(),
         readLoadedEntryPages(query, pageCount, (page) => window.reader.listEntryPage(page), isCurrent),
         window.reader.getLibraryCounts()
       ]);
       if (!isCurrent() || !nextPage) return;
+      lastRevision.current = revision;
       loadedPageCount.current = nextPage.pageCount;
       loadedQuery.current = query;
       setSources(nextSources);
@@ -66,11 +70,33 @@ export function useLibraryData() {
   useEffect(() => {
     // reload owns the visible error state; unattended ticks must not reject globally.
     void reload().catch(() => undefined);
+    let active = true;
+    let dirty = false;
+    let changeTimer: number | undefined;
+    const refreshChanged = () => {
+      if (!active) return;
+      changeTimer = undefined;
+      if (reloading.current || loadingMore.current) { changeTimer = window.setTimeout(refreshChanged, 150); return; }
+      if (dirty) { dirty = false; void reload().catch(() => undefined); }
+    };
+    const unsubscribe = window.reader.onLibraryChanged?.((revision) => {
+      if (revision === lastRevision.current) return;
+      dirty = true;
+      if (changeTimer === undefined) changeTimer = window.setTimeout(refreshChanged, 100);
+    });
     const timer = window.setInterval(() => {
-      if (!reloading.current && !loadingMore.current) void reload().catch(() => undefined);
-    }, 15_000);
+      if (reloading.current || loadingMore.current) return;
+      void Promise.resolve(window.reader.getLibraryRevision?.()).then((revision) => {
+        if (!active) return;
+        const midnightChanged = libraryView === "today" && loadedQuery.current?.endAt !== undefined && Date.now() >= loadedQuery.current.endAt;
+        if (revision !== lastRevision.current || midnightChanged || lastRevision.current === undefined) { dirty = true; refreshChanged(); }
+      }).catch(() => undefined);
+    }, 60_000);
     return () => {
+      active = false;
       window.clearInterval(timer);
+      window.clearTimeout(changeTimer);
+      unsubscribe?.();
       reloadSequence.current += 1;
       pageGeneration.current += 1;
     };
@@ -111,7 +137,7 @@ export function useLibraryData() {
   }, [navigateLibrary]);
 
   const setEntrySearch = useCallback((search: string) => {
-    if (!activeSourceId || search === entrySearch) return;
+    if (search === entrySearch) return;
     navigateLibrary({ view: libraryView, sourceId: activeSourceId, search });
   }, [activeSourceId, entrySearch, libraryView, navigateLibrary]);
 

@@ -1,3 +1,4 @@
+import { createReadSnapshot } from "./persistence/read-snapshot";
 import { load } from "cheerio";
 import { ArticleReader } from "./article-reader";
 import { ReadingDatabase } from "./database";
@@ -380,7 +381,10 @@ async function reportResult(options: ReaderAuditOptions, result: ReaderAuditResu
  * regression checks safely without becoming a full-text archive.
  */
 export async function auditLocalReader(databasePath: string, options: ReaderAuditOptions = {}): Promise<ReaderAuditResult[]> {
-  const database = new ReadingDatabase(databasePath);
+  const snapshot = await createReadSnapshot(databasePath);
+  let database: ReadingDatabase;
+  try { database = new ReadingDatabase(snapshot.path); }
+  catch (error) { await snapshot.dispose(); throw error; }
   const http = new PublicHttpClient();
   const renderer = new IsolatedPageRenderer();
   const zhihuFollow = new ZhihuFollowConnector();
@@ -495,6 +499,7 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
     }
   } finally {
     database.close();
+    await snapshot.dispose();
   }
   return results;
 }

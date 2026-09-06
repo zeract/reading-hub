@@ -1,3 +1,4 @@
+import katex from "katex";
 import { describe, expect, it, vi } from "vitest";
 import { load } from "cheerio";
 import { ArticleReader, extractReaderArticle, extractReaderArticleAsync } from "../src/main/article-reader";
@@ -22,6 +23,19 @@ const entry: Entry = {
 };
 
 describe("article reader extraction", () => {
+  it("reconstructs publisher-rendered KaTeX from explicit annotations without duplicate source text", () => {
+    const inline = katex.renderToString(String.raw`x^2 + y^2`, { displayMode: false });
+    const block = katex.renderToString(String.raw`\begin{gathered}R = \frac{a}{b}\\ R > 0\end{gathered}`, { displayMode: true });
+    const result = extractReaderArticle(`<article><h1>Formula fixture</h1><p>${"Explanatory text. ".repeat(30)}${inline}</p>${block}<pre><code>\\text{literal}</code></pre></article>`, entry.url, entry);
+    expect(result?.article.formulaDiagnostics).toMatchObject({ total: 2, semantic: 2, display: 1, rendered: 2, fallback: 0, dropped: 0 });
+    const content = load(result!.article.contentHtml);
+    expect(content(".katex")).toHaveLength(2);
+    expect(content(".katex-display")).toHaveLength(1);
+    expect(content("pre code").text()).toBe(String.raw`\text{literal}`);
+    content(".katex, pre, code").remove();
+    expect(content.text()).not.toMatch(/\\(?:begin|frac|end)/);
+  });
+
   it("prefers a named body over nested related-article cards", () => {
     const body = "这个系列面向顶会阅读与工程判断，系统梳理数据库研究与工程实践。".repeat(18);
     const result = extractReaderArticle(

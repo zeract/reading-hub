@@ -57,6 +57,7 @@ export class ContentNormalizer {
     return {
       ...normalizedItem,
       id: randomUUID(),
+      ingestionKind: item.ingestionKind ?? "current",
       sourceId: source.id,
       canonicalUrl,
       canonicalIdentity,

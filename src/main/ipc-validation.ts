@@ -77,10 +77,15 @@ export function parseEntryListQuery(value: unknown): EntryListQuery | undefined 
   const favorite = value.favorite === undefined ? undefined : requireBoolean(value.favorite, "收藏筛选无效。");
   const facetSelections = value.facetSelections === undefined ? undefined : parseFacetReferences(value.facetSelections, "文章分类筛选无效。");
   if (startAt !== undefined && endAt !== undefined && startAt >= endAt) throw new Error("时间筛选范围无效。");
-  if (search && !sourceId) throw new Error("请先选择一个来源再搜索。");
+  if (value.collection !== undefined && !["current", "history"].includes(value.collection as string)) throw new Error("收集范围无效。");
+  if (value.sort !== undefined && !["published", "collected"].includes(value.sort as string)) throw new Error("排序方式无效。");
   return {
     sourceId,
     ...(search ? { search } : {}),
+    ...(value.dismissed === undefined ? {} : { dismissed: requireBoolean(value.dismissed) }),
+    ...(value.publishedOnly === undefined ? {} : { publishedOnly: requireBoolean(value.publishedOnly) }),
+    ...(value.collection ? { collection: value.collection as "current" | "history" } : {}),
+    ...(value.sort ? { sort: value.sort as "published" | "collected" } : {}),
     startAt,
     endAt,
     limit,
@@ -95,6 +100,10 @@ export function parseEntryPageQuery(value: unknown): EntryPageQuery | undefined 
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new Error("文章分页参数无效。");
   const parsedBase = parseEntryListQuery({
+    dismissed: value.dismissed,
+    publishedOnly: value.publishedOnly,
+    collection: value.collection,
+    sort: value.sort,
     sourceId: value.sourceId,
     search: value.search,
     startAt: value.startAt,

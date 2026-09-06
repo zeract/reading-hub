@@ -1,14 +1,35 @@
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { app, BrowserWindow, ipcMain } from "electron";
+import { writeFile } from "node:fs/promises";
+import { ReadingDatabase } from "../dist/main/main/database.js";
 
 const root = path.resolve(import.meta.dirname, "..");
 const preload = path.join(root, "dist", "main", "main", "preload.js");
 const renderer = path.join(root, "dist", "renderer", "index.html");
+const database = new ReadingDatabase(":memory:");
+const source = database.createSource({ url: "https://example.com/feed", title: "Workflow fixture", kind: "rss", pollingEnabled: true });
+for (const [id, title, ingestionKind] of [["success", "Readable fixture", "current"], ["failure", "Unavailable fixture", "current"], ["history", "Historical fixture", "history"]]) {
+  database.saveEntries([{ id, sourceId: source.id, url: `https://example.com/${id}`, canonicalUrl: `https://example.com/${id}`, title,
+    ingestionKind, contentHash: id, createdAt: Date.now(), read: false, favorite: false }]);
+}
+database.markFavorite("success", true);
 const channels = [
-  ["source:list", () => []],
-  ["entry:list-page", () => ({ entries: [] })],
-  ["entry:counts", () => ({ unread: 0, favorite: 0, today: 0 })],
+  ["library:revision", () => database.getLibraryRevision()],
+  ["source:list", () => database.listSources()],
+  ["source:load-icon", () => undefined],
+  ["entry:list-page", (_event, query) => database.listEntryPage(query)],
+  ["entry:counts", () => database.getLibraryCounts()],
+  ["entry:read", (_event, id, read) => database.markRead(id, read)],
+  ["entry:favorite", (_event, id, favorite) => database.markFavorite(id, favorite)],
+  ["entry:dismiss", (_event, id) => database.dismissEntry(id)],
+  ["entry:restore", (_event, id) => database.restoreEntry(id)],
+  ["source:set-subscribed", (_event, id, subscribed) => database.setSubscribed(id, subscribed)],
+  ["source:collection-settings", (_event, id) => database.getSourceCollectionSettings(id)],
+  ["entry:read-content", (_event, id) => {
+    if (id === "failure") throw new Error("Deterministic offline fixture");
+    return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", contentHtml: "<p>This is a deterministic reader fixture.</p>" } };
+  }],
   ["window:is-fullscreen", () => false]
 ];
 
@@ -22,7 +43,7 @@ const startupWatchdog = setTimeout(() => {
   // reached readiness. This is a diagnostic-only process, so force the
   // watchdog outcome instead of retaining a stuck Electron helper.
   process.exit(1);
-}, 15_000);
+}, 45_000);
 
 function waitFor(window, expression, timeout = 8_000) {
   return new Promise((resolve, reject) => {
@@ -41,12 +62,15 @@ function waitFor(window, expression, timeout = 8_000) {
 }
 
 await app.whenReady();
-for (const [channel, handler] of channels) ipcMain.handle(channel, handler);
+for (const [channel, handler] of channels) ipcMain.handle(channel, (event, ...args) => {
+  try { return handler(event, ...args); } finally { database.publishChanges(); }
+});
 
 const messages = [];
 const preloadErrors = [];
 const window = new BrowserWindow({
   show: false,
+  width: 1280, height: 800,
   webPreferences: {
     preload,
     contextIsolation: true,
@@ -59,6 +83,14 @@ window.webContents.on("preload-error", (_event, preloadPath, error) => {
   preloadErrors.push(`${preloadPath}: ${error.message}`);
 });
 
+const unsubscribe = database.onLibraryChanged((revision) => {
+  if (!window.isDestroyed()) window.webContents.send("library:changed", revision);
+});
+async function evaluate(code) { return window.webContents.executeJavaScript(code); }
+async function clickText(selector, text) {
+  await evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find((element) => element.textContent.trim() === ${JSON.stringify(text)}).click()`);
+}
+function assert(condition, message) { if (!condition) throw new Error(message); }
 let failure;
 try {
   await window.loadFile(renderer);
@@ -68,12 +100,49 @@ try {
   if (preloadErrors.length) throw new Error(`沙箱预加载加载失败：${preloadErrors.join("；")}`);
   const preloadError = messages.find((message) => /Unable to load preload script|module not found/i.test(message));
   if (preloadError) throw new Error(`沙箱预加载加载失败：${preloadError}`);
-  console.log("Reading Hub renderer smoke test: passed");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 2");
+  assert(await evaluate("document.querySelector('.timeline h1').textContent === '新收集'"), "The initial view must show collection order.");
+  await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Unavailable fixture\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.reader-failure'))");
+  assert(!database.getEntry("failure").read, "Failed reader load must leave content unread.");
+  await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Readable fixture\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.reader-article')) && Boolean(document.querySelector('.entry-card.read'))");
+  assert(database.getEntry("success").read, "Successful content must become read.");
+  await clickText(".library-filter", "历史回填");
+  await waitFor(window, "document.querySelector('.entry-card h2')?.textContent === 'Historical fixture'");
+  await clickText(".library-filter", "全部内容");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 3");
+  await evaluate(`const input = document.querySelector('.entry-search input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Historical'); input.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 1 && document.querySelector('.entry-card h2').textContent === 'Historical fixture'");
+  await clickText(".entry-actions button", "删除");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 0");
+  await clickText(".library-filter", "最近删除");
+  await waitFor(window, "document.querySelector('.entry-card h2')?.textContent === 'Historical fixture'");
+  await clickText(".entry-actions button", "恢复内容");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 0");
+  assert(database.getEntry("history"), "Deleted content must be recoverable through the UI.");
+  await evaluate("document.querySelector('.source-filter').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))");
+  await waitFor(window, "Boolean(document.querySelector('.source-settings-form'))");
+  await clickText(".source-settings-operations button", "取消订阅");
+  await waitFor(window, "Boolean(document.querySelector('.archived-sources')) && !document.querySelector('.source-settings-form')");
+  assert(database.getSource(source.id).subscribed === false && database.getEntry("success").favorite, "Unsubscribe must retain favorites.");
+  await clickText(".library-filter", "全部内容");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 3");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25]]) {
+    window.setSize(width, height); window.webContents.setZoomFactor(scale);
+    await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    const geometry = await evaluate(`({ overflow: document.documentElement.scrollWidth > innerWidth + 1, navBottom: document.querySelector('.library-nav').getBoundingClientRect().bottom, footerTop: document.querySelector('.sidebar-footer').getBoundingClientRect().top, sourcesHeight: document.querySelector('.source-list').clientHeight })`);
+    assert(!geometry.overflow && geometry.navBottom < geometry.footerTop && geometry.sourcesHeight > 20, `Library navigation does not fit ${width}px at ${scale}.`);
+    await writeFile(path.join(tmpdir(), `reading-hub-workflow-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/unsubscribe/restore and three actual React layouts verified.");
 } catch (error) {
   failure = error;
   console.error(error);
 } finally {
   clearTimeout(startupWatchdog);
+  unsubscribe();
+  database.close();
   for (const [channel] of channels) ipcMain.removeHandler(channel);
   if (!window.isDestroyed()) window.destroy();
 }

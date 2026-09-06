@@ -21,6 +21,7 @@ function defaultGroup(source: Source): { id: string; title: string } {
 export function groupSources(sources: Source[]): SourceGroup[] {
   const groups = new Map<string, SourceGroup>();
   for (const source of sources) {
+    if (source.subscribed === false) continue;
     const customTitle = source.category?.trim();
     const fallback = defaultGroup(source);
     const id = customTitle ? `custom:${customTitle.toLocaleLowerCase("zh-CN")}` : fallback.id;

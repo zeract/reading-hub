@@ -37,6 +37,7 @@ import {
 import { migrateDatabaseSchema } from "./persistence/schema";
 
 type SourceRow = {
+  subscribed?: number;
   id: string;
   url: string;
   title: string;
@@ -50,6 +51,7 @@ type SourceRow = {
   etag: string | null;
   last_modified: string | null;
   last_checked_at: number | null;
+  last_successful_at?: number | null;
   next_check_at: number | null;
   consecutive_empty: number;
   failure_count: number;
@@ -63,6 +65,7 @@ type SourceRow = {
 };
 
 type EntryRow = {
+  ingestion_kind?: "current" | "history";
   id: string;
   source_id: string;
   canonical_url: string;
@@ -97,6 +100,7 @@ type AccountRow = {
 };
 
 type SubscriptionRow = {
+  subscribed?: number;
   id: string;
   source_id: string;
   connector_id: ConnectorId;
@@ -155,6 +159,9 @@ const NULL_PUBLICATION_CURSOR_VALUE = Number.MIN_SAFE_INTEGER;
 const ENTRY_PUBLICATION_GROUP = "CASE WHEN entries.published_at IS NULL THEN 1 ELSE 0 END";
 const ENTRY_PUBLICATION_VALUE = `COALESCE(entries.published_at, ${NULL_PUBLICATION_CURSOR_VALUE})`;
 const ENTRY_OBSERVED_VALUE = "COALESCE(entries.observed_at, entries.created_at)";
+const SOURCE_SELECT = "SELECT sources.*, COALESCE((SELECT subscribed FROM subscriptions WHERE source_id = sources.id), 1) AS subscribed FROM sources";
+const VISIBLE_ENTRY = "NOT EXISTS (SELECT 1 FROM dismissed_contents WHERE canonical_identity = COALESCE(entries.canonical_identity, entries.canonical_url))";
+const COLLECTED_ORDER_BY = "entries.created_at DESC, entries.id DESC";
 const ENTRY_ORDER_BY = `${ENTRY_PUBLICATION_GROUP} ASC, ${ENTRY_PUBLICATION_VALUE} DESC, ${ENTRY_OBSERVED_VALUE} DESC, entries.created_at DESC, entries.id DESC`;
 
 function boundedPageSize(value: number | undefined): number {
@@ -236,11 +243,13 @@ function sourceFromRow(row: SourceRow): Source {
     metadataRevision: toOptionalNumber(row.metadata_revision ?? null),
     status: row.status,
     extractionRule: row.extraction_rule ? JSON.parse(row.extraction_rule) : undefined,
+    subscribed: row.subscribed !== 0,
     pollingEnabled: Boolean(row.polling_enabled),
     refreshIntervalMinutes: toOptionalNumber(row.refresh_interval_minutes ?? null),
     etag: row.etag ?? undefined,
     lastModified: row.last_modified ?? undefined,
     lastCheckedAt: toOptionalNumber(row.last_checked_at),
+    lastSuccessfulAt: toOptionalNumber(row.last_successful_at ?? null),
     nextCheckAt: toOptionalNumber(row.next_check_at),
     consecutiveEmpty: row.consecutive_empty,
     failureCount: row.failure_count,
@@ -252,6 +261,7 @@ function sourceFromRow(row: SourceRow): Source {
 
 function entryFromRow(row: EntryRow): Entry {
   return {
+    ingestionKind: row.ingestion_kind ?? "current",
     id: row.id,
     sourceId: row.source_id,
     canonicalUrl: row.canonical_url,
@@ -336,6 +346,7 @@ function subscriptionFromRow(row: SubscriptionRow, scope: SubscriptionScope = de
   return {
     id: row.id,
     sourceId: row.source_id,
+    subscribed: row.subscribed !== 0,
     connectorId: row.connector_id,
     accountId: row.account_id ?? undefined,
     targetId: row.target_id ?? undefined,
@@ -348,6 +359,35 @@ function subscriptionFromRow(row: SubscriptionRow, scope: SubscriptionScope = de
 
 export class ReadingDatabase {
   private readonly db: Database.Database;
+  private readonly changeListeners = new Set<(revision: number) => void>();
+  private publishedRevision = -1;
+  private previousVisitAt = Date.now();
+
+  beginLibrarySession(now = Date.now()): void {
+    const row = this.db.prepare("SELECT last_visit_at FROM library_state WHERE id = 1").get() as { last_visit_at: number | null };
+    this.previousVisitAt = row.last_visit_at ?? now;
+    this.db.prepare("UPDATE library_state SET last_visit_at = ? WHERE id = 1").run(now);
+  }
+
+  getLibraryRevision(): number {
+    return (this.db.prepare("SELECT revision FROM library_state WHERE id = 1").get() as { revision: number }).revision;
+  }
+
+  onLibraryChanged(listener: (revision: number) => void): () => void {
+    this.publishedRevision = this.getLibraryRevision();
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  publishChanges(): void {
+    if (!this.db.open || this.db.inTransaction || !this.changeListeners.size) return;
+    const revision = this.getLibraryRevision();
+    if (revision === this.publishedRevision) return;
+    this.publishedRevision = revision;
+    for (const listener of this.changeListeners) {
+      try { listener(revision); } catch { /* A disconnected observer cannot roll back committed library data. */ }
+    }
+  }
 
   constructor(filePath: string) {
     this.db = new Database(filePath);
@@ -358,10 +398,16 @@ export class ReadingDatabase {
 
   /** A host-owned synchronous unit of work; network work must finish before entry. */
   writeTransaction<T>(write: () => T & (T extends PromiseLike<unknown> ? never : unknown)): T {
-    return this.db.transaction(write)();
+    const result = this.db.transaction(write)();
+    this.publishChanges();
+    return result;
   }
 
   createSource(input: SourceInput): Source {
+    return this.writeTransaction(() => this.insertSource(input));
+  }
+
+  private insertSource(input: SourceInput): Source {
     const now = Date.now();
     const source: Source = {
       id: randomUUID(),
@@ -405,7 +451,7 @@ export class ReadingDatabase {
         now
       );
     this.ensureSubscriptionForSource(source);
-    return source;
+    return this.getSource(source.id)!;
   }
 
   private ensureSubscriptionForSource(source: Source): Subscription {
@@ -434,7 +480,7 @@ export class ReadingDatabase {
   }
 
   getSource(id: string): Source | undefined {
-    const row = this.db.prepare("SELECT * FROM sources WHERE id = ?").get(id) as SourceRow | undefined;
+    const row = this.db.prepare(`${SOURCE_SELECT} WHERE id = ?`).get(id) as SourceRow | undefined;
     return row ? sourceFromRow(row) : undefined;
   }
 
@@ -446,21 +492,20 @@ export class ReadingDatabase {
     // SourceKind is a UI compatibility category, while connectorId identifies
     // the host-owned protocol implementation. Editing a title/category must
     // never silently switch a future connector back to the generic adapter.
-    const connectorId = kindChanged ? settings.kind : source.connectorId ?? source.kind;
     const nextCheckAt = settings.pollingEnabled ? now + refreshDelay(settings.refreshIntervalMinutes) : null;
     const extractionRule = kindChanged && settings.kind !== "generic" ? null : source.extractionRule ? JSON.stringify(source.extractionRule) : null;
     this.db.transaction(() => {
-      this.db.prepare(`UPDATE sources SET title = ?, category = ?, kind = ?, connector_id = ?, polling_enabled = ?, refresh_interval_minutes = ?,
+      this.db.prepare(`UPDATE sources SET title = ?, category = ?, kind = ?, polling_enabled = ?, refresh_interval_minutes = ?,
         metadata_revision = CASE WHEN ? THEN NULL ELSE metadata_revision END,
         extraction_rule = ?, etag = CASE WHEN ? THEN NULL ELSE etag END, last_modified = CASE WHEN ? THEN NULL ELSE last_modified END,
         status = CASE WHEN ? OR (? AND status = 'paused') THEN 'active' ELSE status END,
         next_check_at = ?, updated_at = ? WHERE id = ?`)
-        .run(settings.title, normaliseSourceCategory(settings.category) ?? null, settings.kind, connectorId, Number(settings.pollingEnabled), settings.refreshIntervalMinutes ?? null,
+        .run(settings.title, normaliseSourceCategory(settings.category) ?? null, settings.kind, Number(settings.pollingEnabled), settings.refreshIntervalMinutes ?? null,
           Number(kindChanged), extractionRule, Number(kindChanged), Number(kindChanged), Number(kindChanged), Number(settings.pollingEnabled), nextCheckAt, now, sourceId);
       if (kindChanged) {
         // A checkpoint belongs to a protocol, not to its UI source identity.
         this.db.prepare("DELETE FROM sync_checkpoints WHERE subscription_id IN (SELECT id FROM subscriptions WHERE source_id = ?)").run(sourceId);
-        this.db.prepare("UPDATE subscriptions SET connector_id = ?, account_id = NULL, updated_at = ? WHERE source_id = ?")
+        this.db.prepare("UPDATE subscriptions SET connector_id = ?, account_id = NULL, target_id = NULL, config_json = NULL, updated_at = ? WHERE source_id = ?")
           .run(settings.kind, now, sourceId);
         // Facet IDs are provider-scoped. Carrying a selected RSS category
         // into a different connector would silently filter all of its cards,
@@ -509,12 +554,12 @@ export class ReadingDatabase {
   }
 
   getSourceByUrl(url: string): Source | undefined {
-    const row = this.db.prepare("SELECT * FROM sources WHERE url = ?").get(url) as SourceRow | undefined;
+    const row = this.db.prepare(`${SOURCE_SELECT} WHERE url = ?`).get(url) as SourceRow | undefined;
     return row ? sourceFromRow(row) : undefined;
   }
 
   listSources(): Source[] {
-    return (this.db.prepare("SELECT * FROM sources ORDER BY updated_at DESC").all() as SourceRow[]).map(sourceFromRow);
+    return (this.db.prepare(`${SOURCE_SELECT} ORDER BY updated_at DESC`).all() as SourceRow[]).map(sourceFromRow);
   }
 
   /** Internal maintenance state; never exposed over IPC or attached to a source. */
@@ -687,7 +732,7 @@ export class ReadingDatabase {
     return (
       this.db
         .prepare(`SELECT * FROM sources
-          WHERE polling_enabled = 1 AND status IN ('active', 'error') AND next_check_at IS NOT NULL AND next_check_at <= ?
+          WHERE EXISTS (SELECT 1 FROM subscriptions WHERE source_id = sources.id AND subscribed = 1) AND polling_enabled = 1 AND status IN ('active', 'error') AND next_check_at IS NOT NULL AND next_check_at <= ?
           ORDER BY next_check_at ASC`)
         .all(now) as SourceRow[]
     ).map(sourceFromRow);
@@ -704,9 +749,9 @@ export class ReadingDatabase {
     const { conditions, parameters } = filter;
     const limit = boundedLimit(query.limit);
     const statement = this.db.prepare(`SELECT id, source_id, canonical_url, original_url, title, author, published_at, summary,
-      image_url, content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity
+      image_url, content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity, ingestion_kind
       FROM entries${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""}
-      ORDER BY ${ENTRY_ORDER_BY}${limit ? " LIMIT ?" : ""}`);
+      ORDER BY ${query.sort === "collected" ? COLLECTED_ORDER_BY : ENTRY_ORDER_BY}${limit ? " LIMIT ?" : ""}`);
     if (limit) parameters.push(limit);
     const rows = statement.all(...parameters) as EntryRow[];
     return this.withOrigins(rows.map(entryFromRow));
@@ -723,15 +768,17 @@ export class ReadingDatabase {
     if (!filter) return { entries: [] };
     const { conditions, parameters } = filter;
     if (query.cursor) {
-      const cursor = afterEntryCursor(query.cursor);
+      const cursor = query.sort === "collected"
+        ? { sql: "(entries.created_at < ? OR (entries.created_at = ? AND entries.id < ?))", parameters: [query.cursor.createdAt, query.cursor.createdAt, query.cursor.id] }
+        : afterEntryCursor(query.cursor);
       conditions.push(cursor.sql);
       parameters.push(...cursor.parameters);
     }
     const pageSize = boundedPageSize(query.pageSize);
     const rows = this.db.prepare(`SELECT id, source_id, canonical_url, original_url, title, author, published_at, summary,
-      image_url, content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity
+      image_url, content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity, ingestion_kind
       FROM entries${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""}
-      ORDER BY ${ENTRY_ORDER_BY} LIMIT ?`)
+      ORDER BY ${query.sort === "collected" ? COLLECTED_ORDER_BY : ENTRY_ORDER_BY} LIMIT ?`)
       .all(...parameters, pageSize + 1) as EntryRow[];
     const pageRows = rows.slice(0, pageSize);
     const entries = this.withOrigins(pageRows.map(entryFromRow));
@@ -748,7 +795,8 @@ export class ReadingDatabase {
     const endAt = finiteTimestamp(query.endAt);
     if (startAt !== undefined && endAt !== undefined && endAt <= startAt) return undefined;
 
-    const conditions: string[] = [];
+    const conditions: string[] = [query.dismissed ? `NOT (${VISIBLE_ENTRY})` : VISIBLE_ENTRY];
+    if (query.publishedOnly) conditions.push("entries.published_at IS NOT NULL");
     const parameters: Array<string | number> = [];
     if (query.sourceId) {
       conditions.push(`(entries.source_id = ? OR EXISTS (
@@ -756,10 +804,10 @@ export class ReadingDatabase {
       ))`);
       parameters.push(query.sourceId, query.sourceId);
     }
-    // The renderer only exposes this as a source-local feature. Keep the
-    // database boundary equally strict so an accidental future IPC caller
-    // cannot turn a source search into an unbounded library-wide scan.
-    if (query.search && !query.sourceId) return undefined;
+    if (query.collection) {
+      conditions.push("entries.ingestion_kind = ?");
+      parameters.push(query.collection);
+    }
     for (const term of entrySearchTerms(query.search)) {
       const pattern = `%${escapeLikePattern(term)}%`;
       conditions.push(`(
@@ -819,19 +867,22 @@ export class ReadingDatabase {
     const current = new Date(now);
     const start = new Date(current.getFullYear(), current.getMonth(), current.getDate()).getTime();
     const end = new Date(current.getFullYear(), current.getMonth(), current.getDate() + 1).getTime();
-    const timelineTimestamp = "COALESCE(published_at, observed_at, created_at)";
+    const timelineTimestamp = "published_at";
     const row = this.db.prepare(`SELECT
+      SUM(CASE WHEN ingestion_kind = 'current' THEN 1 ELSE 0 END) AS collected,
+      SUM(CASE WHEN ingestion_kind = 'history' THEN 1 ELSE 0 END) AS history,
+      SUM(CASE WHEN ingestion_kind = 'current' AND created_at > ? THEN 1 ELSE 0 END) AS new_arrivals,
       SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread,
       SUM(CASE WHEN is_favorite = 1 THEN 1 ELSE 0 END) AS favorite,
       SUM(CASE WHEN ${timelineTimestamp} >= ? AND ${timelineTimestamp} < ? THEN 1 ELSE 0 END) AS today
-      FROM entries`).get(start, end) as { unread: number | null; favorite: number | null; today: number | null };
-    return { unread: row.unread ?? 0, favorite: row.favorite ?? 0, today: row.today ?? 0 };
+      FROM entries WHERE ${VISIBLE_ENTRY}`).get(this.previousVisitAt, start, end) as { collected: number; history: number; new_arrivals: number; unread: number | null; favorite: number | null; today: number | null };
+    return { collected: row.collected ?? 0, history: row.history ?? 0, newArrivals: row.new_arrivals ?? 0, unread: row.unread ?? 0, favorite: row.favorite ?? 0, today: row.today ?? 0 };
   }
 
   getEntry(entryId: string): Entry | undefined {
     const row = this.db
       .prepare(`SELECT id, source_id, canonical_url, original_url, title, author, published_at, summary,
-        image_url, content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity FROM entries WHERE id = ?`)
+        image_url, content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity, ingestion_kind FROM entries WHERE id = ? AND ${VISIBLE_ENTRY}`)
       .get(entryId) as EntryRow | undefined;
     return row ? this.withOrigins([entryFromRow(row)])[0] : undefined;
   }
@@ -888,6 +939,27 @@ export class ReadingDatabase {
     });
   }
 
+  setSubscribed(sourceId: string, subscribed: boolean): Source {
+    const source = this.getSource(sourceId);
+    if (!source) throw new Error("来源不存在。");
+    const status = subscribed && source.status === "paused" ? source.failureCount ? "error" : "active" : source.status;
+    return this.writeTransaction(() => {
+      this.db.prepare("UPDATE subscriptions SET subscribed = ?, updated_at = ? WHERE source_id = ?").run(Number(subscribed), Date.now(), sourceId);
+      this.db.prepare("UPDATE sources SET polling_enabled = ?, status = ?, next_check_at = ?, updated_at = ? WHERE id = ?")
+        .run(Number(subscribed && source.kind !== "manual"), status, subscribed && source.kind !== "manual" && status !== "needs_review" ? Date.now() : null, Date.now(), sourceId);
+      return this.getSource(sourceId)!;
+    });
+  }
+
+  /** Keep saved and shared cards; this explicit cleanup never deletes provenance. */
+  clearSourceContent(sourceId: string): number {
+    const result = this.db.prepare(`INSERT OR IGNORE INTO dismissed_contents (canonical_identity, dismissed_at)
+      SELECT COALESCE(canonical_identity, canonical_url), ? FROM entries WHERE source_id = ? AND is_favorite = 0
+      AND NOT EXISTS (SELECT 1 FROM entry_origins WHERE entry_id = entries.id AND source_id != ?)`)
+      .run(Date.now(), sourceId, sourceId);
+    return result.changes;
+  }
+
   deleteSource(sourceId: string): void {
     const source = this.getSource(sourceId);
     if (!source) throw new Error("来源不存在。");
@@ -903,17 +975,10 @@ export class ReadingDatabase {
    * removed, retain an item that is also attributed to a different source and
    * only delete content that no longer has any origin.
    */
-  private removeSourceOrigins(sourceId: string): void {
+  private removeSourceOrigins(sourceId: string, preserveSaved = false): void {
     const affected = this.db.prepare("SELECT id, source_id FROM entries WHERE source_id = ? OR id IN (SELECT entry_id FROM entry_origins WHERE source_id = ?)")
       .all(sourceId, sourceId) as Array<{ id: string; source_id: string }>;
-    const alternate = this.db.prepare("SELECT source_id FROM entry_origins WHERE entry_id = ? AND source_id != ? ORDER BY observed_at ASC LIMIT 1");
-    const assign = this.db.prepare("UPDATE entries SET source_id = ? WHERE id = ?");
-    for (const entry of affected) {
-      const fallback = alternate.get(entry.id, sourceId) as { source_id: string } | undefined;
-      if (entry.source_id === sourceId && fallback) assign.run(fallback.source_id, entry.id);
-    }
-    this.db.prepare("DELETE FROM entry_origins WHERE source_id = ?").run(sourceId);
-    this.db.prepare("DELETE FROM entries WHERE NOT EXISTS (SELECT 1 FROM entry_origins WHERE entry_origins.entry_id = entries.id)").run();
+    removeEntriesForSourceOrigins(this.db, sourceId, affected, preserveSaved);
   }
 
   /** @deprecated ContentMaintenance owns legacy repair scheduling. */
@@ -954,8 +1019,11 @@ export class ReadingDatabase {
     this.db.transaction(() => {
       this.db.prepare("INSERT OR REPLACE INTO dismissed_contents (canonical_identity, dismissed_at) VALUES (?, ?)")
         .run(identity, Date.now());
-      this.db.prepare("DELETE FROM entries WHERE id = ?").run(entryId);
     })();
+  }
+
+  restoreEntry(entryId: string): void {
+    this.db.prepare("DELETE FROM dismissed_contents WHERE canonical_identity IN (SELECT COALESCE(canonical_identity, canonical_url) FROM entries WHERE id = ?)").run(entryId);
   }
 
   /**
@@ -1002,9 +1070,9 @@ export class ReadingDatabase {
   saveEntries(entries: Entry[]): number {
     const insert = this.db.prepare(`INSERT INTO entries (
       id, source_id, canonical_url, original_url, title, author, published_at, summary, image_url,
-      content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity
+      content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity, ingestion_kind
     ) VALUES (@id, @sourceId, @canonicalUrl, @url, @title, @author, @publishedAt, @summary, @imageUrl,
-      @contentHash, 0, 0, @createdAt, @observedAt, @providerId, @providerLabel, @externalId, @canonicalIdentity)
+      @contentHash, 0, 0, @createdAt, @observedAt, @providerId, @providerLabel, @externalId, @canonicalIdentity, @ingestionKind)
     ON CONFLICT(canonical_url) DO UPDATE SET
       title = excluded.title,
       author = COALESCE(excluded.author, entries.author),
@@ -1047,6 +1115,7 @@ export class ReadingDatabase {
           providerId,
           providerLabel: entry.providerLabel ?? null,
           externalId: entry.externalId ?? null,
+          ingestionKind: entry.ingestionKind ?? "current",
           canonicalIdentity: identity
         });
         const stored = entryIdForCanonical.get(entry.canonicalUrl) as { id: string };
@@ -1091,9 +1160,9 @@ export class ReadingDatabase {
     const nextCheckAt = status === "active" && source.pollingEnabled ? now + refreshDelay(source.refreshIntervalMinutes) : null;
     this.db
       .prepare(`UPDATE sources SET status = ?, etag = COALESCE(?, etag), last_modified = COALESCE(?, last_modified),
-        last_checked_at = ?, next_check_at = ?, consecutive_empty = ?, failure_count = 0, last_error = NULL,
+        last_checked_at = ?, last_successful_at = ?, next_check_at = ?, consecutive_empty = ?, failure_count = 0, last_error = NULL,
         updated_at = ? WHERE id = ?`)
-      .run(status, update.etag ?? null, update.lastModified ?? null, now, nextCheckAt, emptyCount, now, source.id);
+      .run(status, update.etag ?? null, update.lastModified ?? null, now, now, nextCheckAt, emptyCount, now, source.id);
     return this.getSource(source.id)!;
   }
 
@@ -1141,8 +1210,8 @@ export class ReadingDatabase {
           next_check_at = ?, updated_at = ? WHERE id = ?`)
         .run(JSON.stringify(rule), Date.now(), Date.now(), sourceId);
       // A rule correction replaces uncertain extraction output with a verified
-      // replay, but it must not delete content still attributed to another source.
-      this.removeSourceOrigins(sourceId);
+      // replay, while keeping favorites, recoverable deletions and shared origins.
+      this.removeSourceOrigins(sourceId, true);
     })();
   }
 

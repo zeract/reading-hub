@@ -1,6 +1,7 @@
 import type { Entry, LibraryCounts, Source } from "../shared/types";
 import type { LibraryView } from "./library-view";
 import type { SourceGroup } from "./source-groups";
+import { sourceHealthLabel } from "../shared/source-capabilities";
 import { AppIcon, SourceIcon } from "./ui-icons";
 
 export function SourceSidebar({ sources, groups, libraryView, activeSourceId, libraryCounts, collapsedGroups, onSelectLibrary, onSelectSource, onToggleGroup, onEditSource, onOpenSettings }: {
@@ -19,12 +20,16 @@ export function SourceSidebar({ sources, groups, libraryView, activeSourceId, li
   return <aside className="sidebar">
     <nav className="library-nav" aria-label="阅读分类">
       <div className="section-title">阅读</div>
-      <button className={`library-filter ${libraryView === "today" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("today")}><span><AppIcon name="today" />今日</span></button>
+      <button className={`library-filter ${libraryView === "collected" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("collected")}><span><AppIcon name="today" />新收集</span><em title="自上次启动以来收集的新内容，不含历史回填">{libraryCounts.newArrivals || ""}</em></button>
+      <button className={`library-filter ${libraryView === "all" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("all")}><span><AppIcon name="folder" />全部内容</span></button>
+      <button className={`library-filter ${libraryView === "today" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("today")}><span><AppIcon name="today" />今日发布</span></button>
       <button className={`library-filter ${libraryView === "unread" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("unread")}><span><AppIcon name="unread" />未读</span><em>{libraryCounts.unread}</em></button>
       <button className={`library-filter ${libraryView === "favorite" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("favorite")}><span><AppIcon name="favorite" />收藏</span><em>{libraryCounts.favorite}</em></button>
+      <button className={`library-filter ${libraryView === "history" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("history")}><span><AppIcon name="folder" />历史回填</span></button>
+      <button className={`library-filter ${libraryView === "trash" ? "selected" : ""}`} onClick={() => onSelectLibrary("trash")}><span><AppIcon name="folder" />最近删除</span></button>
     </nav>
     <section className="source-section" aria-labelledby="source-heading">
-      <div className="section-title" id="source-heading">来源 <span>{sources.length}</span></div>
+      <div className="section-title" id="source-heading">来源 <span>{sources.filter((source) => source.subscribed !== false).length}</span></div>
       <div className="source-list">
         {groups.map((group) => <section className="source-group" key={group.id}>
           <button type="button" className="source-group-heading" onClick={() => onToggleGroup(group.id)} aria-expanded={!collapsedGroups[group.id]}>
@@ -37,12 +42,13 @@ export function SourceSidebar({ sources, groups, libraryView, activeSourceId, li
                   event.preventDefault();
                   onEditSource(source);
                 }
-              }} title={`${source.title}（右键配置）`} aria-label={`查看 ${source.title}；右键打开来源设置`}>
-                <SourceIcon source={source} /><span className="source-title">{source.title}</span>
+              }} title={`${source.title} · ${sourceHealthLabel(source)}（右键配置）`} aria-label={`查看 ${source.title}；右键打开来源设置`}>
+                <SourceIcon source={source} /><span className="source-title">{source.title}</span>{source.status !== "active" && <span className="source-health-indicator" aria-label={sourceHealthLabel(source)}>•</span>}
               </button>
             </div>
           ))}
         </section>)}
+        {sources.some((source) => source.subscribed === false) && <details className="archived-sources"><summary>已取消订阅</summary>{sources.filter((source) => source.subscribed === false).map((source) => <div className="source-row" key={source.id}><button className={`source-filter ${activeSourceId === source.id ? "selected" : ""}`} onClick={() => onSelectSource(source.id)}><SourceIcon source={source} /><span className="source-title">{source.title}</span></button><button type="button" onClick={() => onEditSource(source)} aria-label={`重新订阅 ${source.title}`}>＋</button></div>)}</details>}
         {!sources.length && <p className="empty-side">先添加一个公开 Feed 或网页。</p>}
       </div>
     </section>
@@ -50,7 +56,7 @@ export function SourceSidebar({ sources, groups, libraryView, activeSourceId, li
   </aside>;
 }
 
-export function Timeline({ activeSource, libraryView, entrySearch, entries, hasMoreEntries, loadingMoreEntries, sourceById, readingEntryId, notice, busy, libraryCounts, onClearNotice, onEntrySearchChange, onUpdateEntry, onOpenEntry, onDismissEntry, onLoadMore }: {
+export function Timeline({ activeSource, libraryView, entrySearch, entries, hasMoreEntries, loadingMoreEntries, sourceById, readingEntryId, notice, busy, onUndo, onEditSource, onClearNotice, onEntrySearchChange, onUpdateEntry, onOpenEntry, onDismissEntry, onRestoreEntry, onLoadMore }: {
   activeSource?: Source;
   libraryView: LibraryView;
   entrySearch: string;
@@ -61,12 +67,14 @@ export function Timeline({ activeSource, libraryView, entrySearch, entries, hasM
   readingEntryId?: string;
   notice?: string;
   busy: boolean;
-  libraryCounts: LibraryCounts;
+  onUndo?: () => void;
+  onEditSource?: (source: Source) => void;
   onClearNotice: () => void;
   onEntrySearchChange: (search: string) => void;
   onUpdateEntry: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>;
   onOpenEntry: (entry: Entry) => void;
   onDismissEntry: (entry: Entry) => Promise<void>;
+  onRestoreEntry?: (entry: Entry) => Promise<void>;
   onLoadMore: () => void;
 }) {
   const visibleEntries = entries.filter((entry) => {
@@ -74,18 +82,13 @@ export function Timeline({ activeSource, libraryView, entrySearch, entries, hasM
     if (libraryView === "favorite") return entry.favorite;
     return true;
   });
-  const title = activeSource?.title || ({ all: "最新文章", today: "今日更新", unread: "未读文章", favorite: "收藏文章" } satisfies Record<LibraryView, string>)[libraryView];
-  const count = activeSource
-    ? { value: hasMoreEntries ? `${entries.length}+` : entries.length, label: entrySearch.trim() ? "篇匹配" : "篇内容" }
-    : libraryView === "today"
-      ? { value: libraryCounts.today, label: "篇更新" }
-      : libraryView === "favorite"
-        ? { value: libraryCounts.favorite, label: "篇收藏" }
-        : { value: libraryCounts.unread, label: "未读" };
+  const title = activeSource?.title || ({ trash: "最近删除", all: "全部内容", collected: "新收集", history: "历史回填", today: "今日发布", unread: "未读文章", favorite: "收藏文章" } satisfies Record<LibraryView, string>)[libraryView];
+  const count = { value: hasMoreEntries ? `${entries.length}+` : entries.length, label: entrySearch.trim() ? "篇匹配" : "篇内容" };
 
   return <section className="timeline" aria-label="文章列表">
     <header><div><p className="eyebrow">{activeSource ? "来源内容" : "阅读收件箱"}</p><h1>{title}</h1></div><span className="count">{count.value} {count.label}</span></header>
-    {activeSource && <form className="entry-search" role="search" onSubmit={(event) => event.preventDefault()}>
+    {activeSource && <button type="button" className="source-health" onClick={() => onEditSource?.(activeSource)}>{sourceHealthLabel(activeSource)} · 查看来源设置{activeSource.lastError ? `：${activeSource.lastError}` : ""}</button>}
+    {<form className="entry-search" role="search" onSubmit={(event) => event.preventDefault()}>
       <AppIcon name="search" />
       <input
         type="search"
@@ -93,8 +96,8 @@ export function Timeline({ activeSource, libraryView, entrySearch, entries, hasM
         maxLength={160}
         autoComplete="off"
         spellCheck={false}
-        aria-label={`搜索 ${activeSource.title} 中的帖子`}
-        placeholder={`搜索 ${activeSource.title} 中的帖子`}
+        aria-label={`搜索 ${activeSource?.title || "当前列表"} 中的帖子`}
+        placeholder={`搜索 ${activeSource?.title || "当前列表"} 中的帖子`}
         onChange={(event) => onEntrySearchChange(event.currentTarget.value)}
         onKeyDown={(event) => {
           if (event.key === "Escape") onEntrySearchChange("");
@@ -102,16 +105,16 @@ export function Timeline({ activeSource, libraryView, entrySearch, entries, hasM
       />
       {entrySearch && <button type="button" className="entry-search-clear" onClick={() => onEntrySearchChange("")} aria-label="清除关键词">×</button>}
     </form>}
-    {notice && <div className="notice">{notice}<button onClick={onClearNotice}>×</button></div>}
+    {notice && <div className="notice">{notice}{onUndo && <button type="button" disabled={busy} onClick={onUndo}>撤销删除</button>}<button onClick={onClearNotice}>×</button></div>}
     <div className="entry-list">
-      {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntryId === entry.id} onRead={onUpdateEntry} onOpen={onOpenEntry} onDismiss={onDismissEntry} busy={busy} />)}
-      {!visibleEntries.length && <div className="empty-state"><p className="eyebrow">READING DESK / 00</p><h2>{activeSource ? entrySearch.trim() ? `没有匹配“${entrySearch.trim()}”的帖子` : "该来源还没有内容" : libraryView === "today" ? "今天还没有更新" : libraryView === "unread" ? "没有未读文章" : libraryView === "favorite" ? "还没有收藏文章" : "还没有内容"}</h2><p>{activeSource ? entrySearch.trim() ? "会在标题、作者和摘要中查找关键词；不会读取或保存文章全文。" : "可以刷新来源，或使用“自动校准”重新识别内容列表。" : "添加 RSS、公开文章列表页，或粘贴小红书分享链接开始。"}</p></div>}
+      {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntryId === entry.id} onRead={onUpdateEntry} onOpen={onOpenEntry} onDismiss={libraryView === "trash" ? onRestoreEntry || onDismissEntry : onDismissEntry} deleted={libraryView === "trash"} busy={busy} />)}
+      {!visibleEntries.length && <div className="empty-state"><p className="eyebrow">READING DESK / 00</p><h2>{activeSource ? entrySearch.trim() ? `没有匹配“${entrySearch.trim()}”的帖子` : "该来源还没有内容" : libraryView === "today" ? "今天还没有更新" : libraryView === "unread" ? "没有未读文章" : libraryView === "favorite" ? "还没有收藏文章" : libraryView === "trash" ? "没有已删除内容" : "还没有内容"}</h2><p>{libraryView === "trash" ? "删除的卡片会保留在本机，可在这里恢复。" : activeSource ? entrySearch.trim() ? "会在标题、作者和摘要中查找关键词；不会读取或保存文章全文。" : "请查看来源设置中的状态、收集范围与最近错误；筛选条件也可能让列表暂时为空。" : "添加 RSS、公开文章列表页，或粘贴小红书分享链接开始。"}</p></div>}
       {hasMoreEntries && <div className="entry-load-more"><p>已加载 {entries.length} 篇内容</p><button type="button" onClick={onLoadMore} disabled={busy || loadingMoreEntries}>{loadingMoreEntries ? "正在加载…" : "加载更多"}</button></div>}
     </div>
   </section>;
 }
 
-function EntryCard({ entry, source, selected, onRead, onOpen, onDismiss, busy }: { entry: Entry; source?: Source; selected: boolean; onRead: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>; onOpen: (entry: Entry) => void; onDismiss: (entry: Entry) => Promise<void>; busy: boolean }) {
+function EntryCard({ entry, source, selected, onRead, onOpen, onDismiss, busy, deleted }: { deleted?: boolean; entry: Entry; source?: Source; selected: boolean; onRead: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>; onOpen: (entry: Entry) => void; onDismiss: (entry: Entry) => Promise<void>; busy: boolean }) {
   const date = entry.publishedAt
     ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(entry.publishedAt)
     : entry.observedAt ? `收集于 ${new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(entry.observedAt)}` : "刚刚收集";
@@ -121,10 +124,10 @@ function EntryCard({ entry, source, selected, onRead, onOpen, onDismiss, busy }:
     : entry.facets;
   const facets = (sourceFacets ?? entry.facets ?? []).slice(0, 3);
   return <article className={`entry-card ${entry.read ? "read" : ""}${selected ? " selected" : ""}`}>
-    <button className="entry-main" type="button" onClick={() => onOpen(entry)} aria-label={`在应用内阅读：${entry.title}`}>
+    <button className="entry-main" type="button" disabled={deleted} onClick={() => onOpen(entry)} aria-label={`在应用内阅读：${entry.title}`}>
       <div className="entry-copy"><p className="entry-source">{source?.title || "已保存内容"} <span>·</span> {date}{providers.length ? <><span>·</span>{providers.join(" / ")}</> : null}</p><h2>{entry.title}</h2>{entry.summary && <p className="summary">{entry.summary}</p>}{facets.length > 0 && <p className="entry-facets" aria-label="文章分类">{facets.map((facet) => <span key={`${facet.scheme}\u0000${facet.key}`}>{facet.label}</span>)}</p>}<p className="byline">{entry.author || "原文链接"}</p></div>
       {entry.imageUrl && <img src={entry.imageUrl} alt="" loading="lazy" />}
     </button>
-    <div className="entry-actions"><button type="button" onClick={() => onOpen(entry)}>应用内阅读</button><button aria-label="标记已读" onClick={() => void onRead(entry, "read", !entry.read)}>{entry.read ? "未读" : "已读"}</button><button aria-label="收藏" onClick={() => void onRead(entry, "favorite", !entry.favorite)}>{entry.favorite ? "★" : "☆"}</button><button type="button" className="delete-entry" onClick={() => void onDismiss(entry)} disabled={busy}>删除</button></div>
+    <div className="entry-actions">{!deleted && <><button type="button" onClick={() => onOpen(entry)}>应用内阅读</button><button aria-label={entry.read ? "标为未读" : "标为已读"} onClick={() => void onRead(entry, "read", !entry.read)}>{entry.read ? "未读" : "已读"}</button><button aria-label="收藏" onClick={() => void onRead(entry, "favorite", !entry.favorite)}>{entry.favorite ? "★" : "☆"}</button></>}<button type="button" className="delete-entry" onClick={() => void onDismiss(entry)} disabled={busy}>{deleted ? "恢复内容" : "删除"}</button></div>
   </article>;
 }

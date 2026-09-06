@@ -32,21 +32,25 @@ type SourceEntryRow = Pick<RepairEntryRow, "id" | "source_id">;
  * row whenever another source still owns an origin.  All legacy repair tasks
  * use the same ownership-preserving primitive.
  */
-export function removeEntriesForSourceOrigins(database: SqliteDatabase, sourceId: string, matches: SourceEntryRow[]): number {
+export function removeEntriesForSourceOrigins(database: SqliteDatabase, sourceId: string, matches: SourceEntryRow[], preserveSaved = true): number {
   if (!matches.length) return 0;
+  const protectedEntry = database.prepare(`SELECT id FROM entries WHERE id = ? AND (is_favorite = 1 OR EXISTS (SELECT 1 FROM dismissed_contents WHERE canonical_identity = COALESCE(entries.canonical_identity, entries.canonical_url)))`);
+  let removed = 0;
   const alternate = database.prepare("SELECT source_id FROM entry_origins WHERE entry_id = ? AND source_id != ? ORDER BY observed_at ASC LIMIT 1");
   const assign = database.prepare("UPDATE entries SET source_id = ? WHERE id = ?");
   const removeOrigin = database.prepare("DELETE FROM entry_origins WHERE entry_id = ? AND source_id = ?");
   const removeContent = database.prepare("DELETE FROM entries WHERE id = ? AND NOT EXISTS (SELECT 1 FROM entry_origins WHERE entry_origins.entry_id = entries.id)");
   database.transaction(() => {
     for (const entry of matches) {
+      if (preserveSaved && protectedEntry.get(entry.id)) continue;
+      removed += 1;
       const fallback = alternate.get(entry.id, sourceId) as { source_id: string } | undefined;
       if (entry.source_id === sourceId && fallback) assign.run(fallback.source_id, entry.id);
       removeOrigin.run(entry.id, sourceId);
       removeContent.run(entry.id);
     }
   })();
-  return matches.length;
+  return removed;
 }
 
 export function deleteTaxonomyEntries(database: SqliteDatabase, sourceId: string): number {

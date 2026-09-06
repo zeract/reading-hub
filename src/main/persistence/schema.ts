@@ -6,7 +6,7 @@ import { MAX_FUTURE_PUBLICATION_SKEW_MS } from "../../shared/publication-date";
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 type SqliteDatabase = Database.Database;
 
@@ -255,7 +255,42 @@ const MIGRATIONS: readonly SchemaMigration[] = [
       database.prepare(`INSERT OR IGNORE INTO subscription_scopes (subscription_id, history_mode, history_limit, updated_at)
         SELECT id, 'none', NULL, ? FROM subscriptions`).run(Date.now());
     }
+  },
+  {
+    version: 6,
+    name: "separate-subscriptions-and-retained-library-state",
+    up: (database) => {
+      database.exec(`
+        ALTER TABLE sources ADD COLUMN last_successful_at INTEGER;
+        UPDATE sources SET last_successful_at = last_checked_at WHERE failure_count = 0 AND last_error IS NULL;
+        ALTER TABLE subscriptions ADD COLUMN subscribed INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE entries ADD COLUMN ingestion_kind TEXT NOT NULL DEFAULT 'current';
+        CREATE INDEX entries_collection ON entries(ingestion_kind, created_at DESC, id DESC);
+        CREATE TABLE library_state (id INTEGER PRIMARY KEY CHECK(id = 1), revision INTEGER NOT NULL DEFAULT 0, last_visit_at INTEGER);
+        INSERT INTO library_state (id, last_visit_at) VALUES (1, NULL);
+        CREATE TRIGGER subscription_metadata_insert AFTER INSERT ON subscriptions BEGIN
+          UPDATE sources SET connector_id = NEW.connector_id, account_id = NEW.account_id, config_json = NEW.config_json WHERE id = NEW.source_id;
+        END;
+        CREATE TRIGGER subscription_metadata_update AFTER UPDATE OF connector_id, account_id, config_json ON subscriptions BEGIN
+          UPDATE sources SET connector_id = NEW.connector_id, account_id = NEW.account_id, config_json = NEW.config_json WHERE id = NEW.source_id;
+        END;
+        UPDATE sources SET connector_id = (SELECT connector_id FROM subscriptions WHERE source_id = sources.id),
+          account_id = (SELECT account_id FROM subscriptions WHERE source_id = sources.id),
+          config_json = (SELECT config_json FROM subscriptions WHERE source_id = sources.id)
+          WHERE EXISTS (SELECT 1 FROM subscriptions WHERE source_id = sources.id);
+      `);
+      // These legacy source columns remain compatibility projections for read-only
+      // audit scripts. Subscription writes are their sole application authority.
+      for (const table of ["sources", "subscriptions", "entries", "entry_origins", "entry_origin_facets", "subscription_scopes", "subscription_scope_facets", "dismissed_contents"]) {
+        for (const operation of ["INSERT", "UPDATE", "DELETE"]) database.exec(`
+          CREATE TRIGGER library_${table}_${operation.toLowerCase()} AFTER ${operation} ON ${table} BEGIN
+            UPDATE library_state SET revision = revision + 1 WHERE id = 1;
+          END;
+        `);
+      }
+    }
   }
+
 ];
 
 function ensureColumn(database: SqliteDatabase, table: "sources" | "entries" | "entry_origins", column: string, type: string): void {

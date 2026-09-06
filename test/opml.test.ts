@@ -27,7 +27,7 @@ describe("OPML subscriptions", () => {
 
     expect(service.importOpml(SAMPLE_OPML)).toEqual({ imported: 2, existing: 0, skipped: 0 });
     expect(database.listSources()).toEqual(expect.arrayContaining([
-      expect.objectContaining({ url: "https://example.com/feed.xml", category: "Research / ML", config: undefined }),
+      expect.objectContaining({ url: "https://example.com/feed.xml", category: "Research / ML", config: {} }),
       expect.objectContaining({ url: "http://127.0.0.1:1200/example/feed", category: "Local", config: { allowTrustedLoopbackFeed: true } })
     ]));
     expect(service.importOpml(SAMPLE_OPML)).toEqual({ imported: 0, existing: 2, skipped: 0 });

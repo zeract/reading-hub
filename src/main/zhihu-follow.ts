@@ -52,25 +52,31 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
     recognizeLogin(loginWindow.webContents.getURL());
   }
 
-  async fetchEntries(): Promise<RawEntry[]> {
-    const window = await this.createWindow(false);
+  async fetchEntries(signal?: AbortSignal): Promise<RawEntry[]> {
+    const window = await this.createWindow(false, signal);
+    const stopAndDestroy = () => {
+      if (!window.isDestroyed()) { window.webContents.stop(); window.destroy(); }
+    };
+    signal?.addEventListener("abort", stopAndDestroy, { once: true });
     try {
-      await window.loadURL(FOLLOW_URL);
+      throwIfAborted(signal);
+      await awaitWithAbort(window.loadURL(FOLLOW_URL), signal);
       if (!isFollowUrl(window.webContents.getURL())) {
         throw new Error("知乎登录已失效，请点击“重新登录知乎”后再刷新关注动态。");
       }
-      await new Promise((resolve) => setTimeout(resolve, 1_200));
-      const html = await window.webContents.executeJavaScript("document.documentElement.outerHTML", true) as string;
+      await delayWithAbort(1_200, signal);
+      const html = await awaitWithAbort(window.webContents.executeJavaScript("document.documentElement.outerHTML", true) as Promise<string>, signal);
       const entries = extractZhihuFollowPage(html, FOLLOW_URL);
       if (!entries.length) throw new Error("未能识别知乎关注动态中的公开内容，请在知乎登录窗口完成登录后重试。");
       return entries;
     } finally {
+      signal?.removeEventListener("abort", stopAndDestroy);
       if (!window.isDestroyed()) window.destroy();
     }
   }
 
-  async sync(_context: SyncContext): Promise<SyncResult> {
-    return { entries: await this.fetchEntries(), emptyIsHealthy: true };
+  async sync(context: SyncContext): Promise<SyncResult> {
+    return { entries: await this.fetchEntries(context.signal), emptyIsHealthy: true };
   }
 
   normalize(item: RawEntry, source: Source) {

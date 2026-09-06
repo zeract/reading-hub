@@ -1,3 +1,4 @@
+import { isRetiredXPublicProfile } from "../shared/source-capabilities";
 import { randomUUID } from "node:crypto";
 import type {
   Account,
@@ -51,7 +52,7 @@ export class SourceService {
     this.pending.delete(token);
     const { probe } = pending;
     const existing = this.db.getSourceByUrl(probe.url);
-    if (existing) return existing;
+    if (existing) return existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
     const config: Record<string, unknown> = {};
     if (probe.kind === "rss" && isTrustedLoopbackFeedUrl(probe.url)) config.allowTrustedLoopbackFeed = true;
     if (probe.kind === "rss" && probe.historicalArchiveUrl) {
@@ -131,7 +132,7 @@ export class SourceService {
 
   connectZhihu(): Source {
     const existing = this.db.listSources().find((source) => source.kind === "zhihu");
-    if (existing) return existing;
+    if (existing) return existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
     return this.db.createSource({
       url: "https://developer.zhihu.com/api/v1/user/contents",
       title: "知乎（本人官方数据）",
@@ -142,7 +143,7 @@ export class SourceService {
 
   ensureXSource(account: Account): Source {
     const existing = this.db.listSources().find((source) => source.connectorId === "x" && source.accountId === account.id && source.config?.mode !== "profile");
-    if (existing) return existing;
+    if (existing) return existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
     return this.db.createSource({
       url: `https://api.x.com/2/users/${encodeURIComponent(account.subjectId || account.id)}/following`,
       title: "X 关注动态（原创帖与长文链接）",
@@ -157,7 +158,7 @@ export class SourceService {
   createXiaohongshuProfileSource(input: ProfileSubscriptionInput): Source {
     const profile = parseXiaohongshuProfileUrl(input.url);
     const existing = this.db.getSourceByUrl(profile.url);
-    if (existing) return existing;
+    if (existing) return existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
     return this.db.createSource({
       url: profile.url,
       title: normalizedOptionalTitle(input.title) || `小红书 · ${profile.profileId}`,
@@ -174,7 +175,7 @@ export class SourceService {
     const target = draft.targetId || JSON.stringify(config);
     const url = `https://academic.local/author/${encodeURIComponent(target)}`;
     const existing = this.db.getSourceByUrl(url);
-    if (existing) return existing;
+    if (existing) return existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
     return this.db.createSource({
       url,
       title: draft.title,
@@ -187,7 +188,7 @@ export class SourceService {
 
   ensureZhihuFollowSource(): Source {
     const existing = this.db.listSources().find((source) => source.kind === "zhihu_follow");
-    if (existing) return existing;
+    if (existing) return existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
     return this.db.createSource({
       url: "https://www.zhihu.com/follow",
       title: "知乎关注动态（授权会话）",
@@ -217,7 +218,7 @@ export class SourceService {
     const publicKinds = new Set<Source["kind"]>(["rss", "generic", "manual"]);
     const sourceIsPublic = publicKinds.has(source.kind);
     const sourceUsesLegacyRssHub = source.config?.sourceProvider === "rsshub";
-    const unsupportedXPublicProfile = source.kind === "x" && source.connectorId === "x" && source.config?.mode === "public-profile";
+    const unsupportedXPublicProfile = isRetiredXPublicProfile(source);
     if (!sourceIsPublic && settings.kind !== source.kind) throw new Error("授权平台的信源类型由连接器决定，不能在此更改。");
     if (sourceUsesLegacyRssHub && settings.kind !== source.kind) throw new Error("已保存的 RSSHub Feed 固定使用 RSS 连接器，不能在此更改。");
     if (sourceIsPublic && !publicKinds.has(settings.kind)) throw new Error("只能将公开来源设置为 RSS、公开网页或分享链接。");
@@ -225,7 +226,7 @@ export class SourceService {
     if (settings.pollingEnabled && interval !== undefined && ![30, 60, 120, 240, 720, 1440].includes(interval)) {
       throw new Error("刷新间隔必须是预设的安全时间。");
     }
-    const pollingEnabled = settings.kind === "manual" || unsupportedXPublicProfile ? false : settings.pollingEnabled;
+    const pollingEnabled = source.subscribed === false || settings.kind === "manual" || unsupportedXPublicProfile ? false : settings.pollingEnabled;
     return this.db.updateSourceSettings(sourceId, { ...settings, title, category, pollingEnabled, refreshIntervalMinutes: pollingEnabled ? interval : undefined });
   }
 
@@ -285,11 +286,23 @@ export class SourceService {
     return this.connectors.get(connectorId);
   }
 
-  async delete(sourceId: string): Promise<void> {
+  async setSubscribed(sourceId: string, subscribed: boolean): Promise<Source> {
+    const updated = this.changeSubscription(sourceId, subscribed);
+    if (!subscribed && updated.kind === "zhihu_follow") await this.zhihuFollow.clearSession();
+    return updated;
+  }
+
+  private changeSubscription(sourceId: string, subscribed: boolean): Source {
     const source = this.db.getSource(sourceId);
     if (!source) throw new Error("来源不存在。");
-    if (source.kind === "zhihu_follow") await this.zhihuFollow.clearSession();
-    this.db.deleteSource(sourceId);
+    if (subscribed && isRetiredXPublicProfile(source)) throw new Error("此旧来源不支持恢复，请通过官方账号连接。");
+    this.sync.cancelSource(sourceId);
+    return this.db.setSubscribed(sourceId, subscribed);
+  }
+
+  /** Compatibility for older renderer builds: removing a subscription retains cards. */
+  async delete(sourceId: string): Promise<void> {
+    await this.setSubscribed(sourceId, false);
   }
 
   /**

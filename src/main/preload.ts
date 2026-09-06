@@ -15,6 +15,8 @@ const IPC_CHANNELS = {
     importOpml: "source:import-opml",
     list: "source:list",
     remove: "source:delete",
+    subscribe: "source:set-subscribed",
+    clearContent: "source:clear-content",
     refresh: "source:refresh",
     updateSettings: "source:update-settings",
     collectionSettings: "source:collection-settings",
@@ -33,7 +35,10 @@ const IPC_CHANNELS = {
     loadImage: "entry:load-image",
     markRead: "entry:read",
     markFavorite: "entry:favorite",
-    dismiss: "entry:dismiss"
+    dismiss: "entry:dismiss",
+    restore: "entry:restore",
+    revision: "library:revision",
+    changed: "library:changed"
   },
   ai: {
     listProviders: "ai:list-providers",
@@ -59,6 +64,17 @@ const readerApi: ReaderApi = {
   confirmSource: (token) => ipcRenderer.invoke(IPC_CHANNELS.source.confirm, token),
   importOpml: () => ipcRenderer.invoke(IPC_CHANNELS.source.importOpml),
   listSources: () => ipcRenderer.invoke(IPC_CHANNELS.source.list),
+  setSourceSubscribed: (id, subscribed) => ipcRenderer.invoke(IPC_CHANNELS.source.subscribe, id, subscribed),
+  clearSourceContent: (id) => ipcRenderer.invoke(IPC_CHANNELS.source.clearContent, id),
+  restoreEntry: (id) => ipcRenderer.invoke(IPC_CHANNELS.entry.restore, id),
+  getLibraryRevision: () => ipcRenderer.invoke(IPC_CHANNELS.entry.revision),
+  onLibraryChanged: (listener) => {
+    const receive = (_event: Electron.IpcRendererEvent, revision: unknown) => {
+      if (typeof revision === "number" && Number.isSafeInteger(revision)) listener(revision);
+    };
+    ipcRenderer.on(IPC_CHANNELS.entry.changed, receive);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.entry.changed, receive);
+  },
   deleteSource: (id) => ipcRenderer.invoke(IPC_CHANNELS.source.remove, id),
   refreshSource: (id) => ipcRenderer.invoke(IPC_CHANNELS.source.refresh, id),
   updateSourceSettings: (id, settings) => ipcRenderer.invoke(IPC_CHANNELS.source.updateSettings, id, settings),

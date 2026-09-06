@@ -9,6 +9,36 @@ import { SyncCancelledError, SyncManager } from "../src/main/sync-manager";
 import type { ConnectorAdapter, Entry, RawEntry, Source } from "../src/shared/types";
 
 describe("SyncManager", () => {
+  it("starts a fresh refresh after a cancelled predecessor drains", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+    const registry = new ConnectorRegistry();
+    const gate = deferred();
+    let calls = 0;
+    registry.register({
+      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      async sync() {
+        calls += 1;
+        if (calls === 1) { gate.started(); await gate.wait; }
+        return { entries: [{ url: "https://example.com/new", title: "Fresh" }], emptyIsHealthy: true };
+      },
+      normalize(item, current) { return readerEntry(current, item); }
+    });
+    const manager = new SyncManager(db, registry);
+    try {
+      const first = manager.syncSource(source.id);
+      const cancelled = expect(first).rejects.toBeInstanceOf(SyncCancelledError);
+      await gate.startedPromise;
+      manager.cancelSource(source.id);
+      const retried = manager.syncSource(source.id);
+      gate.release();
+      await cancelled;
+      await expect(retried).resolves.toMatchObject({ inserted: 1 });
+      expect(calls).toBe(2);
+      expect(db.listSyncEvents()).toHaveLength(1);
+    } finally { await manager.close(); db.close(); }
+  });
+
   it("writes an adapter metadata revision and backfills an existing card on replay", async () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/feed.xml", title: "Example", kind: "rss", pollingEnabled: true });

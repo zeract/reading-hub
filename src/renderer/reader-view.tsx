@@ -83,12 +83,16 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   const readerWorkspaceElement = useRef<HTMLDivElement>(null);
   const articleRequestGuard = useRef(new LatestRequestGuard());
   const renderedEntryId = useRef(entry.id);
+  const loadedEntryId = useRef<string | undefined>(undefined);
+  const autoReadEntryId = useRef<string | undefined>(undefined);
 
   // Effects run after React commits the new entry. Invalidate synchronously as
   // soon as this render belongs to a different entry so a just-resolved IPC
   // response for the previous article can never replace the new view.
   if (renderedEntryId.current !== entry.id) {
     renderedEntryId.current = entry.id;
+    loadedEntryId.current = undefined;
+    autoReadEntryId.current = undefined;
     articleRequestGuard.current.invalidate();
   }
 
@@ -102,7 +106,7 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
     try {
       const result = await window.reader.readEntry(entry.id);
       if (!articleRequestGuard.current.isCurrent(request)) return;
-      if (result.kind === "article") setArticle(result.article);
+      if (result.kind === "article") { loadedEntryId.current = entry.id; setArticle(result.article); }
       else setEmbedded(true);
     } catch (reason) {
       if (articleRequestGuard.current.isCurrent(request)) setError(errorMessage(reason));
@@ -112,6 +116,13 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   }, [entry.id]);
 
   useEffect(() => { void loadArticle(); }, [loadArticle]);
+  // Only a successfully committed article counts as reading. Failed extraction
+  // or merely launching a restricted original window leaves the card unread.
+  useEffect(() => {
+    if (!article || loadedEntryId.current !== entry.id || autoReadEntryId.current === entry.id) return;
+    autoReadEntryId.current = entry.id;
+    if (!entry.read) void onUpdateEntry(entry, "read", true);
+  }, [article, entry, onUpdateEntry]);
   useEffect(() => {
     setAssistantState("closed");
     setImagePreview(undefined);

@@ -1,3 +1,4 @@
+import { throwIfAborted } from "./cancellation";
 import { load } from "cheerio";
 import type { ConnectorAdapter, Entry, ExtractionRule, Facet, RawEntry, Source, Subscription, SyncCheckpoint, SyncContext, SyncResult } from "../shared/types";
 import { normaliseFacets } from "../shared/subscription-scope";
@@ -29,7 +30,7 @@ export class RssConnector extends BaseConnector implements ConnectorAdapter {
   readonly manifest = builtInManifest("rss", "RSS / Atom / JSON Feed", ["public-http"], []);
 
   sync(context: SyncContext): Promise<SyncResult> {
-    return this.fetchWithMetadata(context.source, context.checkpoint, context.subscription);
+    return this.fetchWithMetadata(context.source, context.checkpoint, context.subscription, context.signal);
   }
 
   /**
@@ -46,7 +47,7 @@ export class RssConnector extends BaseConnector implements ConnectorAdapter {
     return archiveCatalogConfig(source) !== undefined;
   }
 
-  async fetchWithMetadata(source: Source, checkpoint?: SyncCheckpoint, subscription?: Subscription): Promise<FetchOutcome> {
+  async fetchWithMetadata(source: Source, checkpoint?: SyncCheckpoint, subscription?: Subscription, signal?: AbortSignal): Promise<FetchOutcome> {
     // A 304 response contains no feed body to replay. After a metadata-parser
     // upgrade, deliberately make one normal public request so existing cards
     // can be enriched; the revision prevents this from recurring on refresh.
@@ -55,10 +56,10 @@ export class RssConnector extends BaseConnector implements ConnectorAdapter {
     const response = await this.http.getText(
       source.url,
       needsMetadataReplay ? undefined : { etag: source.etag, lastModified: source.lastModified },
-      allowTrustedLoopbackFeed ? { allowTrustedLoopbackFeed: true } : undefined
+      { allowTrustedLoopbackFeed, signal }
     );
     const feed = response.status === 304 ? undefined : await parseFeed(response.text, response.url);
-    const archive = await this.fetchSelectedArchiveHistory(source, subscription, checkpoint);
+    const archive = await this.fetchSelectedArchiveHistory(source, subscription, checkpoint, signal);
     return {
       // The current Feed is authoritative for its overlapping entries. A
       // one-time archive can supply older records and publication dates, but
@@ -83,7 +84,8 @@ export class RssConnector extends BaseConnector implements ConnectorAdapter {
   private async fetchSelectedArchiveHistory(
     source: Source,
     subscription: Subscription | undefined,
-    checkpoint: SyncCheckpoint | undefined
+    checkpoint: SyncCheckpoint | undefined,
+    signal?: AbortSignal
   ): Promise<{ entries: RawEntry[]; checkpoint?: FetchOutcome["checkpoint"] }> {
     const catalog = archiveCatalogConfig(source);
     const selection = archiveHistorySelection(subscription);
@@ -93,7 +95,7 @@ export class RssConnector extends BaseConnector implements ConnectorAdapter {
     const now = Date.now();
     if (previous?.completedAt || (previous?.nextAttemptAt !== undefined && previous.nextAttemptAt > now)) return { entries: [] };
     try {
-      const response = await this.http.getText(catalog.url, undefined, { maxBytes: MAX_ARCHIVE_DOCUMENT_BYTES });
+      const response = await this.http.getText(catalog.url, undefined, { maxBytes: MAX_ARCHIVE_DOCUMENT_BYTES, signal });
       const archiveEntries = parsePublishedArchive(response.text, response.url);
       if (!archiveEntries.length) throw new Error("作者公开归档未包含可验证的日期条目。");
       const entries = selectArchiveEntries(archiveEntries, selection);
@@ -107,6 +109,7 @@ export class RssConnector extends BaseConnector implements ConnectorAdapter {
         }
       };
     } catch {
+      throwIfAborted(signal);
       // Do not turn a healthy Feed into a failed source merely because its
       // optional archive is temporarily unavailable. Persist a conservative
       // retry checkpoint so future Feed polls can resume it without a burst.
@@ -238,7 +241,7 @@ function mergeFeedFirst(feedEntries: RawEntry[], archiveEntries: RawEntry[]): Ra
     known.add(identity);
     return true;
   });
-  return [...mergedFeed, ...olderOnly];
+  return [...mergedFeed, ...olderOnly.map((entry) => ({ ...entry, ingestionKind: "history" as const }))];
 }
 
 /**
@@ -282,7 +285,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
   }
 
   sync(context: SyncContext): Promise<SyncResult> {
-    return this.fetchWithMetadata(context.source);
+    return this.fetchWithMetadata(context.source, context.signal);
   }
 
   private genericHomepageMismatchTarget(item: RawEntry, source: Source): string | undefined {
@@ -299,11 +302,11 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
     }
   }
 
-  async fetchWithMetadata(source: Source): Promise<FetchOutcome> {
+  async fetchWithMetadata(source: Source, signal?: AbortSignal): Promise<FetchOutcome> {
     const needsLegacyRuleAudit = Boolean(source.extractionRule?.itemRootSelector && source.extractionRule.autoRepairRevision !== AUTOMATIC_RULE_REVISION);
     const needsPublicationDateAudit = source.extractionRule?.publicationDateRevision !== PUBLICATION_DATE_REVISION;
     const configuredFeedUrl = source.extractionRule?.feedUrl;
-    if (configuredFeedUrl) return this.fetchDeclaredFeed(source, configuredFeedUrl);
+    if (configuredFeedUrl) return this.fetchDeclaredFeed(source, configuredFeedUrl, signal);
 
     // Existing web sources were created before footer/feed-link discovery was
     // available. Replay each once even when the homepage validator says 304,
@@ -313,13 +316,14 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
       cached: needsLegacyRuleAudit || needsPublicationDateAudit || needsFeedDiscoveryAudit
         ? undefined
         : { etag: source.etag, lastModified: source.lastModified },
+      signal,
       preferRenderer: source.extractionRule?.rendererRequired === true
     });
     if (page.response?.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true };
 
     for (const feedUrl of discoverFeedUrls(page.text, page.url)) {
       try {
-        const feedResponse = await this.http.getText(feedUrl);
+        const feedResponse = await this.http.getText(feedUrl, undefined, { signal });
         if (!looksLikeFeed(feedResponse.contentType, feedResponse.text)) continue;
         const feed = await parseFeed(feedResponse.text, feedResponse.url);
         if (!feed.entries.length) continue;
@@ -334,13 +338,14 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
           extractionRule: withFeedDiscoveryRevision({ version: 1, ...source.extractionRule, feedUrl: feedResponse.url })
         };
       } catch {
+        throwIfAborted(signal);
         // A candidate is only an optimisation. Preserve the working generic
         // path when it is malformed, unavailable, or robots-disallowed.
       }
     }
 
     const extraction = extractGenericPage(page.text, page.url, source.extractionRule);
-    const entries = await this.enrichPublicationDates(extraction.entries);
+    const entries = await this.enrichPublicationDates(extraction.entries, signal);
     return {
       entries,
       notModified: false,
@@ -361,7 +366,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
    * linked public article has one. Enrich only missing records, keeping the
    * normal robots-aware HTTP policy and never persisting fetched page bodies.
    */
-  private async enrichPublicationDates(entries: RawEntry[]): Promise<RawEntry[]> {
+  private async enrichPublicationDates(entries: RawEntry[], signal?: AbortSignal): Promise<RawEntry[]> {
     const missing = entries.filter((entry) => entry.publishedAt === undefined);
     const dates = new Map<string, number>();
     const unresolved: RawEntry[] = [];
@@ -375,10 +380,11 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
     // manual refresh even when a site happens to present a very large list.
     for (const entry of unresolved.slice(0, 32)) {
       try {
-        const response = await this.http.getText(entry.url, undefined, { maxBytes: 1_500_000 });
+        const response = await this.http.getText(entry.url, undefined, { maxBytes: 1_500_000, signal });
         const date = extractPagePublishedAt(load(response.text));
         if (date !== undefined) dates.set(entry.url, date);
       } catch {
+        throwIfAborted(signal);
         // A missing date must not make a healthy source fail. The next normal
         // refresh can retry while preserving the original entry.
       }
@@ -390,13 +396,13 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
     });
   }
 
-  private async fetchDeclaredFeed(source: Source, feedUrl: string): Promise<FetchOutcome> {
+  private async fetchDeclaredFeed(source: Source, feedUrl: string, signal?: AbortSignal): Promise<FetchOutcome> {
     // A generic source that later graduated to a Feed still needs the same
     // one-time metadata replays as a direct RSS subscription. Otherwise an
     // ETag 304 would leave legacy card fields (and filtered navigation links)
     // untouched indefinitely.
     const needsMetadataReplay = source.metadataRevision !== RSS_METADATA_REVISION;
-    const response = await this.http.getText(feedUrl, needsMetadataReplay ? undefined : { etag: source.etag, lastModified: source.lastModified });
+    const response = await this.http.getText(feedUrl, needsMetadataReplay ? undefined : { etag: source.etag, lastModified: source.lastModified }, { signal });
     if (response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true };
     if (!looksLikeFeed(response.contentType, response.text)) throw new Error("来源声明的 Feed 已不再是有效订阅，请重新校准该来源。");
     const feed = await parseFeed(response.text, response.url);

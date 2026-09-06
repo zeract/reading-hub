@@ -7,6 +7,7 @@ describe("library view queries", () => {
 
     expect(entryQueryForLibrary("today", "source-1", now)).toEqual({
       sourceId: "source-1",
+      publishedOnly: true,
       startAt: new Date(2026, 7, 18).getTime(),
       endAt: new Date(2026, 7, 19).getTime()
     });
@@ -19,10 +20,10 @@ describe("library view queries", () => {
     expect(entryQueryForLibrary("all")).toEqual({ sourceId: undefined });
   });
 
-  it("adds a keyword only to an explicitly selected source", () => {
+  it("preserves metadata search in source and global reading filters", () => {
     expect(entryQueryForLibrary("all", "source-1", undefined, "vector database"))
       .toEqual({ sourceId: "source-1", search: "vector database" });
     expect(entryQueryForLibrary("unread", "source-1", undefined, "vector database"))
-      .toEqual({ sourceId: undefined, read: false });
+      .toEqual({ sourceId: undefined, search: "vector database", read: false });
   });
 });

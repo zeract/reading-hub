@@ -27,6 +27,34 @@ describe("connector platform", () => {
       expect(fetchX).not.toHaveBeenCalled();
     } finally { database.close(); }
   });
+  it.each([401, 403])("handles asynchronous X HTTP %s without misclassifying account state", async (status) => {
+    const database = new ReadingDatabase(":memory:");
+    try {
+      const account = database.saveAccount({ connectorId: "x", displayName: "X", subjectId: "owner", keychainAccount: "x:test", scopes: [], status: "active" });
+      const source = database.createSource({ url: "https://api.x.com/2/users/owner/following", title: "X", kind: "x", accountId: account.id, pollingEnabled: true });
+      const secrets = { getConnectorSecret: async () => JSON.stringify({ accessToken: "fixture-only", expiresAt: Date.now() + 3_600_000 }) };
+      const connector = new XConnector(database, secrets as never, async () => undefined, async () => new Response("{}", { status }));
+      await expect(connector.sync({ source, subscription: database.getSubscriptionForSource(source.id)!, account })).rejects.toThrow();
+      expect(database.getAccount(account.id)?.status).toBe(status === 401 ? "expired" : "active");
+    } finally { database.close(); }
+  });
+
+  it("cancels X pagination without expiring the account or starting another page", async () => {
+    const database = new ReadingDatabase(":memory:");
+    try {
+      const account = database.saveAccount({ connectorId: "x", displayName: "X", subjectId: "owner", keychainAccount: "x:test", scopes: [], status: "active" });
+      const source = database.createSource({ url: "https://api.x.com/2/users/owner/following", title: "X", kind: "x", accountId: account.id, pollingEnabled: true });
+      const controller = new AbortController();
+      const secrets = { getConnectorSecret: async () => JSON.stringify({ accessToken: "fixture-only", expiresAt: Date.now() + 3_600_000 }) };
+      const fetch = vi.fn(async () => { controller.abort(new Error("cancel sync")); return new Response(JSON.stringify({ data: [], meta: { next_token: "next" } })); });
+      const connector = new XConnector(database, secrets as never, async () => undefined, fetch);
+      await expect(connector.sync({ source, subscription: database.getSubscriptionForSource(source.id)!, account, signal: controller.signal })).rejects.toThrow("cancel sync");
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(database.getAccount(account.id)?.status).toBe("active");
+      expect(database.getCheckpoint(source.id)).toBeUndefined();
+    } finally { database.close(); }
+  });
+
   it("only accepts explicitly built-in adapters", () => {
     const registry = new ConnectorRegistry();
     expect(() => registry.register({

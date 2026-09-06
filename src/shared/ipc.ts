@@ -34,6 +34,8 @@ export const IPC_CHANNELS = {
     importOpml: "source:import-opml",
     list: "source:list",
     remove: "source:delete",
+    subscribe: "source:set-subscribed",
+    clearContent: "source:clear-content",
     refresh: "source:refresh",
     updateSettings: "source:update-settings",
     collectionSettings: "source:collection-settings",
@@ -52,7 +54,10 @@ export const IPC_CHANNELS = {
     loadImage: "entry:load-image",
     markRead: "entry:read",
     markFavorite: "entry:favorite",
-    dismiss: "entry:dismiss"
+    dismiss: "entry:dismiss",
+    restore: "entry:restore",
+    revision: "library:revision",
+    changed: "library:changed"
   },
   ai: {
     listProviders: "ai:list-providers",
@@ -82,6 +87,11 @@ export interface ReaderApi {
   importOpml(): Promise<OpmlImportResult>;
   listSources(): Promise<Source[]>;
   deleteSource(id: string): Promise<void>;
+  setSourceSubscribed(id: string, subscribed: boolean): Promise<Source>;
+  clearSourceContent(id: string): Promise<number>;
+  restoreEntry(id: string): Promise<void>;
+  getLibraryRevision(): Promise<number>;
+  onLibraryChanged(listener: (revision: number) => void): () => void;
   refreshSource(id: string): Promise<SourceSyncResult>;
   updateSourceSettings(id: string, settings: SourceSettings): Promise<Source>;
   getSourceCollectionSettings(id: string): Promise<SourceCollectionSettings>;

@@ -28,6 +28,8 @@ beforeEach(async () => {
       ? { id: last.id, observedAt: last.createdAt, createdAt: last.createdAt } : undefined };
   });
   Object.defineProperty(window, "reader", { configurable: true, value: {
+    getLibraryRevision: vi.fn(async () => 0),
+    onLibraryChanged: vi.fn(() => () => undefined),
     listSources: vi.fn(async () => []),
     listEntryPage: listPage,
     getLibraryCounts: vi.fn(async () => ({ unread: 0, favorite: 0, today: 0 }))
@@ -46,8 +48,32 @@ afterEach(async () => {
 });
 
 describe("library read-model", () => {
+  it("defaults to collection order and performs no idle full reload", async () => {
+    expect(library.libraryView).toBe("collected");
+    expect(listPage.mock.lastCall?.[0]).toMatchObject({ collection: "current", sort: "collected" });
+    vi.useFakeTimers();
+    await act(async () => library.selectSource("for-timer"));
+    listPage.mockClear();
+    await act(async () => { await vi.advanceTimersByTimeAsync(180_000); });
+    expect(listPage).not.toHaveBeenCalled();
+  });
+
+  it("coalesces mutation notifications and removes listeners when unmounted", async () => {
+    vi.useFakeTimers();
+    let notify!: (revision: number) => void;
+    const unsubscribe = vi.fn();
+    vi.mocked(window.reader.onLibraryChanged).mockImplementation((listener) => { notify = listener; return unsubscribe; });
+    await act(async () => library.selectSource("notifications"));
+    listPage.mockClear();
+    await act(async () => { notify(1); notify(2); await vi.advanceTimersByTimeAsync(100); });
+    expect(listPage).toHaveBeenCalledTimes(1);
+    await act(async () => library.selectSource("next"));
+    expect(unsubscribe).toHaveBeenCalled();
+  });
+
   it("refreshes today's query boundary after midnight", async () => {
-    const before = listPage.mock.calls[0][0];
+    await act(async () => library.selectLibrary("today"));
+    const before = listPage.mock.lastCall![0];
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(before.endAt + 1));
     await act(async () => library.reload());

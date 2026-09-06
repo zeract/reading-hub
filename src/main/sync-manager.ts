@@ -1,3 +1,4 @@
+import { throwIfAborted } from "./cancellation";
 import type { RawEntry, Source, Subscription } from "../shared/types";
 import { entryMatchesSubscriptionScope, normaliseSubscriptionScope } from "../shared/subscription-scope";
 import { redactDiagnosticMessage } from "./diagnostic-redaction";
@@ -35,6 +36,7 @@ export class SyncManager {
   private timer?: NodeJS.Timeout;
   private dueRun?: Promise<void>;
   private readonly inFlight = new Map<string, Promise<SourceSyncResult>>();
+  private readonly controllers = new Map<string, AbortController>();
   private closing = false;
   private closePromise?: Promise<void>;
 
@@ -58,11 +60,20 @@ export class SyncManager {
   /** Stop admission, skip queued requests and drain active connectors before SQLite closes. */
   close(): Promise<void> {
     if (!this.closePromise) {
-      this.closing = true;
-      this.stop();
+      this.beginShutdown();
       this.closePromise = Promise.allSettled([...this.inFlight.values(), this.dueRun]).then(() => undefined);
     }
     return this.closePromise;
+  }
+
+  beginShutdown(): void {
+    this.closing = true;
+    this.stop();
+    for (const id of this.controllers.keys()) this.cancelSource(id);
+  }
+
+  cancelSource(sourceId: string): void {
+    this.controllers.get(sourceId)?.abort(new SyncCancelledError("已取消此次同步。"));
   }
 
   async runDue(): Promise<void> {
@@ -85,21 +96,31 @@ export class SyncManager {
   async syncSource(sourceId: string): Promise<SourceSyncResult> {
     this.assertOpen();
     const existing = this.inFlight.get(sourceId);
-    if (existing) return existing;
-    const pending = this.syncOnce(sourceId);
+    if (existing) {
+      if (!this.controllers.get(sourceId)?.signal.aborted) return existing;
+      // A new subscription request must not inherit a cancelled predecessor.
+      await existing.catch(() => undefined);
+      return this.syncSource(sourceId);
+    }
+    const controller = new AbortController();
+    this.controllers.set(sourceId, controller);
+    const pending = this.syncOnce(sourceId, controller.signal);
     this.inFlight.set(sourceId, pending);
     try {
       return await pending;
     } finally {
       this.inFlight.delete(sourceId);
+      this.controllers.delete(sourceId);
+      this.db.publishChanges();
     }
   }
 
-  private async syncOnce(sourceId: string): Promise<SourceSyncResult> {
+  private async syncOnce(sourceId: string, signal: AbortSignal): Promise<SourceSyncResult> {
     const queuedSource = this.db.getSource(sourceId);
     if (!queuedSource) throw new Error("来源不存在。");
     return this.gate.run(queuedSource.url, async () => {
       this.assertOpen();
+      throwIfAborted(signal);
       const source = this.db.getSource(sourceId);
       if (!source) throw new SyncCancelledError("来源已被删除，已取消此次同步。");
       assertSourceEnabled(source);
@@ -113,7 +134,8 @@ export class SyncManager {
         const account = subscription.accountId ? this.db.getAccount(subscription.accountId) : undefined;
         const connector = this.registry.get(subscription.connectorId);
         if (connector.manifest.requiresAccount && !account) throw new Error(`${connector.manifest.displayName} 需要重新授权。`);
-        const outcome = await connector.sync({ source, subscription, account, checkpoint: this.db.getCheckpoint(subscription.id) });
+        const outcome = await connector.sync({ source, subscription, account, checkpoint: this.db.getCheckpoint(subscription.id), signal });
+        throwIfAborted(signal);
         this.assertOpen();
         return this.db.writeTransaction(() => {
           const currentSource = currentSourceForSync(this.db, source, subscription);
@@ -152,6 +174,7 @@ export class SyncManager {
           return { inserted, source: updated };
         });
       } catch (error) {
+        throwIfAborted(signal);
         if (error instanceof SyncCancelledError) throw error;
         this.assertOpen();
         // Success and failure must obey the same stale-result boundary.
@@ -209,6 +232,8 @@ function currentSourceForSync(database: ReadingDatabase, initial: Source, initia
   const currentSubscription = database.getSubscriptionForSource(current.id);
   if (initialSubscription && (!currentSubscription || currentSubscription.id !== initialSubscription.id
     || currentSubscription.accountId !== initialSubscription.accountId
+    || currentSubscription.targetId !== initialSubscription.targetId
+    || JSON.stringify(currentSubscription.config) !== JSON.stringify(initialSubscription.config)
     || JSON.stringify(normaliseSubscriptionScope(currentSubscription.scope)) !== JSON.stringify(normaliseSubscriptionScope(initialSubscription.scope)))) {
     throw new SyncCancelledError("收集范围已更新，已取消旧的同步结果。");
   }
@@ -221,7 +246,7 @@ function currentSourceForSync(database: ReadingDatabase, initial: Source, initia
 }
 
 function assertSourceEnabled(source: Source): void {
-  if (!source.pollingEnabled || source.status === "paused") {
+  if (source.subscribed === false || !source.pollingEnabled || source.status === "paused") {
     throw new SyncCancelledError("来源已暂停，已取消此次同步。");
   }
 }

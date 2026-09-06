@@ -44,6 +44,13 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
   // Renderer requests are scoped to their owning WebContents. A malicious or
   // stale renderer cannot cancel another window's AI turn by guessing an id.
   const aiStreamControllers = new Map<number, Map<string, AbortController>>();
+  const observers = new Map<number, Electron.WebContents>();
+  const unsubscribeChanges = database?.onLibraryChanged?.((revision) => {
+    for (const [id, sender] of observers) {
+      if (sender.isDestroyed()) observers.delete(id);
+      else sender.send(IPC_CHANNELS.entry.changed, revision);
+    }
+  });
   const pending = new Set<Promise<unknown>>();
   const channels: string[] = [];
   let closing = false;
@@ -55,7 +62,7 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
       if (closing) throw new Error("应用正在退出，请稍后重新打开。");
       const request = Promise.resolve(listener(event, ...args));
       pending.add(request);
-      return request.finally(() => pending.delete(request));
+      return request.finally(() => { pending.delete(request); database?.publishChanges?.(); });
     });
   }
 
@@ -71,7 +78,14 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     const text = await readFile(selection, "utf8");
     return { cancelled: false, ...sources.importOpml(text) };
   });
-  handle(IPC_CHANNELS.source.list, () => database.listSources());
+  handle(IPC_CHANNELS.source.list, (event) => {
+    observers.set(event.sender.id, event.sender);
+    return database.listSources();
+  });
+  handle(IPC_CHANNELS.source.subscribe, (_event, id: unknown, subscribed: unknown) => sources.setSubscribed(requireEntityId(id), requireBoolean(subscribed)));
+  handle(IPC_CHANNELS.source.clearContent, (_event, id: unknown) => database.clearSourceContent(requireEntityId(id)));
+  handle(IPC_CHANNELS.entry.restore, (_event, id: unknown) => database.restoreEntry(requireEntityId(id)));
+  handle(IPC_CHANNELS.entry.revision, () => database.getLibraryRevision());
   handle(IPC_CHANNELS.source.remove, (_event, id: unknown) => sources.delete(requireEntityId(id)));
   handle(IPC_CHANNELS.source.refresh, (_event, id: unknown) => sync.syncSource(requireEntityId(id)));
   handle(IPC_CHANNELS.source.updateSettings, (_event, id: unknown, settings: unknown) =>
@@ -174,6 +188,8 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
 
   return async () => {
     closing = true;
+    unsubscribeChanges?.();
+    observers.clear();
     for (const channel of channels) ipcMain.removeHandler(channel);
     for (const streams of aiStreamControllers.values()) {
       for (const controller of streams.values()) controller.abort(new Error("应用正在退出。"));

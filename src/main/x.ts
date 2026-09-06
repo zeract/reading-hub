@@ -1,3 +1,4 @@
+import { requestJsonWithTimeout, throwIfAborted } from "./cancellation";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { shell } from "electron";
@@ -110,13 +111,14 @@ export class XConnector implements ConnectorAdapter {
     const account = context.account;
     if (!account?.subjectId) throw new Error("X 来源缺少有效的授权账号，请重新连接 X。");
     try {
-      const token = await this.tokenFor(account);
+      const token = await this.tokenFor(account, context.signal);
       if (context.subscription.config.mode === "profile") {
         if (!profileUsername) throw new Error("X 博主来源缺少用户名，请删除后重新添加。");
-        return this.syncProfile(profileUsername, token.accessToken, context.checkpoint);
+        return await this.syncProfile(profileUsername, token.accessToken, context.checkpoint, context.signal);
       }
-      return this.syncFollowing(account.subjectId, token.accessToken, context.subscription.config, context.checkpoint);
+      return await this.syncFollowing(account.subjectId, token.accessToken, context.subscription.config, context.checkpoint, context.signal);
     } catch (error) {
+      throwIfAborted(context.signal);
       // A 403 can mean a protected target or a product entitlement issue; it
       // does not prove the local OAuth token has expired. Only X's 401 is a
       // safe reason to invalidate the saved account.
@@ -129,14 +131,15 @@ export class XConnector implements ConnectorAdapter {
     accountUserId: string,
     accessToken: string,
     config: Record<string, unknown>,
-    checkpoint: SyncContext["checkpoint"]
+    checkpoint: SyncContext["checkpoint"],
+    signal?: AbortSignal
   ): Promise<SyncResult> {
     const checkpointData = checkpoint?.data ?? {};
     const now = Date.now();
     let followed = decodeFollowed(checkpointData.followed);
     const refreshedAt = numberValue(checkpointData.followingRefreshedAt);
     if (!followed.length || !refreshedAt || now - refreshedAt >= FOLLOW_REFRESH_MS) {
-      followed = await this.fetchFollowing(accountUserId, accessToken);
+      followed = await this.fetchFollowing(accountUserId, accessToken, signal);
     }
     const configuredLimit = numberValue(config.maxFollowees);
     const limit = Math.max(1, Math.min(configuredLimit || DEFAULT_FOLLOW_LIMIT, DEFAULT_FOLLOW_LIMIT));
@@ -145,7 +148,7 @@ export class XConnector implements ConnectorAdapter {
     const nextSinceByUser: Record<string, string> = { ...stringRecord(sinceByUser) };
     const entries: RawEntry[] = [];
     for (const user of tracked) {
-      const fetched = await this.fetchUserPosts(user, accessToken, nextSinceByUser[user.id]);
+      const fetched = await this.fetchUserPosts(user, accessToken, nextSinceByUser[user.id], signal);
       if (fetched.sinceId) nextSinceByUser[user.id] = fetched.sinceId;
       entries.push(...fetched.entries);
     }
@@ -159,13 +162,13 @@ export class XConnector implements ConnectorAdapter {
     };
   }
 
-  private async syncProfile(username: string, accessToken: string, checkpoint: SyncContext["checkpoint"]): Promise<SyncResult> {
+  private async syncProfile(username: string, accessToken: string, checkpoint: SyncContext["checkpoint"], signal?: AbortSignal): Promise<SyncResult> {
     const profile = await this.requestJson<XResponse<XUser>>(
       `/users/by/username/${encodeURIComponent(username)}?user.fields=name,username`,
-      accessToken
+      accessToken, signal
     ).then((response) => response.data);
     if (!profile?.id || !profile.username) throw new Error("未找到该 X 博主，或该主页目前不可公开读取。");
-    const fetched = await this.fetchUserPosts(profile, accessToken, checkpoint?.sinceId);
+    const fetched = await this.fetchUserPosts(profile, accessToken, checkpoint?.sinceId, signal);
     return {
       entries: fetched.entries,
       emptyIsHealthy: true,
@@ -176,7 +179,7 @@ export class XConnector implements ConnectorAdapter {
     };
   }
 
-  private async fetchUserPosts(user: XUser, accessToken: string, sinceId?: string): Promise<{ entries: RawEntry[]; sinceId?: string }> {
+  private async fetchUserPosts(user: XUser, accessToken: string, sinceId?: string, signal?: AbortSignal): Promise<{ entries: RawEntry[]; sinceId?: string }> {
     const query = new URLSearchParams({
       max_results: "20",
       exclude: "replies,retweets",
@@ -185,7 +188,7 @@ export class XConnector implements ConnectorAdapter {
     if (sinceId) query.set("since_id", sinceId);
     const response = await this.requestJson<XResponse<XPost[]>>(
       `/users/${encodeURIComponent(user.id)}/tweets?${query}`,
-      accessToken
+      accessToken, signal
     );
     let nextSinceId = sinceId;
     const entries: RawEntry[] = [];
@@ -204,21 +207,22 @@ export class XConnector implements ConnectorAdapter {
     return contentNormalizer.normalize(item, source, X_CONTENT_NORMALIZATION);
   }
 
-  private async fetchFollowing(userId: string, accessToken: string): Promise<XUser[]> {
+  private async fetchFollowing(userId: string, accessToken: string, signal?: AbortSignal): Promise<XUser[]> {
     const users: XUser[] = [];
     let cursor: string | undefined;
     do {
       const query = new URLSearchParams({ max_results: "1000", "user.fields": "name,username" });
       if (cursor) query.set("pagination_token", cursor);
-      const response = await this.requestJson<XResponse<XUser[]>>(`/users/${encodeURIComponent(userId)}/following?${query}`, accessToken);
+      const response = await this.requestJson<XResponse<XUser[]>>(`/users/${encodeURIComponent(userId)}/following?${query}`, accessToken, signal);
       users.push(...(response.data ?? []).filter((item) => item.id && item.username));
       cursor = response.meta?.next_token;
     } while (cursor && users.length < DEFAULT_FOLLOW_LIMIT);
     return users.slice(0, DEFAULT_FOLLOW_LIMIT);
   }
 
-  private async tokenFor(account: Account): Promise<XToken> {
+  private async tokenFor(account: Account, signal?: AbortSignal): Promise<XToken> {
     const raw = await this.secrets.getConnectorSecret(account.keychainAccount);
+    throwIfAborted(signal);
     if (!raw) {
       this.database.updateAccountStatus(account.id, "expired");
       throw new Error("X 授权已失效，请重新连接 X。");
@@ -238,12 +242,13 @@ export class XConnector implements ConnectorAdapter {
       throw new Error("X 授权已到期，请重新连接 X。");
     }
     try {
-      const refreshed = await this.refreshToken(clientId, token.refreshToken);
+      const refreshed = await this.refreshToken(clientId, token.refreshToken, signal);
       const keychainAccount = await this.secrets.setConnectorSecret("x", account.id, JSON.stringify(refreshed));
       this.database.saveAccount({ ...account, keychainAccount, status: "active" });
       return refreshed;
     } catch (error) {
-      this.database.updateAccountStatus(account.id, "expired");
+      throwIfAborted(signal);
+      if (error instanceof XApiError && (error.status === 400 || error.status === 401)) this.database.updateAccountStatus(account.id, "expired");
       throw error;
     }
   }
@@ -297,25 +302,25 @@ export class XConnector implements ConnectorAdapter {
     }));
   }
 
-  private async refreshToken(clientId: string, refreshToken: string): Promise<XToken> {
-    return this.exchangeToken(new URLSearchParams({ grant_type: "refresh_token", client_id: clientId, refresh_token: refreshToken }));
+  private async refreshToken(clientId: string, refreshToken: string, signal?: AbortSignal): Promise<XToken> {
+    return this.exchangeToken(new URLSearchParams({ grant_type: "refresh_token", client_id: clientId, refresh_token: refreshToken }), signal);
   }
 
-  private async exchangeToken(body: URLSearchParams): Promise<XToken> {
-    let response: Response;
+  private async exchangeToken(body: URLSearchParams, signal?: AbortSignal): Promise<XToken> {
+    let result: { response: Response; payload: { access_token?: string; refresh_token?: string; expires_in?: number } };
     try {
-      response = await this.fetchX(X_TOKEN_URL, {
+      result = await requestJsonWithTimeout(this.fetchX, X_TOKEN_URL, {
         method: "POST",
         headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
-        body,
-        signal: AbortSignal.timeout(20_000)
-      });
+        body
+      }, signal, 20_000);
     } catch {
+      throwIfAborted(signal);
       // Do not expose a network exception: it can contain request metadata
       // including OAuth parameters. The caller only needs a useful next step.
       throw new XApiError("无法连接到 X OAuth 令牌服务。请检查系统代理、VPN、DNS 或网络访问后重试。");
     }
-    const payload = await response.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; expires_in?: number; error?: string };
+    const { response, payload } = result;
     if (!response.ok || !payload.access_token) {
       throw new XApiError(
         response.status === 400
@@ -331,19 +336,19 @@ export class XConnector implements ConnectorAdapter {
     };
   }
 
-  private async requestJson<T>(path: string, accessToken: string): Promise<T> {
+  private async requestJson<T>(path: string, accessToken: string, signal?: AbortSignal): Promise<T> {
     const url = new URL(path.replace(/^\//, ""), `${X_API_ROOT}/`);
     if (url.protocol !== "https:" || url.hostname !== "api.x.com") throw new Error("X 连接器拒绝访问未授权域名。");
-    let response: Response;
+    let result: { response: Response; payload: T };
     try {
-      response = await this.fetchX(url.toString(), {
-        headers: { accept: "application/json", authorization: `Bearer ${accessToken}` },
-        signal: AbortSignal.timeout(20_000)
-      });
+      result = await requestJsonWithTimeout<T>(this.fetchX, url.toString(), {
+        headers: { accept: "application/json", authorization: `Bearer ${accessToken}` }
+      }, signal, 20_000);
     } catch {
+      throwIfAborted(signal);
       throw new XApiError("无法连接到 X API。请检查系统代理、VPN、DNS 或网络访问后重试。");
     }
-    const payload = await response.json().catch(() => ({})) as T;
+    const { response, payload } = result;
     if (!response.ok) throw new XApiError(xHttpFailureMessage(response.status, path), response.status);
     return payload;
   }

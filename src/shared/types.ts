@@ -49,12 +49,15 @@ export interface Source {
   metadataRevision?: number;
   status: SourceStatus;
   extractionRule?: ExtractionRule;
+  /** False keeps provenance and saved cards after unsubscribe. */
+  subscribed?: boolean;
   pollingEnabled: boolean;
   /** Requested cadence in minutes. Undefined retains the conservative 30–60 minute default. */
   refreshIntervalMinutes?: number;
   etag?: string;
   lastModified?: string;
   lastCheckedAt?: number;
+  lastSuccessfulAt?: number;
   nextCheckAt?: number;
   consecutiveEmpty: number;
   failureCount: number;
@@ -122,6 +125,7 @@ export interface FacetCatalog {
 }
 
 export interface RawEntry {
+  ingestionKind?: "current" | "history";
   url: string;
   title: string;
   author?: string;
@@ -172,9 +176,13 @@ export interface Entry extends RawEntry {
  * safely include the entire local calendar day without relying on 23:59:59.
  */
 export interface EntryListQuery {
+  dismissed?: boolean;
+  publishedOnly?: boolean;
+  collection?: "current" | "history";
+  sort?: "published" | "collected";
   sourceId?: string;
   /**
-   * Source-scoped local metadata search. The host matches normalized terms
+   * Local metadata search across all sources or one selected source. The host matches normalized terms
    * against retained card fields only; it never fetches or indexes article
    * bodies just to satisfy a search.
    */
@@ -220,6 +228,9 @@ export interface EntryPage {
 
 /** Small local navigation counters; no article body or remote data is involved. */
 export interface LibraryCounts {
+  collected?: number;
+  history?: number;
+  newArrivals?: number;
   unread: number;
   favorite: number;
   today: number;
@@ -252,6 +263,7 @@ export interface Account {
 
 /** A connector target. Existing sources have a one-to-one compatibility subscription. */
 export interface Subscription {
+  subscribed?: boolean;
   id: string;
   sourceId: string;
   connectorId: ConnectorId;
@@ -297,6 +309,7 @@ export interface SubscriptionDraft {
 }
 
 export interface SyncContext {
+  signal?: AbortSignal;
   source: Source;
   subscription: Subscription;
   account?: Account;

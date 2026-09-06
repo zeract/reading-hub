@@ -1,3 +1,4 @@
+import { isRetiredXPublicProfile, sourceCapabilities, sourceHealthLabel } from "../shared/source-capabilities";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useState } from "react";
 import type {
   CalibrationResult,
@@ -51,9 +52,10 @@ export function AddSourceDialog({ onClose, onPreview, onImportOpml, onZhihuStart
   ];
   const selected = methods.find((item) => item.id === method)!;
   return <Dialog title="添加来源" onClose={onClose}>
-    <div className="source-method-tabs" role="tablist" aria-label="来源类型">
+    <details open={method !== "public"}><summary>连接账号或追踪作者</summary><div className="source-method-tabs" role="tablist" aria-label="来源类型">
       {methods.map((item) => <button key={item.id} type="button" role="tab" aria-selected={method === item.id} className={method === item.id ? "selected" : ""} onClick={() => setMethod(item.id)}>{item.label}</button>)}
     </div>
+    </details>
     <p className="source-method-description">{selected.description}</p>
     {method === "public" && <PublicSourcePane onPreview={onPreview} onImportOpml={onImportOpml} />}
     {method === "zhihu" && <ZhihuSourcePane onStarted={onZhihuStarted} />}
@@ -225,9 +227,7 @@ const REFRESH_OPTIONS: Array<{ value: "default" | "30" | "60" | "120" | "240" | 
   { value: "1440", label: "约每天一次" }
 ];
 
-export function isRetiredXPublicProfile(source: Source | undefined): boolean {
-  return source?.kind === "x" && source.connectorId === "x" && source.config?.mode === "public-profile";
-}
+export { isRetiredXPublicProfile } from "../shared/source-capabilities";
 
 export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCalibrate, onDelete, onReconnectZhihu }: {
   source: Source;
@@ -249,7 +249,8 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
   const [error, setError] = useState<string>();
   const legacyRssHubFeed = source.config?.sourceProvider === "rsshub";
   const retiredXPublicProfile = isRetiredXPublicProfile(source);
-  const typeLocked = !PUBLIC_SOURCE_KINDS.includes(source.kind) || legacyRssHubFeed;
+  const capabilities = sourceCapabilities(source);
+  const typeLocked = !capabilities.canChangeKind;
   const manual = kind === "manual";
 
   useEffect(() => {
@@ -289,7 +290,7 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
         setInitialCollectionScope(persisted.scope);
         // Scope changes deliberately take effect now: this is the only path
         // that can start an explicitly chosen historical import.
-        if (!retiredXPublicProfile) await onRefresh();
+        if (capabilities.canPoll && pollingEnabled) await onRefresh();
       }
       await onSaved();
     } catch (reason) {
@@ -327,11 +328,12 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
       <label>来源名称<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} required autoFocus /></label>
       <label>来源文件夹<input value={category} onChange={(event) => setCategory(event.target.value)} maxLength={60} placeholder="留空则自动归类" /></label>
       <p className="source-settings-note">来源文件夹仅保存在本机，用于将来源整理为可折叠的分组；它不会过滤文章。</p>
-      <label>信源类型<select value={kind} onChange={(event) => setKind(event.target.value as SourceKind)} disabled={typeLocked || busy}>
+      <details><summary>高级设置</summary><label>信源类型<select value={kind} onChange={(event) => setKind(event.target.value as SourceKind)} disabled={typeLocked || busy}>
         {typeLocked ? <option value={source.kind}>{sourceKindLabel(source.kind)}</option> : PUBLIC_SOURCE_KINDS.map((item) => <option key={item} value={item}>{sourceKindLabel(item)}</option>)}
       </select></label>
       {typeLocked && <p className="source-settings-note">{retiredXPublicProfile ? "此旧 X 公开来源已停止刷新：X 没有提供可合规自动读取的公开订阅接口。已有卡片会保留；如需继续同步，请删除它后使用官方 API。" : legacyRssHubFeed ? "已保存的 RSSHub Feed 仍使用 RSS 连接器；这里可调整名称和刷新频率。" : "平台来源的类型及账号绑定由内置连接器管理；这里仍可调整名称和刷新频率。"}</p>}
-      <label className="source-settings-toggle"><input type="checkbox" checked={!manual && pollingEnabled} onChange={(event) => setPollingEnabled(event.target.checked)} disabled={manual || retiredXPublicProfile || busy} />自动刷新</label>
+      </details>
+      <label className="source-settings-toggle"><input type="checkbox" checked={!manual && pollingEnabled} onChange={(event) => setPollingEnabled(event.target.checked)} disabled={manual || !capabilities.canPoll || busy} />自动刷新</label>
       <label>刷新时间<select value={refresh} onChange={(event) => setRefresh(event.target.value as typeof refresh)} disabled={manual || retiredXPublicProfile || !pollingEnabled || busy}>{REFRESH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
       {manual && <p className="source-settings-note">分享链接是一次性阅读卡片，不会自动轮询。</p>}
       <label>来源地址<input value={source.url} readOnly aria-readonly="true" /></label>
@@ -342,8 +344,13 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
         onInspect={() => void inspectCollectionFacets()}
         onChange={updateCollectionScope}
       />}
-      <dl className="source-settings-details"><div><dt>当前状态</dt><dd><StatusBadge status={source.status} /></dd></div><div><dt>实际连接器</dt><dd>{sourceConnectorLabel(source)}</dd></div></dl>
-      <div className="source-settings-operations">{!retiredXPublicProfile && <button type="button" onClick={() => void runOperation(onRefresh)} disabled={busy}>立即刷新</button>}{source.kind === "generic" && <button type="button" onClick={() => void runOperation(onCalibrate)} disabled={busy}>自动校准</button>}{source.kind === "zhihu_follow" && <button type="button" onClick={() => void runOperation(onReconnectZhihu)} disabled={busy}>重新登录知乎</button>}<button type="button" className="danger" onClick={() => void runOperation(onDelete)} disabled={busy}>删除来源</button></div>
+      <dl className="source-settings-details"><div><dt>当前状态</dt><dd>{sourceHealthLabel(source)}</dd></div><div><dt>实际连接器</dt><dd>{sourceConnectorLabel(source)}</dd></div></dl>
+      {source.lastError && <p className="error">{source.lastError}</p>}
+      <p className="source-settings-note">最近成功：{source.lastSuccessfulAt ? new Date(source.lastSuccessfulAt).toLocaleString("zh-CN") : "尚未检查"}；下次检查：{source.nextCheckAt && capabilities.canRefresh ? new Date(source.nextCheckAt).toLocaleString("zh-CN") : "未安排"}</p>
+      <div className="source-settings-operations">{capabilities.canRefresh && <button type="button" onClick={() => void runOperation(onRefresh)} disabled={busy}>立即刷新</button>}{capabilities.canCalibrate && <button type="button" onClick={() => void runOperation(onCalibrate)} disabled={busy}>自动校准</button>}{capabilities.canReconnect && <button type="button" onClick={() => void runOperation(onReconnectZhihu)} disabled={busy}>重新登录知乎</button>}<button type="button" className="danger" onClick={() => void runOperation(onDelete)} disabled={busy || (source.subscribed === false && !capabilities.canSubscribe)}>{source.subscribed === false ? "重新订阅" : "取消订阅"}</button><button type="button" className="danger" disabled={busy} onClick={() => void runOperation(async () => {
+        if (!window.confirm("清理该来源独有且未收藏的内容？其他来源共享的内容和收藏会保留。")) return;
+        await window.reader.clearSourceContent(source.id); await onSaved();
+      })}>清理未收藏内容</button></div>
       {error && <p className="error">{error}</p>}
       <div className="dialog-actions"><button type="button" onClick={onClose} disabled={busy}>取消</button><button className="primary" disabled={busy}>{busy ? "正在保存…" : "保存配置"}</button></div>
     </form>
@@ -425,11 +432,6 @@ function CollectionScopeEditor({ source, settings, disabled, onInspect, onChange
 
 export function Dialog({ title, children, onClose, className }: { title: string; children: ReactNode; onClose: () => void; className?: string }) {
   return <div className="modal-backdrop" role="presentation"><section className={`dialog${className ? ` ${className}` : ""}`} role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button onClick={onClose} aria-label="关闭">×</button></header>{children}</section></div>;
-}
-
-function StatusBadge({ status }: { status: Source["status"] }) {
-  const labels = { active: "正常", needs_review: "需校正", paused: "已暂停", error: "重试中" };
-  return <span className={`status ${status}`}>{labels[status]}</span>;
 }
 
 const SOURCE_KIND_LABELS = {

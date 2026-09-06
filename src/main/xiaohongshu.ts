@@ -27,7 +27,7 @@ export class XiaohongshuConnector implements ConnectorAdapter {
     const response = await this.http.getText(context.source.url, {
       etag: context.source.etag,
       lastModified: context.source.lastModified
-    });
+    }, { signal: context.signal });
     if (response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true };
     const entries = extractPublicXiaohongshuNotes(response.text, response.url);
     if (!entries.length) {

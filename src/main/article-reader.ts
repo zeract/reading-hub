@@ -1088,7 +1088,7 @@ function prepareSanitizedContent(rawHtml: string, pageUrl: string): PreparedSani
   // first loses the only source TeX when generic sanitisation removes data/SVG.
   preserveSemanticFormulaCarriers($, root, formulas);
   preserveMathScripts($, root, formulas);
-  preserveRenderedMathJax($, root, formulas);
+  preserveRenderedMath($, root, formulas);
   removeReaderNoise($, root, pageUrl);
   for (const node of root.find("*").toArray()) {
     const element = $(node);
@@ -1417,14 +1417,14 @@ function preserveMathScripts($: ReturnType<typeof load>, root: any, formulas: Fo
 }
 
 /**
- * A Scientific Spaces page may have already run MathJax before its HTML is
- * fetched. Prefer the original TeX embedded in MathJax 2/3's annotation or
+ * A publisher may have already run MathJax or KaTeX before its HTML is
+ * fetched. Prefer the original TeX embedded in an explicit annotation or
  * data attributes; this avoids both the preview/rendered duplicate and losing
  * formulas when the original script was removed by the site.
  */
-function preserveRenderedMathJax($: ReturnType<typeof load>, root: any, formulas: FormulaDocument): void {
+function preserveRenderedMath($: ReturnType<typeof load>, root: any, formulas: FormulaDocument): void {
   root.find(".MathJax_Preview").remove();
-  const rendered = root.find("mjx-container, .MathJax, [id^='MathJax-']").toArray()
+  const rendered = root.find("mjx-container, .MathJax, [id^='MathJax-'], .katex-display, .katex").toArray()
     // Work from the outer frame inward. A MathJax 2/3 wrapper often contains
     // several elements which all match this selector. Processing a child
     // first used to create a second token, then leave that token behind when
@@ -1438,8 +1438,8 @@ function preserveRenderedMathJax($: ReturnType<typeof load>, root: any, formulas
     // lets an already-consumed nested MathJax node append a ghost formula,
     // which can shift later equation numbers and macro scope. Only process
     // nodes still reachable from this reader root.
-    if (!isNodeWithinRoot(root, node)) continue;
-    const tex = mathJaxSource(element);
+    if (!isNodeWithinRoot(root, node) || isLiteralMathContext(element)) continue;
+    const tex = renderedMathSource(element);
     if (tex) {
       const displayMode = isRenderedMathDisplay(element);
       const authored = adjacentAuthoredMath($, element, formulas);
@@ -1451,9 +1451,12 @@ function preserveRenderedMathJax($: ReturnType<typeof load>, root: any, formulas
         element.remove();
         continue;
       }
-      element.replaceWith(formulas.add(tex, displayMode, "mathjax-frame"));
+      element.replaceWith(formulas.add(tex, displayMode, element.is(".katex, .katex-display") ? "semantic" : "mathjax-frame"));
       continue;
     }
+    // Without an explicit annotation, a KaTeX-looking class is not enough
+    // evidence to infer TeX or delete authored text.
+    if (element.is(".katex, .katex-display")) continue;
     // A child MathJax node may already have been replaced by its placeholder.
     // Unwrap that placeholder instead of discarding the entire formula.
     if (element.text().includes(MATH_TOKEN_PREFIX)) element.replaceWith(element.contents());
@@ -1482,7 +1485,7 @@ function isNodeWithinRoot(root: any, node: any): boolean {
   return false;
 }
 
-function mathJaxSource(element: any): string | undefined {
+function renderedMathSource(element: any): string | undefined {
   // `data-mathml` is MathML, not TeX. Treating it as TeX makes the fallback
   // renderer emit a raw-source card even when the same frame has a valid TeX
   // annotation. Prefer explicit TeX fields, then the standard annotation or
@@ -1510,9 +1513,9 @@ function mathJaxSource(element: any): string | undefined {
 }
 
 function isRenderedMathDisplay(element: any): boolean {
-  return element.is("[display='true'], .MathJax_Display")
-    || element.parents("[display='true'], .MathJax_Display").length > 0
-    || element.find("[display='true'], .MathJax_Display").length > 0;
+  return element.is("[display='true'], .MathJax_Display, .katex-display")
+    || element.parents("[display='true'], .MathJax_Display, .katex-display").length > 0
+    || element.find("[display='true'], .MathJax_Display, .katex-display").length > 0;
 }
 
 /** Finds a source-script marker immediately beside a MathJax visual frame. */

@@ -310,7 +310,7 @@ describe("ReadingDatabase", () => {
     db.markRead(favourite!.id, true);
     db.markFavorite(favourite!.id, true);
 
-    expect(db.getLibraryCounts(new Date(2026, 7, 18, 16).getTime())).toEqual({ unread: 1, favorite: 1, today: 1 });
+    expect(db.getLibraryCounts(new Date(2026, 7, 18, 16).getTime())).toMatchObject({ unread: 1, favorite: 1, today: 1, collected: 2, history: 0 });
     db.close();
   });
 
@@ -372,7 +372,7 @@ describe("ReadingDatabase", () => {
       search: "vector",
       facetSelections: [{ scheme: "feed:https://example.com/search:category", key: "research" }]
     }).entries.map((item) => item.title)).toEqual(["Vector database roadmap"]);
-    expect(db.listEntryPage({ search: "vector" }).entries).toEqual([]);
+    expect(db.listEntryPage({ search: "vector" }).entries).toHaveLength(3);
     db.close();
   });
 

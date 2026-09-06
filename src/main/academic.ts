@@ -1,3 +1,4 @@
+import { requestJsonWithTimeout, throwIfAborted } from "./cancellation";
 import type { ConnectorAdapter, RawEntry, Source, SubscriptionDraft, SyncContext, SyncResult } from "../shared/types";
 import { compactText } from "../shared/text";
 import { builtInManifest } from "./connector-registry";
@@ -44,10 +45,11 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
       throw new Error("请至少选择一个学术数据库中的作者身份。");
     }
     const result = await Promise.allSettled([
-      config.openAlexId ? this.fetchOpenAlex(config) : Promise.resolve([]),
-      config.semanticScholarId ? this.fetchSemantic(config) : Promise.resolve([]),
-      config.orcid ? this.fetchOrcid(config) : Promise.resolve([])
+      ...(config.openAlexId ? [this.fetchOpenAlex(config, context.signal)] : []),
+      ...(config.semanticScholarId ? [this.fetchSemantic(config, context.signal)] : []),
+      ...(config.orcid ? [this.fetchOrcid(config, context.signal)] : [])
     ]);
+    throwIfAborted(context.signal);
     const entries = result.flatMap((item) => item.status === "fulfilled" ? item.value : []);
     if (!entries.length && result.every((item) => item.status === "rejected")) {
       const message = result.find((item): item is PromiseRejectedResult => item.status === "rejected")?.reason;
@@ -92,7 +94,7 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
     });
   }
 
-  private async fetchOpenAlex(config: AuthorConfig): Promise<RawEntry[]> {
+  private async fetchOpenAlex(config: AuthorConfig, signal?: AbortSignal): Promise<RawEntry[]> {
     const url = new URL("/works", OPENALEX_ROOT);
     url.search = new URLSearchParams({
       filter: `authorships.author.id:${normalOpenAlexId(config.openAlexId)}`,
@@ -100,7 +102,7 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
       per_page: "100",
       select: "id,doi,title,publication_date,authorships,primary_location,type"
     }).toString();
-    const payload = await this.requestJson<{ results?: Array<any> }>(url);
+    const payload = await this.requestJson<{ results?: Array<any> }>(url, {}, signal);
     return (payload.results || []).flatMap((work) => {
       const doi = normalDoi(work.doi);
       const landing = work.primary_location?.landing_page_url || work.id;
@@ -121,11 +123,11 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
     });
   }
 
-  private async fetchSemantic(config: AuthorConfig): Promise<RawEntry[]> {
+  private async fetchSemantic(config: AuthorConfig, signal?: AbortSignal): Promise<RawEntry[]> {
     const id = encodeURIComponent(config.semanticScholarId || "");
     const url = new URL(`author/${id}/papers`, `${SEMANTIC_ROOT}/`);
     url.search = new URLSearchParams({ limit: "100", fields: "paperId,title,abstract,publicationDate,externalIds,openAccessPdf,url" }).toString();
-    const payload = await this.requestJson<{ data?: Array<any> }>(url);
+    const payload = await this.requestJson<{ data?: Array<any> }>(url, {}, signal);
     return (payload.data || []).flatMap((paper) => {
       const doi = normalDoi(paper.externalIds?.DOI);
       const arxiv = stringValue(paper.externalIds?.ArXiv);
@@ -147,9 +149,9 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
     });
   }
 
-  private async fetchOrcid(config: AuthorConfig): Promise<RawEntry[]> {
+  private async fetchOrcid(config: AuthorConfig, signal?: AbortSignal): Promise<RawEntry[]> {
     const id = encodeURIComponent(config.orcid || "");
-    const payload = await this.requestJson<any>(new URL(`${id}/works`, `${ORCID_ROOT}/`), { accept: "application/json" });
+    const payload = await this.requestJson<any>(new URL(`${id}/works`, `${ORCID_ROOT}/`), { accept: "application/json" }, signal);
     const groups = payload.group || [];
     return groups.flatMap((group: any) => {
       const summary = group["work-summary"]?.[0];
@@ -173,19 +175,19 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
     });
   }
 
-  private async requestJson<T>(url: URL, headers: Record<string, string> = {}): Promise<T> {
+  private async requestJson<T>(url: URL, headers: Record<string, string> = {}, signal?: AbortSignal): Promise<T> {
     if (url.protocol !== "https:" || !["api.openalex.org", "api.semanticscholar.org", "pub.orcid.org"].includes(url.hostname)) {
       throw new Error("学术连接器拒绝访问未授权域名。");
     }
-    let response: Response;
     try {
-      response = await this.fetchJson(url.toString(), { headers: { accept: "application/json", ...headers }, signal: AbortSignal.timeout(20_000) });
-    } catch {
+      const { response, payload } = await requestJsonWithTimeout<T>(this.fetchJson, url.toString(), { headers: { accept: "application/json", ...headers } }, signal, 20_000);
+      if (!response.ok) throw new Error(`学术数据源请求失败（${response.status}）。`);
+      return payload;
+    } catch (error) {
+      throwIfAborted(signal);
+      if (error instanceof Error && error.message.startsWith("学术数据源请求失败")) throw error;
       throw new Error("无法连接到学术数据源。请检查网络、代理或 DNS 设置后重试。");
     }
-    const payload = await response.json().catch(() => ({})) as T;
-    if (!response.ok) throw new Error(`学术数据源请求失败（${response.status}）。`);
-    return payload;
   }
 }
 

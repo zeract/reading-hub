@@ -23,7 +23,7 @@ export interface PublicRequestOptions {
    */
   maxFeedBytes?: number;
   allowTrustedLoopbackFeed?: boolean;
-  /** Optional caller-owned cancellation. Normal app requests do not use it. */
+  /** Optional caller-owned cancellation, shared by sync and reader work. */
   signal?: AbortSignal;
 }
 
