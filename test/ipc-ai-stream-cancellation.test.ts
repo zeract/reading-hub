@@ -26,6 +26,7 @@ type TestSender = {
   send: ReturnType<typeof vi.fn>;
   isDestroyed: ReturnType<typeof vi.fn>;
   once: ReturnType<typeof vi.fn>;
+  removeListener: ReturnType<typeof vi.fn>;
 };
 
 type PendingStream = {
@@ -41,7 +42,8 @@ function createSender(id: number): TestSender {
     id,
     send: vi.fn(),
     isDestroyed: vi.fn(() => false),
-    once: vi.fn()
+    once: vi.fn(),
+    removeListener: vi.fn()
   };
 }
 
@@ -64,7 +66,7 @@ function answer(text: string): AiAnswer {
   return { provider: "codex-cli", model: "gpt-5.6-luna · low", text };
 }
 
-function createHarness(): { pending: PendingStream[]; register(): void } {
+function createHarness(): { pending: PendingStream[]; register(): () => Promise<void> } {
   const pending: PendingStream[] = [];
   const learningAssistant = {
     askStream: vi.fn((request: AiQuestionRequest, onDelta: (text: string) => void, signal?: AbortSignal) =>
@@ -94,6 +96,132 @@ async function flushAsyncWork(): Promise<void> {
 }
 
 describe("AI stream IPC cancellation", () => {
+  it("waits for a cancelled stream to actually settle before completing IPC shutdown", async () => {
+    const harness = createHarness();
+    const drain = harness.register();
+    const sender = createSender(61);
+    await handler(IPC_CHANNELS.ai.askStream)({ sender }, streamPayload("slow-cleanup"));
+    let drained = false;
+    const closing = drain().then(() => { drained = true; });
+    await flushAsyncWork();
+    expect(harness.pending[0].signal?.aborted).toBe(true);
+    expect(drained).toBe(false);
+    harness.pending[0].resolve(answer("late answer"));
+    await closing;
+    expect(drained).toBe(true);
+    expect(sender.send).not.toHaveBeenCalled();
+  });
+
+  it("releases its owner listener after the last stream settles", async () => {
+    const harness = createHarness();
+    const drain = harness.register();
+    const sender = createSender(62);
+    await handler(IPC_CHANNELS.ai.askStream)({ sender }, streamPayload("complete"));
+    harness.pending[0].resolve(answer("done"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(sender.removeListener).toHaveBeenCalledWith("destroyed", expect.any(Function));
+    await drain();
+  });
+
+  it("keeps a replacement cancellable after the old request with the same id settles", async () => {
+    const harness = createHarness();
+    const drain = harness.register();
+    const sender = createSender(63);
+    const start = handler(IPC_CHANNELS.ai.askStream);
+    const cancel = handler(IPC_CHANNELS.ai.cancelStream);
+    await start({ sender }, streamPayload("duplicate"));
+    await start({ sender }, streamPayload("duplicate"));
+    expect(harness.pending[0].signal?.aborted).toBe(true);
+    harness.pending[0].resolve(answer("obsolete"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await cancel({ sender }, "duplicate");
+    expect(harness.pending[1].signal?.aborted).toBe(true);
+    harness.pending[1].reject(new Error("cancelled replacement"));
+    await drain();
+    expect(sender.send).not.toHaveBeenCalled();
+  });
+
+  it("cancels concurrent streams on owner destruction without affecting another owner", async () => {
+    const harness = createHarness();
+    const drain = harness.register();
+    const first = createSender(64);
+    const second = createSender(65);
+    const start = handler(IPC_CHANNELS.ai.askStream);
+    for (let i = 0; i < 20; i++) await start({ sender: first }, streamPayload(`stream-${i}`));
+    await start({ sender: second }, streamPayload("stream-0"));
+    expect(first.once).toHaveBeenCalledTimes(1);
+    first.isDestroyed.mockReturnValue(true);
+    first.once.mock.calls[0][1]();
+    for (const pending of harness.pending.slice(0, 20)) {
+      expect(pending.signal?.aborted).toBe(true);
+      pending.onDelta("late delta");
+      pending.resolve(answer("late answer"));
+    }
+    const independent = harness.pending[20];
+    expect(independent.signal?.aborted).toBe(false);
+    independent.resolve(answer("independent answer"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(first.send).not.toHaveBeenCalled();
+    expect(second.send).toHaveBeenCalledWith(IPC_CHANNELS.ai.streamEvent, expect.objectContaining({ type: "complete" }));
+    await drain();
+  });
+
+  it("does not start scheduled provider work if shutdown occurs before its microtask", async () => {
+    const harness = createHarness();
+    const drain = harness.register();
+    const sender = createSender(66);
+    const admitted = handler(IPC_CHANNELS.ai.askStream)({ sender }, streamPayload("queued-request"));
+    await drain();
+    await admitted;
+    expect(harness.pending).toHaveLength(0);
+    expect(sender.send).not.toHaveBeenCalled();
+    expect(sender.removeListener).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start provider work for a destroyed owner", async () => {
+    const harness = createHarness();
+    const drain = harness.register();
+    const sender = createSender(67);
+    sender.isDestroyed.mockReturnValue(true);
+    await handler(IPC_CHANNELS.ai.askStream)({ sender }, streamPayload("destroyed"));
+    await drain();
+    expect(harness.pending).toHaveLength(0);
+    expect(sender.once).not.toHaveBeenCalled();
+    expect(sender.send).not.toHaveBeenCalled();
+  });
+
+  it("reports a provider failure and releases the owner for a later retry", async () => {
+    const harness = createHarness();
+    const drain = harness.register();
+    const sender = createSender(68);
+    const start = handler(IPC_CHANNELS.ai.askStream);
+    await start({ sender }, streamPayload("retry-request"));
+    harness.pending[0].reject(new Error("Provider unavailable"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(sender.send).toHaveBeenCalledWith(IPC_CHANNELS.ai.streamEvent, {
+      type: "error", requestId: "retry-request", message: "Provider unavailable"
+    });
+    expect(sender.removeListener).toHaveBeenCalledTimes(1);
+    await start({ sender }, streamPayload("retry-request"));
+    expect(sender.once).toHaveBeenCalledTimes(2);
+    harness.pending[1].resolve(answer("recovered"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(sender.send).toHaveBeenCalledWith(IPC_CHANNELS.ai.streamEvent, expect.objectContaining({ type: "complete" }));
+    await drain();
+  });
+
+  it("settles cleanly if the IPC transport fails while delivering a terminal event", async () => {
+    const harness = createHarness();
+    const drain = harness.register();
+    const sender = createSender(69);
+    sender.send.mockImplementation(() => { throw new Error("Transport destroyed"); });
+    await handler(IPC_CHANNELS.ai.askStream)({ sender }, streamPayload("transport"));
+    harness.pending[0].resolve(answer("done"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(sender.removeListener).toHaveBeenCalledTimes(1);
+    await drain();
+  });
+
   it("stops IPC admission and drains pending handlers before releasing services", async () => {
     let resolve!: (value: unknown) => void;
     const pending = new Promise((release) => { resolve = release; });

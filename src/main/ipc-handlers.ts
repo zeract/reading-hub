@@ -1,7 +1,7 @@
 import { lstat, readFile } from "node:fs/promises";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC_CHANNELS } from "../shared/ipc";
-import { throwIfAborted } from "./cancellation";
+import { combineAbortSignals, throwIfAborted } from "./cancellation";
 import { WindowRequestScope } from "./window-request-scope";
 import { assertPublicUrl } from "../shared/url";
 import type { AiStreamEvent, AiStreamRequest, OpmlImportResult } from "../shared/types";
@@ -169,10 +169,25 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
   handle(IPC_CHANNELS.ai.askStream, (event, payload: unknown) => {
     const request = parseAiStreamRequest(payload);
     const controller = registerAiStreamController(aiStreamControllers, event.sender, request.requestId);
-    startAiStream(event.sender, learningAssistant, request, controller.signal, () => {
+    const stream = foregroundRequests.run(event.sender, async (signal) => {
+      const combined = combineAbortSignals(signal, controller.signal);
+      try {
+        await startAiStream(event.sender, learningAssistant, request, combined.signal!);
+      } finally {
+        combined.dispose();
+      }
+    }).catch(() => {
+      // Provider failures are delivered by startAiStream. Owner cancellation
+      // or a destroyed IPC transport must not produce an unhandled rejection.
+    }).finally(() => {
       const streams = aiStreamControllers.get(event.sender.id);
       if (streams?.get(request.requestId) === controller) streams.delete(request.requestId);
+      if (!streams?.size) aiStreamControllers.delete(event.sender.id);
     });
+    // The invoke acknowledges admission immediately; its background task still
+    // belongs to the shutdown drain until provider cleanup has actually ended.
+    pending.add(stream);
+    void stream.then(() => { pending.delete(stream); });
     return { requestId: request.requestId };
   });
   handle(IPC_CHANNELS.ai.cancelStream, (event, rawRequestId: unknown) => {
@@ -213,9 +228,6 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     observers.clear();
     for (const channel of channels) ipcMain.removeHandler(channel);
     foregroundRequests.close();
-    for (const streams of aiStreamControllers.values()) {
-      for (const controller of streams.values()) controller.abort(new Error("应用正在退出。"));
-    }
     await Promise.allSettled([...pending]);
   };
 }
@@ -237,28 +249,28 @@ function findEntry(database: ApplicationServices["database"], id: string) {
   return entry;
 }
 
-function startAiStream(
+async function startAiStream(
   sender: Electron.WebContents,
   learningAssistant: ApplicationServices["learningAssistant"],
   payload: AiStreamRequest,
-  signal: AbortSignal,
-  onSettled: () => void
-): void {
+  signal: AbortSignal
+): Promise<void> {
   const emit = (update: AiStreamEvent) => {
     if (!signal.aborted && !sender.isDestroyed()) sender.send(IPC_CHANNELS.ai.streamEvent, update);
   };
   // Queue after invoke returns so the renderer has registered its request id.
-  queueMicrotask(() => {
-    if (signal.aborted) { onSettled(); return; }
-    void learningAssistant.askStream(payload.request, (text) => emit({ type: "delta", requestId: payload.requestId, text }), signal)
-      .then((answer) => emit({ type: "complete", requestId: payload.requestId, answer }))
-      .catch((error: unknown) => emit({
-        type: "error",
-        requestId: payload.requestId,
-        message: error instanceof Error && error.message ? error.message : "AI 学习助手暂时无法完成回答，请稍后重试。"
-      }))
-      .finally(onSettled);
-  });
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
+  if (signal.aborted) return;
+  try {
+    const answer = await learningAssistant.askStream(payload.request, (text) => emit({ type: "delta", requestId: payload.requestId, text }), signal);
+    emit({ type: "complete", requestId: payload.requestId, answer });
+  } catch (error: unknown) {
+    emit({
+      type: "error",
+      requestId: payload.requestId,
+      message: error instanceof Error && error.message ? error.message : "AI 学习助手暂时无法完成回答，请稍后重试。"
+    });
+  }
 }
 
 function registerAiStreamController(
@@ -270,10 +282,6 @@ function registerAiStreamController(
   if (!controllers) {
     controllers = new Map();
     controllersByWebContents.set(sender.id, controllers);
-    sender.once("destroyed", () => {
-      for (const controller of controllers!.values()) controller.abort(new Error("阅读窗口已关闭。"));
-      controllersByWebContents.delete(sender.id);
-    });
   }
   // A duplicate id is invalid at the renderer level, but cancelling the older
   // one is safer than allowing two provider requests to share an event key.
