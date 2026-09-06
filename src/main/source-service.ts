@@ -49,10 +49,13 @@ export class SourceService {
   async confirm(token: string): Promise<Source> {
     const pending = this.pending.get(token);
     if (!pending || pending.expiresAt < Date.now()) throw new Error("预览已过期，请重新添加来源。");
-    this.pending.delete(token);
     const { probe } = pending;
     const existing = this.db.getSourceByUrl(probe.url);
-    if (existing) return existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
+    if (existing) {
+      const source = existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
+      this.pending.delete(token);
+      return source;
+    }
     const config: Record<string, unknown> = {};
     if (probe.kind === "rss" && isTrustedLoopbackFeedUrl(probe.url)) config.allowTrustedLoopbackFeed = true;
     if (probe.kind === "rss" && probe.historicalArchiveUrl) {
@@ -72,12 +75,18 @@ export class SourceService {
       pollingEnabled: probe.kind !== "manual",
       status: probe.kind === "generic" && probe.confidence < 0.5 ? "needs_review" : "active"
     };
-    const source = this.db.createSource(input);
     // Keep the preview as a resilient, immediately visible fallback. It is
     // intentionally capped for the dialog, so it must never be treated as the
     // initial import itself: a normal source can legitimately have far more
     // than ten Feed items.
-    this.sync.savePreview(source, probe.preview);
+    const source = this.db.writeTransaction(() => {
+      const created = this.db.createSource(input);
+      this.sync.savePreview(created, probe.preview);
+      return created;
+    });
+    // Failed local writes leave the preview confirmation available for retry.
+    // Network acquisition happens only after the complete local fallback exists.
+    this.pending.delete(token);
     if (source.pollingEnabled && source.status === "active") {
       // A source must not rely on the next one-minute scheduler tick to get
       // its full initial result. A transient failure is already persisted by
@@ -91,7 +100,7 @@ export class SourceService {
   importOpml(text: string): { imported: number; existing: number; skipped: number } {
     const seen = new Set<string>();
     const existingIdentities = new Set(this.db.listSources().map((source) => canonicalizeUrl(source.url)));
-    const created: Source[] = [];
+    const inputs: SourceInput[] = [];
     let existing = 0;
     let skipped = 0;
     for (const item of parseOpml(text)) {
@@ -102,13 +111,13 @@ export class SourceService {
           existing += 1;
           continue;
         }
-        seen.add(identity);
         if (existingIdentities.has(identity)) {
+          seen.add(identity);
           existing += 1;
           continue;
         }
         const localFeed = isTrustedLoopbackFeedUrl(url);
-        const source = this.db.createSource({
+        const input: SourceInput = {
           url,
           title: normalizedOptionalTitle(item.title) || new URL(url).hostname,
           category: item.category,
@@ -116,16 +125,19 @@ export class SourceService {
           connectorId: "rss",
           config: localFeed ? { allowTrustedLoopbackFeed: true } : undefined,
           pollingEnabled: true
-        });
-        created.push(source);
-        existingIdentities.add(identity);
+        };
+        inputs.push(input);
+        seen.add(identity);
       } catch {
         // One malformed or private-network outline must not block all other
         // user-selected subscriptions. The aggregate count is shown in UI.
         skipped += 1;
       }
     }
-    if (!created.length && !existing) throw new Error("OPML 中没有可导入的公开或本机 Feed。");
+    if (!inputs.length && !existing) throw new Error("OPML 中没有可导入的公开或本机 Feed。");
+    // Validation skips individual invalid outlines; storage failures must roll
+    // back the whole accepted batch and surface as failures, not skip counts.
+    const created = this.db.writeTransaction(() => inputs.map((input) => this.db.createSource(input)));
     void this.syncImportedSources(created);
     return { imported: created.length, existing, skipped };
   }

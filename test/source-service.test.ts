@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ReadingDatabase } from "../src/main/database";
 import { SourceService } from "../src/main/source-service";
 import type { Entry, ProbeResult, RawEntry, Source } from "../src/shared/types";
@@ -40,6 +43,64 @@ function probeResult(overrides: Partial<ProbeResult> = {}): ProbeResult {
 }
 
 describe("SourceService initial acquisition", () => {
+  it("recovers the complete confirmed preview after restart when initial networking fails", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "reading-hub-confirmation-"));
+    const path = join(directory, "library.sqlite");
+    let db = new ReadingDatabase(path);
+    const sync = {
+      savePreview: (source: Source, items: RawEntry[]) => db.saveEntries(items.map((item) => entry(source, item))),
+      syncSource: vi.fn().mockRejectedValue(new Error("fixture offline"))
+    };
+    const service = new SourceService(db, { probe: vi.fn().mockResolvedValue(probeResult()) } as any, sync as any, {} as any);
+    try {
+      const pending = await service.preview("https://example.com/feed.xml");
+      const source = await service.confirm(pending.token);
+      db.close();
+      db = new ReadingDatabase(path);
+      expect(db.listSources()).toHaveLength(1);
+      expect(db.getSubscriptionForSource(source.id)).toBeDefined();
+      expect(db.listEntries(source.id)).toHaveLength(10);
+    } finally { db.close(); rmSync(directory, { recursive: true }); }
+  });
+
+  it("rolls back a failed preview save and allows the same confirmation to retry", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const sync = {
+      savePreview: vi.fn((source: Source, items: RawEntry[]) => db.saveEntries(items.map((item) => entry(source, item)))),
+      syncSource: vi.fn().mockResolvedValue({ inserted: 0 })
+    };
+    const save = sync.savePreview.getMockImplementation()!;
+    sync.savePreview.mockImplementationOnce((source, items) => { save(source, items); throw new Error("fixture disk failure"); });
+    const service = new SourceService(db, { probe: vi.fn().mockResolvedValue(probeResult()) } as any, sync as any, {} as any);
+    try {
+      const pending = await service.preview("https://example.com/feed.xml");
+      await expect(service.confirm(pending.token)).rejects.toThrow("fixture disk failure");
+      expect(db.listSources()).toEqual([]);
+      expect(db.listEntries()).toEqual([]);
+      expect(sync.syncSource).not.toHaveBeenCalled();
+      const source = await service.confirm(pending.token);
+      expect(db.getSubscriptionForSource(source.id)).toBeDefined();
+      expect(db.listEntries(source.id)).toHaveLength(10);
+      expect(db.listSources()).toHaveLength(1);
+    } finally { db.close(); }
+  });
+
+  it("notifies library observers only after the source and its preview are both committed", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const observations: number[] = [];
+    const unsubscribe = db.onLibraryChanged(() => { observations.push(db.listEntries().length); });
+    const sync = {
+      savePreview: (source: Source, items: RawEntry[]) => db.saveEntries(items.map((item) => entry(source, item))),
+      syncSource: vi.fn().mockResolvedValue({ inserted: 0 })
+    };
+    const service = new SourceService(db, { probe: vi.fn().mockResolvedValue(probeResult()) } as any, sync as any, {} as any);
+    try {
+      const pending = await service.preview("https://example.com/feed.xml");
+      await service.confirm(pending.token);
+      expect(observations).toEqual([10]);
+    } finally { unsubscribe(); db.close(); }
+  });
+
   it("persists the capped preview then immediately performs a full initial sync", async () => {
     const db = new ReadingDatabase(":memory:");
     const full = rawEntries(24);

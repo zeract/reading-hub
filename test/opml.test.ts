@@ -12,6 +12,57 @@ const SAMPLE_OPML = `<?xml version="1.0" encoding="UTF-8"?>
 </body></opml>`;
 
 describe("OPML subscriptions", () => {
+  it("rolls back imported subscriptions when persistence fails instead of counting the failure as a skipped outline", () => {
+    const database = new ReadingDatabase(":memory:");
+    const sync = { syncSource: vi.fn().mockResolvedValue(undefined) };
+    const service = new SourceService(database, undefined as never, sync as never, undefined as never);
+    const original = database.createSource.bind(database);
+    vi.spyOn(database, "createSource").mockImplementation((input) => {
+      const source = original(input);
+      if (input.url.includes("127.0.0.1")) throw new Error("fixture disk failure");
+      return source;
+    });
+    try {
+      expect(() => service.importOpml(SAMPLE_OPML)).toThrow("fixture disk failure");
+      expect(database.listSources()).toEqual([]);
+      expect(sync.syncSource).not.toHaveBeenCalled();
+      vi.mocked(database.createSource).mockImplementation(original);
+      expect(service.importOpml(SAMPLE_OPML)).toEqual({ imported: 2, existing: 0, skipped: 0 });
+    } finally { database.close(); }
+  });
+
+  it("skips an invalid outline without suppressing a later valid outline for the same URL", () => {
+    const database = new ReadingDatabase(":memory:");
+    const service = new SourceService(database, undefined as never, { syncSource: vi.fn().mockResolvedValue(undefined) } as never, undefined as never);
+    const input = `<opml version="2.0"><body>
+      <outline text="${"x".repeat(121)}" xmlUrl="https://example.com/feed.xml" />
+      <outline text="Valid title" xmlUrl="https://example.com/feed.xml" />
+      <outline text="Private" xmlUrl="https://192.168.1.2/feed.xml" />
+    </body></opml>`;
+    try {
+      expect(service.importOpml(input)).toEqual({ imported: 1, existing: 0, skipped: 2 });
+      expect(database.listSources()).toMatchObject([{ title: "Valid title" }]);
+    } finally { database.close(); }
+  });
+
+  it("publishes one complete batch before starting any initial sync", async () => {
+    const database = new ReadingDatabase(":memory:");
+    const notifications: number[] = [];
+    const unsubscribe = database.onLibraryChanged(() => notifications.push(database.listSources().length));
+    const syncObservations: number[] = [];
+    const sync = { syncSource: vi.fn().mockImplementation(async () => {
+      syncObservations.push(database.listSources().length);
+    }) };
+    const service = new SourceService(database, undefined as never, sync as never, undefined as never);
+    try {
+      expect(service.importOpml(SAMPLE_OPML)).toEqual({ imported: 2, existing: 0, skipped: 0 });
+      expect(notifications).toEqual([2]);
+      expect(sync.syncSource).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(sync.syncSource).toHaveBeenCalledTimes(2));
+      expect(syncObservations).toEqual([2, 2]);
+    } finally { unsubscribe(); database.close(); }
+  });
+
   it("parses feed leaves and keeps nested folder labels", () => {
     expect(parseOpml(SAMPLE_OPML)).toEqual([
       { url: "https://example.com/feed.xml", title: "Example Feed", category: "Research / ML" },
