@@ -1,3 +1,4 @@
+import { awaitWithAbort, throwIfAborted } from "./cancellation";
 import { BrowserWindow, session } from "electron";
 import { assertPublicUrl } from "../shared/url";
 import { configureChromiumSession } from "./network";
@@ -8,14 +9,16 @@ import { configureChromiumSession } from "./network";
  * Node access, permissions, popups, or persistent login state.
  */
 export class InAppArticleViewer {
-  async open(rawUrl: string, entryTitle: string): Promise<void> {
+  async open(rawUrl: string, entryTitle: string, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     const url = assertPublicUrl(rawUrl).toString();
     const partition = `reader-article-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const isolatedSession = session.fromPartition(partition);
     // The fallback browser deliberately receives no cookies or preload, but it
     // must not bypass the user's terminal/system proxy simply because it has a
     // separate session partition.
-    await configureChromiumSession(isolatedSession);
+    await awaitWithAbort(configureChromiumSession(isolatedSession), signal);
+    throwIfAborted(signal);
     isolatedSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     isolatedSession.setPermissionCheckHandler(() => false);
 

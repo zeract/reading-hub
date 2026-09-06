@@ -107,46 +107,53 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     const sourceId = requireEntityId(id);
     return foregroundRequests.run(event.sender, (signal) => sources.calibrate(sourceId, signal));
   });
-  handle(IPC_CHANNELS.source.loadIcon, async (_event, sourceId: unknown) => {
-    const source = database.getSource(requireEntityId(sourceId));
-    if (!source) return undefined;
-    const iconUrl = sourceFaviconCandidate(source);
-    if (!iconUrl) return undefined;
-    try {
-      return await http.getImageDataUrl(iconUrl, source.url);
-    } catch {
-      // Decorative metadata never changes a source's health state.
-      return undefined;
-    }
+  handle(IPC_CHANNELS.source.loadIcon, (event, sourceId: unknown) => {
+    const id = requireEntityId(sourceId);
+    return foregroundRequests.run(event.sender, async (signal) => {
+      const source = database.getSource(id);
+      if (!source) return undefined;
+      const iconUrl = sourceFaviconCandidate(source);
+      if (!iconUrl) return undefined;
+      try {
+        return await http.getImageDataUrl(iconUrl, source.url, { signal });
+      } catch {
+        throwIfAborted(signal);
+        // Decorative metadata never changes a source's health state.
+        return undefined;
+      }
+    });
   });
 
   handle(IPC_CHANNELS.entry.listPage, (_event, query: unknown) => database.listEntryPage(parseEntryPageQuery(query)));
   handle(IPC_CHANNELS.entry.counts, () => database.getLibraryCounts());
-  handle(IPC_CHANNELS.entry.readContent, async (_event, entryId: unknown) => {
+  handle(IPC_CHANNELS.entry.readContent, (event, entryId: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));
-    try {
-      return { kind: "article" as const, article: await articles.read(entry, database.getSource(entry.sourceId)) };
-    } catch (error) {
-      if (!(error instanceof RobotsDisallowedError)) throw error;
-      await inAppArticleViewer.open(entry.url, entry.title);
-      return { kind: "embedded" as const };
-    }
+    return foregroundRequests.run(event.sender, async (signal) => {
+      try {
+        return { kind: "article" as const, article: await articles.read(entry, database.getSource(entry.sourceId), { signal }) };
+      } catch (error) {
+        throwIfAborted(signal);
+        if (!(error instanceof RobotsDisallowedError)) throw error;
+        await inAppArticleViewer.open(entry.url, entry.title, signal);
+        return { kind: "embedded" as const };
+      }
+    });
   });
-  handle(IPC_CHANNELS.entry.readLanguageVariant, async (_event, entryId: unknown, rawUrl: unknown) => {
+  handle(IPC_CHANNELS.entry.readLanguageVariant, (event, entryId: unknown, rawUrl: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));
-    return articles.readLanguageVariant(
-      entry,
-      database.getSource(entry.sourceId),
-      requireText(rawUrl, "语言版本地址无效，请重新打开文章后再试。", 2_000)
-    );
+    const url = requireText(rawUrl, "语言版本地址无效，请重新打开文章后再试。", 2_000);
+    return foregroundRequests.run(event.sender, (signal) => articles.readLanguageVariant(
+      entry, database.getSource(entry.sourceId), url, { signal }
+    ));
   });
-  handle(IPC_CHANNELS.entry.openEmbedded, async (_event, entryId: unknown) => {
+  handle(IPC_CHANNELS.entry.openEmbedded, (event, entryId: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));
-    await inAppArticleViewer.open(entry.url, entry.title);
+    return foregroundRequests.run(event.sender, (signal) => inAppArticleViewer.open(entry.url, entry.title, signal));
   });
-  handle(IPC_CHANNELS.entry.loadImage, async (_event, entryId: unknown, imageUrl: unknown) => {
+  handle(IPC_CHANNELS.entry.loadImage, (event, entryId: unknown, imageUrl: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));
-    return http.getImageDataUrl(requireText(imageUrl, "图片地址无效。", 4_000), entry.url);
+    const url = requireText(imageUrl, "图片地址无效。", 4_000);
+    return foregroundRequests.run(event.sender, (signal) => http.getImageDataUrl(url, entry.url, { signal }));
   });
   handle(IPC_CHANNELS.entry.markRead, (_event, id: unknown, read: unknown) =>
     database.markRead(requireEntityId(id), requireBoolean(read)));
