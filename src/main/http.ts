@@ -1,6 +1,6 @@
 import { assertFeedSubscriptionUrl, assertPublicUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 import { abortError, throwIfAborted, withRequestTimeout } from "./cancellation";
-import { formatByteLimit } from "./byte-limit";
+import { concatenateBytes, discardResponseBody, formatByteLimit, readResponseBytes } from "./byte-limit";
 import { hasFeedSignature, isAmbiguousFeedContentType, isExplicitFeedContentType } from "./feed";
 import { chromiumFetch } from "./network";
 import { RobotsPolicy } from "./robots";
@@ -114,10 +114,10 @@ export class PublicHttpClient {
       throwIfAborted(options?.signal);
       if (!localFeed) await this.robots.assertAllowed(targetUrl, { signal: options?.signal });
       const request = withRequestTimeout(options?.signal, 20_000, "该站点响应超时。请稍后重试，或检查网络与代理设置。");
+      let response: Response | undefined;
       try {
         // Redirects are followed explicitly so every destination is checked for
         // public-address and robots policy compliance.
-        let response: Response;
         try {
           response = await chromiumFetch(targetUrl, { headers, redirect: "manual", signal: request.signal });
         } catch (error) {
@@ -149,7 +149,6 @@ export class PublicHttpClient {
           // A declared size lets us reject before creating a body reader. Tell
           // Chromium to stop consuming the response so a preview cannot keep
           // an unnecessarily large transfer alive in the background.
-          void response.body?.cancel().catch(() => undefined);
           throw new ResponseTooLargeError(maxBytes, contentType, targetUrl, declaredSize);
         }
         try {
@@ -157,7 +156,7 @@ export class PublicHttpClient {
             maxBytes,
             maxFeedBytes,
             declaredSize: Number.isFinite(declaredSize) ? declaredSize : undefined
-          }, contentType, targetUrl);
+          }, contentType, targetUrl, request.signal);
           return {
             url: targetUrl,
             status: response.status,
@@ -172,6 +171,7 @@ export class PublicHttpClient {
           throw new NetworkRequestError(error);
         }
       } finally {
+        discardResponseBody(response);
         request.dispose();
       }
     }
@@ -196,8 +196,8 @@ export class PublicHttpClient {
       throwIfAborted(options?.signal);
       await this.robots.assertAllowed(targetUrl, { signal: options?.signal });
       const request = withRequestTimeout(options?.signal, 20_000, "图片请求超时。请稍后重试，或检查网络与代理设置。");
+      let response: Response | undefined;
       try {
-        let response: Response;
         try {
           response = await chromiumFetch(targetUrl, {
             headers: {
@@ -227,13 +227,15 @@ export class PublicHttpClient {
         const maxBytes = 8_000_000;
         const size = Number(response.headers.get("content-length") ?? 0);
         if (size > maxBytes) throw new Error("图片响应超过 8 MB，已跳过加载。");
-        const bytes = Buffer.from(await response.arrayBuffer());
-        if (bytes.byteLength > maxBytes) throw new Error("图片响应超过 8 MB，已跳过加载。");
+        const bytes = Buffer.from(await readResponseBytes(response, (_chunk, receivedBytes) => {
+          if (receivedBytes > maxBytes) throw new Error("图片响应超过 8 MB，已跳过加载。");
+        }, request.signal));
         const result = `data:${contentType};base64,${bytes.toString("base64")}`;
         this.imageCache.set(cacheKey, result);
         if (this.imageCache.size > 24) this.imageCache.delete(this.imageCache.keys().next().value!);
         return result;
       } finally {
+        discardResponseBody(response);
         request.dispose();
       }
     }
@@ -257,60 +259,39 @@ type TextByteLimits = {
  * larger bounded read only after a short prefix confirms RSS/Atom/JSON Feed
  * syntax. This avoids trusting a missing or misleading Content-Type header.
  */
-async function readTextWithinLimit(response: Response, limits: TextByteLimits, contentType: string, url: string): Promise<string> {
-  if (!response.body) return "";
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let receivedBytes = 0;
+async function readTextWithinLimit(response: Response, limits: TextByteLimits, contentType: string, url: string, signal?: AbortSignal): Promise<string> {
   const prefixChunks: Uint8Array[] = [];
   let prefixBytes = 0;
   const mayBeFeed = isExplicitFeedContentType(contentType) || isAmbiguousFeedContentType(contentType);
   let isFeed = false;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      if (mayBeFeed && prefixBytes < FEED_SIGNATURE_SNIFF_BYTES) {
-        const remaining = FEED_SIGNATURE_SNIFF_BYTES - prefixBytes;
-        const prefix = value.byteLength <= remaining ? value : value.subarray(0, remaining);
-        prefixChunks.push(prefix);
-        prefixBytes += prefix.byteLength;
-        if (hasFeedSignature(decodeChunks(prefixChunks, prefixBytes))) isFeed = true;
-      }
-      receivedBytes += value.byteLength;
-      const maxBytes = isFeed ? limits.maxFeedBytes : limits.maxBytes;
-      if (isFeed && limits.declaredSize !== undefined && limits.declaredSize > limits.maxFeedBytes) {
-        await reader.cancel().catch(() => undefined);
-        throw new ResponseTooLargeError(limits.maxFeedBytes, contentType, url, receivedBytes, "feed");
-      }
-      // If a response advertised a large ambiguous body but its first safe
-      // prefix proves it is not a Feed, stop immediately instead of consuming
-      // the remaining ordinary-page allowance.
-      const largeNonFeed = !isFeed
-        && limits.declaredSize !== undefined
-        && limits.declaredSize > limits.maxBytes
-        && prefixBytes >= FEED_SIGNATURE_SNIFF_BYTES;
-      if (receivedBytes > maxBytes || largeNonFeed) {
-        await reader.cancel().catch(() => undefined);
-        throw new ResponseTooLargeError(maxBytes, contentType, url, receivedBytes, isFeed ? "feed" : "page");
-      }
-      chunks.push(value);
+  const bytes = await readResponseBytes(response, (value, receivedBytes) => {
+    if (mayBeFeed && prefixBytes < FEED_SIGNATURE_SNIFF_BYTES) {
+      const remaining = FEED_SIGNATURE_SNIFF_BYTES - prefixBytes;
+      const prefix = value.byteLength <= remaining ? value : value.subarray(0, remaining);
+      prefixChunks.push(prefix);
+      prefixBytes += prefix.byteLength;
+      if (hasFeedSignature(decodeChunks(prefixChunks, prefixBytes))) isFeed = true;
     }
-  } finally {
-    reader.releaseLock();
-  }
-  return decodeChunks(chunks, receivedBytes);
+    const maxBytes = isFeed ? limits.maxFeedBytes : limits.maxBytes;
+    if (isFeed && limits.declaredSize !== undefined && limits.declaredSize > limits.maxFeedBytes) {
+      throw new ResponseTooLargeError(limits.maxFeedBytes, contentType, url, receivedBytes, "feed");
+    }
+    // If a response advertised a large ambiguous body but its first safe
+    // prefix proves it is not a Feed, stop immediately instead of consuming
+    // the remaining ordinary-page allowance.
+    const largeNonFeed = !isFeed
+      && limits.declaredSize !== undefined
+      && limits.declaredSize > limits.maxBytes
+      && prefixBytes >= FEED_SIGNATURE_SNIFF_BYTES;
+    if (receivedBytes > maxBytes || largeNonFeed) {
+      throw new ResponseTooLargeError(maxBytes, contentType, url, receivedBytes, isFeed ? "feed" : "page");
+    }
+  }, signal);
+  return new TextDecoder().decode(bytes);
 }
 
 function decodeChunks(chunks: Uint8Array[], byteLength: number): string {
-  const bytes = new Uint8Array(byteLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
+  return new TextDecoder().decode(concatenateBytes(chunks, byteLength));
 }
 
 function normalisedFeedByteLimit(options: PublicRequestOptions | undefined, maxBytes: number): number {
