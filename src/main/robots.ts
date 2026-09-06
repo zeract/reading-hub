@@ -2,9 +2,13 @@ import { assertPublicUrl } from "../shared/url";
 import { abortError, awaitWithAbort, throwIfAborted, withRequestTimeout } from "./cancellation";
 import { discardResponseBody, readResponseBytes } from "./byte-limit";
 import { chromiumFetch } from "./network";
+import { isRobotsPathAllowed, parseRobots, type RobotsRule } from "./robots-rules";
 
-type CacheItem = { expiresAt: number; disallow: string[] };
+type RobotsResult = { kind: "rules"; rules: RobotsRule[] } | { kind: "unavailable" } | { kind: "unreachable" };
+type CacheItem = { expiresAt: number; result: RobotsResult };
 const MAX_ROBOTS_BYTES = 1_048_576;
+const POLICY_CACHE_MS = 24 * 60 * 60_000;
+const FAILURE_RETRY_MS = 60 * 60_000;
 
 /** A crawler restriction, not a network or article-content failure. */
 export class RobotsDisallowedError extends Error {
@@ -23,21 +27,31 @@ class RobotsResponseTooLargeError extends RobotsDisallowedError {
   }
 }
 
-/** Small, conservative robots.txt checker. A failed robots request permits the fetch. */
+class RobotsUnreachableError extends RobotsDisallowedError {
+  constructor() {
+    super();
+    this.name = "RobotsUnreachableError";
+    this.message = "暂时无法确认该站点的 robots.txt 规则，已停止自动读取，请稍后重试。";
+  }
+}
+
+/** Retrieval state and parsed rules are distinct; an unknown policy is not permission. */
 export class RobotsPolicy {
   private readonly cache = new Map<string, CacheItem>();
 
   async assertAllowed(rawUrl: string, options?: { signal?: AbortSignal }): Promise<void> {
     throwIfAborted(options?.signal);
     const url = assertPublicUrl(rawUrl);
+    if (url.pathname === "/robots.txt" && !url.search) return;
     const origin = url.origin;
     let item = this.cache.get(origin);
-    if (!item || item.expiresAt < Date.now()) {
+    if (!item || item.expiresAt <= Date.now()) {
       item = await this.load(origin, options?.signal);
       throwIfAborted(options?.signal);
       this.cache.set(origin, item);
     }
-    if (item.disallow.some((path) => path !== "" && (url.pathname + url.search).startsWith(path))) {
+    if (item.result.kind === "unreachable") throw new RobotsUnreachableError();
+    if (item.result.kind === "rules" && !isRobotsPathAllowed(item.result.rules, url.pathname + url.search)) {
       throw new RobotsDisallowedError();
     }
   }
@@ -62,7 +76,7 @@ export class RobotsPolicy {
           response = await awaitWithAbort(fetching, request.signal);
           const location = response.headers.get("location");
           if (location && response.status >= 300 && response.status < 400) {
-            if (redirects === 5) throw new Error("robots.txt 重定向次数过多。");
+            if (redirects === 5) return { expiresAt: Date.now() + POLICY_CACHE_MS, result: { kind: "unavailable" } };
             const redirected = assertPublicUrl(new URL(location, target).toString());
             if (new URL(target).protocol === "https:" && redirected.protocol !== "https:") {
               throw new Error("robots.txt 重定向地址不安全。");
@@ -70,40 +84,28 @@ export class RobotsPolicy {
             target = redirected.toString();
             continue;
           }
-          if (!response.ok) return { expiresAt: Date.now() + 24 * 60 * 60_000, disallow: [] };
+          if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+            return { expiresAt: Date.now() + POLICY_CACHE_MS, result: { kind: "unavailable" } };
+          }
+          if (!response.ok) throw new RobotsUnreachableError();
           const declaredBytes = Number(response.headers.get("content-length"));
           if (Number.isFinite(declaredBytes) && declaredBytes > MAX_ROBOTS_BYTES) throw new RobotsResponseTooLargeError();
           const bytes = await readResponseBytes(response, (_chunk, received) => {
             if (received > MAX_ROBOTS_BYTES) throw new RobotsResponseTooLargeError();
           }, request.signal);
           throwIfAborted(request.signal);
-          return { expiresAt: Date.now() + 24 * 60 * 60_000, disallow: parseRobots(new TextDecoder().decode(bytes)) };
+          return { expiresAt: Date.now() + POLICY_CACHE_MS, result: { kind: "rules", rules: parseRobots(new TextDecoder().decode(bytes)) } };
         } finally { discardResponseBody(response); }
       }
       throw new Error("robots.txt 重定向次数过多。");
     } catch (error) {
-      // An explicit audit cancellation must not silently become a fail-open
-      // robots result that permits the pending page request to continue.
+      // Caller cancellation must not become a cached site failure or trigger
+      // the reader's policy fallback after the request has been abandoned.
       if (signal?.aborted) throw abortError(signal);
       if (error instanceof RobotsResponseTooLargeError) throw error;
-      return { expiresAt: Date.now() + 60 * 60_000, disallow: [] };
+      return { expiresAt: Date.now() + FAILURE_RETRY_MS, result: { kind: "unreachable" } };
     } finally {
       request.dispose();
     }
   }
-}
-
-export function parseRobots(input: string): string[] {
-  const rules: string[] = [];
-  let applies = false;
-  for (const rawLine of input.split(/\r?\n/)) {
-    const line = rawLine.replace(/#.*/, "").trim();
-    const separator = line.indexOf(":");
-    if (separator === -1) continue;
-    const key = line.slice(0, separator).trim().toLowerCase();
-    const value = line.slice(separator + 1).trim();
-    if (key === "user-agent") applies = value === "*" || value.toLowerCase() === "readinghub";
-    if (key === "disallow" && applies) rules.push(value);
-  }
-  return rules;
 }

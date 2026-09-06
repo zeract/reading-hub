@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseRobots, RobotsDisallowedError } from "../src/main/robots";
+import { RobotsDisallowedError } from "../src/main/robots";
+import { isRobotsPathAllowed, parseRobots } from "../src/main/robots-rules";
 import { randomRefreshDelay, retryDelay } from "../src/main/database";
 
 describe("scheduling safeguards", () => {
@@ -18,7 +19,7 @@ describe("scheduling safeguards", () => {
 
 describe("robots parser", () => {
   it("reads wildcard disallow rules", () => {
-    expect(parseRobots("User-agent: *\nDisallow: /private\nAllow: /")).toEqual(["/private"]);
+    expect(isRobotsPathAllowed(parseRobots("User-agent: *\nDisallow: /private\nAllow: /"), "/private")).toBe(false);
   });
 
   it("distinguishes a robots restriction from an ordinary network failure", () => {

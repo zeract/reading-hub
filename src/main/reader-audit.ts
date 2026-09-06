@@ -257,7 +257,7 @@ export function expectedImageProxyDiagnostic(error: unknown): string | undefined
     return "首图为 SVG；正文保留直接图片显示，加载失败时不会绕过安全代理限制。";
   }
   if (error instanceof RobotsDisallowedError) {
-    return "首图的本地失败回退受 robots.txt 限制；正文保留原始图片地址与安全原文入口。";
+    return `${error.message} 首图的本地失败回退受 robots.txt 限制；正文保留原始图片地址与安全原文入口。`;
   }
   return undefined;
 }
@@ -462,7 +462,7 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
         } catch (error) {
           const timedOut = error instanceof ReaderAuditTimeoutError;
           if (error instanceof RobotsDisallowedError) {
-            const result: ReaderAuditResult = { source: source.title, kind: source.kind, entry: entry.title, sample, mode: "embedded", status: "skipped", durationMs: Date.now() - startedAt, issues: [] };
+            const result: ReaderAuditResult = { source: source.title, kind: source.kind, entry: entry.title, sample, mode: "embedded", status: "skipped", durationMs: Date.now() - startedAt, issues: [error.message] };
             results.push(result);
             await reportResult(options, result);
           } else {

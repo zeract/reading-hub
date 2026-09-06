@@ -9,7 +9,7 @@ afterEach(() => vi.useRealTimers());
 describe("robots transport boundary", () => {
   it("requires manual redirect handling before contacting the server", async () => {
     network.fetch.mockResolvedValueOnce(new Response("", { status: 302, headers: { location: "https://127.0.0.1/private" } }));
-    await new RobotsPolicy().assertAllowed("https://example.com/post");
+    await expect(new RobotsPolicy().assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsDisallowedError);
     expect(network.fetch).toHaveBeenCalledWith("https://example.com/robots.txt", expect.objectContaining({ redirect: "manual" }));
     expect(network.fetch).toHaveBeenCalledTimes(1);
   });
@@ -32,14 +32,15 @@ describe("robots transport boundary", () => {
     expect(network.fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("ends a stalled body timeout and keeps the existing network-failure fallback", async () => {
+  it("ends a stalled body timeout without granting permission", async () => {
     vi.useFakeTimers();
     let stream!: ReadableStreamDefaultController<Uint8Array>;
     const cancel = vi.fn(() => new Promise<void>(() => undefined));
     const body = new ReadableStream<Uint8Array>({ start(controller) { stream = controller; }, cancel });
     network.fetch.mockResolvedValueOnce(new Response(body));
     let settled = false;
-    const pending = new RobotsPolicy().assertAllowed("https://example.com/post").then(() => { settled = true; });
+    const pending = expect(new RobotsPolicy().assertAllowed("https://example.com/post"))
+      .rejects.toBeInstanceOf(RobotsDisallowedError).then(() => { settled = true; });
     try {
       await vi.advanceTimersByTimeAsync(8_000);
       expect(settled).toBe(true);
@@ -55,7 +56,7 @@ describe("robots transport boundary", () => {
     const cancel = vi.fn();
     const body = new ReadableStream({ cancel }, { highWaterMark: 0 });
     network.fetch.mockResolvedValueOnce(new Response(body, { status: 302, headers: { location } }));
-    await new RobotsPolicy().assertAllowed("https://example.com/post");
+    await expect(new RobotsPolicy().assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsDisallowedError);
     expect(network.fetch).toHaveBeenCalledTimes(1);
     expect(cancel).toHaveBeenCalledTimes(1);
   });
@@ -129,7 +130,7 @@ describe("robots transport boundary", () => {
       await new Promise((resolve) => setTimeout(resolve, 5_000));
       return new Response(new ReadableStream({ cancel }, { highWaterMark: 0 }));
     });
-    const pending = new RobotsPolicy().assertAllowed("https://example.com/post");
+    const pending = expect(new RobotsPolicy().assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsDisallowedError);
     await vi.advanceTimersByTimeAsync(8_000);
     await pending;
     await vi.advanceTimersByTimeAsync(2_000);
@@ -137,16 +138,19 @@ describe("robots transport boundary", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it.each([404, 503])("preserves the existing HTTP %i fallback and cache lifetime", async (status) => {
+  it.each([404, 503])("distinguishes unavailable from unreachable HTTP %i and releases its body", async (status) => {
     vi.useFakeTimers();
     const cancel = vi.fn();
     network.fetch.mockResolvedValueOnce(new Response(new ReadableStream({ cancel }, { highWaterMark: 0 }), { status }));
     const policy = new RobotsPolicy();
-    await policy.assertAllowed("https://example.com/post");
-    await policy.assertAllowed("https://example.com/post");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const pending = policy.assertAllowed("https://example.com/post");
+      if (status === 404) await pending;
+      else await expect(pending).rejects.toBeInstanceOf(RobotsDisallowedError);
+    }
     expect(network.fetch).toHaveBeenCalledTimes(1);
     expect(cancel).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(24 * 60 * 60_000 + 1);
+    await vi.advanceTimersByTimeAsync((status === 404 ? 24 : 1) * 60 * 60_000);
     network.fetch.mockResolvedValueOnce(new Response("User-agent: *\nDisallow: /"));
     await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsDisallowedError);
     expect(network.fetch).toHaveBeenCalledTimes(2);

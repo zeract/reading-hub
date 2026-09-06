@@ -50,8 +50,8 @@ describe("reader audit cancellation", () => {
     expect(expectedImageProxyDiagnostic(new UnsupportedReaderImageTypeError("image/svg+xml")))
       .toContain("SVG");
     expect(expectedImageProxyDiagnostic(new UnsupportedReaderImageTypeError("text/html"))).toBeUndefined();
-    expect(expectedImageProxyDiagnostic(new RobotsDisallowedError("https://example.com/image.jpg")))
-      .toContain("robots.txt");
+    expect(expectedImageProxyDiagnostic(new RobotsDisallowedError()))
+      .toContain("robots.txt 不允许此路径");
     expect(expectedImageProxyDiagnostic(new Error("图片请求失败（HTTP 403）"))).toBeUndefined();
   });
 
