@@ -17,7 +17,6 @@ import { XConnector } from "./x";
 import { XiaohongshuConnector } from "./xiaohongshu";
 import { ZhihuConnector } from "./zhihu";
 import { ZhihuFollowConnector } from "./zhihu-follow";
-import type { Source, SyncResult } from "../shared/types";
 
 /** Main-process dependencies assembled once at application startup. */
 export interface ApplicationServices {
@@ -32,7 +31,7 @@ export interface ApplicationServices {
   learningAssistant: AiService;
   articles: ArticleReader;
   inAppArticleViewer: InAppArticleViewer;
-  close(): void;
+  close(): Promise<void>;
 }
 
 /**
@@ -55,14 +54,21 @@ export async function createApplicationServices(databasePath: string): Promise<A
   const zhihu = new ZhihuConnector(() => secrets.getZhihuAccessSecret());
   const zhihuFollow = new ZhihuFollowConnector();
   const registry = createConnectorRegistry(rss, generic, manual, zhihu, zhihuFollow);
-  const x = new XConnector(database, secrets);
+  const x = new XConnector({
+    findAccount: database.findAccount.bind(database),
+    saveAccount: database.saveAccount.bind(database),
+    updateAccountStatus: database.updateAccountStatus.bind(database)
+  }, {
+    getConnectorSecret: secrets.getConnectorSecret.bind(secrets),
+    setConnectorSecret: secrets.setConnectorSecret.bind(secrets)
+  });
   const xiaohongshu = new XiaohongshuConnector(http);
   const academic = new AcademicAuthorConnector();
   registry.register(x);
   registry.register(xiaohongshu);
   registry.register(academic);
   const maintenance = new ContentMaintenance(database);
-  const sync = new SyncManager(database, registry, createPostSyncWorkflow(database, registry, zhihu), maintenance);
+  const sync = new SyncManager(database, registry, maintenance);
   const sources = new SourceService(database, probe, sync, zhihuFollow, registry);
   const articles = new ArticleReader(http, renderer, (url, options) => zhihuFollow.renderArticle(url, options));
   const inAppArticleViewer = new InAppArticleViewer();
@@ -83,6 +89,7 @@ export async function createApplicationServices(databasePath: string): Promise<A
     await sync.syncSource(source.id);
   });
 
+  let closePromise: Promise<void> | undefined;
   return {
     database,
     http,
@@ -96,8 +103,11 @@ export async function createApplicationServices(databasePath: string): Promise<A
     articles,
     inAppArticleViewer,
     close: () => {
-      sync.stop();
-      database.close();
+      // Login recognition can finish after its window has closed. Detach its
+      // source-creation callback before draining the already-running syncs.
+      zhihuFollow.setOnAuthenticated(async () => undefined);
+      closePromise ??= sync.close().then(() => database.close());
+      return closePromise;
     }
   };
 }
@@ -106,24 +116,4 @@ function createConnectorRegistry(rss: RssConnector, generic: GenericConnector, m
   const registry = new ConnectorRegistry();
   for (const connector of [rss, generic, manual, zhihu, zhihuFollow]) registry.register(connector);
   return registry;
-}
-
-function createPostSyncWorkflow(database: ReadingDatabase, registry: ConnectorRegistry, zhihu: ZhihuConnector) {
-  let zhihuSecondarySync: Promise<void> | undefined;
-  return async (source: Source, _result: SyncResult): Promise<void> => {
-    // The Zhihu parser now rejects ideas and promoted cards before the shared
-    // normalisation path. Existing legacy rows are handled by the versioned
-    // ContentMaintenance service, not by every routine sync.
-    if (source.kind === "zhihu_follow") return;
-    if ((source.connectorId ?? source.kind) !== "zhihu" || zhihuSecondarySync) return;
-    zhihuSecondarySync = (async () => {
-      const [collections, followees] = await Promise.allSettled([zhihu.fetchRecentCollections(), zhihu.fetchFollowees()]);
-      if (collections.status === "fulfilled") {
-        const storedSource = database.getSource(source.id);
-        if (storedSource) database.saveEntries(collections.value.map((entry) => registry.get("zhihu").normalize(entry, storedSource)));
-      }
-      if (followees.status === "fulfilled") database.upsertFollowees(followees.value);
-    })().finally(() => { zhihuSecondarySync = undefined; });
-    void zhihuSecondarySync;
-  };
 }

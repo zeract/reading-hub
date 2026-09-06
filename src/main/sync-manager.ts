@@ -1,10 +1,12 @@
-import type { RawEntry, Source, Subscription, SyncResult } from "../shared/types";
+import type { RawEntry, Source, Subscription } from "../shared/types";
 import { entryMatchesSubscriptionScope, normaliseSubscriptionScope } from "../shared/subscription-scope";
+import { redactDiagnosticMessage } from "./diagnostic-redaction";
 import { ContentMaintenance } from "./content-maintenance";
 import { ReadingDatabase } from "./database";
 import { ConnectorRegistry } from "./connector-registry";
 
 const BACKGROUND_SYNC_CONCURRENCY = 2;
+type SourceSyncResult = { inserted: number; source: Source };
 
 class HostGate {
   private readonly tails = new Map<string, Promise<void>>();
@@ -32,16 +34,18 @@ export class SyncManager {
   private readonly gate = new HostGate();
   private timer?: NodeJS.Timeout;
   private dueRun?: Promise<void>;
+  private readonly inFlight = new Map<string, Promise<SourceSyncResult>>();
+  private closing = false;
+  private closePromise?: Promise<void>;
 
   constructor(
     private readonly db: ReadingDatabase,
     private readonly registry: ConnectorRegistry,
-    private readonly afterSuccessfulSync?: (source: Source, result: SyncResult) => Promise<void>,
     private readonly maintenance?: ContentMaintenance
   ) {}
 
   start(): void {
-    if (this.timer) return;
+    if (this.timer || this.closing) return;
     this.timer = setInterval(() => this.scheduleDueRun(), 60_000);
     this.scheduleDueRun();
   }
@@ -51,74 +55,107 @@ export class SyncManager {
     this.timer = undefined;
   }
 
+  /** Stop admission, skip queued requests and drain active connectors before SQLite closes. */
+  close(): Promise<void> {
+    if (!this.closePromise) {
+      this.closing = true;
+      this.stop();
+      this.closePromise = Promise.allSettled([...this.inFlight.values(), this.dueRun]).then(() => undefined);
+    }
+    return this.closePromise;
+  }
+
   async runDue(): Promise<void> {
+    if (this.closing) return;
     const sources = this.db.listDueSources();
     await forEachWithConcurrency(sources, BACKGROUND_SYNC_CONCURRENCY, async (source) => {
       // A source-level error has already been recorded by syncSource, including
       // its backoff deadline. It must not turn an unattended timer tick into an
       // unhandled rejection; manual refreshes still receive the same failure.
+      if (this.closing) return;
+      const current = this.db.getSource(source.id);
+      // The snapshot may have waited behind other sources while a manual
+      // refresh or settings change already advanced this source's deadline.
+      if (!current?.pollingEnabled || !["active", "error"].includes(current.status)
+        || current.nextCheckAt === undefined || current.nextCheckAt > Date.now()) return;
       await this.syncSource(source.id).catch(() => undefined);
     });
   }
 
-  async syncSource(sourceId: string): Promise<{ inserted: number; source: Source }> {
+  async syncSource(sourceId: string): Promise<SourceSyncResult> {
+    this.assertOpen();
+    const existing = this.inFlight.get(sourceId);
+    if (existing) return existing;
+    const pending = this.syncOnce(sourceId);
+    this.inFlight.set(sourceId, pending);
+    try {
+      return await pending;
+    } finally {
+      this.inFlight.delete(sourceId);
+    }
+  }
+
+  private async syncOnce(sourceId: string): Promise<SourceSyncResult> {
     const queuedSource = this.db.getSource(sourceId);
     if (!queuedSource) throw new Error("来源不存在。");
     return this.gate.run(queuedSource.url, async () => {
+      this.assertOpen();
       const source = this.db.getSource(sourceId);
       if (!source) throw new SyncCancelledError("来源已被删除，已取消此次同步。");
+      assertSourceEnabled(source);
+      const subscription = this.db.getSubscriptionForSource(source.id);
       try {
         // Historical content fixes are versioned and marker-gated. They run at
         // most once per source instead of scanning all old cards on every poll.
         this.maintenance?.prepareForSync(source);
         const connectorId = source.connectorId ?? source.kind;
-        const subscription = this.db.getSubscriptionForSource(source.id);
         if (!subscription) throw new Error("来源订阅状态缺失，请删除后重新添加该来源。");
         const account = subscription.accountId ? this.db.getAccount(subscription.accountId) : undefined;
         const connector = this.registry.get(subscription.connectorId);
         if (connector.manifest.requiresAccount && !account) throw new Error(`${connector.manifest.displayName} 需要重新授权。`);
         const outcome = await connector.sync({ source, subscription, account, checkpoint: this.db.getCheckpoint(subscription.id) });
-        const currentSource = currentSourceForSync(this.db, source, subscription);
-        let effectiveSource = connectorId === "generic" && outcome.extractionRule
-          ? this.db.replaceAutomaticRule(currentSource.id, outcome.extractionRule)
-          : currentSource;
-        if (outcome.metadataRevision !== undefined) {
-          effectiveSource = this.db.updateMetadataRevision(effectiveSource.id, outcome.metadataRevision);
-        }
-        if (outcome.iconUrl) effectiveSource = this.db.updateSourceIcon(effectiveSource.id, outcome.iconUrl);
-        // Filter a narrow class of legacy RSS navigation cards only after a
-        // successful response. We never delete ordinary entries merely
-        // because a paginated Feed no longer returns them.
-        if (!outcome.notModified) this.db.deleteNonContentFeedNavigationEntries(effectiveSource, Boolean(effectiveSource.extractionRule?.feedUrl));
-        // A connector only maps provider records into the shared shape.  The
-        // host owns collection policy so category filters cannot slowly drift
-        // across RSS, web, platform, or future adapters.
-        const saved = outcome.notModified
-          ? { inserted: 0, accepted: 0 }
-          : this.saveRawEntries(effectiveSource, outcome.entries, subscription);
-        const inserted = saved.inserted;
-        this.maintenance?.afterSuccessfulSync(effectiveSource);
-        if (outcome.checkpoint) this.db.saveCheckpoint(subscription.id, outcome.checkpoint);
-        const updated = this.db.markSuccess(effectiveSource, {
-          etag: outcome.etag,
-          lastModified: outcome.lastModified,
-          empty: !outcome.emptyIsHealthy && !outcome.notModified && outcome.entries.length === 0
+        this.assertOpen();
+        return this.db.writeTransaction(() => {
+          const currentSource = currentSourceForSync(this.db, source, subscription);
+          let effectiveSource = connectorId === "generic" && outcome.extractionRule
+            ? this.db.replaceAutomaticRule(currentSource.id, outcome.extractionRule)
+            : currentSource;
+          if (outcome.metadataRevision !== undefined) {
+            effectiveSource = this.db.updateMetadataRevision(effectiveSource.id, outcome.metadataRevision);
+          }
+          if (outcome.iconUrl) effectiveSource = this.db.updateSourceIcon(effectiveSource.id, outcome.iconUrl);
+          // Filter a narrow class of legacy RSS navigation cards only after a
+          // successful response. We never delete ordinary entries merely
+          // because a paginated Feed no longer returns them.
+          if (!outcome.notModified) this.db.deleteNonContentFeedNavigationEntries(effectiveSource, Boolean(effectiveSource.extractionRule?.feedUrl));
+          // A connector only maps provider records into the shared shape.  The
+          // host owns collection policy so category filters cannot slowly drift
+          // across RSS, web, platform, or future adapters.
+          const saved = outcome.notModified
+            ? { inserted: 0, accepted: 0 }
+            : this.saveRawEntries(effectiveSource, outcome.entries, subscription);
+          const inserted = saved.inserted;
+          this.maintenance?.afterSuccessfulSync(effectiveSource);
+          if (outcome.followees) this.db.upsertFollowees(outcome.followees);
+          if (outcome.checkpoint) this.db.saveCheckpoint(subscription.id, outcome.checkpoint);
+          const updated = this.db.markSuccess(effectiveSource, {
+            etag: outcome.etag,
+            lastModified: outcome.lastModified,
+            empty: !outcome.emptyIsHealthy && !outcome.notModified && outcome.entries.length === 0
+          });
+          const eventMessage = updated.status === "needs_review"
+            ? "来源需要复核提取规则"
+            : outcome.entries.length > 0 && saved.accepted === 0 && subscription.scope.facetSelections.length > 0
+              ? "本次内容不在已选分类内；已正常推进同步状态"
+              : undefined;
+          this.db.recordSyncEvent(source.id, updated.status === "needs_review" ? "warning" : "success", outcome.entries.length, inserted, eventMessage);
+          return { inserted, source: updated };
         });
-        const eventMessage = updated.status === "needs_review"
-          ? "来源需要复核提取规则"
-          : outcome.entries.length > 0 && saved.accepted === 0 && subscription.scope.facetSelections.length > 0
-            ? "本次内容不在已选分类内；已正常推进同步状态"
-            : undefined;
-        this.db.recordSyncEvent(source.id, updated.status === "needs_review" ? "warning" : "success", outcome.entries.length, inserted, eventMessage);
-        await this.afterSuccessfulSync?.(updated, outcome);
-        return { inserted, source: updated };
       } catch (error) {
         if (error instanceof SyncCancelledError) throw error;
-        // Settings may have changed while a network request was in flight.
-        // Record a real transport/parser failure against the newest state,
-        // rather than reviving an older failure count or a deleted source.
-        const currentSource = this.db.getSource(source.id);
-        if (!currentSource) throw new SyncCancelledError("来源已被删除，已取消此次同步。");
+        this.assertOpen();
+        // Success and failure must obey the same stale-result boundary.
+        const currentSource = currentSourceForSync(this.db, source, subscription);
         const updated = this.db.markFailure(currentSource, userSafeError(error));
         throw new SyncFailure(updated.lastError || "同步失败");
       }
@@ -126,6 +163,7 @@ export class SyncManager {
   }
 
   savePreview(source: Source, entries: RawEntry[]): number {
+    this.assertOpen();
     return this.saveRawEntries(source, entries).inserted;
   }
 
@@ -138,8 +176,12 @@ export class SyncManager {
     return { inserted: this.db.saveEntries(accepted), accepted: accepted.length };
   }
 
+  private assertOpen(): void {
+    if (this.closing) throw new SyncCancelledError("应用正在退出，已取消此次同步。");
+  }
+
   private scheduleDueRun(): void {
-    if (this.dueRun) return;
+    if (this.closing || this.dueRun) return;
     this.dueRun = this.runDue()
       .catch((error) => {
         // Only infrastructure errors that prevent a whole scheduling pass from
@@ -155,20 +197,19 @@ export class SyncManager {
 export class SyncFailure extends Error {}
 export class SyncCancelledError extends Error {}
 
-function currentSourceForSync(database: ReadingDatabase, initial: Source, initialSubscription: Subscription): Source {
+function currentSourceForSync(database: ReadingDatabase, initial: Source, initialSubscription?: Subscription): Source {
   const current = database.getSource(initial.id);
   if (!current) throw new SyncCancelledError("来源已被删除，已取消此次同步。");
   // An explicit pause is a user/compliance decision, not an error state to be
   // overwritten by an older in-flight response.
-  if (!current.pollingEnabled || current.status === "paused") {
-    throw new SyncCancelledError("来源已暂停，已取消此次同步。");
-  }
-  if (current.kind !== initial.kind || (current.connectorId ?? current.kind) !== initialSubscription.connectorId) {
+  assertSourceEnabled(current);
+  if (current.kind !== initial.kind || (current.connectorId ?? current.kind) !== (initial.connectorId ?? initial.kind)) {
     throw new SyncCancelledError("来源类型已更新，已取消旧的同步结果。");
   }
   const currentSubscription = database.getSubscriptionForSource(current.id);
-  if (!currentSubscription || currentSubscription.id !== initialSubscription.id
-    || JSON.stringify(normaliseSubscriptionScope(currentSubscription.scope)) !== JSON.stringify(normaliseSubscriptionScope(initialSubscription.scope))) {
+  if (initialSubscription && (!currentSubscription || currentSubscription.id !== initialSubscription.id
+    || currentSubscription.accountId !== initialSubscription.accountId
+    || JSON.stringify(normaliseSubscriptionScope(currentSubscription.scope)) !== JSON.stringify(normaliseSubscriptionScope(initialSubscription.scope)))) {
     throw new SyncCancelledError("收集范围已更新，已取消旧的同步结果。");
   }
   // A calibration replaces the old cards and is an explicit user decision.
@@ -177,6 +218,12 @@ function currentSourceForSync(database: ReadingDatabase, initial: Source, initia
     throw new SyncCancelledError("提取规则已更新，已取消旧的同步结果。");
   }
   return current;
+}
+
+function assertSourceEnabled(source: Source): void {
+  if (!source.pollingEnabled || source.status === "paused") {
+    throw new SyncCancelledError("来源已暂停，已取消此次同步。");
+  }
 }
 
 function sameRule(left: Source["extractionRule"], right: Source["extractionRule"]): boolean {
@@ -195,6 +242,6 @@ async function forEachWithConcurrency<T>(items: T[], limit: number, task: (item:
 }
 
 function userSafeError(error: unknown): string {
-  if (error instanceof Error) return error.message.replace(/Bearer\s+\S+/gi, "Bearer [redacted]");
+  if (error instanceof Error) return redactDiagnosticMessage(error.message);
   return "发生未知同步错误。";
 }

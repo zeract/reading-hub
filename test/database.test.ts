@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ReadingDatabase } from "../src/main/database";
 import type { Entry } from "../src/shared/types";
 
@@ -18,6 +18,32 @@ function entry(sourceId: string, title = "测试文章", options: Partial<Entry>
 }
 
 describe("ReadingDatabase", () => {
+  it("resets protocol checkpoints and replay markers only when the connector changes", () => {
+    const db = new ReadingDatabase(":memory:");
+    try {
+      const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+      const subscription = db.getSubscriptionForSource(source.id)!;
+      db.saveCheckpoint(subscription.id, { cursor: "rss-cursor", data: { completed: true } });
+      db.updateMetadataRevision(source.id, 123);
+      db.updateSourceSettings(source.id, { title: "Renamed", kind: "rss", pollingEnabled: true });
+      expect(db.getCheckpoint(subscription.id)?.cursor).toBe("rss-cursor");
+      expect(db.getSource(source.id)?.metadataRevision).toBe(123);
+      db.updateSourceSettings(source.id, { title: "Renamed", kind: "generic", pollingEnabled: true });
+      expect(db.getCheckpoint(subscription.id)).toBeUndefined();
+      expect(db.getSource(source.id)?.metadataRevision).toBeUndefined();
+    } finally { db.close(); }
+  });
+
+  it("keeps a failure's health state and event in one transaction", () => {
+    const db = new ReadingDatabase(":memory:");
+    try {
+      const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+      vi.spyOn(db, "recordSyncEvent").mockImplementationOnce(() => { throw new Error("disk error"); });
+      expect(() => db.markFailure(source, "offline")).toThrow("disk error");
+      expect(db.getSource(source.id)).toEqual(source);
+    } finally { db.close(); }
+  });
+
   it("pages a large source without a 200-entry ceiling, skips, or duplicate timestamp ties", () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });

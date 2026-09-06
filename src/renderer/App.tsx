@@ -23,6 +23,8 @@ export function App() {
     entries,
     hasMoreEntries,
     loadingMoreEntries,
+    reloadError,
+    clearReloadError,
     libraryCounts,
     activeSourceId,
     libraryView,
@@ -124,7 +126,7 @@ export function App() {
       await reload();
       setNotice(`已检查「${source.title}」。`);
     } catch (error) {
-      await reload();
+      await reload().catch(() => undefined);
       setNotice(errorMessage(error));
     } finally {
       setBusy(false);
@@ -239,10 +241,10 @@ export function App() {
         loadingMoreEntries={loadingMoreEntries}
         sourceById={sourceById}
         readingEntryId={readingEntry?.id}
-        notice={notice}
+        notice={reloadError ?? notice}
         busy={busy}
         libraryCounts={libraryCounts}
-        onClearNotice={() => setNotice(undefined)}
+        onClearNotice={() => { setNotice(undefined); clearReloadError(); }}
         onEntrySearchChange={setEntrySearch}
         onUpdateEntry={updateEntry}
         onOpenEntry={openReader}

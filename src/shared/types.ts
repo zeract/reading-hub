@@ -305,6 +305,8 @@ export interface SyncContext {
 
 export interface SyncResult {
   entries: RawEntry[];
+  /** Optional current-user followee metadata; committed by the host with this result. */
+  followees?: Followee[];
   checkpoint?: Omit<SyncCheckpoint, "subscriptionId" | "updatedAt">;
   /** A successful response without new entries must not be treated as a broken extractor. */
   emptyIsHealthy?: boolean;
@@ -321,8 +323,10 @@ export interface SyncResult {
 export type NormalizedEntry = Entry;
 
 /**
- * A deliberately narrow extension boundary. Connectors never receive SQLite,
- * keychain, renderer, or unrestricted network access; the host owns those.
+ * A deliberately narrow built-in extension boundary. Sync receives snapshots;
+ * the host commits content. OAuth adapters may additionally receive explicit
+ * account and secret-store methods at composition time. This is not a sandbox
+ * for loading third-party code.
  */
 export interface ConnectorAdapter {
   manifest: ConnectorManifest;

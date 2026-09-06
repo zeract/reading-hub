@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Entry, EntryPageCursor, LibraryCounts, Source } from "../shared/types";
-import { firstEntryPageQuery, mergeEntryPages, nextEntryPageQuery } from "./entry-pagination";
+import type { Entry, EntryListQuery, EntryPageCursor, LibraryCounts, Source } from "../shared/types";
+import { mergeEntryPages, nextEntryPageQuery, readLoadedEntryPages } from "./entry-pagination";
+import { errorMessage } from "./errors";
 import { entryQueryForLibrary, type LibraryView } from "./library-view";
 import { groupSources } from "./source-groups";
 import { isSameLibrarySelection, type LibrarySelection } from "./source-selection";
@@ -18,46 +19,73 @@ export function useLibraryData() {
   const [libraryCounts, setLibraryCounts] = useState<LibraryCounts>(EMPTY_LIBRARY_COUNTS);
   const [nextEntryCursor, setNextEntryCursor] = useState<EntryPageCursor>();
   const [loadingMoreEntries, setLoadingMoreEntries] = useState(false);
+  const [reloadError, setReloadError] = useState<string>();
   const [activeSourceId, setActiveSourceId] = useState<string>();
   const [libraryView, setLibraryView] = useState<LibraryView>("today");
   const [entrySearch, setEntrySearchState] = useState("");
   const reloadSequence = useRef(0);
   const pageGeneration = useRef(0);
-  const loadedBeyondFirstPage = useRef(false);
+  const loadedPageCount = useRef(1);
+  const loadedQuery = useRef<EntryListQuery | undefined>(undefined);
   const loadingMore = useRef(false);
+  const reloading = useRef(false);
 
-  const entriesQuery = useMemo(
-    () => entryQueryForLibrary(libraryView, activeSourceId, new Date(), entrySearch),
-    [activeSourceId, entrySearch, libraryView]
-  );
   const reload = useCallback(async () => {
     const sequence = ++reloadSequence.current;
-    const generation = pageGeneration.current;
-    const [nextSources, nextPage, nextLibraryCounts] = await Promise.all([
-      window.reader.listSources(),
-      window.reader.listEntryPage(firstEntryPageQuery(entriesQuery)),
-      window.reader.getLibraryCounts()
-    ]);
-    if (sequence !== reloadSequence.current || generation !== pageGeneration.current) return;
-    setSources(nextSources);
-    setEntries((current) => loadedBeyondFirstPage.current ? mergeEntryPages(nextPage.entries, current) : nextPage.entries);
-    if (!loadedBeyondFirstPage.current) setNextEntryCursor(nextPage.nextCursor);
-    setLibraryCounts(nextLibraryCounts);
-  }, [entriesQuery]);
+    const generation = ++pageGeneration.current;
+    const isCurrent = () => sequence === reloadSequence.current && generation === pageGeneration.current;
+    // Recompute today's range on refresh, including when the app stays open overnight.
+    const query = entryQueryForLibrary(libraryView, activeSourceId, new Date(), entrySearch);
+    const pageCount = JSON.stringify(query) === JSON.stringify(loadedQuery.current) ? loadedPageCount.current : 1;
+    reloading.current = true;
+    loadingMore.current = false;
+    setLoadingMoreEntries(false);
+    try {
+      const [nextSources, nextPage, nextLibraryCounts] = await Promise.all([
+        window.reader.listSources(),
+        readLoadedEntryPages(query, pageCount, (page) => window.reader.listEntryPage(page), isCurrent),
+        window.reader.getLibraryCounts()
+      ]);
+      if (!isCurrent() || !nextPage) return;
+      loadedPageCount.current = nextPage.pageCount;
+      loadedQuery.current = query;
+      setSources(nextSources);
+      setEntries(nextPage.entries);
+      setNextEntryCursor(nextPage.nextCursor);
+      setLibraryCounts(nextLibraryCounts);
+      setReloadError(undefined);
+    } catch (error) {
+      if (!isCurrent()) return;
+      setReloadError(errorMessage(error));
+      throw error;
+    } finally {
+      if (isCurrent()) reloading.current = false;
+    }
+  }, [activeSourceId, entrySearch, libraryView]);
 
   useEffect(() => {
-    void reload();
-    const timer = window.setInterval(() => void reload(), 15_000);
-    return () => window.clearInterval(timer);
+    // reload owns the visible error state; unattended ticks must not reject globally.
+    void reload().catch(() => undefined);
+    const timer = window.setInterval(() => {
+      if (!reloading.current && !loadingMore.current) void reload().catch(() => undefined);
+    }, 15_000);
+    return () => {
+      window.clearInterval(timer);
+      reloadSequence.current += 1;
+      pageGeneration.current += 1;
+    };
   }, [reload]);
 
   const resetEntryPages = useCallback(() => {
     pageGeneration.current += 1;
-    loadedBeyondFirstPage.current = false;
+    loadedPageCount.current = 1;
+    loadedQuery.current = undefined;
+    reloading.current = false;
     loadingMore.current = false;
     setLoadingMoreEntries(false);
     setNextEntryCursor(undefined);
     setEntries([]);
+    setReloadError(undefined);
   }, []);
 
   const navigateLibrary = useCallback((requested: LibrarySelection) => {
@@ -65,7 +93,7 @@ export function useLibraryData() {
     if (isSameLibrarySelection(current, requested)) {
       // A repeated click leaves React state unchanged, so the query effect
       // will not run. Keep the current list visible while its refresh starts.
-      void reload();
+      void reload().catch(() => undefined);
       return;
     }
     resetEntryPages();
@@ -89,23 +117,26 @@ export function useLibraryData() {
 
   const loadMoreEntries = useCallback(async () => {
     const cursor = nextEntryCursor;
-    if (!cursor || loadingMore.current) return;
+    const query = loadedQuery.current;
+    if (!cursor || !query || loadingMore.current || reloading.current) return;
     const generation = pageGeneration.current;
     loadingMore.current = true;
     setLoadingMoreEntries(true);
     try {
-      const nextPage = await window.reader.listEntryPage(nextEntryPageQuery(entriesQuery, cursor));
+      const nextPage = await window.reader.listEntryPage(nextEntryPageQuery(query, cursor));
       if (generation !== pageGeneration.current) return;
       setEntries((current) => mergeEntryPages(current, nextPage.entries));
       setNextEntryCursor(nextPage.nextCursor);
-      loadedBeyondFirstPage.current = true;
+      loadedPageCount.current += 1;
+    } catch (error) {
+      if (generation === pageGeneration.current) throw error;
     } finally {
       if (generation === pageGeneration.current) {
         loadingMore.current = false;
         setLoadingMoreEntries(false);
       }
     }
-  }, [entriesQuery, nextEntryCursor]);
+  }, [nextEntryCursor]);
 
   const clearActiveSource = useCallback(() => {
     navigateLibrary({ view: libraryView, sourceId: undefined, search: "" });
@@ -120,6 +151,8 @@ export function useLibraryData() {
     entries,
     hasMoreEntries: Boolean(nextEntryCursor),
     loadingMoreEntries,
+    reloadError,
+    clearReloadError: () => setReloadError(undefined),
     libraryCounts,
     activeSourceId,
     libraryView,

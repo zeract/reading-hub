@@ -10,9 +10,11 @@ import { auditLocalReader, type ReaderAuditProgress, type ReaderAuditResult } fr
 import { ScientificArticleVisualAuditor } from "./scientific-visual-audit";
 import { installDevelopmentSupervisorGuard } from "./dev-supervisor";
 import { MainWindowLifecycle } from "./main-window-lifecycle";
+import { createShutdownHandler } from "./shutdown";
 
 let tray: Tray | undefined;
 let services: ApplicationServices | undefined;
+let drainIpc: (() => Promise<void>) | undefined;
 let quitting = false;
 
 const APPLICATION_NAME = "Reading Hub";
@@ -71,13 +73,15 @@ function quitApplication(): void {
  * window is closing. `before-quit` runs before that drain has finished; in
  * development a main-process rebuild therefore used to close the database
  * while the outgoing renderer was still requesting its initial source list.
- * `will-quit` is emitted only after windows have been closed, so it is the
- * safe final boundary for releasing main-process services.
+ * `will-quit` closes admission, then waits for pending IPC and connector work.
+ * Closed windows alone do not imply that their async main-process work ended.
  */
-function closeApplicationServices(): void {
+async function closeApplicationServices(): Promise<void> {
   const activeServices = services;
+  activeServices?.sync.stop();
+  await drainIpc?.();
+  await activeServices?.close();
   services = undefined;
-  activeServices?.close();
 }
 
 // `scripts/dev.mjs` terminates Electron when the compiled main process changes.
@@ -97,7 +101,10 @@ if (isDevelopment) installDevelopmentSupervisorGuard(process, quitApplication);
 app.on("before-quit", () => {
   quitting = true;
 });
-app.once("will-quit", closeApplicationServices);
+app.on("will-quit", createShutdownHandler(closeApplicationServices, () => app.quit(), () => {
+  console.error("Reading Hub 未能正常释放本地服务。");
+  app.exit(1);
+}));
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -203,7 +210,12 @@ async function bootstrap(): Promise<void> {
   const icon = applicationIcon();
   if (process.platform === "darwin" && !icon.isEmpty()) app.dock?.setIcon(icon);
   services = await createApplicationServices(path.join(app.getPath("userData"), "reading-hub.sqlite"));
-  registerIpcHandlers(services);
+  if (quitting) {
+    await services.close();
+    services = undefined;
+    return;
+  }
+  drainIpc = registerIpcHandlers(services);
   mainRendererReady = true;
   loadMainRenderer(startupWindow);
   createTray();

@@ -3,11 +3,11 @@ import { createServer } from "node:http";
 import { shell } from "electron";
 import type { Account, ConnectorAdapter, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
 import { compactText } from "../shared/text";
-import { ReadingDatabase } from "./database";
+import type { ReadingDatabase } from "./database";
 import { builtInManifest } from "./connector-registry";
 import { contentNormalizer } from "./content-normalizer";
 import { chromiumFetch } from "./network";
-import { SecretStore } from "./secrets";
+import type { SecretStore } from "./secrets";
 
 const REDIRECT_URI = "http://127.0.0.1:43119/x/callback";
 const X_AUTHORIZE_URL = "https://x.com/i/oauth2/authorize";
@@ -52,8 +52,8 @@ export class XConnector implements ConnectorAdapter {
   readonly manifest = builtInManifest("x", "X", ["oauth"], ["api.x.com", "x.com"]);
 
   constructor(
-    private readonly database: ReadingDatabase,
-    private readonly secrets: SecretStore,
+    private readonly database: Pick<ReadingDatabase, "findAccount" | "saveAccount" | "updateAccountStatus">,
+    private readonly secrets: Pick<SecretStore, "getConnectorSecret" | "setConnectorSecret">,
     private readonly openExternal: (url: string) => Promise<void> = (url) => shell.openExternal(url),
     // Keep X on Electron's Chromium network stack. It honours the system
     // proxy/VPN configuration, unlike Node's built-in fetch on macOS.

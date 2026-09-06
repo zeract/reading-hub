@@ -104,7 +104,7 @@ describe("ContentMaintenance", () => {
     registry.register(emptyGenericAdapter());
     const maintenance = new ContentMaintenance(database);
 
-    await new SyncManager(database, registry, undefined, maintenance).syncSource(source.id);
+    await new SyncManager(database, registry, maintenance).syncSource(source.id);
 
     expect(database.listEntries(source.id)).toEqual([]);
     expect(database.getSourceMaintenanceRevision(source.id)).toBe(SOURCE_CONTENT_MAINTENANCE_REVISION);

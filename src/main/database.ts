@@ -356,6 +356,11 @@ export class ReadingDatabase {
     migrateDatabaseSchema(this.db);
   }
 
+  /** A host-owned synchronous unit of work; network work must finish before entry. */
+  writeTransaction<T>(write: () => T & (T extends PromiseLike<unknown> ? never : unknown)): T {
+    return this.db.transaction(write)();
+  }
+
   createSource(input: SourceInput): Source {
     const now = Date.now();
     const source: Source = {
@@ -446,12 +451,15 @@ export class ReadingDatabase {
     const extractionRule = kindChanged && settings.kind !== "generic" ? null : source.extractionRule ? JSON.stringify(source.extractionRule) : null;
     this.db.transaction(() => {
       this.db.prepare(`UPDATE sources SET title = ?, category = ?, kind = ?, connector_id = ?, polling_enabled = ?, refresh_interval_minutes = ?,
+        metadata_revision = CASE WHEN ? THEN NULL ELSE metadata_revision END,
         extraction_rule = ?, etag = CASE WHEN ? THEN NULL ELSE etag END, last_modified = CASE WHEN ? THEN NULL ELSE last_modified END,
         status = CASE WHEN ? OR (? AND status = 'paused') THEN 'active' ELSE status END,
         next_check_at = ?, updated_at = ? WHERE id = ?`)
         .run(settings.title, normaliseSourceCategory(settings.category) ?? null, settings.kind, connectorId, Number(settings.pollingEnabled), settings.refreshIntervalMinutes ?? null,
-          extractionRule, Number(kindChanged), Number(kindChanged), Number(kindChanged), Number(settings.pollingEnabled), nextCheckAt, now, sourceId);
+          Number(kindChanged), extractionRule, Number(kindChanged), Number(kindChanged), Number(kindChanged), Number(settings.pollingEnabled), nextCheckAt, now, sourceId);
       if (kindChanged) {
+        // A checkpoint belongs to a protocol, not to its UI source identity.
+        this.db.prepare("DELETE FROM sync_checkpoints WHERE subscription_id IN (SELECT id FROM subscriptions WHERE source_id = ?)").run(sourceId);
         this.db.prepare("UPDATE subscriptions SET connector_id = ?, account_id = NULL, updated_at = ? WHERE source_id = ?")
           .run(settings.kind, now, sourceId);
         // Facet IDs are provider-scoped. Carrying a selected RSS category
@@ -1114,15 +1122,16 @@ export class ReadingDatabase {
   markFailure(source: Source, message: string): Source {
     const now = Date.now();
     const failures = source.failureCount + 1;
-    this.db
-      .prepare(`UPDATE sources SET status = ?, failure_count = ?, last_error = ?, last_checked_at = ?,
-        next_check_at = ?, updated_at = ? WHERE id = ?`)
-      // Network/parser failures remain retryable indefinitely. `paused` is
-      // reserved for an explicit user or compliance stop through pauseSource,
-      // which also disables polling.
-      .run("error", failures, message.slice(0, 300), now, now + retryDelay(failures), now, source.id);
-    this.recordSyncEvent(source.id, "failure", 0, 0, message);
-    return this.getSource(source.id)!;
+    return this.writeTransaction(() => {
+      this.db
+        .prepare(`UPDATE sources SET status = ?, failure_count = ?, last_error = ?, last_checked_at = ?,
+          next_check_at = ?, updated_at = ? WHERE id = ?`)
+        // Network/parser failures remain retryable indefinitely. `paused` is
+        // reserved for an explicit user or compliance stop through pauseSource.
+        .run("error", failures, message.slice(0, 300), now, now + retryDelay(failures), now, source.id);
+      this.recordSyncEvent(source.id, "failure", 0, 0, message);
+      return this.getSource(source.id)!;
+    });
   }
 
   updateRule(sourceId: string, rule: Source["extractionRule"]): void {
@@ -1152,7 +1161,12 @@ export class ReadingDatabase {
       ON CONFLICT(url_token) DO UPDATE SET fullname = excluded.fullname, url = excluded.url,
         avatar_url = excluded.avatar_url, headline = excluded.headline, follower_count = excluded.follower_count,
         updated_at = excluded.updated_at`);
-    this.db.transaction((items: Followee[]) => items.forEach((item) => query.run(item)))(followees);
+    this.db.transaction((items: Followee[]) => items.forEach((item) => query.run({
+      ...item,
+      avatarUrl: item.avatarUrl ?? null,
+      headline: item.headline ?? null,
+      followerCount: item.followerCount ?? null
+    })))(followees);
   }
 
   close(): void {

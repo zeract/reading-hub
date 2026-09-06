@@ -13,6 +13,20 @@ const academicSource: Source = {
 
 describe("connector platform", () => {
   afterEach(() => vi.unstubAllGlobals());
+  it("marks missing X credentials expired without making a network request", async () => {
+    const database = new ReadingDatabase(":memory:");
+    try {
+      const account = database.saveAccount({ connectorId: "x", displayName: "X", subjectId: "owner",
+        keychainAccount: "x:test", scopes: [], status: "active" });
+      const source = database.createSource({ url: "https://api.x.com/2/users/owner/following", title: "X",
+        kind: "x", connectorId: "x", accountId: account.id, pollingEnabled: true });
+      const fetchX = vi.fn();
+      const connector = new XConnector(database, { getConnectorSecret: async () => null } as any, async () => undefined, fetchX);
+      await expect(connector.sync({ source, subscription: database.getSubscriptionForSource(source.id)!, account })).rejects.toThrow("X 授权已失效");
+      expect(database.getAccount(account.id)?.status).toBe("expired");
+      expect(fetchX).not.toHaveBeenCalled();
+    } finally { database.close(); }
+  });
   it("only accepts explicitly built-in adapters", () => {
     const registry = new ConnectorRegistry();
     expect(() => registry.register({

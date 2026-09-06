@@ -28,7 +28,7 @@ const MAX_OPML_BYTES = 2_000_000;
  * The renderer receives only this small, validated IPC surface. Services stay
  * unaware of Electron events, windows, dialogs, and untrusted IPC payloads.
  */
-export function registerIpcHandlers(services: ApplicationServices): void {
+export function registerIpcHandlers(services: ApplicationServices): () => Promise<void> {
   const {
     database,
     http,
@@ -44,6 +44,20 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   // Renderer requests are scoped to their owning WebContents. A malicious or
   // stale renderer cannot cancel another window's AI turn by guessing an id.
   const aiStreamControllers = new Map<number, Map<string, AbortController>>();
+  const pending = new Set<Promise<unknown>>();
+  const channels: string[] = [];
+  let closing = false;
+
+  function handle(channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void {
+    channels.push(channel);
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, (event, ...args) => {
+      if (closing) throw new Error("应用正在退出，请稍后重新打开。");
+      const request = Promise.resolve(listener(event, ...args));
+      pending.add(request);
+      return request.finally(() => pending.delete(request));
+    });
+  }
 
   handle(IPC_CHANNELS.source.preview, (_event, rawUrl: unknown) =>
     sources.preview(requireText(rawUrl, "来源地址无效，请重新填写。", 2_000)));
@@ -157,13 +171,15 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     academic.discover(requireText(query, "学术作者搜索词无效。", 500)));
   handle(IPC_CHANNELS.academic.subscribe, async (_event, draft: unknown) =>
     sync.syncSource(sources.createAcademicSource(parseAcademicDraft(draft)).id));
-}
 
-function handle(channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void {
-  // Safe for development reloads and direct handler tests: a channel must map
-  // to one authoritative handler, never accumulate stale closures.
-  ipcMain.removeHandler(channel);
-  ipcMain.handle(channel, listener);
+  return async () => {
+    closing = true;
+    for (const channel of channels) ipcMain.removeHandler(channel);
+    for (const streams of aiStreamControllers.values()) {
+      for (const controller of streams.values()) controller.abort(new Error("应用正在退出。"));
+    }
+    await Promise.allSettled([...pending]);
+  };
 }
 
 async function chooseOpmlFile(sender: Electron.WebContents): Promise<string | undefined> {

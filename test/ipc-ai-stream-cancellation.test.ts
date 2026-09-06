@@ -94,6 +94,26 @@ async function flushAsyncWork(): Promise<void> {
 }
 
 describe("AI stream IPC cancellation", () => {
+  it("stops IPC admission and drains pending handlers before releasing services", async () => {
+    let resolve!: (value: unknown) => void;
+    const pending = new Promise((release) => { resolve = release; });
+    const listSources = vi.fn(() => pending);
+    const drain = registerIpcHandlers({ database: { listSources } } as unknown as ApplicationServices);
+    const list = handler(IPC_CHANNELS.source.list);
+    const request = list({ sender: createSender(10) });
+    let drained = false;
+    const closing = drain().then(() => { drained = true; });
+    expect(electron.handlers.size).toBe(0);
+    expect(() => list({ sender: createSender(10) })).toThrow("应用正在退出");
+    await flushAsyncWork();
+    expect(drained).toBe(false);
+    resolve([]);
+    await request;
+    await closing;
+    expect(drained).toBe(true);
+    expect(listSources).toHaveBeenCalledTimes(1);
+  });
+
   beforeEach(() => {
     electron.handlers.clear();
     vi.clearAllMocks();

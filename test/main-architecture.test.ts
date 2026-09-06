@@ -30,7 +30,9 @@ describe("main-process boundaries", () => {
     const index = mainFile("index.ts");
 
     expect(index).toMatch(/app\.on\("before-quit", \(\) => \{\s+quitting = true;\s+\}\);/);
-    expect(index).toContain('app.once("will-quit", closeApplicationServices);');
+    expect(index).toContain('app.on("will-quit", createShutdownHandler(closeApplicationServices');
+    expect(index).toContain('await drainIpc?.();');
+    expect(index).toContain('await activeServices?.close();');
     expect(index).not.toMatch(/app\.on\("before-quit", \(\) => \{[\s\S]*?services\?\.close\(\)/);
   });
 

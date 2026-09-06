@@ -6,7 +6,7 @@ import { contentNormalizer } from "./content-normalizer";
 
 const API_ORIGIN = "https://developer.zhihu.com";
 
-type ApiResponse<T> = { Code?: number; Message?: string; Data?: T };
+type ApiResponse<T> = { Code?: number; Data?: T };
 type Paged<T> = { Items?: T[]; Paging?: { IsEnd?: boolean; NextOffset?: string } };
 
 /** Official, current-user-only API client. It intentionally has no user-id parameter. */
@@ -16,7 +16,15 @@ export class ZhihuConnector implements ConnectorAdapter {
   constructor(private readonly getAccessSecret: () => Promise<string | null>) {}
 
   async sync(_context: SyncContext): Promise<SyncResult> {
-    return { entries: await this.fetchEntries(), emptyIsHealthy: true };
+    const entries = await this.fetchEntries();
+    // Supplementary endpoints stay best-effort, but their results must pass
+    // the same host-owned stale checks, scope filter and transaction as cards.
+    const [collections, followees] = await Promise.allSettled([this.fetchRecentCollections(), this.fetchFollowees()]);
+    return {
+      entries: [...entries, ...(collections.status === "fulfilled" ? collections.value : [])],
+      followees: followees.status === "fulfilled" ? followees.value : undefined,
+      emptyIsHealthy: true
+    };
   }
 
   normalize(item: RawEntry, source: Source) {
@@ -86,8 +94,11 @@ export class ZhihuConnector implements ConnectorAdapter {
         });
         const body = (await response.json().catch(() => ({}))) as ApiResponse<T>;
         if (response.ok && body.Code === 0 && body.Data) return body.Data;
-        if (response.status < 500 && body.Code !== 90001) throw new Error(body.Message || `知乎接口请求失败（HTTP ${response.status}）`);
-        lastError = new Error(body.Message || `知乎服务暂时不可用（HTTP ${response.status}）`);
+        // Never persist an arbitrary provider error body, which can echo the
+        // request's credentials. Status is enough to offer a useful action.
+        if (response.status === 401 || response.status === 403) throw new Error("知乎授权无效或权限不足，请在设置中检查 Access Secret。");
+        if (response.status < 500 && body.Code !== 90001) throw new Error(`知乎接口请求失败（HTTP ${response.status}），请检查授权和接口权限。`);
+        lastError = new Error(`知乎服务暂时不可用（HTTP ${response.status}）`);
       } catch (error) {
         lastError = error;
       }
