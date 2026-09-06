@@ -56,6 +56,7 @@ export async function createApplicationServices(databasePath: string): Promise<A
   const zhihuFollow = new ZhihuFollowConnector();
   const registry = createConnectorRegistry(rss, generic, manual, zhihu, zhihuFollow);
   const x = new XConnector({
+    getAccount: database.getAccount.bind(database),
     findAccount: database.findAccount.bind(database),
     saveAccount: database.saveAccount.bind(database),
     updateAccountStatus: database.updateAccountStatus.bind(database)

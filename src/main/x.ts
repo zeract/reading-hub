@@ -1,4 +1,4 @@
-import { requestJsonWithTimeout, throwIfAborted } from "./cancellation";
+import { awaitWithAbort, requestJsonWithTimeout, throwIfAborted } from "./cancellation";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { shell } from "electron";
@@ -51,9 +51,10 @@ export class XApiError extends Error {
  */
 export class XConnector implements ConnectorAdapter {
   readonly manifest = builtInManifest("x", "X", ["oauth"], ["api.x.com", "x.com"]);
+  private readonly credentialTurns = new Map<string, Promise<void>>();
 
   constructor(
-    private readonly database: Pick<ReadingDatabase, "findAccount" | "saveAccount" | "updateAccountStatus">,
+    private readonly database: Pick<ReadingDatabase, "getAccount" | "findAccount" | "saveAccount" | "updateAccountStatus">,
     private readonly secrets: Pick<SecretStore, "getConnectorSecret" | "setConnectorSecret">,
     private readonly openExternal: (url: string) => Promise<void> = (url) => shell.openExternal(url),
     // Keep X on Electron's Chromium network stack. It honours the system
@@ -91,18 +92,20 @@ export class XConnector implements ConnectorAdapter {
     // following-feed connector possible before a source is created.
     await this.requestJson<XResponse<XUser[]>>(`/users/${encodeURIComponent(user.id)}/following?max_results=5`, token.accessToken);
 
-    const existing = this.database.findAccount("x", user.id);
-    const accountId = existing?.id ?? randomUUID();
-    const keychainAccount = await this.secrets.setConnectorSecret("x", accountId, JSON.stringify(token));
-    return this.database.saveAccount({
-      id: accountId,
-      connectorId: "x",
-      displayName: `X · @${user.username || user.name}`,
-      subjectId: user.id,
-      keychainAccount,
-      scopes: X_SCOPES,
-      status: "active",
-      config: { clientId: safeClientId, username: user.username }
+    return this.withCredentials(user.id, async () => {
+      const existing = this.database.findAccount("x", user.id);
+      const accountId = existing?.id ?? randomUUID();
+      const keychainAccount = await this.secrets.setConnectorSecret("x", accountId, JSON.stringify(token));
+      return this.database.saveAccount({
+        id: accountId,
+        connectorId: "x",
+        displayName: `X · @${user.username || user.name}`,
+        subjectId: user.id,
+        keychainAccount,
+        scopes: X_SCOPES,
+        status: "active",
+        config: { clientId: safeClientId, username: user.username }
+      });
     });
   }
 
@@ -110,8 +113,10 @@ export class XConnector implements ConnectorAdapter {
     const profileUsername = stringValue(context.subscription.config.username);
     const account = context.account;
     if (!account?.subjectId) throw new Error("X 来源缺少有效的授权账号，请重新连接 X。");
+    let token: XToken | undefined;
     try {
-      const token = await this.tokenFor(account, context.signal);
+      token = await this.withCredentials(account.subjectId, () => this.tokenFor(account.id, context.signal), context.signal);
+      throwIfAborted(context.signal);
       if (context.subscription.config.mode === "profile") {
         if (!profileUsername) throw new Error("X 博主来源缺少用户名，请删除后重新添加。");
         return await this.syncProfile(profileUsername, token.accessToken, context.checkpoint, context.signal);
@@ -122,7 +127,20 @@ export class XConnector implements ConnectorAdapter {
       // A 403 can mean a protected target or a product entitlement issue; it
       // does not prove the local OAuth token has expired. Only X's 401 is a
       // safe reason to invalidate the saved account.
-      if (error instanceof XApiError && error.status === 401) this.database.updateAccountStatus(account.id, "expired");
+      if (token && error instanceof XApiError && error.status === 401) {
+        const rejectedToken = token.accessToken;
+        await this.withCredentials(account.subjectId, async () => {
+          const current = this.database.getAccount(account.id);
+          if (!current) return;
+          const raw = await this.secrets.getConnectorSecret(current.keychainAccount);
+          throwIfAborted(context.signal);
+          // A response using old credentials cannot invalidate a later refresh
+          // or a newly authorized session. The comparison stays in memory.
+          let accessToken: unknown;
+          try { accessToken = raw ? JSON.parse(raw)?.accessToken : undefined; } catch { return; }
+          if (accessToken === rejectedToken) this.database.updateAccountStatus(account.id, "expired");
+        }, context.signal);
+      }
       throw error;
     }
   }
@@ -220,7 +238,30 @@ export class XConnector implements ConnectorAdapter {
     return users.slice(0, DEFAULT_FOLLOW_LIMIT);
   }
 
-  private async tokenFor(account: Account, signal?: AbortSignal): Promise<XToken> {
+  /** Serialize credential reads/writes per X identity, independently of source hosts. */
+  private async withCredentials<T>(subjectId: string, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    throwIfAborted(signal);
+    const previous = this.credentialTurns.get(subjectId) ?? Promise.resolve();
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => { release = resolve; });
+    // Even a cancelled waiter stays ordered behind its predecessor; later
+    // callers must never overtake an operation still writing to Keychain.
+    const tail = previous.then(() => turn);
+    this.credentialTurns.set(subjectId, tail);
+    void tail.then(() => {
+      if (this.credentialTurns.get(subjectId) === tail) this.credentialTurns.delete(subjectId);
+    });
+    try {
+      await awaitWithAbort(previous, signal);
+      throwIfAborted(signal);
+      return await operation();
+    } finally { release(); }
+  }
+
+  /** Must be called while holding the account's credential turn. */
+  private async tokenFor(accountId: string, signal?: AbortSignal): Promise<XToken> {
+    const account = this.database.getAccount(accountId);
+    if (!account) throw new Error("X 授权账号不存在，请重新连接 X。");
     const raw = await this.secrets.getConnectorSecret(account.keychainAccount);
     throwIfAborted(signal);
     if (!raw) {
