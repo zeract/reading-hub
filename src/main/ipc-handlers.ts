@@ -1,7 +1,7 @@
-import { lstat, readFile } from "node:fs/promises";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC_CHANNELS } from "../shared/ipc";
-import { combineAbortSignals, throwIfAborted } from "./cancellation";
+import { awaitWithAbort, combineAbortSignals, throwIfAborted } from "./cancellation";
+import { readOpmlFile } from "./opml-file";
 import { WindowRequestScope } from "./window-request-scope";
 import { assertPublicUrl } from "../shared/url";
 import type { AiStreamEvent, AiStreamRequest, OpmlImportResult } from "../shared/types";
@@ -23,8 +23,6 @@ import {
   requireText
 } from "./ipc-validation";
 import { RobotsDisallowedError } from "./robots";
-
-const MAX_OPML_BYTES = 2_000_000;
 
 /**
  * The renderer receives only this small, validated IPC surface. Services stay
@@ -75,14 +73,13 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
   });
   handle(IPC_CHANNELS.source.confirm, (_event, token: unknown) =>
     sources.confirm(requireEntityId(token, "预览已过期，请重新添加来源。")));
-  handle(IPC_CHANNELS.source.importOpml, async (event): Promise<OpmlImportResult> => {
-    const selection = await chooseOpmlFile(event.sender);
+  handle(IPC_CHANNELS.source.importOpml, (event) => foregroundRequests.run(event.sender, async (signal): Promise<OpmlImportResult> => {
+    const selection = await chooseOpmlFile(event.sender, signal);
     if (!selection) return { cancelled: true, imported: 0, existing: 0, skipped: 0 };
-    const file = await lstat(selection);
-    if (!file.isFile() || file.size > MAX_OPML_BYTES) throw new Error("OPML 文件必须是小于 2 MB 的普通文件。");
-    const text = await readFile(selection, "utf8");
+    const text = await readOpmlFile(selection, signal);
+    throwIfAborted(signal);
     return { cancelled: false, ...sources.importOpml(text) };
-  });
+  }));
   handle(IPC_CHANNELS.source.list, (event) => {
     observers.set(event.sender.id, event.sender);
     return database.listSources();
@@ -235,14 +232,14 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
   };
 }
 
-async function chooseOpmlFile(sender: Electron.WebContents): Promise<string | undefined> {
+async function chooseOpmlFile(sender: Electron.WebContents, signal: AbortSignal): Promise<string | undefined> {
   const options = {
     title: "导入 OPML 订阅",
     properties: ["openFile"] as Array<"openFile">,
     filters: [{ name: "OPML 订阅", extensions: ["opml", "xml"] }]
   };
   const parent = BrowserWindow.fromWebContents(sender);
-  const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
+  const result = await awaitWithAbort(parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options), signal);
   return result.canceled ? undefined : result.filePaths[0];
 }
 
