@@ -1,4 +1,4 @@
-import { requestJsonWithTimeout, throwIfAborted } from "./cancellation";
+import { InvalidJsonResponseError, requestJsonWithTimeout, throwIfAborted } from "./cancellation";
 import type { ConnectorAdapter, RawEntry, Source, SubscriptionDraft, SyncContext, SyncResult } from "../shared/types";
 import { compactText } from "../shared/text";
 import { builtInManifest } from "./connector-registry";
@@ -191,6 +191,7 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
       return payload;
     } catch (error) {
       throwIfAborted(signal);
+      if (error instanceof InvalidJsonResponseError) throw error;
       if (error instanceof Error && error.message.startsWith("学术数据源请求失败")) throw error;
       throw new Error("无法连接到学术数据源。请检查网络、代理或 DNS 设置后重试。");
     }

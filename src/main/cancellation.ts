@@ -11,6 +11,15 @@ export class RequestAbortedError extends Error {
   }
 }
 
+export class InvalidJsonResponseError extends Error {
+  constructor() {
+    // Do not retain a parser exception or response snippet: remote bodies can
+    // contain personal data or echo authorization material.
+    super("接口返回的数据不完整或格式错误，请稍后重试。");
+    this.name = "InvalidJsonResponseError";
+  }
+}
+
 export function abortError(signal: AbortSignal, fallbackMessage = "操作已取消。"): Error {
   if (signal.reason instanceof Error) return signal.reason;
   if (typeof signal.reason === "string" && signal.reason.trim()) return new RequestAbortedError(signal.reason);
@@ -73,7 +82,12 @@ export function withRequestTimeout(parent: AbortSignal | undefined, timeoutMs: n
 
 /** Resolves or rejects an async value early when the caller cancels it. */
 export function awaitWithAbort<T>(operation: PromiseLike<T> | T, signal?: AbortSignal): Promise<T> {
-  if (signal?.aborted) return Promise.reject(abortError(signal));
+  if (signal?.aborted) {
+    // The operation already exists and may have rejected while its caller was
+    // obtaining it. Always observe it, even when cancellation wins immediately.
+    void Promise.resolve(operation).catch(() => undefined);
+    return Promise.reject(abortError(signal));
+  }
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const finish = (callback: () => void) => {
@@ -116,7 +130,16 @@ export async function requestJsonWithTimeout<T>(
   const request = withRequestTimeout(signal, timeoutMs, "请求响应超时。");
   try {
     const response = await awaitWithAbort(fetcher(url, { ...init, signal: request.signal }), request.signal);
-    const payload = await awaitWithAbort(response.json().catch(() => ({})), request.signal) as T;
+    let payload: T;
+    try {
+      payload = await awaitWithAbort(response.json(), request.signal) as T;
+    } catch {
+      throwIfAborted(request.signal);
+      if (response.ok) throw new InvalidJsonResponseError();
+      // Failed HTTP responses can legitimately contain HTML or no body. Keep
+      // the status available to callers for authorization/backoff handling.
+      payload = {} as T;
+    }
     return { response, payload };
   } finally {
     request.dispose();

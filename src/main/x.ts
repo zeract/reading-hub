@@ -1,4 +1,4 @@
-import { requestJsonWithTimeout, throwIfAborted } from "./cancellation";
+import { InvalidJsonResponseError, requestJsonWithTimeout, throwIfAborted } from "./cancellation";
 import { KeyedTaskQueue } from "./keyed-task-queue";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
@@ -363,10 +363,11 @@ export class XConnector implements ConnectorAdapter {
         headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
         body
       }, signal, 20_000);
-    } catch {
+    } catch (error) {
       throwIfAborted(signal);
       // Do not expose a network exception: it can contain request metadata
       // including OAuth parameters. The caller only needs a useful next step.
+      if (error instanceof InvalidJsonResponseError) throw new XApiError(error.message);
       throw new XApiError("无法连接到 X OAuth 令牌服务。请检查系统代理、VPN、DNS 或网络访问后重试。");
     }
     const { response, payload } = result;
@@ -393,8 +394,9 @@ export class XConnector implements ConnectorAdapter {
       result = await requestJsonWithTimeout<T>(this.fetchX, url.toString(), {
         headers: { accept: "application/json", authorization: `Bearer ${accessToken}` }
       }, signal, 20_000);
-    } catch {
+    } catch (error) {
       throwIfAborted(signal);
+      if (error instanceof InvalidJsonResponseError) throw new XApiError(error.message);
       throw new XApiError("无法连接到 X API。请检查系统代理、VPN、DNS 或网络访问后重试。");
     }
     const { response, payload } = result;
