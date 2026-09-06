@@ -2,8 +2,8 @@ const TRACKING_PARAMS = ["fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"]
 
 export function assertPublicUrl(rawUrl: string): URL {
   const url = parseHttpUrl(rawUrl);
-  const host = url.hostname.toLowerCase();
-  if (isLoopbackHost(host) || host.endsWith(".local") || host === "0.0.0.0" || /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)) {
+  const host = normalizedHost(url.hostname);
+  if (isLoopbackHost(host) || host.endsWith(".localhost") || host.endsWith(".local") || isNonPublicAddress(host)) {
     throw new Error("不能添加本机或私有网络地址。");
   }
   return url;
@@ -43,13 +43,49 @@ function parseHttpUrl(rawUrl: string): URL {
     throw new Error("请输入有效的网址。");
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("仅允许公开 HTTP 或 HTTPS 地址。");
+  if (url.username || url.password) throw new Error("网址不能包含用户名或密码，请使用授权连接。");
   return url;
+}
+
+function normalizedHost(host: string): string {
+  return host.toLowerCase().replace(/\.+$/, "");
 }
 
 function isLoopbackHost(host: string): boolean {
   // URL.hostname retains brackets for an IPv6 literal in Chromium/Node, so
   // treat both representations as the same loopback address.
-  return host === "localhost" || host === "::1" || host === "[::1]" || /^127\./.test(host);
+  host = normalizedHost(host);
+  return host === "localhost" || host === "::1" || host === "[::1]" || /^127\.\d+\.\d+\.\d+$/.test(host);
+}
+
+/** Literal/local-name checks only; this does not resolve or pin DNS answers. */
+function isNonPublicAddress(host: string): boolean {
+  // WHATWG URL has already canonicalised alternate IPv4 spellings and
+  // validated IPv6 syntax. Keep this shared helper usable in the renderer.
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return isNonPublicIpv4(host.split(".").map(Number));
+  if (!host.startsWith("[")) return false;
+  const [left, right] = host.slice(1, -1).split("::");
+  const before = left ? left.split(":").map((word) => parseInt(word, 16)) : [];
+  const after = right ? right.split(":").map((word) => parseInt(word, 16)) : [];
+  const words = right === undefined ? before : [...before, ...Array(8 - before.length - after.length).fill(0), ...after];
+  // IPv4-mapped addresses must obey the same boundary as native IPv4.
+  if (words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff) {
+    return isNonPublicIpv4([words[6] >> 8, words[6] & 255, words[7] >> 8, words[7] & 255]);
+  }
+  // Includes unspecified/loopback and the deprecated IPv4-compatible range.
+  return words.slice(0, 6).every((word) => word === 0)
+    || (words[0] & 0xfe00) === 0xfc00 // unique-local
+    || (words[0] & 0xffc0) === 0xfe80 // link-local
+    || (words[0] & 0xffc0) === 0xfec0 // deprecated site-local
+    || (words[0] & 0xff00) === 0xff00; // multicast
+}
+
+function isNonPublicIpv4([first, second]: number[]): boolean {
+  return first === 0 || first === 10 || first === 127 || first >= 224
+    || (first === 169 && second === 254)
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168)
+    || (first === 100 && second >= 64 && second <= 127);
 }
 
 export function canonicalizeUrl(rawUrl: string): string {

@@ -39,6 +39,17 @@ describe("PublicHttpClient local-feed boundary", () => {
     })).rejects.toThrow("本机 Feed 不能重定向到其他地址");
   });
 
+  it("still checks robots for a public domain that resembles a loopback address", async () => {
+    const restriction = new Error("fixture robots restriction");
+    const robots = { assertAllowed: vi.fn().mockRejectedValue(restriction) };
+    const callsBefore = chromiumFetch.mock.calls.length;
+    await expect(new PublicHttpClient(robots as never).getText("https://127.example.com/feed", undefined, {
+      allowTrustedLoopbackFeed: true
+    })).rejects.toBe(restriction);
+    expect(robots.assertAllowed).toHaveBeenCalledWith("https://127.example.com/feed", expect.anything());
+    expect(chromiumFetch.mock.calls.length).toBe(callsBefore);
+  });
+
   it("aborts an in-flight public request when an audit signal is cancelled", async () => {
     const robots = { assertAllowed: vi.fn() };
     let requestSignal: AbortSignal | undefined;
