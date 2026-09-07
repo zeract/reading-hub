@@ -7,6 +7,7 @@ import { RobotsPolicy } from "./robots";
 import { fetchResponse } from "./fetch-response";
 import { WeightedLruCache } from "./weighted-lru-cache";
 import { SharedTaskMap } from "./shared-task-map";
+import { TaskPool } from "./task-pool";
 
 export interface TextResponse {
   url: string;
@@ -100,6 +101,7 @@ export class PublicHttpClient {
   constructor(private readonly robots = new RobotsPolicy()) {}
 
   private readonly imageTasks = new SharedTaskMap<string>();
+  private readonly imagePool = new TaskPool(4, 64);
   private readonly imageCache = new WeightedLruCache<string, string>({
     maxEntries: 24,
     maxWeight: 32 * 1_048_576,
@@ -203,12 +205,12 @@ export class PublicHttpClient {
     const cacheKey = `${referrer}\u0000${targetUrl}`;
     const cached = this.imageCache.get(cacheKey);
     if (cached) return cached;
-    return this.imageTasks.run(cacheKey, async (signal) => {
+    return this.imageTasks.run(cacheKey, (signal) => this.imagePool.run(async () => {
       const result = await this.downloadImage(targetUrl, referrer, signal);
       throwIfAborted(signal);
       this.imageCache.set(cacheKey, result);
       return result;
-    }, options?.signal);
+    }, signal), options?.signal);
   }
 
   private async downloadImage(targetUrl: string, referrer: string, signal: AbortSignal): Promise<string> {
