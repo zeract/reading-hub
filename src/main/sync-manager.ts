@@ -1,6 +1,6 @@
 import { throwIfAborted } from "./cancellation";
 import type { RawEntry, Source, Subscription } from "../shared/types";
-import { entryMatchesSubscriptionScope, sameSubscriptionScope } from "../shared/subscription-scope";
+import { createSubscriptionScopeMatcher, sameSubscriptionScope } from "../shared/subscription-scope";
 import { redactDiagnosticMessage } from "./diagnostic-redaction";
 import { ContentMaintenance } from "./content-maintenance";
 import { ReadingDatabase } from "./database";
@@ -176,7 +176,7 @@ export class SyncManager {
     const connector = this.registry.get(source.connectorId ?? source.kind);
     const normalized = entries.map((entry) => connector.normalize(entry, source));
     const accepted = subscription
-      ? normalized.filter((entry) => entryMatchesSubscriptionScope(entry, subscription.scope))
+      ? normalized.filter(createSubscriptionScopeMatcher(subscription.scope))
       : normalized;
     return { inserted: this.db.saveEntries(accepted), accepted: accepted.length };
   }

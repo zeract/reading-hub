@@ -129,6 +129,26 @@ describe("public archive backfill", () => {
     expect(http.getText).toHaveBeenCalledTimes(callsBeforeRetry + 1);
   });
 
+  it.each([{ facetSelections: [] }, { facetSelections: [{ scheme: " ", key: "invalid", label: "Invalid" }] }])("does not read selected history without valid category identities: %j", async ({ facetSelections }) => {
+    const http = { getText: vi.fn(async (url: string) => ({ url, status: 200, contentType: "application/rss+xml", text: FEED })) };
+    const result = await new RssConnector(http as any).sync({
+      source: source(), subscription: subscription({ facetSelections, history: { mode: "selected" } })
+    });
+    expect(result.entries.map((entry) => entry.title)).toEqual(["Newest post"]);
+    expect(result.checkpoint).toBeUndefined();
+    expect(http.getText).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies publisher category matching before limiting archive history", async () => {
+    const http = { getText: vi.fn(async (url: string) => ({ url, status: 200, text: url.endsWith("rss.xml") ? FEED : ARCHIVE_HTML })) };
+    const result = await new RssConnector(http as any).sync({ source: source(), subscription: subscription({
+      facetSelections: [{ scheme: "feed:https://example.com:category", key: "systems", label: "Renamed systems" }],
+      history: { mode: "selected", limit: 1 }
+    }) });
+    expect(result.entries.map((entry) => entry.title)).toEqual(["Newest post", "First post"]);
+    expect(result.checkpoint?.data).toMatchObject({ archiveHistory: { importedEntries: 1 } });
+  });
+
   it("keeps the current Feed metadata when its archive repeats the same article", async () => {
     const overlappingFeed = FEED.replace("Newest post", "Current Feed title").replace("/post/newest.html", "/post/one.html");
     const http = {

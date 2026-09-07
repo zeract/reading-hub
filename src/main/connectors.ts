@@ -1,7 +1,7 @@
 import { throwIfAborted } from "./cancellation";
 import { load } from "cheerio";
 import type { ConnectorAdapter, DiscoveryContext, Entry, ExtractionRule, Facet, RawEntry, Source, Subscription, SyncCheckpoint, SyncContext, SyncResult } from "../shared/types";
-import { normaliseFacets } from "../shared/subscription-scope";
+import { createSubscriptionScopeMatcher, normaliseFacets } from "../shared/subscription-scope";
 import { assertPublicUrl, canonicalizeContentUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 import { inspectPublicArchiveFacets, MAX_ARCHIVE_DOCUMENT_BYTES, parsePublishedArchive, type ArchiveFacetCatalog } from "./archive-backfill";
 import { contentNormalizer } from "./content-normalizer";
@@ -163,13 +163,13 @@ function archiveUrlFromConfig(value: unknown): ArchiveCatalogConfig | undefined 
 function archiveHistorySelection(subscription: Subscription | undefined): ArchiveHistorySelection | undefined {
   const history = subscription?.scope?.history;
   if (!history || (history.mode !== "selected" && history.mode !== "all")) return undefined;
-  const facets = Array.isArray(subscription.scope?.facetSelections) ? subscription.scope.facetSelections : [];
+  const facets = normaliseFacets(Array.isArray(subscription.scope?.facetSelections) ? subscription.scope.facetSelections : []);
   // A selected-history subscription with no selected values is intentionally
   // a no-op rather than an accidental all-history import.
   if (history.mode === "selected" && !facets.length) return undefined;
   return {
     mode: history.mode,
-    facets: normaliseFacets(facets),
+    facets,
     limit: archiveHistoryLimit(history.limit)
   };
 }
@@ -206,12 +206,9 @@ function archiveHistoryCheckpoint(data: Record<string, unknown> | undefined, fin
 
 /** Applies an explicit archive policy after parsing its metadata. */
 function selectArchiveEntries(entries: RawEntry[], selection: ArchiveHistorySelection): RawEntry[] {
-  const selected = selection.mode === "all" ? entries : entries.filter((entry) => {
-    const facets = entry.facets ?? [];
-    return facets.some((facet) => selection.facets.some((selectedFacet) => (
-      selectedFacet.scheme === facet.scheme && selectedFacet.key === facet.key
-    )));
-  });
+  const selected = selection.mode === "all" ? entries : entries.filter(createSubscriptionScopeMatcher({
+    facetSelections: selection.facets, history: { mode: "none" }
+  }));
   const ordered = [...selected].sort((left, right) => (right.publishedAt ?? 0) - (left.publishedAt ?? 0) || left.url.localeCompare(right.url));
   return selection.limit === undefined ? ordered : ordered.slice(0, selection.limit);
 }

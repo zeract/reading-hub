@@ -92,15 +92,14 @@ export function sameFacetSelections(left: readonly Facet[] | undefined, right: r
   return identity(left) === identity(right);
 }
 
-/** Current Feed entries pass with no selection; selected facets use OR semantics. */
-export function entryMatchesSubscriptionScope(
-  entry: { facets?: readonly Facet[] },
-  scope: SubscriptionScope | undefined
-): boolean {
+/** Compile one immutable selection per batch. Current Feed entries pass with
+ * no selection; explicit selected-history callers must reject an empty scope
+ * before acquisition. Matching always uses publisher-scoped IDs, not labels. */
+export function createSubscriptionScopeMatcher(scope: SubscriptionScope | undefined): (entry: { facets?: readonly Facet[] }) => boolean {
   const selections = normaliseSubscriptionScope(scope).facetSelections;
-  if (!selections.length) return true;
-  const entryFacetIds = new Set(normaliseFacets(entry.facets).map(facetIdentity));
-  return selections.some((selection) => entryFacetIds.has(facetIdentity(selection)));
+  if (!selections.length) return () => true;
+  const selectedIds = new Set(selections.map(facetIdentity));
+  return (entry) => normaliseFacets(entry.facets).some((facet) => selectedIds.has(facetIdentity(facet)));
 }
 
 export function facetIdentity(facet: Pick<Facet, "scheme" | "key">): string {
