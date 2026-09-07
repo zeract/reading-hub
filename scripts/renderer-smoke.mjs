@@ -28,6 +28,8 @@ const cancelledReads = new Set();
 let aiRequests = 0;
 let aiMode = "complete";
 let activeAiRequest;
+let blockMarkdownModule = true;
+let markdownModuleRequests = 0;
 const cancelledAiRequests = new Set();
 const aiAnswer = "## Fixture answer\n\nInline $x^2$.\n\n$$\ny=x+1\n$$";
 const channels = [
@@ -99,7 +101,7 @@ function waitFor(window, expression, timeout = 8_000) {
       } catch {
         // Keep polling until the renderer either mounts or gives us a useful timeout.
       }
-      if (Date.now() >= deadline) return reject(new Error("渲染器未在限定时间内挂载应用外壳。"));
+      if (Date.now() >= deadline) return reject(new Error(`渲染器检查超时：${expression}`));
       setTimeout(poll, 50);
     };
     void poll();
@@ -124,7 +126,12 @@ const window = new BrowserWindow({
   }
 });
 // Trigger a native, non-bubbling image failure without making an external request.
-window.webContents.session.webRequest.onBeforeRequest({ urls: ["https://fixture.invalid/*"] }, (_details, callback) => callback({ cancel: true }));
+window.webContents.session.webRequest.onBeforeRequest({ urls: ["https://fixture.invalid/*", "file://*/*"] }, (details, callback) => {
+  if (/\/ai-markdown-[^/]+\.js$/.test(new URL(details.url).pathname)) {
+    markdownModuleRequests++;
+    callback({ cancel: blockMarkdownModule });
+  } else callback({ cancel: details.url.startsWith("https://fixture.invalid/") });
+});
 window.webContents.on("console-message", (event) => messages.push(event.message));
 window.webContents.on("preload-error", (_event, preloadPath, error) => {
   preloadErrors.push(`${preloadPath}: ${error.message}`);
@@ -160,9 +167,19 @@ try {
   assert(imageLoads === 1, `A native body image error must invoke the proxy exactly once (observed ${imageLoads}).`);
   await evaluate("document.querySelector('[aria-label=\"打开 AI 学习\"]').click()");
   await waitFor(window, "document.querySelector('.reader-ai-panel option')?.textContent.includes('Fixture AI')");
+  assert(markdownModuleRequests === 0, "The library, reader and empty assistant must not load AI Markdown code.");
   await evaluate("{ const question = document.querySelector('#ai-question'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(question, 'Explain fixture'); question.dispatchEvent(new Event('input', { bubbles: true })); }");
   await evaluate("document.querySelector('.ai-question').requestSubmit()");
+  await waitFor(window, "document.querySelectorAll('.ai-markdown-load-error').length === 2 && !document.querySelector('#ai-question').disabled");
+  assert(markdownModuleRequests === 1 && aiRequests === 1, "Messages must share a failed module load without repeating the question.");
+  await evaluate("document.querySelector('.ai-markdown-load-error button').click()");
+  await waitFor(window, "document.querySelectorAll('.ai-markdown-load-error').length === 2");
+  assert(markdownModuleRequests === 2 && aiRequests === 1, "A failed retry must remain recoverable without replaying the question.");
+  blockMarkdownModule = false;
+  await evaluate("document.querySelector('.ai-markdown-load-error button').click()");
   await waitFor(window, "document.querySelectorAll('.ai-message.assistant .katex').length === 2 && !document.querySelector('#ai-question').disabled");
+  assert(markdownModuleRequests === 3 && aiRequests === 1, "Retry must restore all messages with one module load and no AI replay.");
+  assert(await evaluate("!document.querySelector('.ai-markdown-load-error') && document.querySelector('.ai-message.user').textContent.includes('Explain fixture')"), "Retry must preserve the original question and answer.");
   await evaluate("globalThis.fixtureAnswerFormula = document.querySelector('.ai-message.assistant .katex'); void 0");
   for (const draft of ["N", "Ne", "New question"]) {
     await evaluate(`{ const question = document.querySelector('#ai-question'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(question, ${JSON.stringify(draft)}); question.dispatchEvent(new Event('input', { bubbles: true })); }`);
@@ -256,10 +273,11 @@ try {
     assert(fits, `Academic identities or result scrolling do not fit ${width}px at ${scale}.`);
     await writeFile(path.join(tmpdir(), `reading-hub-academic-${width}.png`), (await window.capturePage()).toPNG());
   }
-  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore, library layouts and four academic search layouts verified.");
+  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore, library layouts and four academic search layouts verified.");
 } catch (error) {
   failure = error;
   console.error(error);
+  console.error("AI module fixture requests:", { aiRequests, markdownModuleRequests });
   console.error("Renderer fixture console:", messages.slice(-5));
 } finally {
   clearTimeout(startupWatchdog);
