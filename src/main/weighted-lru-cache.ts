@@ -10,6 +10,7 @@ type CacheOptions<K, V> = {
 export class WeightedLruCache<K, V> {
   private readonly entries = new Map<K, { value: V; weight: number; expiresAt?: number }>();
   private retainedWeight = 0;
+  private nextExpiryCheckAt = Infinity;
 
   constructor(private readonly options: CacheOptions<K, V>) {
     if (!Number.isSafeInteger(options.maxEntries) || options.maxEntries < 1
@@ -42,13 +43,17 @@ export class WeightedLruCache<K, V> {
     }
     this.entries.set(key, { value, weight, expiresAt });
     this.retainedWeight += weight;
+    if (expiresAt !== undefined) this.nextExpiryCheckAt = Math.min(this.nextExpiryCheckAt, expiresAt);
     return true;
   }
 
   private pruneExpired(): void {
     const now = Date.now();
+    if (now < this.nextExpiryCheckAt) return;
+    this.nextExpiryCheckAt = Infinity;
     for (const [key, entry] of this.entries) {
       if (entry.expiresAt !== undefined && entry.expiresAt <= now) this.delete(key);
+      else if (entry.expiresAt !== undefined) this.nextExpiryCheckAt = Math.min(this.nextExpiryCheckAt, entry.expiresAt);
     }
   }
 
@@ -57,5 +62,7 @@ export class WeightedLruCache<K, V> {
     if (!entry) return;
     this.retainedWeight -= entry.weight;
     this.entries.delete(key);
+    // Deleting/replacing the earliest entry may leave an earlier check time.
+    // That costs at most one future sweep and cannot retain an expired value.
   }
 }
