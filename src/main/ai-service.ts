@@ -220,7 +220,7 @@ export class AiService {
     return this.postStreaming(endpoint, configuration.apiKey, payload, "OpenAI", signal, async (response, requestSignal) => {
       const output = await readServerSentEvents(response, onDelta, {
         readDelta: readOpenAiStreamDelta,
-        readFallback: (body) => readOpenAiOutput(body as OpenAiResponse),
+        readFallback: readOpenAiOutput,
         readError: readOpenAiError,
         readCompletion: readOpenAiCompletion
       }, requestSignal);
@@ -242,10 +242,7 @@ export class AiService {
     return this.postStreaming(endpoint, configuration.apiKey, payload, "DeepSeek", signal, async (response, requestSignal) => {
       const output = await readServerSentEvents(response, onDelta, {
         readDelta: readDeepSeekStreamDelta,
-        readFallback: (body) => {
-          const parsed = body as DeepSeekResponse;
-          return typeof parsed.choices?.[0]?.message?.content === "string" ? parsed.choices[0].message.content.trim() : "";
-        },
+        readFallback: readDeepSeekOutput,
         readError: readDeepSeekError
       }, requestSignal);
       if (!output) throw new AiServiceError("DeepSeek 没有返回可显示的回答，请调整问题后重试。");
@@ -488,22 +485,35 @@ function providerFailureMessage(provider: string, status: number): string {
   return `${provider} 请求失败（HTTP ${status}）。请检查模型名称和账户配置。`;
 }
 
-type OpenAiResponse = {
-  output_text?: unknown;
-  output?: Array<{ type?: string; content?: Array<{ type?: string; text?: unknown }> }>;
-};
+function readOpenAiOutput(response: unknown): string {
+  if (!isRecord(response)) throw new AiServiceError(AI_INVALID_RESPONSE);
+  if (response.output_text !== undefined) {
+    if (typeof response.output_text !== "string") throw new AiServiceError(AI_INVALID_RESPONSE);
+    if (response.output_text.trim()) return response.output_text.trim();
+  }
+  if (response.output === undefined) return "";
+  if (!Array.isArray(response.output)) throw new AiServiceError(AI_INVALID_RESPONSE);
+  const text: string[] = [];
+  for (const item of response.output) {
+    if (!isRecord(item)) throw new AiServiceError(AI_INVALID_RESPONSE);
+    if (item.type !== "message") continue;
+    if (!Array.isArray(item.content)) throw new AiServiceError(AI_INVALID_RESPONSE);
+    for (const part of item.content) {
+      if (!isRecord(part)) throw new AiServiceError(AI_INVALID_RESPONSE);
+      if (part.type !== "output_text") continue;
+      if (typeof part.text !== "string") throw new AiServiceError(AI_INVALID_RESPONSE);
+      text.push(part.text);
+    }
+  }
+  return text.join("\n").trim();
+}
 
-type DeepSeekResponse = { choices?: Array<{ message?: { content?: unknown } }> };
-
-function readOpenAiOutput(response: OpenAiResponse): string {
-  if (typeof response.output_text === "string" && response.output_text.trim()) return response.output_text.trim();
-  return (response.output || [])
-    .filter((item) => item.type === "message")
-    .flatMap((item) => item.content || [])
-    .filter((item) => item.type === "output_text" && typeof item.text === "string")
-    .map((item) => item.text as string)
-    .join("\n")
-    .trim();
+function readDeepSeekOutput(body: unknown): string {
+  if (!isRecord(body)) throw new AiServiceError(AI_INVALID_RESPONSE);
+  const message = readDeepSeekChoice(body)?.message;
+  if (message === undefined) return "";
+  if (!isRecord(message)) throw new AiServiceError(AI_INVALID_RESPONSE);
+  return (readDeepSeekContent(message) ?? "").trim();
 }
 
 type ProviderResponseReader = {
@@ -515,6 +525,7 @@ type ProviderResponseReader = {
 
 const AI_GENERATION_FAILED = "服务在生成回答时返回错误，请稍后重试。";
 const AI_GENERATION_INCOMPLETE = "AI 回答未完整生成，请缩短问题或稍后重试。";
+const AI_INVALID_RESPONSE = "AI 服务返回的数据格式无效，请稍后重试。";
 
 /**
  * Read provider SSE without passing raw provider events across IPC. Responses
@@ -537,7 +548,7 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
     } catch (error) {
       throwIfAborted(signal);
       if (error instanceof AiServiceError) throw error;
-      throw new AiServiceError("AI 服务返回的数据格式无效，请稍后重试。");
+      throw new AiServiceError(AI_INVALID_RESPONSE);
     }
   }
   const reader = response.body.getReader();
@@ -553,9 +564,9 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
     try {
       event = JSON.parse(data);
     } catch {
-      return;
+      throw new AiServiceError(AI_INVALID_RESPONSE);
     }
-    if (!isRecord(event)) return;
+    if (!isRecord(event)) throw new AiServiceError(AI_INVALID_RESPONSE);
     assertProviderOutcome(event, protocol);
     const completion = protocol.readCompletion?.(event);
     if (completion) {
@@ -619,25 +630,47 @@ function checkAiResponseSize(bytes: number): void {
 }
 
 function readOpenAiStreamDelta(event: Record<string, unknown>): string | undefined {
-  return event.type === "response.output_text.delta" && typeof event.delta === "string" ? event.delta : undefined;
+  if (event.type !== "response.output_text.delta") return undefined;
+  if (typeof event.delta !== "string") throw new AiServiceError(AI_INVALID_RESPONSE);
+  return event.delta;
 }
 
 function readOpenAiCompletion(event: Record<string, unknown>): { text?: string } | undefined {
   if (event.type !== "response.completed") return undefined;
   const response = event.response;
-  if (!isRecord(response) || (typeof response.output_text !== "string" && !Array.isArray(response.output))) return {};
-  return { text: readOpenAiOutput(response as OpenAiResponse) };
+  // Preserve minimal compatible envelopes, but never treat a malformed
+  // supplied snapshot as absent and silently substitute the old draft.
+  if (response === undefined) return {};
+  if (!isRecord(response)) throw new AiServiceError(AI_INVALID_RESPONSE);
+  if (response.output_text === undefined && response.output === undefined) return {};
+  return { text: readOpenAiOutput(response) };
 }
 
 function readDeepSeekStreamDelta(event: Record<string, unknown>): string | undefined {
+  const delta = readDeepSeekChoice(event)?.delta;
+  if (delta === undefined) return undefined;
+  if (!isRecord(delta)) throw new AiServiceError(AI_INVALID_RESPONSE);
+  return readDeepSeekContent(delta);
+}
+
+function readDeepSeekChoice(event: Record<string, unknown>): Record<string, unknown> | undefined {
   const choices = event.choices;
-  if (!Array.isArray(choices) || !isRecord(choices[0]) || !isRecord(choices[0].delta)) return undefined;
-  const content = choices[0].delta.content;
-  return typeof content === "string" ? content : undefined;
+  if (choices === undefined) return undefined;
+  if (!Array.isArray(choices)) throw new AiServiceError(AI_INVALID_RESPONSE);
+  if (!choices.length) return undefined;
+  if (!isRecord(choices[0])) throw new AiServiceError(AI_INVALID_RESPONSE);
+  return choices[0];
+}
+
+function readDeepSeekContent(message: Record<string, unknown>): string | undefined {
+  const content = message.content;
+  if (content === undefined || content === null) return undefined;
+  if (typeof content !== "string") throw new AiServiceError(AI_INVALID_RESPONSE);
+  return content;
 }
 
 function assertProviderOutcome(body: unknown, protocol: ProviderResponseReader): void {
-  if (!isRecord(body)) return;
+  if (!isRecord(body)) throw new AiServiceError(AI_INVALID_RESPONSE);
   // Provider errors can echo request metadata. Keep this boundary deliberately
   // generic so remote diagnostics and credentials never reach the renderer.
   const message = body.type === "error" || isRecord(body.error)
@@ -658,9 +691,7 @@ function readOpenAiError(body: Record<string, unknown>): string | undefined {
 function readDeepSeekError(body: Record<string, unknown>): string | undefined {
   // Only the first choice is displayed. Progress/usage frames have no finish
   // reason; a tool handoff cannot complete this text-only question workflow.
-  const choices = body.choices;
-  if (!Array.isArray(choices) || !isRecord(choices[0])) return undefined;
-  switch (choices[0].finish_reason) {
+  switch (readDeepSeekChoice(body)?.finish_reason) {
     case "insufficient_system_resource": return AI_GENERATION_FAILED;
     case "length":
     case "content_filter":
@@ -670,5 +701,5 @@ function readDeepSeekError(body: Record<string, unknown>): string | undefined {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

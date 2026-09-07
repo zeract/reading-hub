@@ -98,7 +98,10 @@ try {
     const terminal = url.hostname === "api.openai.com"
       ? JSON.stringify({ type: "response.completed", response: { status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "Fixture final answer" }] }] } })
       : "[DONE]";
-    const payload = `data: ${JSON.stringify(delta)}${lineEnding}${lineEnding}data: ${terminal}${lineEnding}${lineEnding}data: ${JSON.stringify(delta)}${lineEnding}${lineEnding}`;
+    const malformed = mode === "invalid-json" ? "{private-fixture" : mode === "invalid-delta"
+      ? JSON.stringify(url.hostname === "api.openai.com" ? { type: "response.output_text.delta", delta: 42 } : { choices: [{ delta: { content: 42 } }] }) : undefined;
+    const invalidFrame = malformed === undefined ? "" : `data: ${malformed}${lineEnding}${lineEnding}`;
+    const payload = `data: ${JSON.stringify(delta)}${lineEnding}${lineEnding}${invalidFrame}data: ${terminal}${lineEnding}${lineEnding}data: ${JSON.stringify(delta)}${lineEnding}${lineEnding}`;
     // The provider has finished semantically, but its transport stays open.
     // Completion must cancel it and ignore the suffix without waiting for EOF.
     return new Response(new ReadableStream({
@@ -117,9 +120,17 @@ try {
     }
   }
   assert.equal(protocolRequests, 12);
+  for (mode of ["invalid-json", "invalid-delta"]) {
+    for (const provider of providers) {
+      let text = "";
+      await assert.rejects(service.askStream(request(provider), (delta) => { text += delta; }), { message: "AI 服务返回的数据格式无效，请稍后重试。" });
+      assert.equal(text, "Fixture answer");
+    }
+  }
+  assert.equal(protocolRequests, 20);
   mode = "redirect";
   for (const provider of providers) await assert.rejects(service.askStream(request(provider), () => {}), /允许范围/);
-  assert.equal(protocolRequests, 14);
+  assert.equal(protocolRequests, 22);
   await session.defaultSession.cookies.set({ url: "https://api.example.com", name: "fixture-api-session", value: "fixture-cookie", secure: true });
   const json = await requestJsonWithTimeout((url, init) => {
     assert.equal(init.credentials, "omit");
