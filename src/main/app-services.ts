@@ -44,7 +44,19 @@ export interface ApplicationServices {
 export async function createApplicationServices(databasePath: string): Promise<ApplicationServices> {
   await configureChromiumNetwork();
   const database = new ReadingDatabase(databasePath);
-  database.beginLibrarySession();
+  try {
+    return assembleApplicationServices(database);
+  } catch (error) {
+    // Until assembly returns, no caller owns a service capable of closing
+    // this connection. Failed initialization must release it here.
+    database.close();
+    throw error;
+  }
+}
+
+/** Assembly is synchronous and does not start timers, children or windows.
+ * Only a fully assembled service graph takes ownership of the database. */
+function assembleApplicationServices(database: ReadingDatabase): ApplicationServices {
   const resumedAutomaticSources = database.resumeLegacyAutoPausedSources();
   const robots = new RobotsPolicy();
   const http = new PublicHttpClient(robots);
@@ -103,6 +115,9 @@ export async function createApplicationServices(databasePath: string): Promise<A
     // Begin cleanup before the IPC drain; retain any failure for close().
     void assistantClose.catch(() => undefined);
   };
+  // Failed service assembly is not a library visit. Advance this boundary
+  // only after assembly succeeds, so the next launch still sees new arrivals.
+  database.beginLibrarySession();
   return {
     database,
     http,
