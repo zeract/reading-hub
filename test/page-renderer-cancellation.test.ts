@@ -4,7 +4,7 @@ const electron = vi.hoisted(() => {
   const windows: any[] = [];
   const renderState = {
     loadURL: (..._args: unknown[]) => new Promise<void>(() => undefined),
-    executeJavaScript: (..._args: unknown[]) => Promise.resolve<unknown>(undefined)
+    readDocument: (..._args: unknown[]) => Promise.resolve<unknown>(undefined)
   };
   class BrowserWindow {
     private destroyed = false;
@@ -15,7 +15,7 @@ const electron = vi.hoisted(() => {
       getURL: () => this.url,
       setWindowOpenHandler: vi.fn(),
       on: vi.fn((event: string, listener: (...args: any[]) => void) => this.listeners.set(event, listener)),
-      executeJavaScript: vi.fn((...args: unknown[]) => renderState.executeJavaScript(...args))
+      executeJavaScriptInIsolatedWorld: vi.fn((_world: number, scripts: Array<{ code: string }>) => renderState.readDocument(scripts[0].code))
     };
     readonly loadURL = vi.fn((...args: unknown[]) => { this.url = String(args[0]); return renderState.loadURL(...args); });
 
@@ -68,7 +68,7 @@ function redirectedRenderer(html: string) {
     }
     return Promise.resolve();
   };
-  electron.renderState.executeJavaScript = () => Promise.resolve(html);
+  electron.renderState.readDocument = () => Promise.resolve(html);
   const robots = { assertAllowed: vi.fn().mockResolvedValue(undefined) };
   return new IsolatedPageRenderer(robots as never);
 }
@@ -153,7 +153,7 @@ describe("isolated page renderer cancellation", () => {
 
   it("keeps oversized rendered HTML inside the isolated renderer", async () => {
     electron.renderState.loadURL = (..._args: unknown[]) => Promise.resolve();
-    electron.renderState.executeJavaScript = (script: unknown, ..._args: unknown[]) => {
+    electron.renderState.readDocument = (script: unknown, ..._args: unknown[]) => {
       expect(script).toContain("<= 5");
       return Promise.resolve(null);
     };
@@ -192,7 +192,7 @@ describe("isolated page renderer cancellation", () => {
       }
       return Promise.resolve();
     };
-    electron.renderState.executeJavaScript = () => Promise.resolve("<html><body>safe</body></html>");
+    electron.renderState.readDocument = () => Promise.resolve("<html><body>safe</body></html>");
     const robots = { assertAllowed: vi.fn().mockResolvedValue(undefined) };
     const renderer = new IsolatedPageRenderer(robots as never);
 

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { AiService } from "../dist/main/main/ai-service.js";
 import { configureChromiumNetwork, chromiumFetch } from "../dist/main/main/network.js";
 import { requestJsonWithTimeout } from "../dist/main/main/json-response.js";
-import { IsolatedPageRenderer } from "../dist/main/main/page-renderer.js";
+import { IsolatedPageRenderer, RenderedPageTooLargeError } from "../dist/main/main/page-renderer.js";
 import { extractReaderArticle } from "../dist/main/main/article-reader.js";
 
 app.setPath("userData", await mkdtemp(join(tmpdir(), "reading-hub-ai-network-data-")));
@@ -131,12 +131,16 @@ try {
   assert.equal(apiRequests, 2);
   const initialPageUrl = "https://redirect.example/start";
   const finalPageUrl = "https://rendered.example/papers/index.html";
+  const oversizedPageUrl = "https://rendered.example/oversized";
+  const patchedDomPageUrl = "https://rendered.example/patched-dom";
   const checkedPages = [];
   const interceptRenderedPage = (_event, contents) => {
     contents.session.protocol.handle("https", (request) => {
       assert.equal(request.headers.get("cookie"), null);
       if (request.url === initialPageUrl) return new Response(null, { status: 302, headers: { location: finalPageUrl } });
       if (request.url === finalPageUrl) return new Response(`<article><h1>Fixture article</h1><p>${"Synthetic paragraph. ".repeat(50)}</p><img src="figure.svg"><a href="appendix.html">Fixture appendix</a></article>`, { headers: { "content-type": "text/html" } });
+      if (request.url === oversizedPageUrl) return new Response(`<script>window.Blob = class { get size() { return 0; } };</script><article>${"Synthetic content. ".repeat(200)}</article>`, { headers: { "content-type": "text/html" } });
+      if (request.url === patchedDomPageUrl) return new Response('<script>Object.defineProperty(Element.prototype, "outerHTML", { get() { return "<article>Forged snapshot</article>"; } });</script><article>Actual DOM fixture</article>', { headers: { "content-type": "text/html" } });
       if (request.url === "https://rendered.example/papers/figure.svg") return new Response('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>', { headers: { "content-type": "image/svg+xml" } });
       return new Response(null, { status: 404 });
     });
@@ -144,7 +148,7 @@ try {
   app.on("web-contents-created", interceptRenderedPage);
   try {
     const renderer = new IsolatedPageRenderer({ async assertAllowed(url) {
-      assert([initialPageUrl, finalPageUrl].includes(url)); checkedPages.push(url);
+      assert([initialPageUrl, finalPageUrl, oversizedPageUrl, patchedDomPageUrl].includes(url)); checkedPages.push(url);
     } });
     const page = await renderer.render(initialPageUrl);
     assert.equal(page.url, finalPageUrl);
@@ -153,6 +157,9 @@ try {
     assert.equal(article.article.url, finalPageUrl);
     assert(article.article.contentHtml.includes('src="https://rendered.example/papers/figure.svg"'));
     assert(article.article.contentHtml.includes('href="https://rendered.example/papers/appendix.html"'));
+    await assert.rejects(renderer.render(oversizedPageUrl, { maxBytes: 256 }), RenderedPageTooLargeError);
+    const cleanSnapshot = await renderer.render(patchedDomPageUrl);
+    assert(cleanSnapshot.html.includes("Actual DOM fixture"));
   } finally { app.removeListener("web-contents-created", interceptRenderedPage); }
   console.log("Reading Hub network smoke test passed: AI semantic completion and final snapshots, LF/CRLF/CR, JSON, proxy and credential isolation, plus native rendered-page redirects and relative article URLs verified.");
 } catch (error) {

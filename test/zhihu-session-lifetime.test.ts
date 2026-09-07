@@ -14,7 +14,7 @@ vi.mock("electron", async () => {
     destroyed = false;
     url = "https://www.zhihu.com/follow";
     webContents = Object.assign(new EventEmitter(), {
-      getURL: () => this.url, setWindowOpenHandler: vi.fn(), stop: vi.fn(), executeJavaScript: mocks.evaluate
+      getURL: () => this.url, setWindowOpenHandler: vi.fn(), stop: vi.fn(), executeJavaScriptInIsolatedWorld: mocks.evaluate
     });
     loadURL = async (url: string) => { await mocks.navigate(url); this.url = url; };
     constructor(readonly options: unknown) { super(); mocks.windows.push(this); mocks.created(); }
@@ -66,7 +66,47 @@ it("rejects a final document outside the authorized Zhihu hosts", async () => {
   } finally { connector.close(); }
 });
 
+it("rechecks follow-page authorization after the DOM wait", async () => {
+  mocks.evaluate.mockImplementationOnce(async () => { mocks.windows.at(-1).url = "https://www.zhihu.com/signin"; return "Login HTML"; });
+  const connector = new ZhihuFollowConnector();
+  try {
+    const rejected = expect(connector.fetchEntries()).rejects.toThrow("知乎登录已失效");
+    await vi.advanceTimersByTimeAsync(1_200);
+    await rejected;
+    expect(mocks.extract).not.toHaveBeenCalled();
+    expect(mocks.windows.at(-1).isDestroyed()).toBe(true);
+  } finally { connector.close(); }
+});
+
 describe.each(["feed", "article"] as const)("Zhihu %s session lifetime", (kind) => {
+  it("rejects an oversized document and releases its reading window", async () => {
+    mocks.evaluate.mockResolvedValueOnce("x".repeat(8_000_001));
+    const connector = new ZhihuFollowConnector();
+    try {
+      const rejected = expect(read(connector, kind)).rejects.toThrow("超过 8 MB");
+      await vi.advanceTimersByTimeAsync(1_200);
+      await rejected;
+      expect(mocks.extract).not.toHaveBeenCalled();
+      expect(mocks.windows.at(-1).isDestroyed()).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { connector.close(); }
+  });
+
+  it("times out DOM extraction without waiting for a late result", async () => {
+    const evaluated = barrier<string>();
+    mocks.evaluate.mockImplementationOnce(() => evaluated.wait);
+    const connector = new ZhihuFollowConnector();
+    const settled = vi.fn();
+    const pending = read(connector, kind).then(settled, settled);
+    try {
+      await vi.advanceTimersByTimeAsync(6_200);
+      expect(settled).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: "页面内容读取超时，请重试。" }));
+      expect(mocks.extract).not.toHaveBeenCalled();
+      expect(mocks.windows.at(-1).isDestroyed()).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { evaluated.release("Late HTML"); await pending; connector.close(); }
+  });
+
   it("owns a newly constructed window before the caller resumes", async () => {
     const connector = new ZhihuFollowConnector();
     let clearing: Promise<void> | undefined;

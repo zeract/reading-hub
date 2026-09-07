@@ -1,38 +1,19 @@
 import { BrowserWindow, session } from "electron";
 import { assertPublicUrl } from "../shared/url";
-import { formatByteLimit } from "./byte-limit";
 import { awaitWithAbort, combineAbortSignals, delayWithAbort, throwIfAborted } from "./cancellation";
 import { configureChromiumSession } from "./network";
 import { RobotsPolicy } from "./robots";
 import { createBackgroundWindow } from "./background-window";
+import { readRenderedPage, type PageRenderOptions, type RenderedPage } from "./rendered-document";
+
+export { RenderedPageTooLargeError } from "./rendered-document";
+export type { PageRenderOptions, RenderedPage } from "./rendered-document";
 
 const RENDER_TIMEOUT_MS = 20_000;
-const DEFAULT_RENDERED_DOCUMENT_MAX_BYTES = 8_000_000;
 const MAX_RENDER_REDIRECTS = 5;
-
-export interface PageRenderOptions {
-  /** Optional caller-owned cancellation. Omitted for normal reader requests. */
-  signal?: AbortSignal;
-  /** Upper bound for HTML transferred out of the isolated renderer. */
-  maxBytes?: number;
-}
-
-export interface RenderedPage {
-  /** Actual loaded address; relative URLs belong to this document. */
-  url: string;
-  html: string;
-}
 
 export interface PageRenderer {
   render(url: string, options?: PageRenderOptions): Promise<RenderedPage>;
-}
-
-/** An isolated page remained too large even after removing browser state. */
-export class RenderedPageTooLargeError extends Error {
-  constructor(readonly maxBytes: number) {
-    super(`浏览器渲染后的页面仍超过 ${formatByteLimit(maxBytes)}，已停止提取。`);
-    this.name = "RenderedPageTooLargeError";
-  }
 }
 
 /** Uses Electron's Chromium only for public pages that did not yield usable static HTML. */
@@ -46,7 +27,6 @@ export class IsolatedPageRenderer implements PageRenderer {
     // bounded static request already uses. This also protects sources whose
     // persisted rule requires Chromium on every later refresh.
     await this.robots.assertAllowed(url, { signal: options?.signal });
-    const maxBytes = normalizedRenderByteLimit(options?.maxBytes);
     const partition = `reader-preview-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const isolatedSession = session.fromPartition(partition);
     // A partitioned session is intentionally isolated from cookies and other
@@ -85,14 +65,7 @@ export class IsolatedPageRenderer implements PageRenderer {
       window.webContents.on("will-attach-webview", (event) => event.preventDefault());
       await loadWithVerifiedRedirects(window, this.robots, url, options?.signal);
       await delayWithAbort(800, options?.signal);
-      const html = await withTimeout(
-        window.webContents.executeJavaScript(serializedDocumentScript(maxBytes), true),
-        5_000,
-        "页面内容读取超时，请重试。",
-        options?.signal
-      );
-      if (typeof html !== "string") throw new RenderedPageTooLargeError(maxBytes);
-      return { html, url: assertPublicUrl(window.webContents.getURL()).toString() };
+      return await readRenderedPage(window.webContents, options);
     } finally {
       options?.signal?.removeEventListener("abort", stopAndDestroy);
       if (!window.isDestroyed()) window.destroy();
@@ -140,22 +113,6 @@ async function loadWithVerifiedRedirects(window: BrowserWindow, robots: RobotsPo
     if (redirectCount > MAX_RENDER_REDIRECTS) throw new Error("页面重定向次数过多，已停止渲染。");
     await robots.assertAllowed(targetUrl, { signal });
   }
-}
-
-function serializedDocumentScript(maxBytes: number): string {
-  // Keep the oversized HTML inside the sandboxed renderer. The resulting
-  // string crosses the process boundary only when it is within the same
-  // bounded-document contract as the reader.
-  return `(() => {
-    const html = document.documentElement ? document.documentElement.outerHTML : "";
-    return new Blob([html]).size <= ${maxBytes} ? html : null;
-  })()`;
-}
-
-function normalizedRenderByteLimit(value: number | undefined): number {
-  if (value === undefined) return DEFAULT_RENDERED_DOCUMENT_MAX_BYTES;
-  if (!Number.isFinite(value) || value <= 0) return DEFAULT_RENDERED_DOCUMENT_MAX_BYTES;
-  return Math.floor(value);
 }
 
 function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message: string, signal?: AbortSignal): Promise<T> {

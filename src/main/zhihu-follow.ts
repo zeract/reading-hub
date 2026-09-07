@@ -8,7 +8,7 @@ import { extractZhihuFollowPage } from "./zhihu-follow-parser";
 import { configureChromiumSession } from "./network";
 import { createBackgroundWindow } from "./background-window";
 import { guardMainFrameNavigation } from "./navigation-policy";
-import type { RenderedPage } from "./page-renderer";
+import { readRenderedPage, type PageRenderOptions, type RenderedPage } from "./rendered-document";
 
 const FOLLOW_URL = "https://www.zhihu.com/follow";
 const PARTITION = "persist:reading-hub-zhihu-follow";
@@ -94,8 +94,9 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
         throw new Error("知乎登录已失效，请点击“重新登录知乎”后再刷新关注动态。");
       }
       await delayWithAbort(1_200, signal);
-      const html = await awaitWithAbort(window.webContents.executeJavaScript("document.documentElement.outerHTML", true) as Promise<string>, signal);
-      const entries = extractZhihuFollowPage(html, FOLLOW_URL);
+      const page = await readRenderedPage(window.webContents, { signal });
+      if (!isFollowUrl(page.url)) throw new Error("知乎登录已失效，请点击“重新登录知乎”后再刷新关注动态。");
+      const entries = extractZhihuFollowPage(page.html, page.url);
       if (!entries.length) throw new Error("未能识别知乎关注动态中的公开内容，请在知乎登录窗口完成登录后重试。");
       return entries;
     });
@@ -110,17 +111,16 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
   }
 
   /** Renders a followed Zhihu item in the same dedicated, user-authorized session. */
-  async renderArticle(rawUrl: string, options?: { signal?: AbortSignal }): Promise<RenderedPage> {
+  async renderArticle(rawUrl: string, options?: PageRenderOptions): Promise<RenderedPage> {
     throwIfAborted(options?.signal);
     const url = assertPublicUrl(rawUrl).toString();
     if (!isZhihuUrl(url)) throw new Error("只能在知乎授权会话中打开知乎内容。");
     return this.withReadingWindow(options?.signal, async (window, signal) => {
       await awaitWithAbort(window.loadURL(url), signal);
       await delayWithAbort(900, signal);
-      const html = await awaitWithAbort(window.webContents.executeJavaScript("document.documentElement.outerHTML", true) as Promise<string>, signal);
-      const pageUrl = assertPublicUrl(window.webContents.getURL()).toString();
-      if (!isZhihuUrl(pageUrl)) throw new Error("只能在知乎授权会话中打开知乎内容。");
-      return { html, url: pageUrl };
+      const page = await readRenderedPage(window.webContents, { ...options, signal });
+      if (!isZhihuUrl(page.url)) throw new Error("只能在知乎授权会话中打开知乎内容。");
+      return page;
     });
   }
 
