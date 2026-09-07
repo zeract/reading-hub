@@ -95,9 +95,13 @@ export async function createApplicationServices(databasePath: string): Promise<A
   });
 
   let closePromise: Promise<void> | undefined;
+  let assistantClose: Promise<void> | undefined;
   const beginShutdown = () => {
     zhihuFollow.close();
     sync.beginShutdown();
+    assistantClose ??= learningAssistant.close();
+    // Begin cleanup before the IPC drain; retain any failure for close().
+    void assistantClose.catch(() => undefined);
   };
   return {
     database,
@@ -114,7 +118,7 @@ export async function createApplicationServices(databasePath: string): Promise<A
     beginShutdown,
     close: () => {
       beginShutdown();
-      closePromise ??= sync.close().then(() => database.close());
+      closePromise ??= Promise.all([sync.close(), assistantClose]).then(() => database.close());
       return closePromise;
     }
   };

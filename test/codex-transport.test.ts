@@ -8,7 +8,7 @@ vi.mock("node:fs/promises", () => ({ access: mocks.access }));
 import { LocalCodexCli, invalidateCodexCommandDiscovery } from "../src/main/codex-cli";
 
 const clients: LocalCodexCli[] = [];
-afterEach(() => { for (const cli of clients.splice(0)) cli.dispose(); invalidateCodexCommandDiscovery(); vi.clearAllMocks(); });
+afterEach(() => { for (const cli of clients.splice(0)) cli.dispose(); invalidateCodexCommandDiscovery(); vi.useRealTimers(); vi.clearAllMocks(); });
 
 function fixture(mode: "server" | "exec", output: (child: any, server: boolean) => void) {
   mocks.spawn.mockImplementation((_command, args) => {
@@ -101,4 +101,58 @@ it.each(["Revised final answer", "b"])("bounds exec deltas and accepts the autho
   const delta = vi.fn();
   expect(await cli.askStream("Fixture", "Synthetic context", { effort: "medium" }, delta)).toBe(final);
   expect(delta.mock.calls.flat().join("")).toBe("a".repeat(39_999) + "b");
+});
+
+it.each(["cancel", "timeout"])("settles exec %s even if the child ignores SIGTERM", async (mode) => {
+  vi.useFakeTimers();
+  let child: any;
+  const cli = fixture("exec", (process) => {
+    child = process;
+    child.kill.mockImplementation(() => { child.killed = true; return true; });
+  });
+  const controller = new AbortController();
+  let settled = false;
+  const pending = cli.ask("Fixture", "Synthetic context", { effort: "medium" }, controller.signal)
+    .catch((error) => error).then((result) => { settled = true; return result; });
+  await vi.advanceTimersByTimeAsync(0);
+  if (mode === "cancel") controller.abort();
+  else await vi.advanceTimersByTimeAsync(90_000);
+  await vi.advanceTimersByTimeAsync(2_000);
+  try {
+    expect(settled).toBe(true);
+    expect(child.kill.mock.calls.map((args: string[]) => args[0])).toEqual(["SIGTERM", "SIGKILL"]);
+    expect((await pending).message).toContain(mode === "cancel" ? "已取消" : "超时");
+  } finally { child.emit("close", null); await pending; }
+});
+
+it.each(["server", "exec"] as const)("drains a stubborn %s child on shutdown and rejects later work", async (mode) => {
+  vi.useFakeTimers();
+  let child: any;
+  const cli = fixture(mode, (process) => {
+    child = process; child.kill.mockImplementation(() => { child.killed = true; return true; });
+  });
+  const pending = cli.ask("Fixture", "Synthetic context", { effort: "medium" }).catch((error) => error);
+  await vi.advanceTimersByTimeAsync(0);
+  const closed = cli.close();
+  await vi.advanceTimersByTimeAsync(1_000); await closed;
+  expect((await pending).message).toContain("已取消");
+  expect(child.kill.mock.calls.map((args: string[]) => args[0])).toEqual(["SIGTERM", "SIGKILL"]);
+  const spawned = mocks.spawn.mock.calls.length;
+  await expect(cli.ask("Fixture", "Synthetic context", { effort: "medium" })).rejects.toThrow("已取消");
+  expect(mocks.spawn).toHaveBeenCalledTimes(spawned);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("cleans up the owned App Server on a broken stdin before dropping its reference", async () => {
+  vi.useFakeTimers();
+  let child: any;
+  const cli = fixture("server", (process) => {
+    child = process; child.kill.mockImplementation(() => { child.killed = true; return true; });
+    child.stdin.emit("error", new Error("synthetic pipe details"));
+  });
+  await expect(cli.ask("Fixture", "Synthetic context", { effort: "medium" })).rejects.toThrow("已断开");
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(child.kill.mock.calls.map((args: string[]) => args[0])).toEqual(["SIGTERM", "SIGKILL"]);
+  await cli.close();
+  expect(vi.getTimerCount()).toBe(0);
 });

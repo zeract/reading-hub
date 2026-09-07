@@ -4,7 +4,8 @@ import { constants } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { AiReasoningEffort } from "../shared/types";
-import { awaitWithAbort } from "./cancellation";
+import { awaitWithAbort, combineAbortSignals } from "./cancellation";
+import { ChildProcessScope } from "./child-process-scope";
 import { Utf8LineDecoder } from "./utf8-line-decoder";
 
 const CODEX_TIMEOUT_MS = 90_000;
@@ -157,10 +158,14 @@ export interface CodexCliRunner {
   askStream?(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener, signal?: AbortSignal): Promise<string>;
   /** Releases the local app-server bridge early when the host is shutting down. */
   dispose?(): void;
+  /** Stops admission and drains every owned local child during host shutdown. */
+  close?(): Promise<void>;
 }
 
 export class LocalCodexCli implements CodexCliRunner {
   private appServer: PersistentCodexAppServer | undefined;
+  private readonly processes = new ChildProcessScope();
+  private readonly shutdown = new AbortController();
 
   async status(): Promise<CodexCliStatus> {
     const command = await findCodexCommand();
@@ -172,21 +177,39 @@ export class LocalCodexCli implements CodexCliRunner {
   }
 
   async askStream(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener, signal?: AbortSignal): Promise<string> {
-    throwIfCodexCancelled(signal);
-    const { command } = await this.status();
-    if (!command) throw new CodexCliError("未检测到本机 Codex。请安装官方 Codex，并在终端运行 codex 完成登录后重试。");
+    const request = combineAbortSignals(signal, this.shutdown.signal);
     try {
-      return await this.getAppServer(command).ask(instruction, articleContext, options, onDelta, signal);
+      return await this.runRequest(instruction, articleContext, options, onDelta, request.signal);
+    } finally { request.dispose(); }
+  }
+
+  private async runRequest(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener, signal?: AbortSignal): Promise<string> {
+    throwIfCodexCancelled(signal);
+    const { command } = await awaitWithAbort(this.status(), signal);
+    throwIfCodexCancelled(signal);
+    if (!command) throw new CodexCliError("未检测到本机 Codex。请安装官方 Codex，并在终端运行 codex 完成登录后重试。");
+    const server = this.getAppServer(command);
+    try {
+      return await server.ask(instruction, articleContext, options, onDelta, signal);
     } catch (error) {
-      if (error instanceof CodexAppServerTransportError) this.dispose();
-      // `exec --json` is not token-streaming, but it remains a compatibility
-      // fallback for an older CLI that has not shipped app-server yet.
+      // An old bridge failure must not dispose a replacement created by a
+      // concurrent request while the old process is finishing cleanup.
+      if (error instanceof CodexAppServerTransportError || error instanceof CodexAppServerUnavailableError) {
+        server.dispose();
+        if (this.appServer === server) this.appServer = undefined;
+      }
+      throwIfCodexCancelled(signal);
       if (error instanceof CodexAppServerUnavailableError) {
-        this.dispose();
-        return runCodexStream(command, instruction, articleContext, options, onDelta, signal);
+        return runCodexStream(this.processes, command, instruction, articleContext, options, onDelta, signal);
       }
       throw error;
     }
+  }
+
+  close(): Promise<void> {
+    this.shutdown.abort(new CodexCliError("AI 请求已取消。"));
+    this.dispose();
+    return this.processes.close();
   }
 
   dispose(): void {
@@ -197,7 +220,7 @@ export class LocalCodexCli implements CodexCliRunner {
   private getAppServer(command: string): PersistentCodexAppServer {
     if (this.appServer?.command === command && this.appServer.reusable) return this.appServer;
     this.dispose();
-    this.appServer = new PersistentCodexAppServer(command);
+    this.appServer = new PersistentCodexAppServer(command, this.processes);
     return this.appServer;
   }
 }
@@ -324,7 +347,7 @@ class PersistentCodexAppServer {
   private turnSemaphore = new BoundedAsyncSemaphore(APP_SERVER_MAX_CONCURRENT_TURNS);
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(command: string) {
+  constructor(command: string, private readonly processes: ChildProcessScope) {
     this.command = command;
   }
 
@@ -360,8 +383,7 @@ class PersistentCodexAppServer {
     const child = this.child;
     this.child = undefined;
     if (!child) return;
-    child.stdin.end();
-    if (!child.killed) child.kill("SIGTERM");
+    void this.processes.terminate(child);
   }
 
   private acquireTurnSlot(signal?: AbortSignal): Promise<() => void> {
@@ -373,12 +395,12 @@ class PersistentCodexAppServer {
     if (this.disposed) throw new CodexAppServerTransportError();
     if (this.ready) return this.ready;
 
-    const child = spawn(this.command, codexAppServerArguments(), {
+    const child = this.processes.track(spawn(this.command, codexAppServerArguments(), {
       cwd: tmpdir(),
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true
-    });
+    }));
     this.child = child;
     // The bridge must never keep the Electron process alive after its windows
     // have closed. Active Electron work keeps the stdio listeners serviced.
@@ -649,7 +671,9 @@ class PersistentCodexAppServer {
     this.disposed = true;
     this.stdoutLines.discard();
     this.clearIdleTimer();
+    const child = this.child;
     this.child = undefined;
+    if (child) void this.processes.terminate(child);
     const failure = this.initialized ? new CodexAppServerTransportError() : new CodexAppServerUnavailableError();
     this.turnSemaphore.close(failure);
     this.failAll(failure);
@@ -710,36 +734,44 @@ type ActiveAppServerTurn = {
  * `exec --json` is structured, but may emit only a completed agent message;
  * only agent-message output is ever forwarded to the renderer.
  */
-function runCodexStream(command: string, instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener, signal?: AbortSignal): Promise<string> {
+function runCodexStream(processes: ChildProcessScope, command: string, instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(new CodexCliError("AI 请求已取消。"));
       return;
     }
-    const child = spawn(command, codexExecArguments(instruction, options, true), {
+    const child = processes.track(spawn(command, codexExecArguments(instruction, options, true), {
       cwd: tmpdir(),
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true
-    });
+    }));
     let answer = "";
-    let outputFailure: CodexCliError | undefined;
     let stderr = "";
-    let timedOut = false;
-    let cancelled = false;
-    const abort = () => {
-      cancelled = true;
+    let failure: CodexCliError | undefined;
+    let settled = false;
+    const finish = (error?: CodexCliError, result?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
       lines.discard();
-      if (!child.killed) child.kill("SIGTERM");
+      if (error) reject(error); else resolve(result!);
     };
-    signal?.addEventListener("abort", abort, { once: true });
-    const timeout = setTimeout(() => {
-      timedOut = true;
+    const stop = (error: CodexCliError) => {
+      if (settled || failure) return;
+      failure = error;
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
       lines.discard();
-      child.kill("SIGTERM");
-    }, codexTimeout(options));
+      // Do not depend on close: inherited/open pipes or an uncooperative child
+      // must not keep the request and IPC shutdown drain waiting indefinitely.
+      void processes.terminate(child).then(() => finish(failure));
+    };
+    const abort = () => stop(new CodexCliError("AI 请求已取消。"));
+    const timeout = setTimeout(() => stop(new CodexCliError("本机 Codex 回答超时，请稍后重试。")), codexTimeout(options));
     const acceptEvent = (line: string) => {
-      if (outputFailure || cancelled || timedOut) return;
+      if (settled || failure) return;
       const event = parseCodexEvent(line);
       if (!event) return;
       const next = mergeCodexAnswer(answer, event);
@@ -749,40 +781,23 @@ function runCodexStream(command: string, instruction: string, articleContext: st
     const lines = new Utf8LineDecoder(MAX_PROTOCOL_LINE_BYTES, acceptEvent);
     child.stdout.on("data", (chunk: Buffer) => {
       try { lines.push(chunk); }
-      catch {
-        outputFailure = protocolOutputError();
-        clearTimeout(timeout);
-        signal?.removeEventListener("abort", abort);
-        if (!child.killed) child.kill("SIGTERM");
-        reject(outputFailure);
-      }
+      catch { stop(protocolOutputError()); }
     });
-    child.stderr.on("data", (chunk: Buffer) => { stderr = appendText(stderr, chunk, MAX_STDERR_LENGTH); });
-    child.stdin.once("error", () => undefined);
-    child.once("error", () => {
-      lines.discard();
-      clearTimeout(timeout);
-      signal?.removeEventListener("abort", abort);
-      reject(new CodexCliError("无法启动本机 Codex。请重新安装后在终端执行 codex 登录。"));
-    });
+    child.stderr.on("data", (chunk: Buffer) => { if (!settled && !failure) stderr = appendText(stderr, chunk, MAX_STDERR_LENGTH); });
+    child.stdin.once("error", () => stop(new CodexCliError("无法向本机 Codex 发送请求，请稍后重试。")));
+    child.once("error", () => stop(new CodexCliError("无法启动本机 Codex。请重新安装后在终端执行 codex 登录。")));
     child.once("close", (code) => {
-      clearTimeout(timeout);
-      signal?.removeEventListener("abort", abort);
+      if (settled) return;
       lines.end();
+      if (failure) { finish(failure); return; }
       const finalAnswer = answer.trim();
-      if (outputFailure) {
-        reject(outputFailure);
-      } else if (timedOut) {
-        reject(new CodexCliError("本机 Codex 回答超时，请稍后重试。"));
-      } else if (cancelled) {
-        reject(new CodexCliError("AI 请求已取消。"));
-      } else if (code === 0 && finalAnswer) {
-        resolve(finalAnswer);
-      } else {
-        reject(new CodexCliError(codexFailureMessage(stderr)));
-      }
+      if (code === 0 && finalAnswer) finish(undefined, finalAnswer);
+      else finish(new CodexCliError(codexFailureMessage(stderr)));
     });
-    child.stdin.end(articleContext);
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) { abort(); return; }
+    try { child.stdin.end(articleContext); }
+    catch { stop(new CodexCliError("无法向本机 Codex 发送请求，请稍后重试。")); }
   });
 }
 

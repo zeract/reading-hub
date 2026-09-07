@@ -64,6 +64,11 @@ export class AiService {
     private readonly codexCli: CodexCliRunner = new LocalCodexCli()
   ) {}
 
+  async close(): Promise<void> {
+    if (this.codexCli.close) await this.codexCli.close();
+    else this.codexCli.dispose?.();
+  }
+
   async listProviders(): Promise<AiProviderSettings[]> {
     return Promise.all((Object.keys(PROVIDERS) as AiProviderId[]).map(async (id) => {
       const provider = getProvider(id);
