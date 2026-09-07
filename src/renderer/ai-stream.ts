@@ -12,12 +12,50 @@ export function newAiRequestId(): string {
   return `ai-${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
 }
 
-/** Keep every AI surface on the same scoped IPC subscription contract. */
-export function useAiStreamSubscription(listener: (event: AiStreamEvent) => void): void {
+/** Batch only the active request; terminal events flush even without a paint. */
+export function useAiStreamSubscription(
+  listener: (event: AiStreamEvent) => void,
+  getActiveRequestId: () => string | undefined
+) {
   const listenerRef = useRef(listener);
   listenerRef.current = listener;
+  const activeRef = useRef(getActiveRequestId);
+  activeRef.current = getActiveRequestId;
+  const pending = useRef<Extract<AiStreamEvent, { type: "delta" }> | undefined>(undefined);
+  const frame = useRef<number | undefined>(undefined);
 
-  useEffect(() => window.reader.onAiStream((event) => listenerRef.current(event)), []);
+  const clear = useCallback(() => {
+    cancelScheduledAnimationFrame(frame.current);
+    frame.current = undefined;
+    pending.current = undefined;
+  }, []);
+  const flush = useCallback(() => {
+    const event = pending.current;
+    clear();
+    if (event && event.requestId === activeRef.current()) listenerRef.current(event);
+  }, [clear]);
+  const receive = useCallback((event: AiStreamEvent) => {
+    if (event.requestId !== activeRef.current()) return;
+    if (event.type !== "delta") {
+      flush();
+      listenerRef.current(event);
+      return;
+    }
+    const previous = pending.current;
+    pending.current = previous?.requestId === event.requestId
+      ? { ...event, text: previous.text + event.text }
+      : event;
+    if (frame.current === undefined) frame.current = scheduleAnimationFrame(flush);
+  }, [flush]);
+  const fail = useCallback((requestId: string, message: string) => {
+    receive({ type: "error", requestId, message });
+  }, [receive]);
+
+  useEffect(() => {
+    const unsubscribe = window.reader.onAiStream(receive);
+    return () => { unsubscribe(); clear(); };
+  }, [receive, clear]);
+  return { clear, fail };
 }
 
 /**
@@ -30,83 +68,48 @@ export function useAiTextStream() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const activeRequestId = useRef<string | undefined>(undefined);
-  const bufferedText = useRef("");
-  const renderFrame = useRef<number | undefined>(undefined);
-
-  const publishBufferedText = useCallback((immediate = false) => {
-    if (immediate) {
-      cancelScheduledAnimationFrame(renderFrame.current);
-      renderFrame.current = undefined;
-      setText(bufferedText.current);
-      return;
-    }
-    if (renderFrame.current !== undefined) return;
-    renderFrame.current = scheduleAnimationFrame(() => {
-      renderFrame.current = undefined;
-      setText(bufferedText.current);
-    });
-  }, []);
-
-  const cancel = useCallback(() => {
-    const requestId = activeRequestId.current;
-    activeRequestId.current = undefined;
-    cancelScheduledAnimationFrame(renderFrame.current);
-    renderFrame.current = undefined;
-    if (requestId) void window.reader.cancelAiStream(requestId).catch(() => undefined);
-  }, []);
-
-  useEffect(() => () => cancel(), [cancel]);
-  useEffect(() => () => {
-    cancelScheduledAnimationFrame(renderFrame.current);
-  }, []);
-
-  useAiStreamSubscription((event) => {
-    if (activeRequestId.current !== event.requestId) return;
+  const { clear, fail } = useAiStreamSubscription((event) => {
     if (event.type === "delta") {
-      bufferedText.current = `${bufferedText.current}${event.text}`;
-      publishBufferedText();
+      setText((current) => current + event.text);
       return;
     }
     activeRequestId.current = undefined;
     setBusy(false);
-    if (event.type === "complete") {
-      bufferedText.current = event.answer.text;
-      publishBufferedText(true);
-      return;
-    }
-    setError(event.message);
-  });
+    if (event.type === "complete") setText(event.answer.text);
+    else setError(event.message);
+  }, () => activeRequestId.current);
+
+  const cancel = useCallback(() => {
+    const requestId = activeRequestId.current;
+    activeRequestId.current = undefined;
+    clear();
+    if (requestId) void window.reader.cancelAiStream(requestId).catch(() => undefined);
+  }, [clear]);
+
+  useEffect(() => () => cancel(), [cancel]);
 
   const reset = useCallback(() => {
     cancel();
-    bufferedText.current = "";
-    cancelScheduledAnimationFrame(renderFrame.current);
-    renderFrame.current = undefined;
     setText("");
     setBusy(false);
     setError(undefined);
   }, [cancel]);
 
   const start = useCallback(async (request: AiStreamRequest) => {
-    // A double-click must not create two billable/provider requests for the
-    // same visible answer surface. Explicit reset is required before retrying.
+    // Guard synchronously, before React commits the busy state, so a double
+    // submission cannot create two provider requests for this answer surface.
     if (activeRequestId.current) return;
     activeRequestId.current = request.requestId;
-    bufferedText.current = "";
-    cancelScheduledAnimationFrame(renderFrame.current);
-    renderFrame.current = undefined;
+    clear();
     setText("");
     setBusy(true);
     setError(undefined);
     try {
       await window.reader.startAiStream(request);
     } catch (reason) {
-      if (activeRequestId.current !== request.requestId) return;
-      activeRequestId.current = undefined;
-      setBusy(false);
-      setError(errorMessage(reason));
+      fail(request.requestId, errorMessage(reason));
     }
-  }, []);
+  }, [clear, fail]);
 
   return { text, busy, error, reset, start, cancel };
 }

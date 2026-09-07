@@ -502,7 +502,7 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
     }
   }, [controlledProviderId, onProviderChange]);
   useEffect(() => { void reloadProviders().catch((reason) => setError(errorMessage(reason))); }, [reloadProviders]);
-  useAiStreamSubscription((event) => {
+  const { fail: failStream } = useAiStreamSubscription((event) => {
     const active = activeStream.current;
     if (!active || active.requestId !== event.requestId) return;
     if (event.type === "delta") {
@@ -522,7 +522,12 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
     setMessages((current) => current.map((message) => message.id === active.assistantMessageId
       ? { ...message, text: message.text ? `${message.text}\n\n生成中断：${event.message}` : event.message, error: true, streaming: false }
       : message));
-  });
+  }, () => activeStream.current?.requestId);
+  useEffect(() => () => {
+    const active = activeStream.current;
+    activeStream.current = undefined;
+    if (active) void window.reader.cancelAiStream(active.requestId).catch(() => undefined);
+  }, []);
   useEffect(() => {
     const element = messagesElement.current;
     if (element) element.scrollTop = element.scrollHeight;
@@ -536,7 +541,7 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
 
   async function startQuestion(textValue: string, selection?: AiSelectionContext) {
     const text = textValue.trim();
-    if (!text || busy) return;
+    if (!text || activeStream.current) return;
     if (!selected?.configured) {
       setError(selected?.requiresApiKey ? "请先在设置中配置 API Key。" : "未检测到本机 Codex CLI。请安装并登录后重试。");
       onOpenSettings();
@@ -561,11 +566,7 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
         }
       });
     } catch (reason) {
-      const message = errorMessage(reason);
-      if (activeStream.current?.requestId !== requestId) return;
-      activeStream.current = undefined;
-      setBusy(false);
-      setMessages((current) => current.map((item) => item.id === assistantMessageId ? { ...item, text: message, error: true, streaming: false } : item));
+      failStream(requestId, errorMessage(reason));
     }
   }
 

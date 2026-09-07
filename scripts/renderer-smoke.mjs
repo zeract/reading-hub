@@ -25,15 +25,25 @@ let pendingRead;
 let readRequested;
 const cancelledReads = new Set();
 let aiRequests = 0;
+let aiMode = "complete";
+let activeAiRequest;
+const cancelledAiRequests = new Set();
 const aiAnswer = "## Fixture answer\n\nInline $x^2$.\n\n$$\ny=x+1\n$$";
 const channels = [
   ["ai:list-providers", () => [{ id: "openai", label: "Fixture AI", model: "fixture", configured: true, requiresApiKey: true }]],
   ["ai:ask-stream", (event, payload) => {
     aiRequests++;
+    activeAiRequest = payload.requestId;
     event.sender.send("ai:stream", { requestId: payload.requestId, type: "delta", text: "Fixture" });
+    if (aiMode === "pending") return;
+    if (aiMode === "error") {
+      event.sender.send("ai:stream", { requestId: payload.requestId, type: "delta", text: " partial answer" });
+      event.sender.send("ai:stream", { requestId: payload.requestId, type: "error", message: "Fixture interruption" });
+      return;
+    }
     event.sender.send("ai:stream", { requestId: payload.requestId, type: "complete", answer: { provider: "openai", model: "fixture", text: aiAnswer } });
   }],
-  ["ai:cancel-stream", () => undefined],
+  ["ai:cancel-stream", (_event, requestId) => { cancelledAiRequests.add(requestId); }],
   ["library:revision", () => database.getLibraryRevision()],
   ["source:list", () => database.listSources()],
   ["source:load-icon", () => undefined],
@@ -159,7 +169,18 @@ try {
   await evaluate("document.querySelector('[aria-label=\"恢复 AI 学习助手\"]').click()");
   assert(await evaluate("document.querySelector('.ai-message.assistant .katex') === globalThis.fixtureAnswerFormula"), "Completed answer formula nodes must survive draft and panel updates.");
   assert(aiRequests === 1, "Editing a draft or minimizing the panel must not start a new AI request.");
+  aiMode = "error";
+  await evaluate("document.querySelector('.ai-question').requestSubmit()");
+  await waitFor(window, "document.querySelector('.ai-message.assistant.error')?.textContent.includes('Fixture partial answer') && document.querySelector('.ai-message.assistant.error')?.textContent.includes('Fixture interruption') && !document.querySelector('#ai-question').disabled");
+  aiMode = "pending";
+  await evaluate("{ const question = document.querySelector('#ai-question'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(question, 'Pending fixture'); question.dispatchEvent(new Event('input', { bubbles: true })); }");
+  await evaluate("{ const form = document.querySelector('.ai-question'); form.requestSubmit(); form.requestSubmit(); }");
+  await waitFor(window, "document.querySelector('.ai-message.assistant.is-streaming')?.textContent.includes('Fixture')");
   await evaluate("document.querySelector('[aria-label=\"关闭 AI 学习助手\"]').click()");
+  await waitFor(window, "!document.querySelector('.reader-ai-panel')");
+  assert(aiRequests === 3 && cancelledAiRequests.has(activeAiRequest), "Closing the assistant must cancel its unfinished request over IPC.");
+  window.webContents.send("ai:stream", { requestId: activeAiRequest, type: "delta", text: "Late fixture" });
+  aiMode = "complete";
   pauseRead = true;
   const readStarted = new Promise((resolve) => { readRequested = resolve; });
   await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Unavailable fixture\"]').click()");
@@ -233,7 +254,7 @@ try {
     assert(fits, `Academic identities or result scrolling do not fit ${width}px at ${scale}.`);
     await writeFile(path.join(tmpdir(), `reading-hub-academic-${width}.png`), (await window.capturePage()).toPNG());
   }
-  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-answer-reuse/unsubscribe/restore, library layouts and four academic search layouts verified.");
+  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore, library layouts and four academic search layouts verified.");
 } catch (error) {
   failure = error;
   console.error(error);
