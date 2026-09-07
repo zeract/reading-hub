@@ -99,7 +99,7 @@ it("clears HTTP validators when a source deliberately uses rendered HTML", async
   const db = new ReadingDatabase(":memory:");
   const http = new PublicHttpClient({ assertAllowed: vi.fn().mockResolvedValue(undefined) } as never);
   const registry = new ConnectorRegistry();
-  const render = vi.fn(async () => html);
+  const render = vi.fn(async (url: string) => ({ url, html }));
   registry.register(new GenericConnector(http, { render } as never));
   const sync = new SyncManager(db, registry);
   try {

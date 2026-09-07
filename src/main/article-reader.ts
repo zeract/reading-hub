@@ -13,7 +13,7 @@ import { abortError, awaitWithAbort, throwIfAborted } from "./cancellation";
 import { isHtmlDocumentContentType, PublicHttpClient, type PublicRequestOptions } from "./http";
 import { extractPagePublishedAt } from "./extractor";
 import { ScientificMathRenderer, type MathJaxDocumentExpression, type MathMacroDefinition } from "./mathjax-renderer";
-import type { PageRenderer } from "./page-renderer";
+import type { PageRenderer, RenderedPage } from "./page-renderer";
 import { discoverReaderLanguageVariants, mergeReaderLanguageVariants, sameCanonicalUrl } from "./reader-language-variants";
 import { RobotsDisallowedError } from "./robots";
 
@@ -285,7 +285,7 @@ export interface ReaderReadOptions {
   signal?: AbortSignal;
 }
 
-type RenderWithSession = (url: string, options?: ReaderReadOptions) => Promise<string>;
+type RenderWithSession = (url: string, options?: ReaderReadOptions) => Promise<RenderedPage>;
 type ExtractedArticle = { article: ReaderArticle; textLength: number };
 type PreparedReaderArticle = {
   rawContentHtml: string;
@@ -433,9 +433,9 @@ export class ArticleReader {
       }
     }
 
-    let renderedHtml: string | undefined;
+    let renderedPage: RenderedPage | undefined;
     try {
-      renderedHtml = usesZhihuSession && this.renderWithZhihuSession
+      renderedPage = usesZhihuSession && this.renderWithZhihuSession
         ? await this.renderWithZhihuSession(targetUrl, options)
         : await this.renderer.render(targetUrl, options);
     } catch (error) {
@@ -443,7 +443,7 @@ export class ArticleReader {
       // Keep a usable static article when Chromium rendering is unavailable.
     }
     throwIfAborted(options?.signal);
-    const renderedArticle = renderedHtml ? await awaitWithAbort(this.extractWithMathFallback(renderedHtml, targetUrl, entry), options?.signal) : undefined;
+    const renderedArticle = renderedPage?.html ? await awaitWithAbort(this.extractWithMathFallback(renderedPage.html, renderedPage.url, entry), options?.signal) : undefined;
     throwIfAborted(options?.signal);
     if (renderedArticle && renderedArticle.textLength > (staticArticle?.textLength ?? 0)) {
       return this.rememberLanguageVariants(entry.id, renderedArticle.article, knownLanguageVariants, options?.signal);

@@ -19,7 +19,7 @@ it("negotiates original HTML across DOI redirects instead of JSON metadata", asy
       ? new Response(null, { status: 302, headers: { location: "https://publisher.example/article" } })
       : new Response(html, { headers: { "content-type": "text/html" } });
   });
-  const render = vi.fn(async () => "");
+  const render = vi.fn(async (url: string) => ({ url, html: "" }));
   const article = await new ArticleReader(client(), { render }).read(entry);
   expect(article.contentHtml).toContain("Publisher article prose");
   expect(article.contentHtml).not.toContain("Metadata citation");
@@ -29,7 +29,7 @@ it("negotiates original HTML across DOI redirects instead of JSON metadata", asy
 
 it.each([true, false])("rejects declared JSON as original text (browser HTML available: %s)", async (available) => {
   fetcher.mockResolvedValue(new Response(metadata, { headers: { "content-type": "application/json; charset=utf-8" } }));
-  const render = vi.fn(async () => available ? html : "");
+  const render = vi.fn(async (url: string) => ({ url, html: available ? html : "" }));
   const pending = new ArticleReader(client(), { render }).read(entry);
   if (available) expect((await pending).contentHtml).toContain("Publisher article prose");
   else await expect(pending).rejects.toThrow();

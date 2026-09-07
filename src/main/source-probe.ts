@@ -72,6 +72,7 @@ export class SourceProbe {
     }
 
     let extraction = extractGenericPage(page.text, page.url);
+    let extractedUrl = page.url;
     let usedRenderer = page.fromRenderer;
     // A named, high-confidence semantic section can legitimately contain one
     // newly published post. Rendering it again is costly and cannot improve a
@@ -80,13 +81,14 @@ export class SourceProbe {
       try {
         const rendered = await this.renderer.render(page.url, signal ? { signal } : undefined);
         throwIfAborted(signal);
-        const renderedExtraction = extractGenericPage(rendered, page.url);
+        const renderedExtraction = extractGenericPage(rendered.html, rendered.url);
         if (renderedExtraction.entries.length > extraction.entries.length) {
           extraction = {
             ...renderedExtraction,
             rule: renderedExtraction.rule ? { ...renderedExtraction.rule, rendererRequired: true } : undefined
           };
           usedRenderer = true;
+          extractedUrl = rendered.url;
         }
       } catch {
         throwIfAborted(signal);
@@ -96,7 +98,7 @@ export class SourceProbe {
     return {
       kind: "generic",
       title: extraction.title,
-      url: page.url,
+      url: extractedUrl,
       confidence: extraction.confidence,
       extractionRule: withRendererRequirement(extraction.rule, usedRenderer),
       preview: extraction.entries.slice(0, 10),
@@ -113,8 +115,8 @@ export class SourceProbe {
     assertSupportedPublicProbeUrl(input);
     const page = await loadGenericPage(this.http, this.renderer, input, { signal });
     throwIfAborted(signal);
-    const html = page.text;
-    const pageUrl = page.url;
+    let html = page.text;
+    let pageUrl = page.url;
     let candidates = extractCalibrationCandidates(html, pageUrl);
     if (page.fromRenderer) {
       candidates = candidates.map((candidate) => ({
@@ -126,11 +128,15 @@ export class SourceProbe {
       try {
         const rendered = await this.renderer.render(pageUrl, signal ? { signal } : undefined);
         throwIfAborted(signal);
-        const renderedCandidates = extractCalibrationCandidates(rendered, pageUrl).map((candidate) => ({
+        const renderedCandidates = extractCalibrationCandidates(rendered.html, rendered.url).map((candidate) => ({
           ...candidate,
           rule: { ...candidate.rule, rendererRequired: true }
         }));
-        if (renderedCandidates.length > candidates.length) candidates = renderedCandidates;
+        if (renderedCandidates.length > candidates.length) {
+          candidates = renderedCandidates;
+          html = rendered.html;
+          pageUrl = rendered.url;
+        }
       } catch {
         throwIfAborted(signal);
         // Static candidates are still useful if a page blocks the isolated renderer.

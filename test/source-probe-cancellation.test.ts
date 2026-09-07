@@ -44,7 +44,7 @@ describe("source probe cancellation", () => {
     const http = { getText: vi.fn(async (url: string) => page(url)) };
     const renderer = { render: vi.fn(async (_url: string, options?: { signal?: AbortSignal }) => {
       expect(options?.signal).toBe(controller.signal);
-      controller.abort(new Error("cancel probe")); return "<main>Late fixture page</main>";
+      controller.abort(new Error("cancel probe")); return { url: _url, html: "<main>Late fixture page</main>" };
     }) };
     await expect(new SourceProbe(http as never, renderer)[method]("https://example.com/", controller.signal)).rejects.toThrow("cancel probe");
   });

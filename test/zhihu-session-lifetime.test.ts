@@ -3,7 +3,7 @@ const mocks = vi.hoisted(() => ({
   windows: [] as any[],
   created: vi.fn(),
   configure: vi.fn(async () => undefined),
-  navigate: vi.fn(async () => undefined),
+  navigate: vi.fn(async (_url?: string) => undefined),
   evaluate: vi.fn(async () => "Fixture HTML"),
   clear: vi.fn(async () => undefined),
   extract: vi.fn(() => [{ url: "https://www.zhihu.com/question/1/answer/2", title: "Fixture answer" }])
@@ -12,10 +12,11 @@ vi.mock("electron", async () => {
   const { EventEmitter } = await import("node:events");
   class BrowserWindow extends EventEmitter {
     destroyed = false;
+    url = "https://www.zhihu.com/follow";
     webContents = Object.assign(new EventEmitter(), {
-      getURL: () => "https://www.zhihu.com/follow", setWindowOpenHandler: vi.fn(), stop: vi.fn(), executeJavaScript: mocks.evaluate
+      getURL: () => this.url, setWindowOpenHandler: vi.fn(), stop: vi.fn(), executeJavaScript: mocks.evaluate
     });
-    loadURL = mocks.navigate;
+    loadURL = async (url: string) => { await mocks.navigate(url); this.url = url; };
     constructor(readonly options: unknown) { super(); mocks.windows.push(this); mocks.created(); }
     isDestroyed() { return this.destroyed; }
     destroy() { if (!this.destroyed) { this.destroyed = true; this.emit("closed"); } }
@@ -41,6 +42,29 @@ beforeEach(() => {
   mocks.evaluate.mockResolvedValue("Fixture HTML"); mocks.clear.mockResolvedValue(undefined);
 });
 afterEach(() => vi.useRealTimers());
+
+it("returns the actual Zhihu article address from the authorized session", async () => {
+  const url = "https://zhuanlan.zhihu.com/p/12345";
+  mocks.evaluate.mockImplementationOnce(async () => { mocks.windows.at(-1).url = url; return "Redirected HTML"; });
+  const connector = new ZhihuFollowConnector();
+  try {
+    const pending = connector.renderArticle("https://www.zhihu.com/question/1/answer/2");
+    await vi.advanceTimersByTimeAsync(1_200);
+    expect(await pending).toEqual({ url, html: "Redirected HTML" });
+    expect(mocks.windows.at(-1).isDestroyed()).toBe(true);
+  } finally { connector.close(); }
+});
+
+it("rejects a final document outside the authorized Zhihu hosts", async () => {
+  mocks.evaluate.mockImplementationOnce(async () => { mocks.windows.at(-1).url = "https://example.com/elsewhere"; return "Other HTML"; });
+  const connector = new ZhihuFollowConnector();
+  try {
+    const rejected = expect(connector.renderArticle("https://www.zhihu.com/question/1/answer/2")).rejects.toThrow("只能在知乎授权会话中打开知乎内容");
+    await vi.advanceTimersByTimeAsync(1_200);
+    await rejected;
+    expect(mocks.windows.at(-1).isDestroyed()).toBe(true);
+  } finally { connector.close(); }
+});
 
 describe.each(["feed", "article"] as const)("Zhihu %s session lifetime", (kind) => {
   it("owns a newly constructed window before the caller resumes", async () => {
@@ -99,7 +123,7 @@ describe.each(["feed", "article"] as const)("Zhihu %s session lifetime", (kind) 
       expect(mocks.configure).not.toHaveBeenCalled();
       cleared.release(); await clearing;
       await vi.advanceTimersByTimeAsync(1_200);
-      expect(await reading).toEqual(kind === "feed" ? mocks.extract.mock.results[0].value : "Fixture HTML");
+      expect(await reading).toEqual(kind === "feed" ? mocks.extract.mock.results[0].value : { html: "Fixture HTML", url: "https://www.zhihu.com/question/1/answer/2" });
       expect(mocks.windows).toHaveLength(1);
       expect(mocks.windows[0].isDestroyed()).toBe(true);
     } finally { cleared.release(); await vi.advanceTimersByTimeAsync(1_200); await reading; connector.close(); }

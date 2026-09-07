@@ -17,8 +17,14 @@ export interface PageRenderOptions {
   maxBytes?: number;
 }
 
+export interface RenderedPage {
+  /** Actual loaded address; relative URLs belong to this document. */
+  url: string;
+  html: string;
+}
+
 export interface PageRenderer {
-  render(url: string, options?: PageRenderOptions): Promise<string>;
+  render(url: string, options?: PageRenderOptions): Promise<RenderedPage>;
 }
 
 /** An isolated page remained too large even after removing browser state. */
@@ -33,7 +39,7 @@ export class RenderedPageTooLargeError extends Error {
 export class IsolatedPageRenderer implements PageRenderer {
   constructor(private readonly robots = new RobotsPolicy()) {}
 
-  async render(rawUrl: string, options?: PageRenderOptions): Promise<string> {
+  async render(rawUrl: string, options?: PageRenderOptions): Promise<RenderedPage> {
     throwIfAborted(options?.signal);
     const url = assertPublicUrl(rawUrl).toString();
     // Rendering is another fetch path, so it must never bypass the policy the
@@ -86,7 +92,7 @@ export class IsolatedPageRenderer implements PageRenderer {
         options?.signal
       );
       if (typeof html !== "string") throw new RenderedPageTooLargeError(maxBytes);
-      return html;
+      return { html, url: assertPublicUrl(window.webContents.getURL()).toString() };
     } finally {
       options?.signal?.removeEventListener("abort", stopAndDestroy);
       if (!window.isDestroyed()) window.destroy();

@@ -251,10 +251,10 @@ describe("GenericConnector", () => {
       }
     };
     const renderer = {
-      render: vi.fn().mockResolvedValue(`<main><ul>
+      render: vi.fn().mockImplementation(async (url: string) => ({ url, html: `<main><ul>
         <li><a href="/one">A sufficiently descriptive first post</a><time datetime="2026-08-20">20 Aug 2026</time></li>
         <li><a href="/two">A sufficiently descriptive second post</a><time datetime="2026-08-19">19 Aug 2026</time></li>
-      </ul></main>`)
+      </ul></main>` }))
     };
     const source: Source = {
       id: "source", url: "https://example.com/", title: "Example", kind: "generic", status: "active",

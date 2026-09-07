@@ -78,6 +78,6 @@ function isRenderableHtmlResponse(error: ResponseTooLargeError): boolean {
 }
 
 async function renderPage(renderer: PageRenderer, url: string, signal?: AbortSignal): Promise<LoadedGenericPage> {
-  const text = await renderer.render(url, signal ? { signal } : undefined);
-  return { url, text, contentType: "text/html", fromRenderer: true };
+  const page = await renderer.render(url, signal ? { signal } : undefined);
+  return { url: page.url, text: page.html, contentType: "text/html", fromRenderer: true };
 }

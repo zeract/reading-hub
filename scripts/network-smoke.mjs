@@ -7,8 +7,13 @@ import assert from "node:assert/strict";
 import { AiService } from "../dist/main/main/ai-service.js";
 import { configureChromiumNetwork, chromiumFetch } from "../dist/main/main/network.js";
 import { requestJsonWithTimeout } from "../dist/main/main/json-response.js";
+import { IsolatedPageRenderer } from "../dist/main/main/page-renderer.js";
+import { extractReaderArticle } from "../dist/main/main/article-reader.js";
 
 app.setPath("userData", await mkdtemp(join(tmpdir(), "reading-hub-ai-network-data-")));
+// The isolated renderer destroys its only window before returning its result.
+// Keep this fixture alive until the assertions and explicit app.exit below.
+app.on("window-all-closed", () => {});
 await app.whenReady();
 const cookieObservations = [];
 const proxy = createServer((request, response) => {
@@ -124,7 +129,32 @@ try {
   }, undefined, 2_000);
   assert.deepEqual(json.payload, { fixture: true });
   assert.equal(apiRequests, 2);
-  console.log("Reading Hub network smoke test passed: both AI providers use local proxy; native SSE with LF/CRLF/CR, semantic completion before EOF, final snapshots, JSON, same-origin redirects, real HTTP cookie control, API credential omission, explicit authorization and cross-origin rejection verified.");
+  const initialPageUrl = "https://redirect.example/start";
+  const finalPageUrl = "https://rendered.example/papers/index.html";
+  const checkedPages = [];
+  const interceptRenderedPage = (_event, contents) => {
+    contents.session.protocol.handle("https", (request) => {
+      assert.equal(request.headers.get("cookie"), null);
+      if (request.url === initialPageUrl) return new Response(null, { status: 302, headers: { location: finalPageUrl } });
+      if (request.url === finalPageUrl) return new Response(`<article><h1>Fixture article</h1><p>${"Synthetic paragraph. ".repeat(50)}</p><img src="figure.svg"><a href="appendix.html">Fixture appendix</a></article>`, { headers: { "content-type": "text/html" } });
+      if (request.url === "https://rendered.example/papers/figure.svg") return new Response('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>', { headers: { "content-type": "image/svg+xml" } });
+      return new Response(null, { status: 404 });
+    });
+  };
+  app.on("web-contents-created", interceptRenderedPage);
+  try {
+    const renderer = new IsolatedPageRenderer({ async assertAllowed(url) {
+      assert([initialPageUrl, finalPageUrl].includes(url)); checkedPages.push(url);
+    } });
+    const page = await renderer.render(initialPageUrl);
+    assert.equal(page.url, finalPageUrl);
+    assert.deepEqual(checkedPages, [initialPageUrl, finalPageUrl]);
+    const article = extractReaderArticle(page.html, page.url, { id: "fixture", title: "Fixture", url: initialPageUrl });
+    assert.equal(article.article.url, finalPageUrl);
+    assert(article.article.contentHtml.includes('src="https://rendered.example/papers/figure.svg"'));
+    assert(article.article.contentHtml.includes('href="https://rendered.example/papers/appendix.html"'));
+  } finally { app.removeListener("web-contents-created", interceptRenderedPage); }
+  console.log("Reading Hub network smoke test passed: AI semantic completion and final snapshots, LF/CRLF/CR, JSON, proxy and credential isolation, plus native rendered-page redirects and relative article URLs verified.");
 } catch (error) {
   exitCode = 1;
   console.error(error);

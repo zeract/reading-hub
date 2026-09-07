@@ -5,7 +5,7 @@ const entry: Entry = { id: "one", sourceId: "source", url: "https://example.com/
 
 describe("reader extraction cancellation", () => {
   it.each(["static", "rendered"])("stops waiting for %s extraction and cannot publish late language metadata", async (path) => {
-    const renderer = { render: vi.fn(async () => "rendered fixture") };
+    const renderer = { render: vi.fn(async (url: string) => ({ url, html: "rendered fixture" })) };
     const reader = new ArticleReader({ getText: vi.fn(async () => ({ text: "fixture", url: entry.url })) } as never, renderer);
     const article: ReaderArticle = { entryId: entry.id, title: "One", url: entry.url, renderProfile: "standard", contentHtml: "<p>fixture</p>", languageVariants: [
       { language: "en", label: "English", url: entry.url }, { language: "zh", label: "中文", url: "https://example.com/zh" }

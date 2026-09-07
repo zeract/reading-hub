@@ -8,6 +8,7 @@ import { extractZhihuFollowPage } from "./zhihu-follow-parser";
 import { configureChromiumSession } from "./network";
 import { createBackgroundWindow } from "./background-window";
 import { guardMainFrameNavigation } from "./navigation-policy";
+import type { RenderedPage } from "./page-renderer";
 
 const FOLLOW_URL = "https://www.zhihu.com/follow";
 const PARTITION = "persist:reading-hub-zhihu-follow";
@@ -109,14 +110,17 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
   }
 
   /** Renders a followed Zhihu item in the same dedicated, user-authorized session. */
-  async renderArticle(rawUrl: string, options?: { signal?: AbortSignal }): Promise<string> {
+  async renderArticle(rawUrl: string, options?: { signal?: AbortSignal }): Promise<RenderedPage> {
     throwIfAborted(options?.signal);
     const url = assertPublicUrl(rawUrl).toString();
     if (!isZhihuUrl(url)) throw new Error("只能在知乎授权会话中打开知乎内容。");
     return this.withReadingWindow(options?.signal, async (window, signal) => {
       await awaitWithAbort(window.loadURL(url), signal);
       await delayWithAbort(900, signal);
-      return await awaitWithAbort(window.webContents.executeJavaScript("document.documentElement.outerHTML", true) as Promise<string>, signal);
+      const html = await awaitWithAbort(window.webContents.executeJavaScript("document.documentElement.outerHTML", true) as Promise<string>, signal);
+      const pageUrl = assertPublicUrl(window.webContents.getURL()).toString();
+      if (!isZhihuUrl(pageUrl)) throw new Error("只能在知乎授权会话中打开知乎内容。");
+      return { html, url: pageUrl };
     });
   }
 

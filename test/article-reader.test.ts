@@ -482,7 +482,7 @@ describe("article reader extraction", () => {
         text: `<article><p>${"标准来源正文。 ".repeat(40)}</p><p>$$\\mathjaxOnlyCommand{\\boldsymbol{x}}$$</p><p>${"后续正文。 ".repeat(36)}</p></article>`
       }))
     } as unknown as PublicHttpClient;
-    const reader = new ArticleReader(http, { render: async () => "" }, undefined, math);
+    const reader = new ArticleReader(http, { render: async (url) => ({ html: "", url }) }, undefined, math);
 
     const article = await reader.read(entry);
 
@@ -507,7 +507,7 @@ describe("article reader extraction", () => {
         text: `<article><div class="Post-RichTextContainer"><p>${"知乎正文。 ".repeat(48)}</p><span class="ztext-math" data-eeimg="2" data-tex="\\boxed{rcos(x,y)=\\frac{\\mathrm{cov}(x,y)}{\\mathrm{cov}(x^\\uparrow,y^\\uparrow)}}"></span><p>${"公式后的正文。 ".repeat(34)}</p></div></article>`
       }))
     } as unknown as PublicHttpClient;
-    const reader = new ArticleReader(http, { render: async () => "" }, undefined, math);
+    const reader = new ArticleReader(http, { render: async (url) => ({ html: "", url }) }, undefined, math);
 
     const article = await reader.read({ ...entry, url: "https://zhuanlan.zhihu.com/p/2073205832964220804" });
 
@@ -1104,7 +1104,7 @@ describe("article reader extraction", () => {
       getText: async () => { throw new Error("请求失败（HTTP 403）"); }
     } as unknown as PublicHttpClient;
     const renderer: PageRenderer = {
-      render: async () => `<article><h1>渲染后正文</h1><p>${"可读正文 ".repeat(80)}</p><p>公式 $p_i \\geq 0$。</p></article>`
+      render: async (url) => ({ url, html: `<article><h1>渲染后正文</h1><p>${"可读正文 ".repeat(80)}</p><p>公式 $p_i \\geq 0$。</p></article>` })
     };
 
     const article = await new ArticleReader(http, renderer).read(entry);
@@ -1166,7 +1166,7 @@ describe("article reader extraction", () => {
     const renderer: PageRenderer = {
       render: async () => {
         rendererCalled = true;
-        return "";
+        return { html: "", url: entry.url };
       }
     };
 
@@ -1287,7 +1287,7 @@ describe("article reader extraction", () => {
       pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1
     };
 
-    await expect(new ArticleReader(http, { render: async () => "" }).read({ ...entry, summary: "过短摘要" }, source)).rejects.toBeInstanceOf(RobotsDisallowedError);
+    await expect(new ArticleReader(http, { render: async (url) => ({ html: "", url }) }).read({ ...entry, summary: "过短摘要" }, source)).rejects.toBeInstanceOf(RobotsDisallowedError);
   });
 
   it("uses the dedicated Zhihu session before any public HTTP request", async () => {
@@ -1298,7 +1298,7 @@ describe("article reader extraction", () => {
       id: "zhihu-source", url: "https://www.zhihu.com/follow", title: "知乎关注动态", kind: "zhihu_follow", status: "active",
       pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1
     };
-    const reader = new ArticleReader(http, { render: async () => "" }, async () => `<div class="RichContent-inner"><p>${"授权会话正文 ".repeat(80)}</p></div>`);
+    const reader = new ArticleReader(http, { render: async (url) => ({ html: "", url }) }, async (url) => ({ url, html: `<div class="RichContent-inner"><p>${"授权会话正文 ".repeat(80)}</p></div>` }));
 
     const article = await reader.read(entry, source);
 
@@ -1442,11 +1442,11 @@ describe("article reader extraction", () => {
       id: "zhihu-source", url: "https://www.zhihu.com/follow", title: "知乎关注动态", kind: "zhihu_follow", status: "active",
       pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1
     };
-    const reader = new ArticleReader(http, { render: async () => "" }, async () => `<div class="RichContent-inner">
+    const reader = new ArticleReader(http, { render: async (url) => ({ html: "", url }) }, async (url) => ({ url, html: `<div class="RichContent-inner">
       <p>${"授权会话正文 ".repeat(80)}</p>
       <p><a class="CommentLink" href="#comments">授权会话中的被评论作者文字</a></p>
       <a class="CommentLink" href="#comments">3 条评论</a>
-    </div>`);
+    </div>` }));
 
     const article = await reader.read({ ...entry, url: "https://www.zhihu.com/question/123/answer/456" }, source);
 
