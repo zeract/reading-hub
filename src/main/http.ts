@@ -151,8 +151,12 @@ export class PublicHttpClient {
           }
           continue;
         }
+        const validators = {
+          etag: response.headers.get("etag") ?? undefined,
+          lastModified: response.headers.get("last-modified") ?? undefined
+        };
         if (response.status === 304) {
-          return { url: targetUrl, status: 304, contentType: response.headers.get("content-type") ?? "", text: "" };
+          return { url: targetUrl, status: 304, contentType: response.headers.get("content-type") ?? "", text: "", ...validators };
         }
         if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
         const contentType = response.headers.get("content-type") ?? "";
@@ -176,8 +180,7 @@ export class PublicHttpClient {
             status: response.status,
             contentType,
             text,
-            etag: response.headers.get("etag") ?? undefined,
-            lastModified: response.headers.get("last-modified") ?? undefined
+            ...validators
           };
         } catch (error) {
           if (error instanceof ResponseTooLargeError) throw error;

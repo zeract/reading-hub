@@ -22,7 +22,8 @@ import type {
   SourceStatus,
   Subscription,
   SubscriptionScope,
-  SyncCheckpoint
+  SyncCheckpoint,
+  SyncResult
 } from "../shared/types";
 import { assertPublicUrl } from "../shared/url";
 import { defaultSubscriptionScope, facetIdentity, normaliseFacetReference, normaliseFacets, normaliseSubscriptionScope } from "../shared/subscription-scope";
@@ -1154,17 +1155,19 @@ export class ReadingDatabase {
     this.db.prepare("UPDATE entries SET is_favorite = ? WHERE id = ?").run(Number(favorite), entryId);
   }
 
-  markSuccess(source: Source, update: { etag?: string; lastModified?: string; empty?: boolean; requiresReview?: boolean }): Source {
+  markSuccess(source: Source, update: Pick<SyncResult, "etag" | "lastModified"> & { empty?: boolean; requiresReview?: boolean }): Source {
     const now = Date.now();
     const emptyCount = update.empty ? source.consecutiveEmpty + 1 : 0;
     const requiresReview = update.requiresReview || (source.kind === "generic" && emptyCount >= 3);
     const status: SourceStatus = requiresReview ? "needs_review" : "active";
     const nextCheckAt = status === "active" && source.pollingEnabled ? now + refreshDelay(source.refreshIntervalMinutes) : null;
     this.db
-      .prepare(`UPDATE sources SET status = ?, etag = COALESCE(?, etag), last_modified = COALESCE(?, last_modified),
+      .prepare(`UPDATE sources SET status = ?, etag = CASE WHEN ? THEN ? ELSE etag END,
+        last_modified = CASE WHEN ? THEN ? ELSE last_modified END,
         last_checked_at = ?, last_successful_at = ?, next_check_at = ?, consecutive_empty = ?, failure_count = 0, last_error = NULL,
         updated_at = ? WHERE id = ?`)
-      .run(status, update.etag ?? null, update.lastModified ?? null, now, now, nextCheckAt, emptyCount, now, source.id);
+      .run(status, Number(update.etag !== undefined), update.etag ?? null,
+        Number(update.lastModified !== undefined), update.lastModified ?? null, now, now, nextCheckAt, emptyCount, now, source.id);
     return this.getSource(source.id)!;
   }
 

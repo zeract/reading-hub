@@ -319,8 +319,9 @@ export interface SyncResult {
   /** A successful response without new entries must not be treated as a broken extractor. */
   emptyIsHealthy?: boolean;
   notModified?: boolean;
-  etag?: string;
-  lastModified?: string;
+  /** Undefined keeps the current HTTP validator; null removes it. */
+  etag?: string | null;
+  lastModified?: string | null;
   extractionRule?: ExtractionRule;
   /** Persisted by the host after a connector has replayed upgraded metadata. */
   metadataRevision?: number;

@@ -11,6 +11,7 @@ import { loadGenericPage } from "./generic-page-loader";
 import { PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
 import { builtInManifest } from "./connector-registry";
+import { responseValidators } from "./response-validators";
 
 /** RSS and public-web fetchers return the same host-owned sync contract. */
 export type FetchOutcome = Pick<
@@ -68,8 +69,7 @@ export class RssConnector extends BaseConnector implements ConnectorAdapter {
       entries: mergeFeedFirst(feed?.entries ?? [], archive.entries),
       notModified: response.status === 304 && archive.entries.length === 0,
       emptyIsHealthy: true,
-      etag: response.etag,
-      lastModified: response.lastModified,
+      ...responseValidators(response),
       metadataRevision: RSS_METADATA_REVISION,
       iconUrl: feed?.iconUrl,
       checkpoint: archive.checkpoint
@@ -320,7 +320,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
       signal,
       preferRenderer: source.extractionRule?.rendererRequired === true
     });
-    if (page.response?.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true };
+    if (page.response?.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true, ...responseValidators(page.response) };
 
     for (const feedUrl of discoverFeedUrls(page.text, page.url)) {
       try {
@@ -332,8 +332,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
           entries: feed.entries,
           notModified: false,
           emptyIsHealthy: true,
-          etag: feedResponse.etag,
-          lastModified: feedResponse.lastModified,
+          ...responseValidators(feedResponse),
           metadataRevision: RSS_METADATA_REVISION,
           iconUrl: feed.iconUrl,
           extractionRule: withFeedDiscoveryRevision({ version: 1, ...source.extractionRule, feedUrl: feedResponse.url })
@@ -351,8 +350,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
       entries,
       notModified: false,
       emptyIsHealthy: entries.length > 0,
-      etag: page.response?.etag,
-      lastModified: page.response?.lastModified,
+      ...responseValidators(page.response),
       // A metadata-only rule is safe: it does not constrain item detection,
       // but records that existing entries have been replayed by this parser.
       extractionRule: withFeedDiscoveryRevision(withPublicationDateRevision(withRendererRequirement(
@@ -404,15 +402,14 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
     // untouched indefinitely.
     const needsMetadataReplay = source.metadataRevision !== RSS_METADATA_REVISION;
     const response = await this.http.getText(feedUrl, needsMetadataReplay ? undefined : { etag: source.etag, lastModified: source.lastModified }, { signal });
-    if (response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true };
+    if (response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true, ...responseValidators(response) };
     if (!looksLikeFeed(response.contentType, response.text)) throw new Error("来源声明的 Feed 已不再是有效订阅，请重新校准该来源。");
     const feed = await parseFeed(response.text, response.url);
     return {
       entries: feed.entries,
       notModified: false,
       emptyIsHealthy: true,
-      etag: response.etag,
-      lastModified: response.lastModified,
+      ...responseValidators(response),
       metadataRevision: RSS_METADATA_REVISION,
       iconUrl: feed.iconUrl,
       extractionRule: withFeedDiscoveryRevision({ version: 1, ...source.extractionRule, feedUrl: response.url })

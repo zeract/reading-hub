@@ -4,6 +4,7 @@ import { contentNormalizer } from "./content-normalizer";
 import type { ConnectorAdapter, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
 import { builtInManifest } from "./connector-registry";
 import { PublicHttpClient } from "./http";
+import { responseValidators } from "./response-validators";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -28,7 +29,7 @@ export class XiaohongshuConnector implements ConnectorAdapter {
       etag: context.source.etag,
       lastModified: context.source.lastModified
     }, { signal: context.signal });
-    if (response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true };
+    if (response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true, ...responseValidators(response) };
     const entries = extractPublicXiaohongshuNotes(response.text, response.url);
     if (!entries.length) {
       throw new Error("小红书未在未登录的公开页面中提供可读取的笔记列表。Reading Hub 不会使用 Cookie、登录态或反爬绕过；可改为粘贴单篇分享链接保存。");
@@ -36,8 +37,7 @@ export class XiaohongshuConnector implements ConnectorAdapter {
     return {
       entries,
       emptyIsHealthy: true,
-      etag: response.etag,
-      lastModified: response.lastModified,
+      ...responseValidators(response),
       checkpoint: { data: { lastPublicProfileCheckAt: Date.now() } }
     };
   }
