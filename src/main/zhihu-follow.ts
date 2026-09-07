@@ -3,7 +3,7 @@ import { assertPublicUrl } from "../shared/url";
 import type { ConnectorAdapter, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
 import { builtInManifest } from "./connector-registry";
 import { contentNormalizer } from "./content-normalizer";
-import { abortError, awaitWithAbort, delayWithAbort, throwIfAborted } from "./cancellation";
+import { abortError, awaitWithAbort, combineAbortSignals, delayWithAbort, throwIfAborted } from "./cancellation";
 import { extractZhihuFollowPage } from "./zhihu-follow-parser";
 import { configureChromiumSession } from "./network";
 import { createBackgroundWindow } from "./background-window";
@@ -30,6 +30,7 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
   private login?: LoginAttempt;
   private onAuthenticated?: () => Promise<void>;
   private clearing?: Promise<void>;
+  private readingSession = new AbortController();
   private closed = false;
 
   setOnAuthenticated(callback: () => Promise<void>): void {
@@ -60,7 +61,6 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
 
   private async openLogin(attempt: LoginAttempt): Promise<void> {
     const signal = attempt.controller.signal;
-    while (this.clearing) await awaitWithAbort(this.clearing, signal);
     throwIfAborted(signal);
     const loginWindow = await this.createWindow(true, signal);
     attempt.window = loginWindow;
@@ -87,13 +87,7 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
   }
 
   async fetchEntries(signal?: AbortSignal): Promise<RawEntry[]> {
-    const window = await this.createWindow(false, signal);
-    const stopAndDestroy = () => {
-      if (!window.isDestroyed()) { window.webContents.stop(); window.destroy(); }
-    };
-    signal?.addEventListener("abort", stopAndDestroy, { once: true });
-    try {
-      throwIfAborted(signal);
+    return this.withReadingWindow(signal, async (window, signal) => {
       await awaitWithAbort(window.loadURL(FOLLOW_URL), signal);
       if (!isFollowUrl(window.webContents.getURL())) {
         throw new Error("知乎登录已失效，请点击“重新登录知乎”后再刷新关注动态。");
@@ -103,10 +97,7 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
       const entries = extractZhihuFollowPage(html, FOLLOW_URL);
       if (!entries.length) throw new Error("未能识别知乎关注动态中的公开内容，请在知乎登录窗口完成登录后重试。");
       return entries;
-    } finally {
-      signal?.removeEventListener("abort", stopAndDestroy);
-      if (!window.isDestroyed()) window.destroy();
-    }
+    });
   }
 
   async sync(context: SyncContext): Promise<SyncResult> {
@@ -122,45 +113,55 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
     throwIfAborted(options?.signal);
     const url = assertPublicUrl(rawUrl).toString();
     if (!isZhihuUrl(url)) throw new Error("只能在知乎授权会话中打开知乎内容。");
-    const window = await this.createWindow(false, options?.signal);
-    if (options?.signal?.aborted) {
-      if (!window.isDestroyed()) window.destroy();
-      throwIfAborted(options.signal);
-    }
-    const stopAndDestroy = () => {
-      try {
-        if (!window.isDestroyed()) window.webContents.stop();
-      } catch {
-        // Ignore an already-destroyed offscreen window.
-      }
-      if (!window.isDestroyed()) window.destroy();
-    };
-    options?.signal?.addEventListener("abort", stopAndDestroy, { once: true });
+    return this.withReadingWindow(options?.signal, async (window, signal) => {
+      await awaitWithAbort(window.loadURL(url), signal);
+      await delayWithAbort(900, signal);
+      return await awaitWithAbort(window.webContents.executeJavaScript("document.documentElement.outerHTML", true) as Promise<string>, signal);
+    });
+  }
+
+  /** Reading windows belong to both their caller and the current session.
+   * Clearing authentication invalidates configuration, navigation and DOM
+   * extraction together, including callers without their own signal. */
+  private async withReadingWindow<T>(caller: AbortSignal | undefined, operation: (window: BrowserWindow, signal: AbortSignal) => Promise<T>): Promise<T> {
+    const scope = combineAbortSignals(caller, this.readingSession.signal);
+    const signal = scope.signal!;
     try {
-      await awaitWithAbort(window.loadURL(url), options?.signal);
-      await delayWithAbort(900, options?.signal);
-      return await awaitWithAbort(window.webContents.executeJavaScript("document.documentElement.outerHTML", true) as Promise<string>, options?.signal);
-    } finally {
-      options?.signal?.removeEventListener("abort", stopAndDestroy);
-      if (!window.isDestroyed()) window.destroy();
-    }
+      const window = await this.createWindow(false, signal);
+      try {
+        throwIfAborted(signal);
+        const result = await operation(window, signal);
+        throwIfAborted(signal);
+        return result;
+      } finally {
+        if (!window.isDestroyed()) window.destroy();
+      }
+    } finally { scope.dispose(); }
   }
 
   clearSession(): Promise<void> {
-    if (this.login) this.cancelLogin(this.login);
-    // A new login must not race a still-running deletion of its session data.
+    // New login/reading windows must wait for all queued storage deletions.
     const clearing = (this.clearing ?? Promise.resolve()).catch(() => undefined).then(() => session.fromPartition(PARTITION).clearStorageData({
       storages: ["cookies", "localstorage", "indexdb", "serviceworkers", "cachestorage"]
-    })).catch(() => { throw new Error("知乎会话清理失败，请重试取消订阅。"); }).finally(() => {
+    })).then(() => {
       if (this.clearing === clearing) this.clearing = undefined;
+    }, () => {
+      // Keep a failed deletion as an admission barrier until a retry succeeds;
+      // a fresh reader must not silently reuse partially cleared credentials.
+      throw new Error("知乎会话清理失败，请重试取消订阅。");
     });
     this.clearing = clearing;
+    const previousSession = this.readingSession;
+    this.readingSession = new AbortController();
+    previousSession.abort(new Error("知乎授权会话正在清理，已取消此次读取。"));
+    if (this.login) this.cancelLogin(this.login);
     return clearing;
   }
 
-  /** Stop login callbacks before shutdown drains syncs and closes SQLite. */
+  /** Stop session windows before shutdown drains requests and closes SQLite. */
   close(): void {
     this.closed = true;
+    this.readingSession.abort(new Error("应用正在退出，已取消知乎读取。"));
     if (this.login) this.cancelLogin(this.login);
     this.onAuthenticated = undefined;
   }
@@ -174,11 +175,15 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
   }
 
   private async createWindow(show: boolean, signal?: AbortSignal): Promise<BrowserWindow> {
+    if (this.closed) throw new Error("应用正在退出，无法打开知乎窗口。");
+    while (this.clearing) await awaitWithAbort(this.clearing, signal);
+    throwIfAborted(signal);
     const isolatedSession = session.fromPartition(PARTITION);
     // The authorised session remains separate from Chrome and the app's normal
     // session, while retaining the user's explicit HTTP(S)_PROXY route.
     await awaitWithAbort(configureChromiumSession(isolatedSession), signal);
     throwIfAborted(signal);
+    if (this.closed) throw new Error("应用正在退出，无法打开知乎窗口。");
     const windowOptions = {
       width: 960,
       height: 760,
@@ -200,12 +205,26 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
     const window = show
       ? new BrowserWindow({ ...windowOptions, show: true })
       : createBackgroundWindow(windowOptions);
-    isolatedSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-    isolatedSession.setPermissionCheckHandler(() => false);
-    window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-    window.webContents.on("will-attach-webview", (event) => event.preventDefault());
-    guardMainFrameNavigation(window.webContents, isZhihuUrl);
-    return window;
+    const stopAndDestroy = () => {
+      try { if (!window.isDestroyed()) window.webContents.stop(); }
+      catch { /* The renderer may already have exited. */ }
+      if (!window.isDestroyed()) window.destroy();
+    };
+    // Install ownership before returning across an await boundary. A clear
+    // between creation and the caller's continuation must destroy this window.
+    if (signal) {
+      signal.addEventListener("abort", stopAndDestroy, { once: true });
+      window.once("closed", () => signal.removeEventListener("abort", stopAndDestroy));
+    }
+    try {
+      throwIfAborted(signal);
+      isolatedSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+      isolatedSession.setPermissionCheckHandler(() => false);
+      window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      window.webContents.on("will-attach-webview", (event) => event.preventDefault());
+      guardMainFrameNavigation(window.webContents, isZhihuUrl);
+      return window;
+    } catch (error) { stopAndDestroy(); throw error; }
   }
 
   private async completeLogin(attempt: LoginAttempt): Promise<void> {
