@@ -26,13 +26,22 @@ export function throwIfAborted(signal?: AbortSignal, fallbackMessage?: string): 
  * availability has differed across the Electron versions we support.
  */
 export function combineAbortSignals(...signals: Array<AbortSignal | undefined>): { signal?: AbortSignal; dispose(): void } {
-  const active = signals.filter((signal): signal is AbortSignal => Boolean(signal));
-  if (!active.length) return { signal: undefined, dispose: () => undefined };
+  const active = new Set(signals.filter((signal): signal is AbortSignal => Boolean(signal)));
+  if (!active.size) return { signal: undefined, dispose: () => undefined };
 
   const controller = new AbortController();
   const listeners = new Map<AbortSignal, () => void>();
+  const dispose = () => {
+    for (const [signal, listener] of listeners) signal.removeEventListener("abort", listener);
+    listeners.clear();
+  };
   const abortFrom = (signal: AbortSignal) => {
-    if (!controller.signal.aborted) controller.abort(abortError(signal));
+    if (controller.signal.aborted) return;
+    // Cancellation is terminal even while the caller is still draining work.
+    // Detach before notifying downstream observers, which may cancel another
+    // parent reentrantly. Only our own listeners belong to this scope.
+    dispose();
+    controller.abort(abortError(signal));
   };
   for (const signal of active) {
     if (signal.aborted) {
@@ -44,13 +53,7 @@ export function combineAbortSignals(...signals: Array<AbortSignal | undefined>):
     signal.addEventListener("abort", listener, { once: true });
   }
 
-  return {
-    signal: controller.signal,
-    dispose: () => {
-      for (const [signal, listener] of listeners) signal.removeEventListener("abort", listener);
-      listeners.clear();
-    }
-  };
+  return { signal: controller.signal, dispose };
 }
 
 /** Creates a short-lived request signal while preserving a caller cancellation reason. */
