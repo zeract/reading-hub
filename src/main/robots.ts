@@ -4,6 +4,7 @@ import { discardResponseBody, readResponseBytes } from "./byte-limit";
 import { chromiumFetch } from "./network";
 import { isRobotsPathAllowed, parseRobots, type RobotsRule } from "./robots-rules";
 import { fetchResponse } from "./fetch-response";
+import { WeightedLruCache } from "./weighted-lru-cache";
 
 type RobotsResult = { kind: "rules"; rules: RobotsRule[] } | { kind: "unavailable" } | { kind: "unreachable" };
 type CacheItem = { expiresAt: number; result: RobotsResult };
@@ -41,8 +42,16 @@ class RobotsUnreachableError extends RobotsDisallowedError {
 
 /** Retrieval state and parsed rules are distinct; an unknown policy is not permission. */
 export class RobotsPolicy {
-  private readonly cache = new Map<string, { item: CacheItem; weight: number }>();
-  private cacheWeight = 0;
+  private readonly cache = new WeightedLruCache<string, CacheItem>({
+    maxEntries: MAX_CACHE_ENTRIES,
+    maxWeight: MAX_CACHE_WEIGHT,
+    expiresAt: (item) => item.expiresAt,
+    // Budget retained UTF-16 strings plus per-rule/array overhead.
+    weight: (origin, item) => 128 + origin.length * 2 + (item.result.kind === "rules"
+      ? item.result.rules.reduce((total, rule) => total + 128 + rule.pattern.length * 2
+        + rule.parts.reduce((size, part) => size + 32 + part.length * 2, 0), 0)
+      : 0)
+  });
   private readonly pending = new Map<string, PendingPolicy>();
 
   async assertAllowed(rawUrl: string, options?: { signal?: AbortSignal }): Promise<void> {
@@ -50,13 +59,7 @@ export class RobotsPolicy {
     const url = assertPublicUrl(rawUrl);
     if (url.pathname === "/robots.txt" && !url.search) return;
     const origin = url.origin;
-    this.pruneExpired();
-    const cached = this.cache.get(origin);
-    if (cached) {
-      this.cache.delete(origin);
-      this.cache.set(origin, cached);
-    }
-    const item = cached?.item ?? await this.joinLoad(origin, options?.signal);
+    const item = this.cache.get(origin) ?? await this.joinLoad(origin, options?.signal);
     throwIfAborted(options?.signal);
     if (item.result.kind === "unreachable") throw new RobotsUnreachableError();
     if (item.result.kind === "rules" && !isRobotsPathAllowed(item.result.rules, url.pathname + url.search)) {
@@ -73,7 +76,7 @@ export class RobotsPolicy {
         // Register the task and its first waiter before starting network work.
         promise: Promise.resolve().then(() => this.load(origin, controller.signal)).then((item) => {
           throwIfAborted(controller.signal);
-          this.remember(origin, item);
+          this.cache.set(origin, item);
           return item;
         }).finally(() => {
           created.finished = true;
@@ -101,37 +104,6 @@ export class RobotsPolicy {
     if (signal?.aborted) release();
     try { return await awaitWithAbort(task.promise, signal); }
     finally { release(); }
-  }
-
-  private pruneExpired(): void {
-    const now = Date.now();
-    for (const [origin, cached] of this.cache) {
-      if (cached.item.expiresAt <= now) this.forget(origin);
-    }
-  }
-
-  private forget(origin: string): void {
-    const cached = this.cache.get(origin);
-    if (!cached) return;
-    this.cacheWeight -= cached.weight;
-    this.cache.delete(origin);
-  }
-
-  private remember(origin: string, item: CacheItem): void {
-    this.pruneExpired();
-    this.forget(origin);
-    // Budget retained UTF-16 strings plus per-rule/array overhead. This is an
-    // accounting bound, not a claim about exact V8 heap allocation.
-    const weight = 128 + origin.length * 2 + (item.result.kind === "rules"
-      ? item.result.rules.reduce((total, rule) => total + 128 + rule.pattern.length * 2
-        + rule.parts.reduce((size, part) => size + 32 + part.length * 2, 0), 0)
-      : 0);
-    if (weight > MAX_CACHE_WEIGHT) return; // Still apply this policy to its current callers.
-    this.cache.set(origin, { item, weight });
-    this.cacheWeight += weight;
-    while (this.cache.size > MAX_CACHE_ENTRIES || this.cacheWeight > MAX_CACHE_WEIGHT) {
-      this.forget(this.cache.keys().next().value!);
-    }
   }
 
   private async load(origin: string, signal?: AbortSignal): Promise<CacheItem> {

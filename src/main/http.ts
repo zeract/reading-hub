@@ -5,6 +5,7 @@ import { hasFeedSignature, isAmbiguousFeedContentType, isExplicitFeedContentType
 import { chromiumFetch } from "./network";
 import { RobotsPolicy } from "./robots";
 import { fetchResponse } from "./fetch-response";
+import { WeightedLruCache } from "./weighted-lru-cache";
 
 export interface TextResponse {
   url: string;
@@ -97,7 +98,13 @@ function networkFailureMessage(cause: unknown): string {
 export class PublicHttpClient {
   constructor(private readonly robots = new RobotsPolicy()) {}
 
-  private readonly imageCache = new Map<string, string>();
+  private readonly imageCache = new WeightedLruCache<string, string>({
+    maxEntries: 24,
+    maxWeight: 32 * 1_048_576,
+    // Include both the referrer/image key and the encoded data URL at a
+    // conservative UTF-16 cost, plus entry overhead. In-flight reads are separate.
+    weight: (key, value) => 128 + (key.length + value.length) * 2
+  });
 
   async getText(rawUrl: string, cached?: { etag?: string; lastModified?: string }, options?: PublicRequestOptions): Promise<TextResponse> {
     const maxBytes = options?.maxBytes ?? DEFAULT_SOURCE_DOCUMENT_MAX_BYTES;
@@ -237,7 +244,6 @@ export class PublicHttpClient {
         throwIfAborted(request.signal);
         const result = `data:${contentType};base64,${bytes.toString("base64")}`;
         this.imageCache.set(cacheKey, result);
-        if (this.imageCache.size > 24) this.imageCache.delete(this.imageCache.keys().next().value!);
         return result;
       } finally {
         discardResponseBody(response);
