@@ -23,6 +23,19 @@ function fixture(kind: "rss" | "generic" = "rss") {
 }
 
 describe("source configuration and active synchronization", () => {
+  it("preserves an active refresh when the existing subscription is reaffirmed", async () => {
+    const { db, source, calls, sync, service, outcome } = fixture();
+    const pending = sync.syncSource(source.id).catch((error) => error);
+    try {
+      await vi.waitFor(() => expect(calls).toHaveLength(1));
+      await service.setSubscribed(source.id, true);
+      expect(calls[0].context.signal?.aborted).toBe(false);
+      calls[0].resolve(outcome);
+      expect((await pending).inserted).toBe(1);
+      expect(db.getCheckpoint(source.id)?.cursor).toBe("old");
+    } finally { calls[0]?.resolve(outcome); await pending; await sync.close(); db.close(); }
+  });
+
   it("preserves a refresh across presentation changes and equivalent category selections", async () => {
     const { db, source, calls, sync, service, outcome } = fixture();
     const facets = [{ scheme: "fixture", key: "a", label: "A" }, { scheme: "fixture", key: "b", label: "B" }];

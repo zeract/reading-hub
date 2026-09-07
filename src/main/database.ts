@@ -948,6 +948,9 @@ export class ReadingDatabase {
   setSubscribed(sourceId: string, subscribed: boolean): Source {
     const source = this.getSource(sourceId);
     if (!source) throw new Error("来源不存在。");
+    // Subscription membership is independent of polling preferences and retry
+    // state. Reaffirming membership must not resume or reschedule the source.
+    if ((source.subscribed !== false) === subscribed) return source;
     const status = subscribed && source.status === "paused" ? source.failureCount ? "error" : "active" : source.status;
     return this.writeTransaction(() => {
       this.db.prepare("UPDATE subscriptions SET subscribed = ?, updated_at = ? WHERE source_id = ?").run(Number(subscribed), Date.now(), sourceId);

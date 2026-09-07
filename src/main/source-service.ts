@@ -341,7 +341,7 @@ export class SourceService {
     if (!source) throw new Error("来源不存在。");
     if (subscribed && isRetiredXPublicProfile(source)) throw new Error("此旧来源不支持恢复，请通过官方账号连接。");
     const updated = this.db.setSubscribed(sourceId, subscribed);
-    this.sync.cancelSource(sourceId);
+    if ((source.subscribed !== false) !== (updated.subscribed !== false)) this.sync.cancelSource(sourceId);
     return updated;
   }
 
