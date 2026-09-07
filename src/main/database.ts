@@ -318,6 +318,7 @@ export class ReadingDatabase {
   private publishedRevision = -1;
   private publishingChanges = false;
   private previousVisitAt = Date.now();
+  private countsSnapshot?: { revision: number; start: number; end: number; previousVisitAt: number; counts: LibraryCounts };
 
   beginLibrarySession(now = Date.now()): void {
     const row = this.db.prepare("SELECT last_visit_at FROM library_state WHERE id = 1").get() as { last_visit_at: number | null };
@@ -856,6 +857,12 @@ export class ReadingDatabase {
     const current = new Date(now);
     const start = new Date(current.getFullYear(), current.getMonth(), current.getDate()).getTime();
     const end = new Date(current.getFullYear(), current.getMonth(), current.getDate() + 1).getTime();
+    // Never reuse or retain transaction-local counts: a rollback can reuse
+    // that numerical revision for a different later commit.
+    const revision = this.db.inTransaction ? undefined : this.getLibraryRevision();
+    const cached = this.countsSnapshot;
+    if (revision !== undefined && cached?.revision === revision && cached.start === start && cached.end === end
+      && cached.previousVisitAt === this.previousVisitAt) return { ...cached.counts };
     const timelineTimestamp = "published_at";
     const row = this.db.prepare(`SELECT
       SUM(CASE WHEN ingestion_kind = 'current' THEN 1 ELSE 0 END) AS collected,
@@ -865,7 +872,9 @@ export class ReadingDatabase {
       SUM(CASE WHEN is_favorite = 1 THEN 1 ELSE 0 END) AS favorite,
       SUM(CASE WHEN ${timelineTimestamp} >= ? AND ${timelineTimestamp} < ? THEN 1 ELSE 0 END) AS today
       FROM entries WHERE ${VISIBLE_ENTRY}`).get(this.previousVisitAt, start, end) as { collected: number; history: number; new_arrivals: number; unread: number | null; favorite: number | null; today: number | null };
-    return { collected: row.collected ?? 0, history: row.history ?? 0, newArrivals: row.new_arrivals ?? 0, unread: row.unread ?? 0, favorite: row.favorite ?? 0, today: row.today ?? 0 };
+    const counts = { collected: row.collected ?? 0, history: row.history ?? 0, newArrivals: row.new_arrivals ?? 0, unread: row.unread ?? 0, favorite: row.favorite ?? 0, today: row.today ?? 0 };
+    if (revision !== undefined) this.countsSnapshot = { revision, start, end, previousVisitAt: this.previousVisitAt, counts };
+    return { ...counts };
   }
 
   getEntry(entryId: string): Entry | undefined {
