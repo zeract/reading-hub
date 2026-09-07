@@ -20,7 +20,7 @@ beforeEach(() => {
   load = vi.fn(); cancel = vi.fn(async () => undefined);
   Object.defineProperty(window, "reader", { configurable: true, value: {
     readEntry: vi.fn(async (id: string) => ({ kind: "article", article: { entryId: id, title: id, url: card.url, renderProfile: "standard", coverImageUrl: "https://example.com/cover.png", contentHtml: `<p>fixture</p><img src="https://example.com/${id}.png">` } })),
-    loadArticleImage: load, cancelArticleImage: cancel
+    loadArticleImage: load, cancelArticleImage: cancel, cancelEntryRead: vi.fn(async () => undefined)
   } });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });

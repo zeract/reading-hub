@@ -6,7 +6,7 @@ import { buildAiArticleContext, collectAiArticleText } from "./ai-request";
 import { newAiRequestId, useAiStreamSubscription, useAiTextStream } from "./ai-stream";
 import { errorMessage } from "./errors";
 import { adjustReaderFontScale, loadReaderPreferences, saveReaderPreferences, type ReaderPreferences, type ReaderPreset } from "./reader-preferences";
-import { LatestRequestGuard } from "./request-guard";
+import { useReaderRequest } from "./use-reader-request";
 import { useReaderImages } from "./use-reader-images";
 import { normaliseSelectedArticleText, selectedTextLabel, selectionActionQuestion, selectionContext, selectionOverlay, type SelectionOverlay, type SelectionRect } from "./selection-actions";
 
@@ -86,19 +86,17 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   const articleBodyElement = useRef<HTMLDivElement>(null);
   const readerWorkspaceElement = useRef<HTMLDivElement>(null);
   const { documentId, loadImage: loadReaderImage } = useReaderImages(entry.id, article, readerWorkspaceElement);
-  const articleRequestGuard = useRef(new LatestRequestGuard());
+  const beginArticleRequest = useReaderRequest(entry.id);
   const renderedEntryId = useRef(entry.id);
   const loadedEntryId = useRef<string | undefined>(undefined);
   const autoReadEntryId = useRef<string | undefined>(undefined);
 
-  // Effects run after React commits the new entry. Invalidate synchronously as
-  // soon as this render belongs to a different entry so a just-resolved IPC
-  // response for the previous article can never replace the new view.
+  // The request hook invalidates old results during render, before effect
+  // cleanup cancels IPC. Reading markers must change at that same boundary.
   if (renderedEntryId.current !== entry.id) {
     renderedEntryId.current = entry.id;
     loadedEntryId.current = undefined;
     autoReadEntryId.current = undefined;
-    articleRequestGuard.current.invalidate();
   }
 
   useEffect(() => {
@@ -106,19 +104,20 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   }, [preferences]);
 
   const loadArticle = useCallback(async () => {
-    const request = articleRequestGuard.current.begin();
+    const request = beginArticleRequest();
     setLoading(true); setError(undefined); setLanguageSwitchError(undefined); setArticle(undefined); setEmbedded(false);
     try {
-      const result = await window.reader.readEntry(entry.id);
-      if (!articleRequestGuard.current.isCurrent(request)) return;
+      const result = await window.reader.readEntry(entry.id, request.id);
+      if (!request.isCurrent()) return;
       if (result.kind === "article") { loadedEntryId.current = entry.id; setArticle(result.article); }
       else setEmbedded(true);
     } catch (reason) {
-      if (articleRequestGuard.current.isCurrent(request)) setError(errorMessage(reason));
+      if (request.isCurrent()) setError(errorMessage(reason));
     } finally {
-      if (articleRequestGuard.current.isCurrent(request)) setLoading(false);
+      if (request.isCurrent()) setLoading(false);
+      request.finish();
     }
-  }, [entry.id]);
+  }, [entry.id, beginArticleRequest]);
 
   useEffect(() => { void loadArticle(); }, [loadArticle]);
   // Only a successfully committed article counts as reading. Failed extraction
@@ -255,12 +254,12 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   }
   async function switchLanguage(url: string) {
     if (!article || languageSwitching || url === article.url) return;
-    const request = articleRequestGuard.current.begin();
+    const request = beginArticleRequest();
     setLanguageSwitching(url);
     setLanguageSwitchError(undefined);
     try {
-      const next = await window.reader.readEntryLanguageVariant(entry.id, url);
-      if (!articleRequestGuard.current.isCurrent(request)) return;
+      const next = await window.reader.readEntryLanguageVariant(entry.id, url, request.id);
+      if (!request.isCurrent()) return;
       window.getSelection()?.removeAllRanges();
       setArticle(next);
       setEmbedded(false);
@@ -271,9 +270,10 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
       // a stale assistant panel across an article-version switch.
       setAssistantState("closed");
     } catch (reason) {
-      if (articleRequestGuard.current.isCurrent(request)) setLanguageSwitchError(errorMessage(reason));
+      if (request.isCurrent()) setLanguageSwitchError(errorMessage(reason));
     } finally {
-      if (articleRequestGuard.current.isCurrent(request)) setLanguageSwitching(undefined);
+      if (request.isCurrent()) setLanguageSwitching(undefined);
+      request.finish();
     }
   }
   async function toggleFavorite() {

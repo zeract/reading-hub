@@ -1,9 +1,8 @@
 /**
  * Lets a view ignore a response once a newer article request has started.
  *
- * IPC calls cannot be cancelled reliably after they have crossed Electron's
- * process boundary, so this small guard makes stale responses harmless at the
- * state-update boundary instead.
+ * Cancellation may race with completion or be ignored by a dependency. Keep
+ * this result guard alongside cancellation at the state-update boundary.
  */
 export class LatestRequestGuard {
   private revision = 0;

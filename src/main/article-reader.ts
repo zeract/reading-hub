@@ -8,7 +8,7 @@ import { inlineDollarMathAt } from "../shared/tex";
 import { assertPublicUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl, toAbsoluteUrl } from "../shared/url";
 import type { Entry, ReaderArticle, ReaderFormulaDiagnostics, ReaderLanguageVariant, ReaderRenderProfile, Source } from "../shared/types";
 import { parseFeed } from "./feed";
-import { abortError, throwIfAborted } from "./cancellation";
+import { abortError, awaitWithAbort, throwIfAborted } from "./cancellation";
 import { PublicHttpClient, type PublicRequestOptions } from "./http";
 import { extractPagePublishedAt } from "./extractor";
 import { ScientificMathRenderer, type MathJaxDocumentExpression, type MathMacroDefinition } from "./mathjax-renderer";
@@ -392,13 +392,15 @@ export class ArticleReader {
     let staticArticle: ExtractedArticle | undefined;
     let staticFailure: unknown;
     const usesZhihuSession = source?.kind === "zhihu_follow" && Boolean(this.renderWithZhihuSession);
-    if (resolveReaderProfile(targetUrl) === "scientific") await this.scientificMath.ready().catch(() => undefined);
+    if (resolveReaderProfile(targetUrl) === "scientific") await awaitWithAbort(this.scientificMath.ready().catch(() => undefined), options?.signal);
     throwIfAborted(options?.signal);
     if (!usesZhihuSession) {
       try {
         const response = await this.http.getText(targetUrl, undefined, readerHttpOptions({ maxBytes: 8_000_000 }, options?.signal));
-        staticArticle = await this.extractWithMathFallback(response.text, response.url, entry);
-        if (staticArticle && staticArticle.textLength >= 220) return this.rememberLanguageVariants(entry.id, staticArticle.article, knownLanguageVariants);
+        throwIfAborted(options?.signal);
+        staticArticle = await awaitWithAbort(this.extractWithMathFallback(response.text, response.url, entry), options?.signal);
+        throwIfAborted(options?.signal);
+        if (staticArticle && staticArticle.textLength >= 220) return this.rememberLanguageVariants(entry.id, staticArticle.article, knownLanguageVariants, options?.signal);
       } catch (error) {
         if (options?.signal?.aborted) throw abortError(options.signal);
         // robots.txt must remain a hard boundary. A feed can nevertheless
@@ -407,13 +409,13 @@ export class ArticleReader {
         // This makes RSSHub/X items readable without trying to fetch X again.
         if (error instanceof RobotsDisallowedError) {
           if (!allowFeedFallback) throw error;
-          const feedBody = await this.readTransientFeedBody(entry, source, options).catch(() => {
+          const feedBody = await awaitWithAbort(this.readTransientFeedBody(entry, source, options), options?.signal).catch(() => {
             if (options?.signal?.aborted) throw abortError(options.signal);
             return undefined;
           });
-          if (feedBody) return this.rememberLanguageVariants(entry.id, feedBody, knownLanguageVariants);
+          if (feedBody) return this.rememberLanguageVariants(entry.id, feedBody, knownLanguageVariants, options?.signal);
           const feedSummary = createFeedSummaryArticle(entry, source);
-          if (feedSummary) return this.rememberLanguageVariants(entry.id, feedSummary, knownLanguageVariants);
+          if (feedSummary) return this.rememberLanguageVariants(entry.id, feedSummary, knownLanguageVariants, options?.signal);
           throw error;
         }
         staticFailure = error;
@@ -430,11 +432,12 @@ export class ArticleReader {
       // Keep a usable static article when Chromium rendering is unavailable.
     }
     throwIfAborted(options?.signal);
-    const renderedArticle = renderedHtml ? await this.extractWithMathFallback(renderedHtml, targetUrl, entry) : undefined;
+    const renderedArticle = renderedHtml ? await awaitWithAbort(this.extractWithMathFallback(renderedHtml, targetUrl, entry), options?.signal) : undefined;
+    throwIfAborted(options?.signal);
     if (renderedArticle && renderedArticle.textLength > (staticArticle?.textLength ?? 0)) {
-      return this.rememberLanguageVariants(entry.id, renderedArticle.article, knownLanguageVariants);
+      return this.rememberLanguageVariants(entry.id, renderedArticle.article, knownLanguageVariants, options?.signal);
     }
-    if (staticArticle) return this.rememberLanguageVariants(entry.id, staticArticle.article, knownLanguageVariants);
+    if (staticArticle) return this.rememberLanguageVariants(entry.id, staticArticle.article, knownLanguageVariants, options?.signal);
     // A public original can intermittently reject a reader request (or time
     // out) even though its RSS response already supplied a body. That body is
     // part of the user's subscription, so re-fetch and sanitise it in memory
@@ -444,13 +447,13 @@ export class ArticleReader {
       if (staticFailure) throw staticFailure;
       throw new ArticleContentUnavailableError();
     }
-    const feedBody = await this.readTransientFeedBody(entry, source, options).catch(() => {
+    const feedBody = await awaitWithAbort(this.readTransientFeedBody(entry, source, options), options?.signal).catch(() => {
       if (options?.signal?.aborted) throw abortError(options.signal);
       return undefined;
     });
-    if (feedBody) return this.rememberLanguageVariants(entry.id, feedBody, knownLanguageVariants);
+    if (feedBody) return this.rememberLanguageVariants(entry.id, feedBody, knownLanguageVariants, options?.signal);
     const feedSummary = createFeedSummaryArticle(entry, source);
-    if (feedSummary) return this.rememberLanguageVariants(entry.id, feedSummary, knownLanguageVariants);
+    if (feedSummary) return this.rememberLanguageVariants(entry.id, feedSummary, knownLanguageVariants, options?.signal);
     if (staticFailure) throw staticFailure;
     throw new ArticleContentUnavailableError();
   }
@@ -464,7 +467,8 @@ export class ArticleReader {
     return undefined;
   }
 
-  private rememberLanguageVariants(entryId: string, article: ReaderArticle, knownVariants: ReaderLanguageVariant[]): ReaderArticle {
+  private rememberLanguageVariants(entryId: string, article: ReaderArticle, knownVariants: ReaderLanguageVariant[], signal?: AbortSignal): ReaderArticle {
+    throwIfAborted(signal);
     this.pruneLanguageVariants();
     const variants = mergeReaderLanguageVariants(knownVariants, article.languageVariants || [], article.url, article.activeLanguage);
     const activeLanguage = article.activeLanguage || variants.find((variant) => sameCanonicalUrl(variant.url, article.url))?.language;
@@ -510,7 +514,9 @@ export class ArticleReader {
     );
     throwIfAborted(options?.signal);
     const requestedUrls = new Set([entry.canonicalUrl, canonicalizeUrl(entry.url)]);
-    const item = (await parseFeed(response.text, response.url)).entries.find((candidate) => {
+    const feed = await awaitWithAbort(parseFeed(response.text, response.url), options?.signal);
+    throwIfAborted(options?.signal);
+    const item = feed.entries.find((candidate) => {
       try {
         return requestedUrls.has(canonicalizeUrl(candidate.url));
       } catch {
@@ -522,13 +528,17 @@ export class ArticleReader {
     const renderProfile = resolveReaderProfile(entry.url);
     const preparedContent = prepareSanitizedContent(item.feedContentHtml, response.url);
     if (preparedContent.formulaRenderPolicy === "scientific-document" && !this.scientificMath.isReady()) {
-      await this.scientificMath.ready().catch(() => undefined);
+      await awaitWithAbort(this.scientificMath.ready().catch(() => undefined), options?.signal);
     }
-    let sanitised = await renderPreparedContentAsync(preparedContent, this.scientificMath, new Map());
+    throwIfAborted(options?.signal);
+    let sanitised = await awaitWithAbort(renderPreparedContentAsync(preparedContent, this.scientificMath, new Map()), options?.signal);
+    throwIfAborted(options?.signal);
     if (needsMathJaxFallback(sanitised) && !this.scientificMath.isReady()) {
-      await this.scientificMath.ready().catch(() => undefined);
-      if (this.scientificMath.isReady()) sanitised = await renderPreparedContentAsync(preparedContent, this.scientificMath, new Map());
+      await awaitWithAbort(this.scientificMath.ready().catch(() => undefined), options?.signal);
+      throwIfAborted(options?.signal);
+      if (this.scientificMath.isReady()) sanitised = await awaitWithAbort(renderPreparedContentAsync(preparedContent, this.scientificMath, new Map()), options?.signal);
     }
+    throwIfAborted(options?.signal);
     const contentHtml = sanitised.html;
     const content = load(contentHtml);
     if (normalText(content.text()).length < 24 && !content("img").length) return undefined;

@@ -125,8 +125,9 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
 
   handle(IPC_CHANNELS.entry.listPage, (_event, query: unknown) => database.listEntryPage(parseEntryPageQuery(query)));
   handle(IPC_CHANNELS.entry.counts, () => database.getLibraryCounts());
-  handle(IPC_CHANNELS.entry.readContent, (event, entryId: unknown) => {
+  handle(IPC_CHANNELS.entry.readContent, (event, entryId: unknown, rawRequestId: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));
+    const requestId = requireText(rawRequestId, "正文请求标识无效。", 160);
     return foregroundRequests.run(event.sender, async (signal) => {
       try {
         return { kind: "article" as const, article: await articles.read(entry, database.getSource(entry.sourceId), { signal }) };
@@ -136,14 +137,19 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
         await inAppArticleViewer.open(entry.url, entry.title, signal);
         return { kind: "embedded" as const };
       }
-    });
+    }, `read:${requestId}`);
   });
-  handle(IPC_CHANNELS.entry.readLanguageVariant, (event, entryId: unknown, rawUrl: unknown) => {
+  handle(IPC_CHANNELS.entry.readLanguageVariant, (event, entryId: unknown, rawUrl: unknown, rawRequestId: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));
     const url = requireText(rawUrl, "语言版本地址无效，请重新打开文章后再试。", 2_000);
+    const requestId = requireText(rawRequestId, "正文请求标识无效。", 160);
     return foregroundRequests.run(event.sender, (signal) => articles.readLanguageVariant(
       entry, database.getSource(entry.sourceId), url, { signal }
-    ));
+    ), `read:${requestId}`);
+  });
+  handle(IPC_CHANNELS.entry.cancelRead, (event, rawRequestId: unknown) => {
+    const requestId = requireText(rawRequestId, "正文请求标识无效。", 160);
+    foregroundRequests.cancel(event.sender, `read:${requestId}`);
   });
   handle(IPC_CHANNELS.entry.openEmbedded, (event, entryId: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));

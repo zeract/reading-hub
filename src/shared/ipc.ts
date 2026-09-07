@@ -50,6 +50,7 @@ export const IPC_CHANNELS = {
     counts: "entry:counts",
     readContent: "entry:read-content",
     readLanguageVariant: "entry:read-language-variant",
+    cancelRead: "entry:cancel-read",
     openEmbedded: "entry:open-embedded",
     loadImage: "entry:load-image",
     cancelImage: "entry:cancel-image",
@@ -103,9 +104,10 @@ export interface ReaderApi {
   subscribeXiaohongshuProfile(input: ProfileSubscriptionInput): Promise<Source>;
   listEntryPage(query?: EntryPageQuery): Promise<EntryPage>;
   getLibraryCounts(): Promise<LibraryCounts>;
-  readEntry(id: string): Promise<ArticleReadResult>;
+  readEntry(id: string, requestId: string): Promise<ArticleReadResult>;
   /** Opens only a language URL declared by the currently loaded article. */
-  readEntryLanguageVariant(id: string, url: string): Promise<ReaderArticle>;
+  readEntryLanguageVariant(id: string, url: string, requestId: string): Promise<ReaderArticle>;
+  cancelEntryRead(requestId: string): Promise<void>;
   openEmbeddedEntry(id: string): Promise<void>;
   loadArticleImage(id: string, imageUrl: string, requestId: string): Promise<string>;
   cancelArticleImage(requestId: string): Promise<void>;

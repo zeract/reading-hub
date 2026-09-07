@@ -20,6 +20,10 @@ let imageLoads = 0;
 let pendingImage;
 let imageRequested;
 const cancelledImages = new Set();
+let pauseRead = false;
+let pendingRead;
+let readRequested;
+const cancelledReads = new Set();
 const channels = [
   ["library:revision", () => database.getLibraryRevision()],
   ["source:list", () => database.listSources()],
@@ -44,7 +48,10 @@ const channels = [
     title: `Alexander Long-Name 同名作者 · OpenAlex A${index + 1} · ${index + 1} 篇`,
     config: { authorName: "Alexander Long-Name 同名作者", openAlexId: `A${index + 1}` }
   }))],
-  ["entry:read-content", (_event, id) => {
+  ["entry:cancel-read", (_event, requestId) => { cancelledReads.add(requestId); }],
+  ["entry:read-content", (_event, id, requestId) => {
+    assert(typeof requestId === "string" && requestId.startsWith("read-"), "Read IPC must carry an opaque request id.");
+    if (pauseRead) return new Promise((resolve) => { pendingRead = { requestId, resolve }; readRequested?.(); });
     if (id === "failure") throw new Error("Deterministic offline fixture");
     return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", contentHtml: '<p>This is a deterministic reader fixture.</p><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image">' } };
   }],
@@ -130,6 +137,19 @@ try {
   assert(database.getEntry("success").read, "Successful content must become read.");
   await waitFor(window, "document.querySelector('.article-body img')?.naturalWidth === 1");
   assert(imageLoads === 1, `A native body image error must invoke the proxy exactly once (observed ${imageLoads}).`);
+  pauseRead = true;
+  const readStarted = new Promise((resolve) => { readRequested = resolve; });
+  await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Unavailable fixture\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.reader-loading'))");
+  await readStarted;
+  pauseRead = false;
+  await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Readable fixture\"]').click()");
+  await waitFor(window, "document.querySelector('.article-body img')?.naturalWidth === 1");
+  assert(cancelledReads.has(pendingRead.requestId), "Switching entries must cancel unfinished extraction over IPC.");
+  pendingRead.resolve({ kind: "article", article: { entryId: "failure", url: "https://example.com/failure", title: "Stale extraction fixture", renderProfile: "standard", contentHtml: "<p>Stale extraction fixture</p>" } });
+  await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  assert(await evaluate("!document.querySelector('.reader-view').textContent.includes('Stale extraction fixture')"), "A cancelled extraction must not replace the current reader.");
+  assert(!database.getEntry("failure").read, "Cancelled extraction must leave its entry unread.");
   await clickText(".library-filter", "历史回填");
   await waitFor(window, "document.querySelector('.entry-card h2')?.textContent === 'Historical fixture'");
   pauseImages = true;
@@ -190,7 +210,7 @@ try {
     assert(fits, `Academic identities or result scrolling do not fit ${width}px at ${scale}.`);
     await writeFile(path.join(tmpdir(), `reading-hub-academic-${width}.png`), (await window.capturePage()).toPNG());
   }
-  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/image-proxy/image-cancellation/late-image/unsubscribe/restore, library layouts and four academic search layouts verified.");
+  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/unsubscribe/restore, library layouts and four academic search layouts verified.");
 } catch (error) {
   failure = error;
   console.error(error);
