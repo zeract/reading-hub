@@ -472,7 +472,7 @@ function ImagePreview({ image, onClose }: { image: ReaderImagePreview; onClose: 
   </div>;
 }
 
-function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderId, onProviderChange, minimized, onMinimize, onClose, onOpenSettings }: {
+function ReaderAssistant({ article, sourceTitle, providerId, onProviderChange, minimized, onMinimize, onClose, onOpenSettings }: {
   article: ReaderArticle;
   sourceTitle?: string;
   providerId: AiProviderId;
@@ -483,7 +483,6 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
   onOpenSettings: () => void;
 }) {
   const [providers, setProviders] = useState<AiProviderSettings[]>([]);
-  const [providerId, setProviderId] = useState<AiProviderId>(controlledProviderId);
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<AiMessage[]>([]);
   const [busy, setBusy] = useState(false);
@@ -492,16 +491,18 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
   const messagesElement = useRef<HTMLDivElement>(null);
 
   const selected = providers.find((provider) => provider.id === providerId);
-  const reloadProviders = useCallback(async () => {
-    const next = await window.reader.listAiProviders();
-    setProviders(next);
-    const active = next.find((provider) => provider.id === controlledProviderId) || next[0];
-    if (active) {
-      setProviderId(active.id);
-      onProviderChange(active.id);
-    }
-  }, [controlledProviderId, onProviderChange]);
-  useEffect(() => { void reloadProviders().catch((reason) => setError(errorMessage(reason))); }, [reloadProviders]);
+  useEffect(() => {
+    let current = true;
+    // The reader owns the choice. An older discovery must not replace it or
+    // update a new panel after this one closes.
+    void window.reader.listAiProviders().then((next) => {
+      if (!current) return;
+      setProviders(next);
+      const active = next.find((provider) => provider.id === providerId) || next[0];
+      if (active && active.id !== providerId) onProviderChange(active.id);
+    }).catch((reason) => { if (current) setError(errorMessage(reason)); });
+    return () => { current = false; };
+  }, [providerId, onProviderChange]);
   const { fail: failStream } = useAiStreamSubscription((event) => {
     const active = activeStream.current;
     if (!active || active.requestId !== event.requestId) return;
@@ -534,7 +535,6 @@ function ReaderAssistant({ article, sourceTitle, providerId: controlledProviderI
   }, [messages]);
 
   function switchProvider(nextId: AiProviderId) {
-    setProviderId(nextId);
     onProviderChange(nextId);
     setError(undefined);
   }

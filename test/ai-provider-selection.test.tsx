@@ -1,0 +1,100 @@
+// @vitest-environment jsdom
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ReaderView } from "../src/renderer/reader-view";
+import type { AiProviderSettings, Entry } from "../src/shared/types";
+
+const providers: AiProviderSettings[] = ["codex-cli", "openai", "deepseek"].map((id) => ({
+  id: id as AiProviderSettings["id"], label: id, configured: true, requiresApiKey: id !== "codex-cli", model: "fixture"
+}));
+const entry: Entry = { id: "fixture", sourceId: "source", url: "https://example.com/article", canonicalUrl: "https://example.com/article", title: "Fixture", read: true, favorite: false, contentHash: "fixture", createdAt: 1 };
+let root: Root;
+let container: HTMLDivElement;
+let list: ReturnType<typeof vi.fn>;
+let start: ReturnType<typeof vi.fn>;
+let pending: Array<{ resolve(value: AiProviderSettings[]): void; reject(error: Error): void }>;
+
+beforeEach(async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  pending = [];
+  list = vi.fn().mockResolvedValue(providers);
+  start = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(window, "reader", { configurable: true, value: {
+    readEntry: vi.fn(async () => ({ kind: "article", article: { entryId: entry.id, url: entry.url, title: "Fixture", renderProfile: "standard", contentHtml: "<p>Fixture body</p>" } })),
+    cancelEntryRead: vi.fn(async () => undefined), listAiProviders: list,
+    onAiStream: vi.fn(() => () => undefined), startAiStream: start, cancelAiStream: vi.fn(async () => undefined)
+  } });
+  container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => root.render(<ReaderView entry={entry} onUpdateEntry={async () => true} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} />));
+  await click("打开 AI 学习");
+  list.mockImplementation(() => new Promise<AiProviderSettings[]>((resolve, reject) => pending.push({ resolve, reject })));
+});
+afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
+async function click(label: string) { await act(async () => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click()); }
+async function select(value: string) {
+  await act(async () => {
+    const selector = container.querySelector<HTMLSelectElement>("#ai-provider")!;
+    selector.value = value; selector.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+const selected = () => container.querySelector<HTMLSelectElement>("#ai-provider")!.value;
+
+describe("AI provider discovery lifetime", () => {
+  it("invalidates the previous discovery at selection time before React effect cleanup", async () => {
+    await select("openai");
+    await act(async () => {
+      const selector = container.querySelector<HTMLSelectElement>("#ai-provider")!;
+      selector.value = "deepseek";
+      selector.dispatchEvent(new Event("change", { bubbles: true }));
+      pending[0].resolve(providers);
+      await Promise.resolve();
+    });
+    expect(selected()).toBe("deepseek");
+  });
+
+  it("keeps the latest choice and sends the next question to it after older discovery completes", async () => {
+    await select("openai"); await select("deepseek");
+    expect(pending).toHaveLength(2);
+    await act(async () => pending[1].resolve(providers));
+    await act(async () => pending[0].resolve(providers.map((provider) => ({ ...provider, label: "Stale label" }))));
+    expect(selected()).toBe("deepseek");
+    expect(container.textContent).not.toContain("Stale label");
+    await act(async () => {
+      const input = container.querySelector<HTMLTextAreaElement>("#ai-question")!;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "Explain this article");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => container.querySelector("form.ai-question")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(start).toHaveBeenCalledOnce();
+    expect(start.mock.calls[0][0].request.provider).toBe("deepseek");
+  });
+
+  it("does not surface a stale failure after the latest provider discovery succeeds", async () => {
+    await select("openai"); await select("deepseek");
+    await act(async () => pending[1].resolve(providers));
+    await act(async () => pending[0].reject(new Error("Synthetic obsolete discovery failure")));
+    expect(selected()).toBe("deepseek");
+    expect(container.textContent).not.toContain("Synthetic obsolete discovery failure");
+  });
+
+  it("does not let a closed panel change the preferred provider for its replacement", async () => {
+    await select("openai"); await select("deepseek");
+    await click("关闭 AI 学习助手");
+    await act(async () => pending[1].resolve(providers));
+    await act(async () => pending[0].resolve(providers));
+    list.mockResolvedValue(providers);
+    await click("打开 AI 学习");
+    expect(selected()).toBe("deepseek");
+  });
+
+  it("reports a current failure and recovers when another selection succeeds", async () => {
+    await select("openai");
+    await act(async () => pending[0].reject(new Error("Synthetic current discovery failure")));
+    expect(container.textContent).toContain("Synthetic current discovery failure");
+    await select("deepseek");
+    await act(async () => pending[1].resolve(providers));
+    expect(selected()).toBe("deepseek");
+    expect(container.textContent).not.toContain("Synthetic current discovery failure");
+  });
+});
