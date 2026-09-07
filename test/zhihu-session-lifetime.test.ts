@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 const mocks = vi.hoisted(() => ({
   windows: [] as any[],
   created: vi.fn(),
@@ -28,6 +31,9 @@ vi.mock("electron", async () => {
 vi.mock("../src/main/network", () => ({ configureChromiumSession: mocks.configure }));
 vi.mock("../src/main/zhihu-follow-parser", () => ({ extractZhihuFollowPage: mocks.extract }));
 import { ZhihuFollowConnector } from "../src/main/zhihu-follow";
+import { ConnectorRegistry } from "../src/main/connector-registry";
+import { ReadingDatabase } from "../src/main/database";
+import { SyncManager } from "../src/main/sync-manager";
 
 const read = (connector: ZhihuFollowConnector, kind: "feed" | "article") => kind === "feed"
   ? connector.fetchEntries() : connector.renderArticle("https://www.zhihu.com/question/1/answer/2");
@@ -79,6 +85,77 @@ it("rechecks follow-page authorization after the DOM wait", async () => {
 });
 
 describe.each(["feed", "article"] as const)("Zhihu %s session lifetime", (kind) => {
+  it.each(["cleanup", "configuration", "navigation"] as const)("bounds a stalled %s and permits a fresh read after timeout", async (phase) => {
+    const stalled = barrier<void>();
+    const connector = new ZhihuFollowConnector();
+    let clearing: Promise<void> | undefined;
+    if (phase === "cleanup") {
+      mocks.clear.mockImplementationOnce(() => stalled.wait);
+      clearing = connector.clearSession();
+    }
+    if (phase === "configuration") mocks.configure.mockImplementationOnce(() => stalled.wait);
+    if (phase === "navigation") mocks.navigate.mockImplementationOnce(() => stalled.wait);
+    const settled = vi.fn();
+    const pending = read(connector, kind).then(settled, settled);
+    try {
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(settled).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: "知乎内容读取超时，请检查网络后重试。" }));
+      expect(mocks.windows.every((window) => window.isDestroyed())).toBe(true);
+      if (phase === "navigation") expect(mocks.windows[0].webContents.stop).toHaveBeenCalledOnce();
+      expect(mocks.evaluate).not.toHaveBeenCalled();
+      expect(mocks.extract).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      stalled.release(); await clearing; await pending;
+      await vi.advanceTimersByTimeAsync(1_200);
+      expect(mocks.evaluate).not.toHaveBeenCalled();
+      const next = read(connector, kind);
+      await vi.advanceTimersByTimeAsync(1_200);
+      await next;
+      expect(mocks.evaluate).toHaveBeenCalledOnce();
+      expect(mocks.windows.every((window) => window.isDestroyed())).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      stalled.release(); await clearing; connector.close(); await pending;
+    }
+  });
+
+  it("uses one deadline across configuration, navigation and extraction", async () => {
+    mocks.configure.mockImplementationOnce(() => new Promise((resolve) => setTimeout(resolve, 15_000)));
+    mocks.navigate.mockImplementationOnce(() => new Promise((resolve) => setTimeout(resolve, 12_000)));
+    const evaluated = barrier<string>();
+    mocks.evaluate.mockImplementationOnce(() => evaluated.wait);
+    const connector = new ZhihuFollowConnector();
+    const settled = vi.fn();
+    const pending = read(connector, kind).then(settled, settled);
+    try {
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(mocks.evaluate).toHaveBeenCalledOnce();
+      expect(settled).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: "知乎内容读取超时，请检查网络后重试。" }));
+      expect(mocks.windows[0].isDestroyed()).toBe(true);
+      expect(mocks.extract).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { evaluated.release("Late HTML"); connector.close(); await pending; }
+  });
+
+  it("preserves caller cancellation and disposes the background deadline", async () => {
+    const navigated = barrier<void>();
+    mocks.navigate.mockImplementationOnce(() => navigated.wait);
+    const connector = new ZhihuFollowConnector();
+    const caller = new AbortController();
+    const reason = new Error("Caller stopped reading");
+    const pending = (kind === "feed" ? connector.fetchEntries(caller.signal)
+      : connector.renderArticle("https://www.zhihu.com/question/1/answer/2", { signal: caller.signal })).catch((error) => error);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      caller.abort(reason);
+      expect(await pending).toBe(reason);
+      expect(mocks.windows[0].isDestroyed()).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(mocks.evaluate).not.toHaveBeenCalled();
+    } finally { navigated.release(); connector.close(); await pending; }
+  });
+
   it("rejects an oversized document and releases its reading window", async () => {
     mocks.evaluate.mockResolvedValueOnce("x".repeat(8_000_001));
     const connector = new ZhihuFollowConnector();
@@ -223,4 +300,41 @@ describe.each(["feed", "article"] as const)("Zhihu %s session lifetime", (kind) 
       expect(mocks.windows).toHaveLength(1);
     } finally { await clearing; await reading; connector.close(); }
   });
+});
+
+it("records timeout backoff, permits immediate retry and deduplicates after restart", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "reading-hub-zhihu-deadline-"));
+  const databasePath = join(directory, "fixture.sqlite");
+  let db = new ReadingDatabase(databasePath);
+  const connector = new ZhihuFollowConnector();
+  const registry = new ConnectorRegistry(); registry.register(connector);
+  let manager = new SyncManager(db, registry);
+  const source = db.createSource({ url: "https://www.zhihu.com/follow", title: "Fixture", kind: "zhihu_follow", pollingEnabled: true });
+  const navigated = barrier<void>();
+  mocks.navigate.mockImplementationOnce(() => navigated.wait);
+  const settled = vi.fn();
+  const pending = manager.syncSource(source.id).then(settled, settled);
+  try {
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(settled).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: "知乎内容读取超时，请检查网络后重试。" }));
+    const failed = db.getSource(source.id)!;
+    expect(failed).toMatchObject({ status: "error", failureCount: 1, lastError: "知乎内容读取超时，请检查网络后重试。" });
+    expect(failed.nextCheckAt).toBeGreaterThan(Date.now());
+    // The late navigation remains unresolved while a fresh request succeeds.
+    const retry = manager.syncSource(source.id);
+    await vi.advanceTimersByTimeAsync(1_200);
+    expect(await retry).toMatchObject({ inserted: 1, source: { status: "active", failureCount: 0 } });
+    await manager.close(); db.close();
+    db = new ReadingDatabase(databasePath);
+    manager = new SyncManager(db, registry);
+    const replay = manager.syncSource(source.id);
+    await vi.advanceTimersByTimeAsync(1_200);
+    expect(await replay).toMatchObject({ inserted: 0 });
+    expect(db.listEntries(source.id)).toHaveLength(1);
+    expect(mocks.windows.every((window) => window.isDestroyed())).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    navigated.release(); connector.close(); await pending; await manager.close(); db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

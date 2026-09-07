@@ -3,7 +3,7 @@ import { assertPublicUrl } from "../shared/url";
 import type { ConnectorAdapter, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
 import { builtInManifest } from "./connector-registry";
 import { contentNormalizer } from "./content-normalizer";
-import { abortError, awaitWithAbort, combineAbortSignals, delayWithAbort, throwIfAborted } from "./cancellation";
+import { abortError, awaitWithAbort, combineAbortSignals, delayWithAbort, throwIfAborted, withRequestTimeout } from "./cancellation";
 import { extractZhihuFollowPage } from "./zhihu-follow-parser";
 import { configureChromiumSession } from "./network";
 import { createBackgroundWindow } from "./background-window";
@@ -12,6 +12,7 @@ import { readRenderedPage, type PageRenderOptions, type RenderedPage } from "./r
 
 const FOLLOW_URL = "https://www.zhihu.com/follow";
 const PARTITION = "persist:reading-hub-zhihu-follow";
+const READING_TIMEOUT_MS = 30_000;
 
 type LoginAttempt = {
   controller: AbortController;
@@ -129,18 +130,21 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
    * extraction together, including callers without their own signal. */
   private async withReadingWindow<T>(caller: AbortSignal | undefined, operation: (window: BrowserWindow, signal: AbortSignal) => Promise<T>): Promise<T> {
     const scope = combineAbortSignals(caller, this.readingSession.signal);
-    const signal = scope.signal!;
+    // One budget includes admission, proxy configuration, navigation and DOM
+    // extraction. A stalled background read must release its sync queue slot.
+    const request = withRequestTimeout(scope.signal, READING_TIMEOUT_MS, "知乎内容读取超时，请检查网络后重试。");
+    const signal = request.signal;
     try {
       const window = await this.createWindow(false, signal);
       try {
         throwIfAborted(signal);
-        const result = await operation(window, signal);
+        const result = await awaitWithAbort(operation(window, signal), signal);
         throwIfAborted(signal);
         return result;
       } finally {
         if (!window.isDestroyed()) window.destroy();
       }
-    } finally { scope.dispose(); }
+    } finally { request.dispose(); scope.dispose(); }
   }
 
   clearSession(): Promise<void> {
