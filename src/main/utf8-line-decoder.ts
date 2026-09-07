@@ -4,16 +4,31 @@ export class Utf8LineDecoder {
   private buffer: Buffer = Buffer.alloc(0);
   private bytes = 0;
   private closed = false;
+  private skipLineFeed = false;
 
-  constructor(private readonly maxBytes: number, private readonly accept: (line: string) => void) {
+  constructor(private readonly maxBytes: number, private readonly accept: (line: string) => void,
+    private readonly lineEndings: "lf" | "universal" = "lf") {
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new RangeError("Line byte limit must be a positive safe integer.");
   }
 
-  push(chunk: Buffer): void {
+  push(chunk: Uint8Array): void {
     if (this.closed) return;
     let start = 0;
     while (start < chunk.length && !this.closed) {
-      const newline = chunk.indexOf(10, start);
+      // CR is already a complete line ending. Swallow only its paired LF,
+      // including when the pair straddles transport chunks.
+      if (this.skipLineFeed) {
+        this.skipLineFeed = false;
+        if (chunk[start] === 10) { start++; continue; }
+      }
+      let newline = -1;
+      if (this.lineEndings === "universal") {
+        // Search both separators in one pass; repeated indexOf searches for
+        // an absent separator would rescan a CR-only/LF-only chunk per line.
+        for (let index = start; index < chunk.length; index++) {
+          if (chunk[index] === 10 || chunk[index] === 13) { newline = index; break; }
+        }
+      } else newline = chunk.indexOf(10, start);
       const end = newline < 0 ? chunk.length : newline;
       const length = end - start;
       if (this.bytes + length > this.maxBytes) {
@@ -28,9 +43,10 @@ export class Utf8LineDecoder {
         this.buffer.copy(buffer, 0, 0, this.bytes);
         this.buffer = buffer;
       }
-      chunk.copy(this.buffer, this.bytes, start, end);
+      this.buffer.set(chunk.subarray(start, end), this.bytes);
       this.bytes += length;
       if (newline < 0) return;
+      this.skipLineFeed = this.lineEndings === "universal" && chunk[newline] === 13;
       this.emit();
       start = newline + 1;
     }

@@ -11,6 +11,7 @@ import { CodexCliError, LocalCodexCli, type CodexCliRunner } from "./codex-cli";
 import { abortError, awaitWithAbort, throwIfAborted, withRequestTimeout } from "./cancellation";
 import { discardResponseBody, readResponseBytes } from "./byte-limit";
 import { KeyedTaskQueue } from "./keyed-task-queue";
+import { Utf8LineDecoder } from "./utf8-line-decoder";
 import { chromiumFetch } from "./network";
 import { ApiRequestBoundaryError, fetchApiResponse } from "./api-response";
 import { CODEX_CLI_MODEL_OPTIONS } from "../shared/types";
@@ -495,16 +496,9 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
     }
   }
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
   let answer = "";
   let receivedBytes = 0;
-  const acceptEvent = (block: string) => {
-    const data = block
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trimStart())
-      .join("\n");
+  const acceptEvent = (data: string) => {
     if (!data || data === "[DONE]") return;
     let event: unknown;
     try {
@@ -522,26 +516,42 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
     const accepted = delta.slice(0, remaining);
     answer += accepted;
     onDelta(accepted);
+    // A subscriber can cancel synchronously while receiving this delta. Stop
+    // before dispatching further events already present in the same chunk.
+    throwIfAborted(signal);
   };
+  let firstLine = true;
+  let dataLines: string[] = [];
+  const decoder = new Utf8LineDecoder(MAX_AI_RESPONSE_BYTES, (line) => {
+    if (firstLine) { firstLine = false; line = line.replace(/^\uFEFF/, ""); }
+    if (!line) {
+      const data = dataLines.join("\n");
+      dataLines = [];
+      acceptEvent(data);
+    } else if (line === "data") dataLines.push("");
+    else if (line.startsWith("data:")) {
+      const value = line.slice(5);
+      dataLines.push(value.startsWith(" ") ? value.slice(1) : value);
+    }
+  }, "universal");
   try {
     while (true) {
       const { done, value } = await awaitWithAbort(reader.read(), signal);
       throwIfAborted(signal);
       receivedBytes += value?.byteLength ?? 0;
       checkAiResponseSize(receivedBytes);
-      buffer += decoder.decode(value, { stream: !done });
-      const blocks = buffer.split(/\r?\n\r?\n/);
-      buffer = blocks.pop() || "";
-      for (const block of blocks) acceptEvent(block);
       if (done) break;
+      if (value) decoder.push(value);
     }
-    if (buffer.trim()) acceptEvent(buffer);
+    // EOF is not an SSE event delimiter. Do not publish a partially received
+    // event, even if its data happens to be valid JSON already.
   } catch (error) {
     // A failed parse, cancelled caller, or oversized body must stop the
     // unread stream, without waiting for a stalled transport to acknowledge.
     void reader.cancel().catch(() => undefined);
     throw error;
   } finally {
+    decoder.discard();
     reader.releaseLock();
   }
   return answer.trim();

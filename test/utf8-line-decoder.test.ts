@@ -2,6 +2,34 @@ import { describe, expect, it, vi } from "vitest";
 import { Utf8LineDecoder } from "../src/main/utf8-line-decoder";
 
 describe("bounded UTF-8 lines", () => {
+  it("supports mixed universal line endings across every byte boundary", () => {
+    const lines: string[] = [];
+    const decoder = new Utf8LineDecoder(100, (line) => lines.push(line), "universal");
+    for (const byte of Buffer.from("中文\r\n\r🧪\n\r\n末尾\r")) decoder.push(Uint8Array.of(byte));
+    decoder.end();
+    expect(lines).toEqual(["中文", "", "🧪", "", "末尾"]);
+  });
+
+  it("preserves bare carriage returns in the default JSON-line mode", () => {
+    const lines: string[] = [];
+    const decoder = new Utf8LineDecoder(100, (line) => lines.push(line));
+    decoder.push(Buffer.from("first\rsecond\n"));
+    decoder.end();
+    expect(lines).toEqual(["first\rsecond"]);
+  });
+
+  it("handles batches of CR-only blank lines and stops immediately on discard", () => {
+    const lines: string[] = [];
+    const decoder = new Utf8LineDecoder(100, (line) => {
+      lines.push(line);
+      if (lines.length === 5000) decoder.discard();
+    }, "universal");
+    decoder.push(Buffer.from("\r".repeat(10000)));
+    decoder.end();
+    expect(lines).toHaveLength(5000);
+    expect(lines.every((line) => line === "")).toBe(true);
+  });
+
   it("frames fragmented UTF-8, CRLF, blank lines and a final line without a newline", () => {
     const accept = vi.fn();
     const decoder = new Utf8LineDecoder(100, accept);

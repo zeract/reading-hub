@@ -42,6 +42,7 @@ const request = (provider) => ({
 });
 let protocolRequests = 0;
 let mode = "complete";
+let lineEnding = "\n";
 let exitCode = 0;
 let protocolRegistered = false;
 let apiRequests = 0;
@@ -89,21 +90,23 @@ try {
     const delta = url.hostname === "api.openai.com"
       ? { type: "response.output_text.delta", delta: "Fixture answer" }
       : { choices: [{ delta: { content: "Fixture answer" } }] };
-    return new Response(`data: ${JSON.stringify(delta)}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+    return new Response(`data: ${JSON.stringify(delta)}${lineEnding}${lineEnding}data: [DONE]${lineEnding}${lineEnding}`, { headers: { "content-type": "text/event-stream" } });
   });
   protocolRegistered = true;
   for (const provider of providers) {
     const url = provider === "openai" ? "https://api.openai.com" : "https://api.deepseek.com";
     await session.defaultSession.cookies.set({ url, name: "fixture-session", value: "fixture-cookie", secure: true });
-    let text = "";
-    const answer = await service.askStream(request(provider), (delta) => { text += delta; });
-    assert.equal(answer.text, "Fixture answer");
-    assert.equal(text, "Fixture answer");
+    for (lineEnding of ["\n", "\r\n", "\r"]) {
+      let text = "";
+      const answer = await service.askStream(request(provider), (delta) => { text += delta; });
+      assert.equal(answer.text, "Fixture answer");
+      assert.equal(text, "Fixture answer");
+    }
   }
-  assert.equal(protocolRequests, 4);
+  assert.equal(protocolRequests, 12);
   mode = "redirect";
   for (const provider of providers) await assert.rejects(service.askStream(request(provider), () => {}), /允许范围/);
-  assert.equal(protocolRequests, 6);
+  assert.equal(protocolRequests, 14);
   await session.defaultSession.cookies.set({ url: "https://api.example.com", name: "fixture-api-session", value: "fixture-cookie", secure: true });
   const json = await requestJsonWithTimeout((url, init) => {
     assert.equal(init.credentials, "omit");
@@ -113,7 +116,7 @@ try {
   }, undefined, 2_000);
   assert.deepEqual(json.payload, { fixture: true });
   assert.equal(apiRequests, 2);
-  console.log("Reading Hub network smoke test passed: both AI providers use local proxy; native SSE/JSON, same-origin redirects, real HTTP cookie control, API credential omission, explicit authorization and cross-origin rejection verified.");
+  console.log("Reading Hub network smoke test passed: both AI providers use local proxy; native SSE with LF/CRLF/CR, JSON, same-origin redirects, real HTTP cookie control, API credential omission, explicit authorization and cross-origin rejection verified.");
 } catch (error) {
   exitCode = 1;
   console.error(error);
