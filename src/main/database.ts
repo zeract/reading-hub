@@ -316,6 +316,7 @@ export class ReadingDatabase {
   private readonly db: Database.Database;
   private readonly changeListeners = new Set<(revision: number) => void>();
   private publishedRevision = -1;
+  private publishingChanges = false;
   private previousVisitAt = Date.now();
 
   beginLibrarySession(now = Date.now()): void {
@@ -329,18 +330,32 @@ export class ReadingDatabase {
   }
 
   onLibraryChanged(listener: (revision: number) => void): () => void {
-    this.publishedRevision = this.getLibraryRevision();
+    // Only a fresh subscription may establish a baseline, and never from
+    // uncommitted writes or while existing observers are receiving a revision.
+    if (!this.changeListeners.size && !this.publishingChanges && !this.db.inTransaction) {
+      this.publishedRevision = this.getLibraryRevision();
+    }
     this.changeListeners.add(listener);
     return () => this.changeListeners.delete(listener);
   }
 
   publishChanges(): void {
-    if (!this.db.open || this.db.inTransaction || !this.changeListeners.size) return;
-    const revision = this.getLibraryRevision();
-    if (revision === this.publishedRevision) return;
-    this.publishedRevision = revision;
-    for (const listener of this.changeListeners) {
-      try { listener(revision); } catch { /* A disconnected observer cannot roll back committed library data. */ }
+    if (!this.db.open || this.db.inTransaction || !this.changeListeners.size || this.publishingChanges) return;
+    this.publishingChanges = true;
+    try {
+      // Finish each revision before delivering writes made by its callbacks.
+      // These are invalidations, so multiple committed writes may coalesce.
+      while (this.db.open && !this.db.inTransaction && this.changeListeners.size) {
+        const revision = this.getLibraryRevision();
+        if (revision === this.publishedRevision) break;
+        this.publishedRevision = revision;
+        for (const listener of [...this.changeListeners]) {
+          if (!this.changeListeners.has(listener)) continue;
+          try { listener(revision); } catch { /* A disconnected observer cannot roll back committed library data. */ }
+        }
+      }
+    } finally {
+      this.publishingChanges = false;
     }
   }
 
@@ -350,6 +365,7 @@ export class ReadingDatabase {
       this.db.pragma("journal_mode = WAL");
       this.db.pragma("foreign_keys = ON");
       migrateDatabaseSchema(this.db);
+      this.publishedRevision = this.getLibraryRevision();
     } catch (error) {
       // A failed constructor has no owner that can later close its handle.
       this.db.close();

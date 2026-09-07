@@ -48,8 +48,13 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
   const observers = new Map<number, Electron.WebContents>();
   const unsubscribeChanges = database?.onLibraryChanged?.((revision) => {
     for (const [id, sender] of observers) {
-      if (sender.isDestroyed()) observers.delete(id);
-      else sender.send(IPC_CHANNELS.entry.changed, revision);
+      try {
+        if (sender.isDestroyed()) observers.delete(id);
+        else sender.send(IPC_CHANNELS.entry.changed, revision);
+      } catch {
+        // One unavailable window must not prevent delivery to the others.
+        // Keep its subscription so a transient failure can recover next time.
+      }
     }
   });
   const pending = new Set<Promise<unknown>>();
