@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { AiReasoningEffort } from "../shared/types";
 import { awaitWithAbort } from "./cancellation";
+import { Utf8LineDecoder } from "./utf8-line-decoder";
 
 const CODEX_TIMEOUT_MS = 90_000;
 const CODEX_EXTENDED_TIMEOUT_MS = 180_000;
@@ -15,6 +16,8 @@ const APP_SERVER_INTERRUPT_DRAIN_TIMEOUT_MS = 15_000;
 /** Small multiplexing window improves local AI responsiveness without flooding the local account. */
 const APP_SERVER_MAX_CONCURRENT_TURNS = 2;
 const MAX_OUTPUT_LENGTH = 40_000;
+/** Wire frames include JSON escaping and metadata beyond the visible answer. */
+const MAX_PROTOCOL_LINE_BYTES = 1_000_000;
 const MAX_STDERR_LENGTH = 4_000;
 const DESKTOP_CODEX_COMMAND = "/Applications/ChatGPT.app/Contents/Resources/codex";
 const APP_SERVER_CLIENT_INFO = { name: "reading-hub", title: "Reading Hub", version: "0.1.0" };
@@ -311,7 +314,7 @@ class PersistentCodexAppServer {
   private ready: Promise<void> | undefined;
   private initialized = false;
   private disposed = false;
-  private stdoutBuffer = "";
+  private readonly stdoutLines = new Utf8LineDecoder(MAX_PROTOCOL_LINE_BYTES, (line) => this.acceptLine(line));
   private stderr = "";
   private nextRequestId = 0;
   private pending = new Map<number, PendingAppServerRequest>();
@@ -349,6 +352,7 @@ class PersistentCodexAppServer {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.stdoutLines.discard();
     this.clearIdleTimer();
     const failure = new CodexAppServerTransportError();
     this.turnSemaphore.close(failure);
@@ -457,9 +461,8 @@ class PersistentCodexAppServer {
 
   private attachChild(child: ChildProcessWithoutNullStreams): void {
     child.stdout.on("data", (chunk: Buffer) => {
-      if (this.stdoutBuffer.length >= MAX_OUTPUT_LENGTH * 2) return;
-      this.stdoutBuffer = `${this.stdoutBuffer}${chunk.toString("utf8")}`.slice(0, MAX_OUTPUT_LENGTH * 2);
-      this.consumeLines();
+      try { this.stdoutLines.push(chunk); }
+      catch { this.failAll(protocolOutputError()); this.dispose(); }
     });
     child.stderr.on("data", (chunk: Buffer) => {
       this.stderr = appendText(this.stderr, chunk, MAX_STDERR_LENGTH);
@@ -467,21 +470,17 @@ class PersistentCodexAppServer {
     child.stdin.once("error", () => this.handleDisconnect());
     child.once("error", () => this.handleDisconnect());
     child.once("close", () => {
-      this.consumeLines(true);
+      this.stdoutLines.end();
       this.handleDisconnect();
     });
   }
 
-  private consumeLines(flush = false): void {
-    const lines = this.stdoutBuffer.split(/\r?\n/);
-    this.stdoutBuffer = flush ? "" : lines.pop() || "";
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        this.acceptMessage(JSON.parse(line));
-      } catch {
-        // Never let diagnostics or malformed protocol lines reach the reader.
-      }
+  private acceptLine(line: string): void {
+    if (!line.trim()) return;
+    try {
+      this.acceptMessage(JSON.parse(line));
+    } catch {
+      // Never let diagnostics or malformed protocol lines reach the reader.
     }
   }
 
@@ -648,6 +647,7 @@ class PersistentCodexAppServer {
   private handleDisconnect(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.stdoutLines.discard();
     this.clearIdleTimer();
     this.child = undefined;
     const failure = this.initialized ? new CodexAppServerTransportError() : new CodexAppServerUnavailableError();
@@ -723,45 +723,44 @@ function runCodexStream(command: string, instruction: string, articleContext: st
       windowsHide: true
     });
     let answer = "";
-    let eventBuffer = "";
+    let outputFailure: CodexCliError | undefined;
     let stderr = "";
     let timedOut = false;
     let cancelled = false;
     const abort = () => {
       cancelled = true;
+      lines.discard();
       if (!child.killed) child.kill("SIGTERM");
     };
     signal?.addEventListener("abort", abort, { once: true });
     const timeout = setTimeout(() => {
       timedOut = true;
+      lines.discard();
       child.kill("SIGTERM");
     }, codexTimeout(options));
-    const append = (current: string, chunk: Buffer, limit: number) => current.length >= limit
-      ? current
-      : `${current}${chunk.toString("utf8")}`.slice(0, limit);
     const acceptEvent = (line: string) => {
+      if (outputFailure || cancelled || timedOut) return;
       const event = parseCodexEvent(line);
       if (!event) return;
       const next = mergeCodexAnswer(answer, event);
-      if (!next.delta) return;
       answer = next.answer;
-      onDelta(next.delta);
+      if (next.delta) onDelta(next.delta);
     };
-    const consumeLines = (flush = false) => {
-      const lines = eventBuffer.split(/\r?\n/);
-      if (flush) eventBuffer = "";
-      else eventBuffer = lines.pop() || "";
-      for (const line of lines) acceptEvent(line);
-    };
-
+    const lines = new Utf8LineDecoder(MAX_PROTOCOL_LINE_BYTES, acceptEvent);
     child.stdout.on("data", (chunk: Buffer) => {
-      if (eventBuffer.length >= MAX_OUTPUT_LENGTH) return;
-      eventBuffer = `${eventBuffer}${chunk.toString("utf8")}`.slice(0, MAX_OUTPUT_LENGTH);
-      consumeLines();
+      try { lines.push(chunk); }
+      catch {
+        outputFailure = protocolOutputError();
+        clearTimeout(timeout);
+        signal?.removeEventListener("abort", abort);
+        if (!child.killed) child.kill("SIGTERM");
+        reject(outputFailure);
+      }
     });
-    child.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk, MAX_STDERR_LENGTH); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr = appendText(stderr, chunk, MAX_STDERR_LENGTH); });
     child.stdin.once("error", () => undefined);
     child.once("error", () => {
+      lines.discard();
       clearTimeout(timeout);
       signal?.removeEventListener("abort", abort);
       reject(new CodexCliError("无法启动本机 Codex。请重新安装后在终端执行 codex 登录。"));
@@ -769,9 +768,11 @@ function runCodexStream(command: string, instruction: string, articleContext: st
     child.once("close", (code) => {
       clearTimeout(timeout);
       signal?.removeEventListener("abort", abort);
-      consumeLines(true);
+      lines.end();
       const finalAnswer = answer.trim();
-      if (timedOut) {
+      if (outputFailure) {
+        reject(outputFailure);
+      } else if (timedOut) {
         reject(new CodexCliError("本机 Codex 回答超时，请稍后重试。"));
       } else if (cancelled) {
         reject(new CodexCliError("AI 请求已取消。"));
@@ -914,13 +915,19 @@ function parseCodexEvent(line: string): CodexMessageEvent | undefined {
 }
 
 function mergeCodexAnswer(answer: string, event: CodexMessageEvent): { answer: string; delta: string } {
-  if (!event.snapshot) return { answer: `${answer}${event.text}`.slice(0, MAX_OUTPUT_LENGTH), delta: event.text };
-  if (event.text === answer || answer.endsWith(event.text)) return { answer, delta: "" };
-  if (event.text.startsWith(answer)) return { answer: event.text.slice(0, MAX_OUTPUT_LENGTH), delta: event.text.slice(answer.length) };
-  // A completed agent-message item is normally the full answer. If the CLI
-  // changed an earlier partial event, prefer its authoritative final text.
-  if (!answer) return { answer: event.text.slice(0, MAX_OUTPUT_LENGTH), delta: event.text };
-  return { answer: event.text.slice(0, MAX_OUTPUT_LENGTH), delta: event.text };
+  if (!event.snapshot) {
+    const delta = event.text.slice(0, MAX_OUTPUT_LENGTH - answer.length);
+    return { answer: answer + delta, delta };
+  }
+  const snapshot = event.text.slice(0, MAX_OUTPUT_LENGTH);
+  if (snapshot === answer) return { answer, delta: "" };
+  if (snapshot.startsWith(answer)) return { answer: snapshot, delta: snapshot.slice(answer.length) };
+  // Revised snapshots are authoritative at completion, not append-only deltas.
+  return { answer: snapshot, delta: answer ? "" : snapshot };
+}
+
+function protocolOutputError(): CodexCliError {
+  return new CodexCliError("本机 AI 返回的单条消息过大，已停止读取，请缩短问题后重试。");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
