@@ -3,6 +3,7 @@ import { load } from "cheerio";
 import { JSDOM, VirtualConsole } from "jsdom";
 import katex from "katex";
 import { randomUUID } from "node:crypto";
+import { WeightedLruCache } from "./weighted-lru-cache";
 import { compactText, parsePublishedAt } from "../shared/text";
 import { inlineDollarMathAt } from "../shared/tex";
 import { assertPublicUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl, toAbsoluteUrl } from "../shared/url";
@@ -356,7 +357,13 @@ export class ArticleReader {
    * switch to a publisher-declared language variant that this short-lived,
    * metadata-only cache remembers after the current article was read.
    */
-  private readonly languageVariants = new Map<string, LanguageVariantCache>();
+  private readonly languageVariants = new WeightedLruCache<string, LanguageVariantCache>({
+    maxEntries: MAX_LANGUAGE_VARIANT_CACHES,
+    // Preserve the existing metadata-record budget; article HTML is never cached.
+    maxWeight: MAX_LANGUAGE_VARIANT_CACHES,
+    weight: () => 1,
+    expiresAt: (item) => item.expiresAt
+  });
 
   constructor(
     private readonly http: PublicHttpClient,
@@ -371,7 +378,7 @@ export class ArticleReader {
 
   async readLanguageVariant(entry: Entry, source: Source | undefined, rawUrl: string, options?: ReaderReadOptions): Promise<ReaderArticle> {
     const requestedUrl = assertPublicUrl(rawUrl).toString();
-    const cached = this.getLanguageVariants(entry.id);
+    const cached = this.languageVariants.get(entry.id);
     const requestedCanonicalUrl = canonicalizeUrl(requestedUrl);
     const variant = cached?.variants.find((candidate) => canonicalizeUrl(candidate.url) === requestedCanonicalUrl);
     if (!cached || !variant) {
@@ -462,18 +469,8 @@ export class ArticleReader {
     throw new ArticleContentUnavailableError();
   }
 
-  private getLanguageVariants(entryId: string): LanguageVariantCache | undefined {
-    this.pruneLanguageVariants();
-    const cached = this.languageVariants.get(entryId);
-    if (!cached) return undefined;
-    if (cached.expiresAt > Date.now()) return cached;
-    this.languageVariants.delete(entryId);
-    return undefined;
-  }
-
   private rememberLanguageVariants(entryId: string, article: ReaderArticle, knownVariants: ReaderLanguageVariant[], signal?: AbortSignal): ReaderArticle {
     throwIfAborted(signal);
-    this.pruneLanguageVariants();
     const variants = mergeReaderLanguageVariants(knownVariants, article.languageVariants || [], article.url, article.activeLanguage);
     const activeLanguage = article.activeLanguage || variants.find((variant) => sameCanonicalUrl(variant.url, article.url))?.language;
     const result = variants.length
@@ -485,18 +482,6 @@ export class ArticleReader {
       this.languageVariants.delete(entryId);
     }
     return result;
-  }
-
-  private pruneLanguageVariants(): void {
-    const now = Date.now();
-    for (const [entryId, cached] of this.languageVariants) {
-      if (cached.expiresAt <= now) this.languageVariants.delete(entryId);
-    }
-    if (this.languageVariants.size < MAX_LANGUAGE_VARIANT_CACHES) return;
-    const oldest = [...this.languageVariants.entries()]
-      .sort((left, right) => left[1].expiresAt - right[1].expiresAt)
-      .slice(0, this.languageVariants.size - MAX_LANGUAGE_VARIANT_CACHES + 1);
-    for (const [entryId] of oldest) this.languageVariants.delete(entryId);
   }
 
   /**
