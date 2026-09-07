@@ -139,14 +139,14 @@ export class AiService {
   /** The sole answer path emits text only, never provider events or diagnostics. */
   async askStream(request: AiQuestionRequest, onDelta: AiDeltaListener, signal?: AbortSignal): Promise<AiAnswer> {
     let emittedLength = 0;
-    let settled = false;
+    let subscriber: AiDeltaListener | undefined = onDelta;
     const publish = (delta: string) => {
-      if (settled) return;
+      if (!subscriber) return;
       throwIfAborted(signal, "AI 请求已取消。");
       const accepted = delta.slice(0, MAX_AI_ANSWER_LENGTH - emittedLength);
       if (accepted) {
         emittedLength += accepted.length;
-        onDelta(accepted);
+        subscriber(accepted);
         // A subscriber can cancel synchronously while receiving a delta.
         throwIfAborted(signal, "AI 请求已取消。");
       }
@@ -157,7 +157,11 @@ export class AiService {
       // A final snapshot may revise the draft. Bound it independently, rather
       // than replacing it with the accumulated incremental text.
       return { ...answer, text: answer.text.slice(0, MAX_AI_ANSWER_LENGTH) };
-    } finally { settled = true; }
+    } finally {
+      // A runner may keep publish for late callbacks. Release the caller's
+      // closure (and its window/request context), rather than only muting it.
+      subscriber = undefined;
+    }
   }
 
   private async askProviderStream(request: AiQuestionRequest, onDelta: AiDeltaListener, signal?: AbortSignal): Promise<AiAnswer> {
