@@ -125,7 +125,7 @@ describe("JSON response contract", () => {
     expect(error).toBeInstanceOf(Error);
     expect(error.message).toContain(status === 200 ? "格式错误" : "授权无效");
     expect(error.message).not.toContain("fixture-private-response-marker");
-    expect(chromiumFetch).toHaveBeenCalledTimes(2);
+    expect(chromiumFetch).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });
 });

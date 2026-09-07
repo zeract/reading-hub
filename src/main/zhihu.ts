@@ -1,6 +1,6 @@
-import { throwIfAborted, delayWithAbort } from "./cancellation";
-import { requestJsonWithTimeout } from "./json-response";
-import { compactText } from "../shared/text";
+import { throwIfAborted, delayWithAbort, awaitWithAbort, RequestAbortedError } from "./cancellation";
+import { InvalidJsonResponseError, requestJsonWithTimeout } from "./json-response";
+import { readZhihuEntries, readZhihuEnvelope, readZhihuFolloweePage, ZhihuResponseError } from "./zhihu-response";
 import { chromiumFetch } from "./network";
 import type { ConnectorAdapter, Followee, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
 import { builtInManifest } from "./connector-registry";
@@ -8,8 +8,9 @@ import { contentNormalizer } from "./content-normalizer";
 
 const API_ORIGIN = "https://developer.zhihu.com";
 
-type ApiResponse<T> = { Code?: number; Data?: T };
-type Paged<T> = { Items?: T[]; Paging?: { IsEnd?: boolean; NextOffset?: string } };
+class ZhihuRequestError extends Error {
+  constructor(message: string, readonly retryable = false) { super(message); this.name = "ZhihuRequestError"; }
+}
 
 /** Official, current-user-only API client. It intentionally has no user-id parameter. */
 export class ZhihuConnector implements ConnectorAdapter {
@@ -35,81 +36,68 @@ export class ZhihuConnector implements ConnectorAdapter {
   }
 
   async fetchEntries(signal?: AbortSignal): Promise<RawEntry[]> {
-    const contents = await this.get<Paged<any>>("/api/v1/user/contents?ContentType=all&Limit=50", signal);
-    return this.toEntries(contents.Items ?? []);
+    return readZhihuEntries(await this.get("/api/v1/user/contents?ContentType=all&Limit=50", signal));
   }
 
   async fetchRecentCollections(signal?: AbortSignal): Promise<RawEntry[]> {
-    const collections = await this.get<{ Items?: any[] }>("/api/v1/user/collections?Limit=50", signal);
-    return this.toEntries(collections.Items ?? []);
-  }
-
-  private toEntries(items: any[]): RawEntry[] {
-    const entries: RawEntry[] = [];
-    for (const item of items) {
-      if (!item.Url) continue;
-      entries.push({
-        url: item.Url,
-        title: compactText(item.Title, 240) || "知乎内容",
-        publishedAt: typeof item.CreatedAt === "number" ? item.CreatedAt * 1000 : undefined,
-        summary: compactText(item.Summary, 500),
-        author: compactText(item.Author?.Name, 120)
-      });
-    }
-    return entries;
+    return readZhihuEntries(await this.get("/api/v1/user/collections?Limit=50", signal));
   }
 
   async fetchFollowees(max = 200, signal?: AbortSignal): Promise<Followee[]> {
+    throwIfAborted(signal);
+    if (!Number.isSafeInteger(max) || max < 0) throw new Error("知乎关注数量限制无效。");
     const output: Followee[] = [];
+    const seenTokens = new Set<string>();
+    const seenOffsets = new Set<string>();
     let offset = "0";
     while (output.length < max) {
-      const page = await this.get<Paged<any>>(`/api/v1/user/followees?Offset=${encodeURIComponent(offset)}&Limit=50`, signal);
-      output.push(
-        ...(page.Items ?? []).map((item) => ({
-          urlToken: String(item.UrlToken),
-          fullname: compactText(item.Fullname, 120) || "知乎用户",
-          url: item.Url,
-          avatarUrl: item.AvatarUrl,
-          headline: compactText(item.Headline, 240),
-          followerCount: item.FollowerCount,
-          updatedAt: Date.now()
-        }))
-      );
-      if (page.Paging?.IsEnd || !page.Paging?.NextOffset) break;
-      offset = page.Paging.NextOffset;
+      throwIfAborted(signal);
+      if (seenOffsets.has(offset) || seenOffsets.size >= 20) throw new ZhihuRequestError("知乎关注列表分页异常，已停止读取，请稍后重试。");
+      seenOffsets.add(offset);
+      const page = readZhihuFolloweePage(await this.get(`/api/v1/user/followees?Offset=${encodeURIComponent(offset)}&Limit=50`, signal));
+      for (const entry of page.entries) {
+        if (!seenTokens.has(entry.urlToken)) { seenTokens.add(entry.urlToken); output.push(entry); }
+      }
+      if (!page.next) break;
+      offset = page.next;
     }
     return output.slice(0, max);
   }
 
-  private async get<T>(path: string, signal?: AbortSignal): Promise<T> {
-    const secret = await this.getAccessSecret();
+  private async get(path: string, signal?: AbortSignal): Promise<unknown> {
+    throwIfAborted(signal);
+    let secret: string | null;
+    try { secret = await awaitWithAbort(this.getAccessSecret(), signal); }
+    catch { throwIfAborted(signal); throw new ZhihuRequestError("无法读取知乎授权配置，请在设置中检查 Access Secret。"); }
     throwIfAborted(signal);
     if (!secret) throw new Error("请先在设置中保存知乎 Access Secret。");
-    let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const { response, payload: body } = await requestJsonWithTimeout<ApiResponse<T>>(chromiumFetch, `${API_ORIGIN}${path}`, {
+        const { response, payload: body } = await requestJsonWithTimeout<unknown>(chromiumFetch, `${API_ORIGIN}${path}`, {
           headers: {
             Authorization: `Bearer ${secret}`,
             "X-Request-Timestamp": String(Math.floor(Date.now() / 1000)),
             "Content-Type": "application/json"
           }
         }, signal, 25_000);
-        if (response.ok && body.Code === 0 && body.Data) return body.Data;
         // Never persist an arbitrary provider error body, which can echo the
         // request's credentials. Status is enough to offer a useful action.
-        if (response.status === 401 || response.status === 403) throw new Error("知乎授权无效或权限不足，请在设置中检查 Access Secret。");
-        if (response.status < 500 && body.Code !== 90001) throw new Error(`知乎接口请求失败（HTTP ${response.status}），请检查授权和接口权限。`);
-        lastError = new Error(`知乎服务暂时不可用（HTTP ${response.status}）`);
+        if (response.status === 401 || response.status === 403) throw new ZhihuRequestError("知乎授权无效或权限不足，请在设置中检查 Access Secret。");
+        if (response.status === 429) throw new ZhihuRequestError("知乎接口请求过于频繁，请稍后重试。");
+        if (!response.ok) throw new ZhihuRequestError(`知乎接口请求失败（HTTP ${response.status}），请稍后重试。`, response.status >= 500);
+        const envelope = readZhihuEnvelope(body);
+        if (envelope.code === 0) return envelope.data;
+        throw new ZhihuRequestError("知乎接口暂时无法提供数据，请稍后重试。", envelope.code === 90001);
       } catch (error) {
         throwIfAborted(signal);
-        lastError = error;
+        if (error instanceof InvalidJsonResponseError || error instanceof ZhihuResponseError) throw error;
+        const failure = error instanceof ZhihuRequestError ? error : error instanceof RequestAbortedError
+          ? new ZhihuRequestError("知乎官方接口响应超时，请稍后重试；已保存的 Access Secret 不会丢失。", true)
+          : new ZhihuRequestError("无法连接知乎官方接口，请检查网络或代理设置后重试。", true);
+        if (!failure.retryable || attempt === 1) throw failure;
       }
       if (attempt === 0) await delayWithAbort(800, signal);
     }
-    if (lastError instanceof Error && /timeout|timed out|aborted/i.test(lastError.message)) {
-      throw new Error("知乎官方接口响应超时，请稍后重试；已保存的 Access Secret 不会丢失。");
-    }
-    throw lastError instanceof Error ? lastError : new Error("知乎接口请求失败。");
+    throw new ZhihuRequestError("知乎接口请求失败。");
   }
 }
