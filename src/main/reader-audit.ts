@@ -4,7 +4,7 @@ import { ArticleReader } from "./article-reader";
 import { ReadingDatabase } from "./database";
 import { PublicHttpClient, UnsupportedReaderImageTypeError } from "./http";
 import { IsolatedPageRenderer } from "./page-renderer";
-import { RobotsDisallowedError } from "./robots";
+import { RobotsDisallowedError, RobotsPolicy } from "./robots";
 import { ZhihuFollowConnector } from "./zhihu-follow";
 import type { Entry, ReaderArticle, Source } from "../shared/types";
 
@@ -385,8 +385,9 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
   let database: ReadingDatabase;
   try { database = new ReadingDatabase(snapshot.path); }
   catch (error) { await snapshot.dispose(); throw error; }
-  const http = new PublicHttpClient();
-  const renderer = new IsolatedPageRenderer();
+  const robots = new RobotsPolicy();
+  const http = new PublicHttpClient(robots);
+  const renderer = new IsolatedPageRenderer(robots);
   const zhihuFollow = new ZhihuFollowConnector();
   const reader = new ArticleReader(http, renderer, (url, options) => zhihuFollow.renderArticle(url, options));
   const results: ReaderAuditResult[] = [];
