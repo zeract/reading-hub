@@ -7,7 +7,6 @@ import type {
   ContentOrigin,
   Entry,
   EntryPage,
-  EntryPageCursor,
   EntryPageQuery,
   EntryListQuery,
   Facet,
@@ -36,6 +35,7 @@ import {
   repairScourRedirectEntries
 } from "./persistence/legacy-content-repair";
 import { migrateDatabaseSchema } from "./persistence/schema";
+import { afterEntryCursor, entryPageCursor, ENTRY_ORDER_BY } from "./persistence/entry-order";
 
 type SourceRow = {
   subscribed?: number;
@@ -157,61 +157,13 @@ function boundedLimit(value: number | undefined): number | undefined {
 
 const DEFAULT_ENTRY_PAGE_SIZE = 100;
 const MAX_ENTRY_PAGE_SIZE = 200;
-const NULL_PUBLICATION_CURSOR_VALUE = Number.MIN_SAFE_INTEGER;
-const ENTRY_PUBLICATION_GROUP = "CASE WHEN entries.published_at IS NULL THEN 1 ELSE 0 END";
-const ENTRY_PUBLICATION_VALUE = `COALESCE(entries.published_at, ${NULL_PUBLICATION_CURSOR_VALUE})`;
-const ENTRY_OBSERVED_VALUE = "COALESCE(entries.observed_at, entries.created_at)";
 const SOURCE_SELECT = "SELECT sources.*, COALESCE((SELECT subscribed FROM subscriptions WHERE source_id = sources.id), 1) AS subscribed FROM sources";
 const VISIBLE_ENTRY = "NOT EXISTS (SELECT 1 FROM dismissed_contents WHERE canonical_identity = COALESCE(entries.canonical_identity, entries.canonical_url))";
 const COLLECTED_ORDER_BY = "entries.created_at DESC, entries.id DESC";
-const ENTRY_ORDER_BY = `${ENTRY_PUBLICATION_GROUP} ASC, ${ENTRY_PUBLICATION_VALUE} DESC, ${ENTRY_OBSERVED_VALUE} DESC, entries.created_at DESC, entries.id DESC`;
 
 function boundedPageSize(value: number | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_ENTRY_PAGE_SIZE;
   return Math.max(1, Math.min(MAX_ENTRY_PAGE_SIZE, Math.floor(value)));
-}
-
-function entryPageCursor(entry: Entry): EntryPageCursor {
-  return {
-    ...(entry.publishedAt === undefined ? {} : { publishedAt: entry.publishedAt }),
-    observedAt: entry.observedAt ?? entry.createdAt,
-    createdAt: entry.createdAt,
-    id: entry.id
-  };
-}
-
-function afterEntryCursor(cursor: EntryPageCursor): { sql: string; parameters: Array<string | number> } {
-  const publicationGroup = cursor.publishedAt === undefined ? 1 : 0;
-  const publicationValue = cursor.publishedAt ?? NULL_PUBLICATION_CURSOR_VALUE;
-  return {
-    // The comparison is the exact inverse of ENTRY_ORDER_BY.  Keeping every
-    // tie-breaker here makes continuation stable even when many old feed
-    // items share a publication time or have no publication date at all.
-    sql: `(
-      ${ENTRY_PUBLICATION_GROUP} > ?
-      OR (${ENTRY_PUBLICATION_GROUP} = ? AND (
-        ${ENTRY_PUBLICATION_VALUE} < ?
-        OR (${ENTRY_PUBLICATION_VALUE} = ? AND (
-          ${ENTRY_OBSERVED_VALUE} < ?
-          OR (${ENTRY_OBSERVED_VALUE} = ? AND (
-            entries.created_at < ?
-            OR (entries.created_at = ? AND entries.id < ?)
-          ))
-        ))
-      ))
-    )`,
-    parameters: [
-      publicationGroup,
-      publicationGroup,
-      publicationValue,
-      publicationValue,
-      cursor.observedAt,
-      cursor.observedAt,
-      cursor.createdAt,
-      cursor.createdAt,
-      cursor.id
-    ]
-  };
 }
 
 function originIdentity(origin: Pick<OriginRow, "entry_id" | "source_id" | "provider_id" | "external_id">): string {
@@ -394,9 +346,15 @@ export class ReadingDatabase {
 
   constructor(filePath: string) {
     this.db = new Database(filePath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
-    migrateDatabaseSchema(this.db);
+    try {
+      this.db.pragma("journal_mode = WAL");
+      this.db.pragma("foreign_keys = ON");
+      migrateDatabaseSchema(this.db);
+    } catch (error) {
+      // A failed constructor has no owner that can later close its handle.
+      this.db.close();
+      throw error;
+    }
   }
 
   /** A host-owned synchronous unit of work; network work must finish before entry. */

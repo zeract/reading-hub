@@ -2,13 +2,14 @@ import { normalizeLegacyDismissedIdentities } from "./dismissed-content";
 import { repairScourRedirectEntries } from "./legacy-content-repair";
 import type Database from "better-sqlite3";
 import { MAX_FUTURE_PUBLICATION_SKEW_MS } from "../../shared/publication-date";
+import { ENTRY_ORDER_BY } from "./entry-order";
 
 /**
  * Persistent schema upgrades are deliberately kept out of the repository
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 8;
+export const CURRENT_SCHEMA_VERSION = 9;
 
 type SqliteDatabase = Database.Database;
 
@@ -308,6 +309,18 @@ const MIGRATIONS: readonly SchemaMigration[] = [
       // Legacy validators have no known response URL. Leave them unbound;
       // the next successful full fetch establishes ownership without deleting content.
       ensureColumn(database, "sources", "validator_url", "TEXT");
+    }
+  },
+  {
+    version: 9,
+    name: "index-publication-timeline-order",
+    up: (database) => {
+      database.exec(`
+        DROP INDEX entries_timeline;
+        CREATE INDEX entries_timeline ON entries(is_read, ${ENTRY_ORDER_BY});
+        CREATE INDEX entries_publication_order ON entries(${ENTRY_ORDER_BY});
+      `);
+      database.pragma("optimize");
     }
   }
 ];
