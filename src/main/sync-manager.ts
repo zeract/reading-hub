@@ -58,7 +58,7 @@ export class SyncManager {
   async runDue(): Promise<void> {
     if (this.closing) return;
     const sources = this.db.listDueSources();
-    await forEachWithConcurrency(sources, BACKGROUND_SYNC_CONCURRENCY, async (source) => {
+    await forEachWithKeyedConcurrency(sources, BACKGROUND_SYNC_CONCURRENCY, (source) => new URL(source.url).hostname, async (source) => {
       // A source-level error has already been recorded by syncSource, including
       // its backoff deadline. It must not turn an unattended timer tick into an
       // unhandled rejection; manual refreshes still receive the same failure.
@@ -235,15 +235,27 @@ function sameRule(left: Source["extractionRule"], right: Source["extractionRule"
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
-async function forEachWithConcurrency<T>(items: T[], limit: number, task: (item: T) => Promise<void>): Promise<void> {
-  let nextIndex = 0;
-  const workerCount = Math.min(Math.max(limit, 1), items.length);
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (nextIndex < items.length) {
-      const item = items[nextIndex++];
-      await task(item);
+/** Admit the earliest runnable item, so a host waiting on its own predecessor
+ * cannot consume another background slot. The shared gate still serializes
+ * these requests with manual refreshes. On infrastructure failure, stop
+ * admission and drain started work before releasing the scheduling pass. */
+async function forEachWithKeyedConcurrency<T>(items: T[], limit: number, keyOf: (item: T) => string, task: (item: T) => Promise<void>): Promise<void> {
+  const pending = items.map((item) => ({ item, key: keyOf(item) }));
+  const active = new Map<string, Promise<void>>();
+  let failure: { error: unknown } | undefined;
+  while ((!failure && pending.length) || active.size) {
+    while (!failure && active.size < Math.max(limit, 1)) {
+      const index = pending.findIndex(({ key }) => !active.has(key));
+      if (index < 0) break;
+      const { item, key } = pending.splice(index, 1)[0];
+      const operation = Promise.resolve().then(() => task(item))
+        .catch((error) => { failure ??= { error }; })
+        .finally(() => { active.delete(key); });
+      active.set(key, operation);
     }
-  }));
+    if (active.size) await Promise.race(active.values());
+  }
+  if (failure) throw failure.error;
 }
 
 function userSafeError(error: unknown): string {
