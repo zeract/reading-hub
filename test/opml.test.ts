@@ -14,7 +14,7 @@ const SAMPLE_OPML = `<?xml version="1.0" encoding="UTF-8"?>
 describe("OPML subscriptions", () => {
   it("rolls back imported subscriptions when persistence fails instead of counting the failure as a skipped outline", () => {
     const database = new ReadingDatabase(":memory:");
-    const sync = { syncSource: vi.fn().mockResolvedValue(undefined) };
+    const sync = { requestDueRun: vi.fn().mockResolvedValue(undefined) };
     const service = new SourceService(database, undefined as never, sync as never, undefined as never);
     const original = database.createSource.bind(database);
     vi.spyOn(database, "createSource").mockImplementation((input) => {
@@ -25,7 +25,7 @@ describe("OPML subscriptions", () => {
     try {
       expect(() => service.importOpml(SAMPLE_OPML)).toThrow("fixture disk failure");
       expect(database.listSources()).toEqual([]);
-      expect(sync.syncSource).not.toHaveBeenCalled();
+      expect(sync.requestDueRun).not.toHaveBeenCalled();
       vi.mocked(database.createSource).mockImplementation(original);
       expect(service.importOpml(SAMPLE_OPML)).toEqual({ imported: 2, existing: 0, skipped: 0 });
     } finally { database.close(); }
@@ -33,7 +33,7 @@ describe("OPML subscriptions", () => {
 
   it("skips an invalid outline without suppressing a later valid outline for the same URL", () => {
     const database = new ReadingDatabase(":memory:");
-    const service = new SourceService(database, undefined as never, { syncSource: vi.fn().mockResolvedValue(undefined) } as never, undefined as never);
+    const service = new SourceService(database, undefined as never, { requestDueRun: vi.fn().mockResolvedValue(undefined) } as never, undefined as never);
     const input = `<opml version="2.0"><body>
       <outline text="${"x".repeat(121)}" xmlUrl="https://example.com/feed.xml" />
       <outline text="Valid title" xmlUrl="https://example.com/feed.xml" />
@@ -45,21 +45,20 @@ describe("OPML subscriptions", () => {
     } finally { database.close(); }
   });
 
-  it("publishes one complete batch before starting any initial sync", async () => {
+  it("publishes one complete batch before waking the shared scheduler", () => {
     const database = new ReadingDatabase(":memory:");
     const notifications: number[] = [];
     const unsubscribe = database.onLibraryChanged(() => notifications.push(database.listSources().length));
     const syncObservations: number[] = [];
-    const sync = { syncSource: vi.fn().mockImplementation(async () => {
+    const sync = { requestDueRun: vi.fn().mockImplementation(() => {
       syncObservations.push(database.listSources().length);
     }) };
     const service = new SourceService(database, undefined as never, sync as never, undefined as never);
     try {
       expect(service.importOpml(SAMPLE_OPML)).toEqual({ imported: 2, existing: 0, skipped: 0 });
       expect(notifications).toEqual([2]);
-      expect(sync.syncSource).toHaveBeenCalledTimes(1);
-      await vi.waitFor(() => expect(sync.syncSource).toHaveBeenCalledTimes(2));
-      expect(syncObservations).toEqual([2, 2]);
+      expect(sync.requestDueRun).toHaveBeenCalledTimes(1);
+      expect(syncObservations).toEqual([2]);
     } finally { unsubscribe(); database.close(); }
   });
 
@@ -73,7 +72,7 @@ describe("OPML subscriptions", () => {
 
   it("imports valid feeds once and marks only an explicit loopback feed as trusted", () => {
     const database = new ReadingDatabase(":memory:");
-    const sync = { syncSource: vi.fn().mockResolvedValue(undefined) };
+    const sync = { requestDueRun: vi.fn().mockResolvedValue(undefined) };
     const service = new SourceService(database, undefined as never, sync as never, undefined as never);
 
     expect(service.importOpml(SAMPLE_OPML)).toEqual({ imported: 2, existing: 0, skipped: 0 });
@@ -99,7 +98,7 @@ describe("OPML subscriptions", () => {
       kind: "rss",
       pollingEnabled: true
     });
-    const service = new SourceService(database, undefined as never, { syncSource: vi.fn().mockResolvedValue(undefined) } as never, undefined as never);
+    const service = new SourceService(database, undefined as never, { requestDueRun: vi.fn().mockResolvedValue(undefined) } as never, undefined as never);
 
     expect(service.importOpml(SAMPLE_OPML)).toEqual({ imported: 1, existing: 1, skipped: 0 });
     database.close();

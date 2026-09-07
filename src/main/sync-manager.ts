@@ -14,6 +14,7 @@ export class SyncManager {
   private readonly gate = new KeyedTaskQueue();
   private timer?: NodeJS.Timeout;
   private dueRun?: Promise<void>;
+  private dueRequested = false;
   private readonly inFlight = new Map<string, Promise<SourceSyncResult>>();
   private readonly controllers = new Map<string, AbortController>();
   private closing = false;
@@ -27,8 +28,8 @@ export class SyncManager {
 
   start(): void {
     if (this.timer || this.closing) return;
-    this.timer = setInterval(() => this.scheduleDueRun(), 60_000);
-    this.scheduleDueRun();
+    this.timer = setInterval(() => this.requestDueRun(), 60_000);
+    this.requestDueRun();
   }
 
   stop(): void {
@@ -47,6 +48,7 @@ export class SyncManager {
 
   beginShutdown(): void {
     this.closing = true;
+    this.dueRequested = false;
     this.stop();
     for (const id of this.controllers.keys()) this.cancelSource(id);
   }
@@ -183,9 +185,19 @@ export class SyncManager {
     if (this.closing) throw new SyncCancelledError("应用正在退出，已取消此次同步。");
   }
 
-  private scheduleDueRun(): void {
-    if (this.closing || this.dueRun) return;
-    this.dueRun = this.runDue()
+  /** Timer ticks and committed imports share one tracked scheduler. A wake
+   * during a pass requests one fresh snapshot after it drains, rather than
+   * launching a competing batch or losing newly imported sources. */
+  requestDueRun(): void {
+    if (this.closing) return;
+    this.dueRequested = true;
+    if (this.dueRun) return;
+    this.dueRun = Promise.resolve().then(async () => {
+      while (this.dueRequested && !this.closing) {
+        this.dueRequested = false;
+        await this.runDue();
+      }
+    })
       .catch((error) => {
         // Only infrastructure errors that prevent a whole scheduling pass from
         // running arrive here. Per-source failures are persisted above.
@@ -193,6 +205,8 @@ export class SyncManager {
       })
       .finally(() => {
         this.dueRun = undefined;
+        // Include wakes delivered during error reporting/final cleanup.
+        if (this.dueRequested) this.requestDueRun();
       });
   }
 }

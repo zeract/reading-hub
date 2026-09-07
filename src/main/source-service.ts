@@ -150,7 +150,7 @@ export class SourceService {
     // Validation skips individual invalid outlines; storage failures must roll
     // back the whole accepted batch and surface as failures, not skip counts.
     const created = this.db.writeTransaction(() => inputs.map((input) => this.db.createSource(input)));
-    void this.syncImportedSources(created);
+    if (created.length) this.sync.requestDueRun();
     return { imported: created.length, existing, skipped };
   }
 
@@ -360,12 +360,6 @@ export class SourceService {
       this.db.pauseSource(source.id, "X 不提供可由 Reading Hub 自动读取的公开订阅通道；此旧来源已停止刷新。可保留已有卡片，或删除来源后改用官方 API。");
     }
     return legacySources.length;
-  }
-
-  private async syncImportedSources(sources: Source[]): Promise<void> {
-    // Queue imports rather than firing every feed at once. SyncManager keeps
-    // same-host sources serial and stores individual failures/backs-off.
-    for (const source of sources) await this.sync.syncSource(source.id).catch(() => undefined);
   }
 }
 
