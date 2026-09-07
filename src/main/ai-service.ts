@@ -14,7 +14,7 @@ import { KeyedTaskQueue } from "./keyed-task-queue";
 import { Utf8LineDecoder } from "./utf8-line-decoder";
 import { chromiumFetch } from "./network";
 import { ApiRequestBoundaryError, fetchApiResponse } from "./api-response";
-import { CODEX_CLI_MODEL_OPTIONS } from "../shared/types";
+import { CODEX_CLI_MODEL_OPTIONS, MAX_AI_ANSWER_LENGTH } from "../shared/types";
 import type {
   AiAnswer,
   AiArticleContext,
@@ -138,6 +138,29 @@ export class AiService {
 
   /** The sole answer path emits text only, never provider events or diagnostics. */
   async askStream(request: AiQuestionRequest, onDelta: AiDeltaListener, signal?: AbortSignal): Promise<AiAnswer> {
+    let emittedLength = 0;
+    let settled = false;
+    const publish = (delta: string) => {
+      if (settled) return;
+      throwIfAborted(signal, "AI 请求已取消。");
+      const accepted = delta.slice(0, MAX_AI_ANSWER_LENGTH - emittedLength);
+      if (accepted) {
+        emittedLength += accepted.length;
+        onDelta(accepted);
+        // A subscriber can cancel synchronously while receiving a delta.
+        throwIfAborted(signal, "AI 请求已取消。");
+      }
+    };
+    try {
+      const answer = await this.askProviderStream(request, publish, signal);
+      throwIfAborted(signal, "AI 请求已取消。");
+      // A final snapshot may revise the draft. Bound it independently, rather
+      // than replacing it with the accumulated incremental text.
+      return { ...answer, text: answer.text.slice(0, MAX_AI_ANSWER_LENGTH) };
+    } finally { settled = true; }
+  }
+
+  private async askProviderStream(request: AiQuestionRequest, onDelta: AiDeltaListener, signal?: AbortSignal): Promise<AiAnswer> {
     throwIfAborted(signal, "AI 请求已取消。");
     const provider = getProvider(request.provider);
     const question = normaliseQuestion(request.question);
@@ -511,14 +534,11 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
     if (providerError) throw new AiServiceError(providerError);
     const delta = readDelta(event);
     if (!delta) return;
-    const remaining = Math.max(0, 40_000 - answer.length);
+    const remaining = Math.max(0, MAX_AI_ANSWER_LENGTH - answer.length);
     if (!remaining) return;
     const accepted = delta.slice(0, remaining);
     answer += accepted;
     onDelta(accepted);
-    // A subscriber can cancel synchronously while receiving this delta. Stop
-    // before dispatching further events already present in the same chunk.
-    throwIfAborted(signal);
   };
   let firstLine = true;
   let dataLines: string[] = [];

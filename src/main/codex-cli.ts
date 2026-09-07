@@ -3,7 +3,7 @@ import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import type { AiReasoningEffort } from "../shared/types";
+import { MAX_AI_ANSWER_LENGTH, type AiReasoningEffort } from "../shared/types";
 import { awaitWithAbort, combineAbortSignals } from "./cancellation";
 import { ChildProcessScope } from "./child-process-scope";
 import { Utf8LineDecoder } from "./utf8-line-decoder";
@@ -17,7 +17,6 @@ const APP_SERVER_IDLE_TIMEOUT_MS = 45_000;
 const APP_SERVER_INTERRUPT_DRAIN_TIMEOUT_MS = 15_000;
 /** Small multiplexing window improves local AI responsiveness without flooding the local account. */
 const APP_SERVER_MAX_CONCURRENT_TURNS = 2;
-const MAX_OUTPUT_LENGTH = 40_000;
 /** Wire frames include JSON escaping and metadata beyond the visible answer. */
 const MAX_PROTOCOL_LINE_BYTES = 1_000_000;
 const MAX_STDERR_LENGTH = 4_000;
@@ -461,7 +460,7 @@ class PersistentCodexAppServer {
 
   private appendTurnDelta(turn: ActiveAppServerTurn, delta: string): void {
     if (turn.draining) return;
-    const remaining = MAX_OUTPUT_LENGTH - turn.answer.length;
+    const remaining = MAX_AI_ANSWER_LENGTH - turn.answer.length;
     if (remaining <= 0) return;
     const accepted = delta.slice(0, remaining);
     if (!accepted) return;
@@ -482,7 +481,7 @@ class PersistentCodexAppServer {
     }
     // A revised final message is authoritative. The renderer gets that value
     // in its completion event and never sees a duplicate interim paragraph.
-    turn.answer = snapshot.slice(0, MAX_OUTPUT_LENGTH);
+    turn.answer = snapshot.slice(0, MAX_AI_ANSWER_LENGTH);
   }
 
   private finishTurn(threadId: string, result: { answer?: string; error?: Error }): void {
@@ -834,10 +833,10 @@ function parseCodexEvent(line: string): CodexMessageEvent | undefined {
 
 function mergeCodexAnswer(answer: string, event: CodexMessageEvent): { answer: string; delta: string } {
   if (!event.snapshot) {
-    const delta = event.text.slice(0, MAX_OUTPUT_LENGTH - answer.length);
+    const delta = event.text.slice(0, MAX_AI_ANSWER_LENGTH - answer.length);
     return { answer: answer + delta, delta };
   }
-  const snapshot = event.text.slice(0, MAX_OUTPUT_LENGTH);
+  const snapshot = event.text.slice(0, MAX_AI_ANSWER_LENGTH);
   if (snapshot === answer) return { answer, delta: "" };
   if (snapshot.startsWith(answer)) return { answer: snapshot, delta: snapshot.slice(answer.length) };
   // Revised snapshots are authoritative at completion, not append-only deltas.

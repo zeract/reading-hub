@@ -490,6 +490,9 @@ export interface AiSelectionContext {
   intent: AiSelectionIntent;
 }
 
+/** Shared visible-output budget, measured using JavaScript string length. */
+export const MAX_AI_ANSWER_LENGTH = 40_000;
+
 export interface AiAnswer {
   provider: AiProviderId;
   model: string;
