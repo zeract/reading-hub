@@ -52,6 +52,17 @@ function ask(service: AiService, request: AiQuestionRequest): Promise<AiAnswer> 
 }
 
 describe("AI learning service", () => {
+  it.each(["openai", "deepseek"] as const)("does not forward %s credentials or article excerpts to a redirect origin", async (provider) => {
+    const fetcher = vi.fn(async () => new Response(null, { status: 307, headers: { location: "https://other.example/fixture-private-marker" } }));
+    const service = new AiService(new MemorySecrets(), fetcher);
+    await configure(service, provider);
+    const error = await ask(service, { provider, question: "解释一下", article }).catch((error) => error);
+    expect(error.message).toContain("允许范围");
+    expect(error.message).not.toMatch(/test-key|fixture-private-marker/);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ redirect: "manual" }));
+  });
+
   it("uses the Responses API with store disabled for OpenAI reading questions", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ output_text: "这是对公式的解释。" }));
     const service = new AiService(new MemorySecrets(), fetcher);

@@ -11,6 +11,18 @@ beforeEach(() => { network.fetch.mockReset(); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe("Zhihu response boundaries", () => {
+  it("does not retry or expose an unsafe redirect", async () => {
+    vi.useFakeTimers();
+    network.fetch.mockImplementation(async () => new Response(null, { status: 307, headers: { location: "https://other.example/fixture-secret" } }));
+    const pending = connector().fetchEntries().catch((error) => error);
+    await vi.runAllTimersAsync();
+    const error = await pending;
+    expect(error.message).toContain("允许范围");
+    expect(error.message).not.toContain("fixture-secret");
+    expect(network.fetch).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("does not mistake a missing collection for an empty success", async () => {
     network.fetch.mockImplementation(async () => page({}));
     await expect(connector().fetchEntries()).rejects.toThrow("响应无效");

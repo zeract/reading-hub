@@ -1,6 +1,6 @@
 import { throwIfAborted, withRequestTimeout } from "./cancellation";
 import { discardResponseBody, formatByteLimit, readResponseBytes } from "./byte-limit";
-import { fetchResponse } from "./fetch-response";
+import { fetchApiResponse } from "./api-response";
 
 const MAX_JSON_BYTES = 8_000_000;
 
@@ -28,7 +28,7 @@ export async function requestJsonWithTimeout<T>(
   const request = withRequestTimeout(signal, timeoutMs, "请求响应超时。");
   let response: Response | undefined;
   try {
-    response = await fetchResponse(fetcher, url, { ...init, signal: request.signal });
+    response = await fetchApiResponse(fetcher, url, { ...init, signal: request.signal });
     throwIfAborted(request.signal);
     let payload: T;
     try {

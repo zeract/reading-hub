@@ -11,7 +11,7 @@ import { CodexCliError, LocalCodexCli, type CodexCliRunner } from "./codex-cli";
 import { abortError, awaitWithAbort, throwIfAborted, withRequestTimeout } from "./cancellation";
 import { discardResponseBody, readResponseBytes } from "./byte-limit";
 import { KeyedTaskQueue } from "./keyed-task-queue";
-import { fetchResponse } from "./fetch-response";
+import { ApiRequestBoundaryError, fetchApiResponse } from "./api-response";
 import { CODEX_CLI_MODEL_OPTIONS } from "../shared/types";
 import type {
   AiAnswer,
@@ -215,7 +215,7 @@ export class AiService {
     try {
       let response: Response;
       try {
-        response = await fetchResponse(this.fetcher, endpoint, {
+        response = await fetchApiResponse(this.fetcher, endpoint, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
           body: JSON.stringify(body),
@@ -225,9 +225,10 @@ export class AiService {
           discardResponseBody(response);
           throwIfAborted(request.signal);
         }
-      } catch {
+      } catch (error) {
         if (parentSignal?.aborted) throw abortError(parentSignal, "AI 请求已取消。");
         if (request.signal.aborted) throw new AiServiceError(`${providerLabel} 请求超时，请稍后重试。`);
+        if (error instanceof ApiRequestBoundaryError) throw new AiServiceError(error.message);
         throw new AiServiceError(`无法连接 ${providerLabel}，请检查网络后重试。`);
       }
       if (!response.ok) {

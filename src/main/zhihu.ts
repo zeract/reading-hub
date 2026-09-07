@@ -1,3 +1,4 @@
+import { ApiRequestBoundaryError } from "./api-response";
 import { throwIfAborted, delayWithAbort, awaitWithAbort, RequestAbortedError } from "./cancellation";
 import { InvalidJsonResponseError, requestJsonWithTimeout } from "./json-response";
 import { readZhihuEntries, readZhihuEnvelope, readZhihuFolloweePage, ZhihuResponseError } from "./zhihu-response";
@@ -90,7 +91,7 @@ export class ZhihuConnector implements ConnectorAdapter {
         throw new ZhihuRequestError("知乎接口暂时无法提供数据，请稍后重试。", envelope.code === 90001);
       } catch (error) {
         throwIfAborted(signal);
-        if (error instanceof InvalidJsonResponseError || error instanceof ZhihuResponseError) throw error;
+        if (error instanceof InvalidJsonResponseError || error instanceof ApiRequestBoundaryError || error instanceof ZhihuResponseError) throw error;
         const failure = error instanceof ZhihuRequestError ? error : error instanceof RequestAbortedError
           ? new ZhihuRequestError("知乎官方接口响应超时，请稍后重试；已保存的 Access Secret 不会丢失。", true)
           : new ZhihuRequestError("无法连接知乎官方接口，请检查网络或代理设置后重试。", true);

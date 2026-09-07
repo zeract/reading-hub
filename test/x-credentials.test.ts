@@ -26,6 +26,26 @@ const refreshed = () => new Response(JSON.stringify({ access_token: "fixture-new
 const empty = () => new Response(JSON.stringify({ data: [] }));
 
 describe("X account credentials", () => {
+  it("retains refresh credentials after an unsafe token redirect and recovers on the next attempt", async () => {
+    let blocked = true;
+    const fetcher = vi.fn(async (url: string) => url.endsWith("/oauth2/token")
+      ? blocked ? new Response(null, { status: 307, headers: { location: "https://other.example/fixture-private-marker" } }) : refreshed()
+      : empty());
+    const f = fixture(fetcher);
+    try {
+      await expect(f.connector.sync(f.context)).rejects.toThrow("允许范围");
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(fetcher).toHaveBeenCalledWith("https://api.x.com/2/oauth2/token", expect.objectContaining({ redirect: "manual" }));
+      expect(f.secrets.setConnectorSecret).not.toHaveBeenCalled();
+      expect(JSON.parse((await f.secrets.getConnectorSecret())!)).toMatchObject({ refreshToken: "fixture-refresh" });
+      expect(f.database.getAccount(f.account.id)?.status).toBe("active");
+      expect(JSON.stringify(f.database.listSyncEvents())).not.toMatch(/fixture-private-marker|fixture-refresh/);
+      blocked = false;
+      await expect(f.connector.sync(f.context)).resolves.toMatchObject({ entries: [] });
+      expect(f.secrets.setConnectorSecret).toHaveBeenCalledTimes(1);
+    } finally { f.database.close(); }
+  });
+
   it("refreshes a shared account once when two subscriptions sync concurrently", async () => {
     const response = deferred<Response>();
     const started = deferred<void>();

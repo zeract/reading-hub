@@ -16,9 +16,9 @@ describe("JSON response contract", () => {
     await expect(requestJsonWithTimeout(async () => new Response(body), "https://example.com/api", {}, undefined, 1000)).rejects.toThrow();
   });
 
-  it.each([["academic", "malformed"], ["x", "malformed"], ["academic", "oversized"], ["x", "oversized"]] as const)("does not commit %s success or checkpoint on an %s response", async (kind, problem) => {
+  it.each([["academic", "malformed"], ["x", "malformed"], ["academic", "oversized"], ["x", "oversized"], ["academic", "redirect"], ["x", "redirect"]] as const)("does not commit %s success or checkpoint on an %s response", async (kind, problem) => {
     const database = new ReadingDatabase(":memory:");
-    const fetcher = vi.fn(async () => new Response("<html>fixture gateway error</html>", problem === "oversized" ? { headers: { "content-length": "8000001" } } : undefined));
+    const fetcher = vi.fn(async () => new Response("<html>fixture gateway error</html>", problem === "redirect" ? { status: 307, headers: { location: "https://other.example/fixture-private-response-marker" } } : problem === "oversized" ? { headers: { "content-length": "8000001" } } : undefined));
     const account = database.saveAccount({ connectorId: "x", displayName: "Fixture", subjectId: "owner", keychainAccount: "x:fixture", scopes: [], status: "active" });
     const source = database.createSource({ url: "https://example.com/api", title: "Fixture", kind, accountId: kind === "x" ? account.id : undefined, config: { authorName: "Fixture", openAlexId: "A1" }, pollingEnabled: true });
     const subscription = database.getSubscriptionForSource(source.id)!;
@@ -36,6 +36,8 @@ describe("JSON response contract", () => {
       expect(database.getSource(source.id)?.lastSuccessfulAt).toBeUndefined();
       expect(database.listEntries()).toEqual([]);
       expect(database.getAccount(account.id)?.status).toBe("active");
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(database.listSyncEvents())).not.toMatch(/fixture-private-response-marker|fixture-only/);
     } finally { await manager.close(); database.close(); }
   });
 

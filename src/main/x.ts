@@ -1,3 +1,4 @@
+import { ApiRequestBoundaryError } from "./api-response";
 import { abortError, throwIfAborted } from "./cancellation";
 import { InvalidJsonResponseError, requestJsonWithTimeout } from "./json-response";
 import { KeyedTaskQueue } from "./keyed-task-queue";
@@ -395,7 +396,7 @@ export class XConnector implements ConnectorAdapter {
       throwIfAborted(signal);
       // Do not expose a network exception: it can contain request metadata
       // including OAuth parameters. The caller only needs a useful next step.
-      if (error instanceof InvalidJsonResponseError) throw new XApiError(error.message);
+      if (error instanceof InvalidJsonResponseError || error instanceof ApiRequestBoundaryError) throw new XApiError(error.message);
       throw new XApiError("无法连接到 X OAuth 令牌服务。请检查系统代理、VPN、DNS 或网络访问后重试。");
     }
     const { response, payload } = result;
@@ -422,7 +423,7 @@ export class XConnector implements ConnectorAdapter {
       }, signal, 20_000);
     } catch (error) {
       throwIfAborted(signal);
-      if (error instanceof InvalidJsonResponseError) throw new XApiError(error.message);
+      if (error instanceof InvalidJsonResponseError || error instanceof ApiRequestBoundaryError) throw new XApiError(error.message);
       throw new XApiError("无法连接到 X API。请检查系统代理、VPN、DNS 或网络访问后重试。");
     }
     const { response, payload } = result;

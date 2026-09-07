@@ -1,3 +1,4 @@
+import { ApiRequestBoundaryError } from "./api-response";
 import { throwIfAborted } from "./cancellation";
 import { InvalidJsonResponseError, requestJsonWithTimeout } from "./json-response";
 import type { ConnectorAdapter, DiscoveryContext, RawEntry, Source, SubscriptionDraft, SyncContext, SyncResult } from "../shared/types";
@@ -197,7 +198,7 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
       return payload;
     } catch (error) {
       throwIfAborted(signal);
-      if (error instanceof InvalidJsonResponseError) throw error;
+      if (error instanceof InvalidJsonResponseError || error instanceof ApiRequestBoundaryError) throw error;
       if (error instanceof Error && error.message.startsWith("学术数据源请求失败")) throw error;
       throw new Error("无法连接到学术数据源。请检查网络、代理或 DNS 设置后重试。");
     }
