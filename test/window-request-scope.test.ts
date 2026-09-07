@@ -14,6 +14,48 @@ function deferred<T>() {
 const untilAborted = (signal: AbortSignal) => new Promise<never>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
 
 describe("window request scope", () => {
+  it("cancels only the named operation of the exact owner", async () => {
+    const scope = new WindowRequestScope(), one = new Owner(), two = new Owner();
+    const signals: AbortSignal[] = [];
+    const work = (signal: AbortSignal) => { signals.push(signal); return untilAborted(signal); };
+    const first = scope.run(one, work, "image:one").catch((error) => error);
+    const unnamed = scope.run(one, work).catch((error) => error);
+    const other = scope.run(two, work, "image:one").catch((error) => error);
+    scope.cancel(one, "image:one");
+    expect((await first).message).toContain("已取消");
+    expect(signals.map((signal) => signal.aborted)).toEqual([true, false, false]);
+    scope.close(); await Promise.all([unnamed, other]);
+  });
+
+  it("rejects duplicate active ids without replacing the original operation", async () => {
+    const scope = new WindowRequestScope(), owner = new Owner();
+    const original = scope.run(owner, untilAborted, "same").catch((error) => error);
+    const duplicate = vi.fn(async () => "duplicate");
+    await expect(scope.run(owner, duplicate, "same")).rejects.toThrow("已在使用");
+    expect(duplicate).not.toHaveBeenCalled();
+    scope.cancel(owner, "same"); await original;
+    expect(owner.listenerCount("destroyed")).toBe(0);
+  });
+
+  it("keeps a reused id cancellable after the old operation cleans up late", async () => {
+    const scope = new WindowRequestScope(), owner = new Owner(), gate = deferred<string>();
+    const old = scope.run(owner, () => gate.promise, "same").catch((error) => error);
+    scope.cancel(owner, "same");
+    const next = scope.run(owner, untilAborted, "same").catch((error) => error);
+    gate.resolve("late"); expect((await old).message).toContain("已取消");
+    scope.cancel(owner, "same"); expect((await next).message).toContain("已取消");
+    expect(owner.listenerCount("destroyed")).toBe(0);
+  });
+
+  it("does not retain unknown or completed cancellation ids", async () => {
+    const scope = new WindowRequestScope(), owner = new Owner();
+    scope.cancel(owner, "future");
+    await expect(scope.run(owner, async () => "done", "future")).resolves.toBe("done");
+    scope.cancel(owner, "future");
+    await expect(scope.run(owner, async () => "again", "future")).resolves.toBe("again");
+    expect(owner.listenerCount("destroyed")).toBe(0);
+  });
+
   it("shares one destruction listener across concurrent requests and cleans it up", async () => {
     const scope = new WindowRequestScope();
     const owner = new Owner();

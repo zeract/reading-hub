@@ -52,6 +52,7 @@ export const IPC_CHANNELS = {
     readLanguageVariant: "entry:read-language-variant",
     openEmbedded: "entry:open-embedded",
     loadImage: "entry:load-image",
+    cancelImage: "entry:cancel-image",
     markRead: "entry:read",
     markFavorite: "entry:favorite",
     dismiss: "entry:dismiss",
@@ -106,7 +107,8 @@ export interface ReaderApi {
   /** Opens only a language URL declared by the currently loaded article. */
   readEntryLanguageVariant(id: string, url: string): Promise<ReaderArticle>;
   openEmbeddedEntry(id: string): Promise<void>;
-  loadArticleImage(id: string, imageUrl: string): Promise<string>;
+  loadArticleImage(id: string, imageUrl: string, requestId: string): Promise<string>;
+  cancelArticleImage(requestId: string): Promise<void>;
   loadSourceIcon(id: string): Promise<string | undefined>;
   markRead(id: string, read: boolean): Promise<void>;
   markFavorite(id: string, favorite: boolean): Promise<void>;

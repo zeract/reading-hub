@@ -24,7 +24,7 @@ function fixture(read: (...args: any[]) => Promise<unknown>) {
   const viewer = { open: vi.fn(async () => undefined) };
   const drain = registerIpcHandlers({ database, articles, http, inAppArticleViewer: viewer } as unknown as ApplicationServices);
   const sender = new Sender();
-  const invoke = (channel: string) => electron.handlers.get(channel)!({ sender }, "entry", "https://example.com/alternate");
+  const invoke = (channel: string) => electron.handlers.get(channel)!({ sender }, "entry", "https://example.com/alternate", "fixture-image-request");
   return { sender, invoke, drain, viewer, articles, http };
 }
 beforeEach(() => electron.handlers.clear());

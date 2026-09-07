@@ -7,6 +7,7 @@ import { newAiRequestId, useAiStreamSubscription, useAiTextStream } from "./ai-s
 import { errorMessage } from "./errors";
 import { adjustReaderFontScale, loadReaderPreferences, saveReaderPreferences, type ReaderPreferences, type ReaderPreset } from "./reader-preferences";
 import { LatestRequestGuard } from "./request-guard";
+import { useReaderImages } from "./use-reader-images";
 import { normaliseSelectedArticleText, selectedTextLabel, selectionActionQuestion, selectionContext, selectionOverlay, type SelectionOverlay, type SelectionRect } from "./selection-actions";
 
 type AssistantPanelState = "closed" | "minimized" | "open";
@@ -67,6 +68,9 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   onOpenSettings: () => void;
 }) {
   const [article, setArticle] = useState<ReaderArticle>();
+  // Keep the wrapper stable too: a fresh dangerouslySetInnerHTML object makes
+  // React rewrite identical HTML, losing proxied images and live DOM state.
+  const articleMarkup = useMemo(() => ({ __html: article?.contentHtml ?? "" }), [article?.contentHtml]);
   const [embedded, setEmbedded] = useState(false);
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
@@ -81,6 +85,7 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   const [languageSwitchError, setLanguageSwitchError] = useState<string>();
   const articleBodyElement = useRef<HTMLDivElement>(null);
   const readerWorkspaceElement = useRef<HTMLDivElement>(null);
+  const { documentId, loadImage: loadReaderImage } = useReaderImages(entry.id, article, readerWorkspaceElement);
   const articleRequestGuard = useRef(new LatestRequestGuard());
   const renderedEntryId = useRef(entry.id);
   const loadedEntryId = useRef<string | undefined>(undefined);
@@ -227,16 +232,14 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   }
   function handleContentError(event: SyntheticEvent<HTMLElement>) {
     const image = event.target instanceof HTMLImageElement ? event.target : undefined;
-    if (!image) return;
+    if (!image || loadedEntryId.current !== entry.id) return;
     const originalUrl = image.currentSrc || image.src;
     if (!originalUrl || image.dataset.readerProxyTried === "1") {
       replaceBrokenImage(image);
       return;
     }
     image.dataset.readerProxyTried = "1";
-    void window.reader.loadArticleImage(entry.id, originalUrl)
-      .then((dataUrl) => { image.src = dataUrl; })
-      .catch(() => replaceBrokenImage(image));
+    loadReaderImage(image, originalUrl, () => replaceBrokenImage(image));
   }
   function replaceBrokenImage(image: HTMLImageElement) {
     if (!image.isConnected || image.dataset.readerImageUnavailable === "1") return;
@@ -341,7 +344,7 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
         {loading && <div className="reader-loading" role="status"><span className="loading-mark" /><p>正在准备适合阅读的正文…</p></div>}
         {!loading && embedded && <div className="reader-embedded"><h1>{entry.title}</h1><p>该站点不允许自动提取正文，原文已在 Reading Hub 的受限窗口中打开。该窗口不使用外部浏览器，也不会复用登录态。</p><button type="button" className="primary-action" onClick={() => void loadArticle()}>重新打开原文</button></div>}
         {!loading && error && <div className="reader-failure"><h1>{entry.title}</h1><p>{error}</p><div><button type="button" className="primary-action" onClick={() => void loadArticle()}>重试</button><button type="button" onClick={openEmbedded}>在应用内打开原文</button></div></div>}
-        {!loading && article && <article className="reader-article">
+        {!loading && article && <article key={documentId} className="reader-article" onErrorCapture={handleContentError}>
           <header><p className="eyebrow">{source?.title || "已保存内容"}</p><h1>{article.title}</h1>{(article.author || date) && <p className="reader-byline">{article.author}{article.author && date ? " · " : ""}{date}</p>}</header>
           {article.contentMode === "feed_body" && <aside className="reader-content-notice" role="note">正在显示订阅 Feed 提供的正文。该原页未被自动读取；请使用右上角 ↗ 查看完整原文。</aside>}
           {article.contentMode === "feed_summary" && <aside className="reader-content-notice" role="note">正在显示订阅 Feed 提供的内容摘要。该原页不允许自动读取；请使用右上角 ↗ 查看完整原文。</aside>}
@@ -349,8 +352,8 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
               {article.coverImageUrl && <button type="button" className="reader-cover-button" onClick={(event) => {
                 const image = event.currentTarget.querySelector("img");
                 if (image) previewImage(image);
-              }} aria-label="放大封面图片"><img className="reader-cover" src={article.coverImageUrl} alt="" onError={handleContentError} /></button>}
-              <div ref={articleBodyElement} className="article-body" onClick={handleContentClick} onKeyDown={handleContentKeyDown} onKeyUp={captureArticleSelection} onMouseUp={captureArticleSelection} onError={handleContentError} dangerouslySetInnerHTML={{ __html: article.contentHtml }} />
+              }} aria-label="放大封面图片"><img className="reader-cover" src={article.coverImageUrl} alt="" /></button>}
+              <div ref={articleBodyElement} className="article-body" onClick={handleContentClick} onKeyDown={handleContentKeyDown} onKeyUp={captureArticleSelection} onMouseUp={captureArticleSelection} dangerouslySetInnerHTML={articleMarkup} />
           </div>
         </article>}
       </div>

@@ -149,10 +149,15 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     const entry = findEntry(database, requireEntityId(entryId));
     return foregroundRequests.run(event.sender, (signal) => inAppArticleViewer.open(entry.url, entry.title, signal));
   });
-  handle(IPC_CHANNELS.entry.loadImage, (event, entryId: unknown, imageUrl: unknown) => {
+  handle(IPC_CHANNELS.entry.loadImage, (event, entryId: unknown, imageUrl: unknown, rawRequestId: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));
     const url = requireText(imageUrl, "图片地址无效。", 4_000);
-    return foregroundRequests.run(event.sender, (signal) => http.getImageDataUrl(url, entry.url, { signal }));
+    const requestId = requireText(rawRequestId, "图片请求标识无效。", 160);
+    return foregroundRequests.run(event.sender, (signal) => http.getImageDataUrl(url, entry.url, { signal }), `image:${requestId}`);
+  });
+  handle(IPC_CHANNELS.entry.cancelImage, (event, rawRequestId: unknown) => {
+    const requestId = requireText(rawRequestId, "图片请求标识无效。", 160);
+    foregroundRequests.cancel(event.sender, `image:${requestId}`);
   });
   handle(IPC_CHANNELS.entry.markRead, (_event, id: unknown, read: unknown) =>
     database.markRead(requireEntityId(id), requireBoolean(read)));
