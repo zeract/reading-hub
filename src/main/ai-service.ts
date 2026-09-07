@@ -11,6 +11,7 @@ import { CodexCliError, LocalCodexCli, type CodexCliRunner } from "./codex-cli";
 import { abortError, awaitWithAbort, throwIfAborted, withRequestTimeout } from "./cancellation";
 import { discardResponseBody, readResponseBytes } from "./byte-limit";
 import { KeyedTaskQueue } from "./keyed-task-queue";
+import { chromiumFetch } from "./network";
 import { ApiRequestBoundaryError, fetchApiResponse } from "./api-response";
 import { CODEX_CLI_MODEL_OPTIONS } from "../shared/types";
 import type {
@@ -60,7 +61,7 @@ export class AiService {
 
   constructor(
     private readonly secrets: AiSecretStore,
-    private readonly fetcher: AiFetch = fetch,
+    private readonly fetcher: AiFetch = chromiumFetch,
     private readonly codexCli: CodexCliRunner = new LocalCodexCli()
   ) {}
 
@@ -222,6 +223,9 @@ export class AiService {
       try {
         response = await fetchApiResponse(this.fetcher, endpoint, {
           method: "POST",
+          // Use the configured proxy route without inheriting browser cookies
+          // or HTTP authentication; this request supplies its own API key.
+          credentials: "omit",
           headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
           body: JSON.stringify(body),
           signal: request.signal

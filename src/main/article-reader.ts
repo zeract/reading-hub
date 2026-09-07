@@ -9,7 +9,7 @@ import { assertPublicUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl, toAbsoluteU
 import type { Entry, ReaderArticle, ReaderFormulaDiagnostics, ReaderLanguageVariant, ReaderRenderProfile, Source } from "../shared/types";
 import { parseFeedForReading } from "./feed";
 import { abortError, awaitWithAbort, throwIfAborted } from "./cancellation";
-import { PublicHttpClient, type PublicRequestOptions } from "./http";
+import { isHtmlDocumentContentType, PublicHttpClient, type PublicRequestOptions } from "./http";
 import { extractPagePublishedAt } from "./extractor";
 import { ScientificMathRenderer, type MathJaxDocumentExpression, type MathMacroDefinition } from "./mathjax-renderer";
 import type { PageRenderer } from "./page-renderer";
@@ -396,8 +396,12 @@ export class ArticleReader {
     throwIfAborted(options?.signal);
     if (!usesZhihuSession) {
       try {
-        const response = await this.http.getText(targetUrl, undefined, readerHttpOptions({ maxBytes: 8_000_000 }, options?.signal));
+        const response = await this.http.getText(targetUrl, undefined, readerHttpOptions({ maxBytes: 8_000_000, preferHtml: true }, options?.signal));
         throwIfAborted(options?.signal);
+        // JSON metadata and other declared document formats are not article
+        // HTML, even when their text is long enough to pass extraction scoring.
+        // Keep the existing isolated-browser/Feed fallback for unavailable HTML.
+        if (response.contentType && !isHtmlDocumentContentType(response.contentType)) throw new ArticleContentUnavailableError();
         staticArticle = await awaitWithAbort(this.extractWithMathFallback(response.text, response.url, entry), options?.signal);
         throwIfAborted(options?.signal);
         if (staticArticle && staticArticle.textLength >= 220) return this.rememberLanguageVariants(entry.id, staticArticle.article, knownLanguageVariants, options?.signal);

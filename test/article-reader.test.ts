@@ -1244,7 +1244,7 @@ describe("article reader extraction", () => {
     expect(article.contentHtml).not.toMatch(/script|onerror/);
     expect(article.coverImageUrl).toBeUndefined();
     expect(requests).toEqual([
-      { url: xEntry.url, options: { maxBytes: 8_000_000 } },
+      { url: xEntry.url, options: { maxBytes: 8_000_000, preferHtml: true } },
       { url: source.url, options: { allowTrustedLoopbackFeed: true } }
     ]);
   });

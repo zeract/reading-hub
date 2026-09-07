@@ -1,5 +1,6 @@
 import { net, session } from "electron";
 import type { ProxyConfig } from "electron";
+import { chromiumManualFetch } from "./chromium-manual-fetch";
 
 type Environment = Record<string, string | undefined>;
 
@@ -92,5 +93,5 @@ function proxyBypassRules(value: string | undefined): string[] {
  * built-in fetch does neither reliably on macOS.
  */
 export function chromiumFetch(input: string, init?: RequestInit) {
-  return net.fetch(input, init);
+  return init?.redirect === "manual" ? chromiumManualFetch(input, init) : net.fetch(input, init);
 }

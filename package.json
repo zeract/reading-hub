@@ -14,6 +14,7 @@
     "audit:reader": "npm run build && cross-env READING_HUB_READER_AUDIT=1 node node_modules/electron/cli.js .",
     "audit:scientific-visual": "npm run build && cross-env READING_HUB_READER_AUDIT=1 READING_HUB_AUDIT_SCIENTIFIC_VISUAL=1 node node_modules/electron/cli.js .",
     "audit:sources": "npm run build && node node_modules/electron/cli.js scripts/source-audit-app",
+    "audit:network": "npm run build && electron scripts/network-smoke-app",
     "audit:renderer": "npm run build && electron scripts/renderer-smoke-app",
     "refresh:generic": "npm run build && node node_modules/electron/cli.js scripts/source-refresh-app",
     "audit:style": "node scripts/style-contract.mjs",

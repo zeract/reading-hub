@@ -24,6 +24,8 @@ export type TextValidators = Pick<TextResponse, "url" | "etag" | "lastModified">
 
 export interface PublicRequestOptions {
   maxBytes?: number;
+  /** Original articles should negotiate HTML, not a DOI's JSON metadata. */
+  preferHtml?: boolean;
   /**
    * Optional larger budget used only after a response has been verified as a
    * RSS/Atom/JSON Feed. Omit it to use the normal source-feed budget whenever
@@ -122,7 +124,9 @@ export class PublicHttpClient {
     let targetUrl = localFeed ? assertFeedSubscriptionUrl(rawUrl, true).toString() : assertPublicUrl(rawUrl).toString();
     const baseHeaders: Record<string, string> = {
       "User-Agent": "ReadingHub/0.1 (+local reader)",
-      Accept: "application/atom+xml, application/rss+xml, application/feed+json, application/json, text/html;q=0.9, */*;q=0.1"
+      Accept: options?.preferHtml
+        ? "text/html, application/xhtml+xml;q=0.9, */*;q=0.1"
+        : "application/atom+xml, application/rss+xml, application/feed+json, application/json, text/html;q=0.9, */*;q=0.1"
     };
     const cachedUrl = cached?.url ? validatorResourceUrl(cached.url) : undefined;
     for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
