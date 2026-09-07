@@ -17,7 +17,7 @@ describe("AI service output boundary", () => {
       ? { type: "response.output_text.delta", delta: text }
       : { choices: [{ delta: { content: text } }] };
     const events = [longAnswer.slice(0, 39_990), longAnswer.slice(39_990), "excess"]
-      .map((text) => `data: ${JSON.stringify(frame(text))}\n\n`).join("");
+      .map((text) => `data: ${JSON.stringify(frame(text))}\n\n`).join("") + "data: [DONE]\n\n";
     const service = new AiService(secrets(), async () => new Response(events, { headers: { "content-type": "text/event-stream" } }));
     const updates: string[] = [];
     expect((await service.askStream(question(provider), (text) => updates.push(text))).text).toBe(expected);

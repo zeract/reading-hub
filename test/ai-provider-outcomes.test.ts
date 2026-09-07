@@ -94,7 +94,7 @@ describe("AI provider outcomes", () => {
     const events = provider === "openai"
       ? [{ type: "response.created", response: { status: "in_progress", error: null } }, draft(provider), { type: "response.completed", response: { status: "completed", error: null } }]
       : [{ choices: [], usage: { total_tokens: 1 } }, draft(provider), { choices: [{ delta: { content: "!" }, finish_reason: "stop" }] }];
-    const response = new Response(sse(...events), { headers: { "content-type": "text/event-stream" } });
+    const response = new Response(sse(...events) + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
     const json = output(provider, provider === "openai" ? { status: "completed", error: null } : { finish_reason: "stop" });
     const service = fixture([response, Response.json(json)]);
     await expect(service.askStream({ provider, question: "Fixture?", article }, vi.fn())).resolves.toMatchObject({ text: provider === "openai" ? "Draft" : "Draft!" });

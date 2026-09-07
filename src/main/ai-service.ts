@@ -221,7 +221,8 @@ export class AiService {
       const output = await readServerSentEvents(response, onDelta, {
         readDelta: readOpenAiStreamDelta,
         readFallback: (body) => readOpenAiOutput(body as OpenAiResponse),
-        readError: readOpenAiError
+        readError: readOpenAiError,
+        readCompletion: readOpenAiCompletion
       }, requestSignal);
       if (!output) throw new AiServiceError("OpenAI 没有返回可显示的回答，请调整问题后重试。");
       return output;
@@ -509,6 +510,7 @@ type ProviderResponseReader = {
   readDelta: (event: Record<string, unknown>) => string | undefined;
   readFallback: (body: unknown) => string;
   readError: (body: Record<string, unknown>) => string | undefined;
+  readCompletion?: (event: Record<string, unknown>) => { text?: string } | undefined;
 };
 
 const AI_GENERATION_FAILED = "服务在生成回答时返回错误，请稍后重试。";
@@ -542,8 +544,11 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
   const budget = new AiAnswerBudget();
   let answer = "";
   let receivedBytes = 0;
+  let completed = false;
+  let reachedEof = false;
   const acceptEvent = (data: string) => {
-    if (!data || data === "[DONE]") return;
+    if (!data) return;
+    if (data === "[DONE]") { finishStream(); return; }
     let event: unknown;
     try {
       event = JSON.parse(data);
@@ -552,6 +557,15 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
     }
     if (!isRecord(event)) return;
     assertProviderOutcome(event, protocol);
+    const completion = protocol.readCompletion?.(event);
+    if (completion) {
+      // The completion event owns the final snapshot, including revisions.
+      // Return it through the normal completion path without replaying it as
+      // another delta. Minimal compatible envelopes may omit the snapshot.
+      if (completion.text !== undefined) answer = truncateAiAnswer(completion.text);
+      finishStream();
+      return;
+    }
     const delta = protocol.readDelta(event);
     if (!delta) return;
     const accepted = budget.take(delta);
@@ -573,23 +587,27 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
       dataLines.push(value.startsWith(" ") ? value.slice(1) : value);
     }
   }, "universal");
+  const finishStream = () => {
+    completed = true;
+    // Stop within this transport chunk as well as before the next read.
+    decoder.discard();
+  };
   try {
-    while (true) {
+    while (!completed) {
       const { done, value } = await awaitWithAbort(reader.read(), signal);
       throwIfAborted(signal);
       receivedBytes += value?.byteLength ?? 0;
       checkAiResponseSize(receivedBytes);
-      if (done) break;
+      if (done) { reachedEof = true; break; }
       if (value) decoder.push(value);
     }
     // EOF is not an SSE event delimiter. Do not publish a partially received
     // event, even if its data happens to be valid JSON already.
-  } catch (error) {
-    // A failed parse, cancelled caller, or oversized body must stop the
-    // unread stream, without waiting for a stalled transport to acknowledge.
-    void reader.cancel().catch(() => undefined);
-    throw error;
+    if (!completed) throw new AiServiceError(AI_GENERATION_INCOMPLETE);
   } finally {
+    // A semantic completion, error or cancellation can precede EOF. Release
+    // the unread transport without waiting for its cancellation to settle.
+    if (!reachedEof) void reader.cancel().catch(() => undefined);
     decoder.discard();
     reader.releaseLock();
   }
@@ -602,6 +620,13 @@ function checkAiResponseSize(bytes: number): void {
 
 function readOpenAiStreamDelta(event: Record<string, unknown>): string | undefined {
   return event.type === "response.output_text.delta" && typeof event.delta === "string" ? event.delta : undefined;
+}
+
+function readOpenAiCompletion(event: Record<string, unknown>): { text?: string } | undefined {
+  if (event.type !== "response.completed") return undefined;
+  const response = event.response;
+  if (!isRecord(response) || (typeof response.output_text !== "string" && !Array.isArray(response.output))) return {};
+  return { text: readOpenAiOutput(response as OpenAiResponse) };
 }
 
 function readDeepSeekStreamDelta(event: Record<string, unknown>): string | undefined {

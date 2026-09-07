@@ -49,15 +49,14 @@ describe.each(["openai", "deepseek"] as const)("%s SSE framing", (provider) => {
   it.each(["", "\n"])("does not dispatch a final event missing its blank line (suffix=%j)", async (suffix) => {
     const { service, body } = fixture(`data: ${JSON.stringify(event(provider, "Complete"))}\n\ndata: ${JSON.stringify(event(provider, "Unfinished"))}${suffix}`);
     const delta = vi.fn();
-    const answer = await service.askStream({ provider, question: "Fixture?", article }, delta);
-    expect(answer.text).toBe("Complete");
+    await expect(service.askStream({ provider, question: "Fixture?", article }, delta)).rejects.toThrow("AI 回答未完整生成");
     expect(delta).toHaveBeenCalledExactlyOnceWith("Complete");
     expect(body.locked).toBe(false);
   });
 
   it("supports multiline data and mixed CR/LF separators without forwarding metadata", async () => {
     const data = JSON.stringify(event(provider, "Multiline"), null, 2).split("\n").map((line) => `data: ${line}`).join("\r");
-    const { service, body } = fixture(`event: message\r\nid: fixture\n: comment\r${data}\r\ndata\n\n`);
+    const { service, body } = fixture(`event: message\r\nid: fixture\n: comment\r${data}\r\ndata\n\ndata: [DONE]\n\n`);
     const delta = vi.fn();
     const answer = await service.askStream({ provider, question: "Fixture?", article }, delta);
     expect(answer.text).toBe("Multiline");

@@ -90,7 +90,15 @@ try {
     const delta = url.hostname === "api.openai.com"
       ? { type: "response.output_text.delta", delta: "Fixture answer" }
       : { choices: [{ delta: { content: "Fixture answer" } }] };
-    return new Response(`data: ${JSON.stringify(delta)}${lineEnding}${lineEnding}data: [DONE]${lineEnding}${lineEnding}`, { headers: { "content-type": "text/event-stream" } });
+    const terminal = url.hostname === "api.openai.com"
+      ? JSON.stringify({ type: "response.completed", response: { status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "Fixture final answer" }] }] } })
+      : "[DONE]";
+    const payload = `data: ${JSON.stringify(delta)}${lineEnding}${lineEnding}data: ${terminal}${lineEnding}${lineEnding}data: ${JSON.stringify(delta)}${lineEnding}${lineEnding}`;
+    // The provider has finished semantically, but its transport stays open.
+    // Completion must cancel it and ignore the suffix without waiting for EOF.
+    return new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode(payload)); }
+    }), { headers: { "content-type": "text/event-stream" } });
   });
   protocolRegistered = true;
   for (const provider of providers) {
@@ -99,7 +107,7 @@ try {
     for (lineEnding of ["\n", "\r\n", "\r"]) {
       let text = "";
       const answer = await service.askStream(request(provider), (delta) => { text += delta; });
-      assert.equal(answer.text, "Fixture answer");
+      assert.equal(answer.text, provider === "openai" ? "Fixture final answer" : "Fixture answer");
       assert.equal(text, "Fixture answer");
     }
   }
@@ -116,7 +124,7 @@ try {
   }, undefined, 2_000);
   assert.deepEqual(json.payload, { fixture: true });
   assert.equal(apiRequests, 2);
-  console.log("Reading Hub network smoke test passed: both AI providers use local proxy; native SSE with LF/CRLF/CR, JSON, same-origin redirects, real HTTP cookie control, API credential omission, explicit authorization and cross-origin rejection verified.");
+  console.log("Reading Hub network smoke test passed: both AI providers use local proxy; native SSE with LF/CRLF/CR, semantic completion before EOF, final snapshots, JSON, same-origin redirects, real HTTP cookie control, API credential omission, explicit authorization and cross-origin rejection verified.");
 } catch (error) {
   exitCode = 1;
   console.error(error);

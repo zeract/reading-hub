@@ -19,7 +19,7 @@ describe.each(["openai", "deepseek"] as const)("%s Unicode output boundary", (pr
     const events = chunks.map((text) => provider === "openai"
       ? { type: "response.output_text.delta", delta: text }
       : { choices: [{ delta: { content: text } }] });
-    const response = new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+    const response = new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
     const service = new AiService(secrets(), async () => response);
     const updates: string[] = [];
     const answer = await service.askStream({ provider, question: "Fixture?", article }, (text) => updates.push(text));

@@ -130,10 +130,13 @@ describe("AI response transport lifetime", () => {
 
   it("accepts the exact wire limit and preserves UTF-8 deltas split across chunks", async () => {
     const frame = encoder.encode('data: {"type":"response.output_text.delta","delta":"中文回答"}\r\n\r\n');
-    const tail = new Uint8Array(8_000_000 - frame.byteLength).fill(32);
+    const terminal = encoder.encode("\n\ndata: [DONE]\n\n");
+    const tail = new Uint8Array(8_000_000 - frame.byteLength - terminal.byteLength).fill(32);
+    tail[0] = 58; // A bounded SSE comment before completion, not an unread suffix.
     const body = new ReadableStream<Uint8Array>({ start(controller) {
       for (const byte of frame) controller.enqueue(Uint8Array.of(byte));
       controller.enqueue(tail);
+      controller.enqueue(terminal);
       controller.close();
     } });
     const delta = vi.fn();
