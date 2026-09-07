@@ -2,6 +2,7 @@ import { awaitWithAbort, throwIfAborted } from "./cancellation";
 import { BrowserWindow, session } from "electron";
 import { assertPublicUrl } from "../shared/url";
 import { configureChromiumSession } from "./network";
+import { guardMainFrameNavigation } from "./navigation-policy";
 
 /**
  * User-initiated, in-app navigation used when a site forbids automated text
@@ -41,13 +42,7 @@ export class InAppArticleViewer {
     });
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-attach-webview", (event) => event.preventDefault());
-    window.webContents.on("will-navigate", (event, nextUrl) => {
-      try {
-        assertPublicUrl(nextUrl);
-      } catch {
-        event.preventDefault();
-      }
-    });
+    guardMainFrameNavigation(window.webContents, (nextUrl) => Boolean(assertPublicUrl(nextUrl)));
     window.webContents.on("page-title-updated", (_event, pageTitle) => {
       window.setTitle(`Reading Hub · ${compactTitle(pageTitle || entryTitle)}`);
     });

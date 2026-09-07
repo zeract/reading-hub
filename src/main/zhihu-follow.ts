@@ -7,6 +7,7 @@ import { abortError, awaitWithAbort, delayWithAbort, throwIfAborted } from "./ca
 import { extractZhihuFollowPage } from "./zhihu-follow-parser";
 import { configureChromiumSession } from "./network";
 import { createBackgroundWindow } from "./background-window";
+import { guardMainFrameNavigation } from "./navigation-policy";
 
 const FOLLOW_URL = "https://www.zhihu.com/follow";
 const PARTITION = "persist:reading-hub-zhihu-follow";
@@ -203,9 +204,7 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
     isolatedSession.setPermissionCheckHandler(() => false);
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-attach-webview", (event) => event.preventDefault());
-    window.webContents.on("will-navigate", (event, url) => {
-      if (!isZhihuUrl(url)) event.preventDefault();
-    });
+    guardMainFrameNavigation(window.webContents, isZhihuUrl);
     return window;
   }
 
@@ -253,7 +252,9 @@ function isFollowUrl(rawUrl: string): boolean {
 
 function isZhihuUrl(rawUrl: string): boolean {
   try {
-    const host = new URL(rawUrl).hostname.toLowerCase();
+    const url = new URL(rawUrl);
+    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) return false;
+    const host = url.hostname.toLowerCase();
     return host === "zhihu.com" || host.endsWith(".zhihu.com");
   } catch {
     return false;

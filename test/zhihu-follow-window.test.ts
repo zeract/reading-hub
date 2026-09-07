@@ -62,3 +62,25 @@ describe("Zhihu follow session windows", () => {
     window.destroy();
   });
 });
+
+describe("Zhihu session navigation policy", () => {
+  it.each(["will-navigate", "will-redirect"])("keeps %s within valid Zhihu web destinations", async (name) => {
+    const connector = new ZhihuFollowConnector();
+    const creator = connector as unknown as { createWindow(show: boolean): Promise<typeof electron.windows[number]> };
+    const window = await creator.createWindow(false);
+    try {
+      const listener = window.webContents.on.mock.calls.find(([event]) => event === name)?.[1];
+      expect(listener).toBeTypeOf("function");
+      for (const url of ["https://example.com/", "https://zhihu.com.example.com/", "ftp://www.zhihu.com/file", "https://user:fixture@www.zhihu.com/"]) {
+        const event = { preventDefault: vi.fn() };
+        listener!(event, url, false, true);
+        expect(event.preventDefault).toHaveBeenCalledTimes(1);
+      }
+      for (const url of ["https://www.zhihu.com/signin", "https://zhuanlan.zhihu.com/p/1"]) {
+        const event = { preventDefault: vi.fn() };
+        listener!(event, url, false, true);
+        expect(event.preventDefault).not.toHaveBeenCalled();
+      }
+    } finally { window.destroy(); }
+  });
+});

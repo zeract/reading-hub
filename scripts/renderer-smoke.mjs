@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { app, BrowserWindow, ipcMain } from "electron";
 import { writeFile } from "node:fs/promises";
 import { ReadingDatabase } from "../dist/main/main/database.js";
+import { verifyNavigationPolicy } from "./navigation-policy-smoke.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const preload = path.join(root, "dist", "main", "main", "preload.js");
@@ -139,6 +140,7 @@ async function clickText(selector, text) {
 function assert(condition, message) { if (!condition) throw new Error(message); }
 let failure;
 try {
+  await verifyNavigationPolicy();
   await window.loadFile(renderer);
   await waitFor(window, "typeof window.reader === 'object' && typeof window.reader.listSources === 'function' && Boolean(document.querySelector('.shell'))");
   const result = await window.webContents.executeJavaScript("window.reader.listSources().then((sources) => ({ sources, shell: Boolean(document.querySelector('.shell')) }))");

@@ -64,3 +64,24 @@ describe("original-page window lifetime", () => {
     expect(mocks.BrowserWindow).not.toHaveBeenCalled();
   });
 });
+
+describe("original-page navigation policy", () => {
+  it.each(["will-navigate", "will-redirect"])("validates every %s destination", async (name) => {
+    await new InAppArticleViewer().open("https://example.com/post", "Fixture");
+    const listener = mocks.window.webContents.on.mock.calls.find(([event]) => event === name)?.[1];
+    expect(listener).toBeTypeOf("function");
+    for (const url of ["https://127.0.0.1/private", "http://192.168.1.1/", "file:///tmp/fixture", "https://user:fixture@example.com/"]) {
+      const event = { preventDefault: vi.fn() };
+      listener!(event, url, false, true);
+      expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    }
+    const event = { preventDefault: vi.fn() };
+    listener!(event, "https://other.example.org/article", false, true);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    if (name === "will-redirect") {
+      // This document guard must not silently change existing subframe policy.
+      listener!(event, "https://127.0.0.1/frame-fixture", false, false);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+    }
+  });
+});
