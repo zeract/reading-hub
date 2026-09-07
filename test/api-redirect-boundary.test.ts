@@ -5,6 +5,19 @@ import { fetchApiResponse } from "../src/main/api-response";
 afterEach(() => { vi.useRealTimers(); });
 
 describe("API redirect boundary", () => {
+  it.each([undefined, "same-origin", "include"] as const)("omits ambient session credentials on every API hop (requested: %s)", async (credentials) => {
+    const initial: RequestInit = { credentials, headers: { authorization: "Bearer fixture-only" }, method: "POST", body: "fixture-body" };
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response(null, { status: 307, headers: { location: "/next" } })).mockResolvedValueOnce(new Response("{}"));
+    await requestJsonWithTimeout(fetcher, "https://example.com/api", initial, undefined, 1000);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetcher.mock.calls) {
+      expect(init.credentials).toBe("omit");
+      expect(new Headers(init.headers).get("authorization")).toBe("Bearer fixture-only");
+      expect(init.body).toBe("fixture-body");
+    }
+    expect(initial.credentials).toBe(credentials);
+  });
+
   it("requires manual handling before sending an authenticated API request", async () => {
     const fetcher = vi.fn(async () => new Response("{}"));
     await requestJsonWithTimeout(fetcher, "https://example.com/api", { headers: { authorization: "Bearer fixture-only" } }, undefined, 1000);

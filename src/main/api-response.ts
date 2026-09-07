@@ -24,7 +24,9 @@ function publicHttpsUrl(value: string): URL {
 }
 
 /** API credentials and bodies may only follow redirects within the initial
- * approved HTTPS origin. The caller owns the deadline and final response body. */
+ * approved HTTPS origin. Authentication comes from explicit request headers
+ * or bodies, never the browser's ambient session. The caller owns the deadline
+ * and final response body. */
 export async function fetchApiResponse(
   fetcher: (url: string, init: RequestInit) => Promise<Response>,
   url: string,
@@ -34,7 +36,7 @@ export async function fetchApiResponse(
   throwIfAborted(signal);
   let target = publicHttpsUrl(url);
   const origin = target.origin;
-  let request = { ...init, redirect: "manual" as const };
+  let request = { ...init, credentials: "omit" as const, redirect: "manual" as const };
   for (let redirects = 0; ; redirects++) {
     let response: Response | undefined = await fetchResponse(fetcher, target.toString(), request);
     try {

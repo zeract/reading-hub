@@ -223,9 +223,6 @@ export class AiService {
       try {
         response = await fetchApiResponse(this.fetcher, endpoint, {
           method: "POST",
-          // Use the configured proxy route without inheriting browser cookies
-          // or HTTP authentication; this request supplies its own API key.
-          credentials: "omit",
           headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
           body: JSON.stringify(body),
           signal: request.signal
