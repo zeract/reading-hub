@@ -26,7 +26,7 @@ import type {
   SyncResult
 } from "../shared/types";
 import { assertPublicUrl } from "../shared/url";
-import { defaultSubscriptionScope, facetIdentity, normaliseFacetReference, normaliseFacets, normaliseSubscriptionScope } from "../shared/subscription-scope";
+import { defaultSubscriptionScope, facetIdentity, normaliseFacetReference, normaliseFacets, normaliseSubscriptionScope, sameFacetSelections } from "../shared/subscription-scope";
 import {
   deletePromotedZhihuFollowEntries,
   deleteTaxonomyEntries,
@@ -500,15 +500,14 @@ export class ReadingDatabase {
     this.db.transaction(() => {
       this.db.prepare(`UPDATE sources SET title = ?, category = ?, kind = ?, polling_enabled = ?, refresh_interval_minutes = ?,
         metadata_revision = CASE WHEN ? THEN NULL ELSE metadata_revision END,
-        extraction_rule = ?, validator_url = CASE WHEN ? THEN NULL ELSE validator_url END,
-        etag = CASE WHEN ? THEN NULL ELSE etag END, last_modified = CASE WHEN ? THEN NULL ELSE last_modified END,
+        extraction_rule = ?,
         status = CASE WHEN ? OR (? AND status = 'paused') THEN 'active' ELSE status END,
         next_check_at = ?, updated_at = ? WHERE id = ?`)
         .run(settings.title, normaliseSourceCategory(settings.category) ?? null, settings.kind, Number(settings.pollingEnabled), settings.refreshIntervalMinutes ?? null,
-          Number(kindChanged), extractionRule, Number(kindChanged), Number(kindChanged), Number(kindChanged), Number(kindChanged), Number(settings.pollingEnabled), nextCheckAt, now, sourceId);
+          Number(kindChanged), extractionRule, Number(kindChanged), Number(settings.pollingEnabled), nextCheckAt, now, sourceId);
       if (kindChanged) {
         // A checkpoint belongs to a protocol, not to its UI source identity.
-        this.db.prepare("DELETE FROM sync_checkpoints WHERE subscription_id IN (SELECT id FROM subscriptions WHERE source_id = ?)").run(sourceId);
+        this.resetSyncProgress(sourceId, now);
         this.db.prepare("UPDATE subscriptions SET connector_id = ?, account_id = NULL, target_id = NULL, config_json = NULL, updated_at = ? WHERE source_id = ?")
           .run(settings.kind, now, sourceId);
         // Facet IDs are provider-scoped. Carrying a selected RSS category
@@ -529,6 +528,15 @@ export class ReadingDatabase {
       }
     })();
     return this.getSource(sourceId)!;
+  }
+
+  /** Called within the configuration transaction. A cursor or HTTP validator
+   * only proves collection under the protocol and filters that produced it. */
+  private resetSyncProgress(sourceId: string, now: number): void {
+    this.db.prepare("UPDATE sources SET etag = NULL, last_modified = NULL, validator_url = NULL, updated_at = ? WHERE id = ?")
+      .run(now, sourceId);
+    this.db.prepare("DELETE FROM sync_checkpoints WHERE subscription_id IN (SELECT id FROM subscriptions WHERE source_id = ?)")
+      .run(sourceId);
   }
 
   pauseSource(sourceId: string, reason: string): Source {
@@ -606,8 +614,8 @@ export class ReadingDatabase {
   }
 
   /**
-   * Replaces the user-owned selection atomically while leaving opaque
-   * connector configuration and source metadata untouched.
+   * Replaces the selection and invalidates progress atomically when current
+   * collection filters change. Retained content and connector config survive.
    */
   updateSubscriptionScope(sourceId: string, requestedScope: SubscriptionScope): Subscription {
     const subscription = this.getSubscriptionForSource(sourceId);
@@ -632,6 +640,9 @@ export class ReadingDatabase {
       clearScopeFacets.run(subscription.id);
       for (const facet of scope.facetSelections) {
         insertScopeFacet.run(subscription.id, persistFacet(facetStatements, facet, now));
+      }
+      if (!sameFacetSelections(subscription.scope.facetSelections, scope.facetSelections)) {
+        this.resetSyncProgress(sourceId, now);
       }
     })();
     return this.getSubscriptionForSource(sourceId)!;

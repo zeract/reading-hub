@@ -82,10 +82,13 @@ export function normaliseSubscriptionScope(value: SubscriptionScope | undefined)
 /** Labels and OR-selection order are presentation; history and facet IDs
  * determine which records a connector may collect. */
 export function sameSubscriptionScope(left: SubscriptionScope | undefined, right: SubscriptionScope | undefined): boolean {
-  const identity = (scope: SubscriptionScope | undefined) => {
-    const normalized = normaliseSubscriptionScope(scope);
-    return JSON.stringify({ history: normalized.history, facets: normalized.facetSelections.map(facetIdentity).sort() });
-  };
+  return JSON.stringify(normaliseSubscriptionScope(left).history) === JSON.stringify(normaliseSubscriptionScope(right).history)
+    && sameFacetSelections(left?.facetSelections, right?.facetSelections);
+}
+
+/** Current collection filters do not depend on history limits or display labels. */
+export function sameFacetSelections(left: readonly Facet[] | undefined, right: readonly Facet[] | undefined): boolean {
+  const identity = (facets: readonly Facet[] | undefined) => JSON.stringify(normaliseFacets(facets).map(facetIdentity).sort());
   return identity(left) === identity(right);
 }
 
