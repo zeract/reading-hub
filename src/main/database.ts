@@ -758,8 +758,11 @@ export class ReadingDatabase {
     if (!filter) return { entries: [] };
     const { conditions, parameters } = filter;
     if (query.cursor) {
+      // A row-value comparison lets entries_collection seek directly to the
+      // cursor and retain index order, instead of merging two OR ranges or
+      // scanning all newer entries. Both columns are non-null in saved cards.
       const cursor = query.sort === "collected"
-        ? { sql: "(entries.created_at < ? OR (entries.created_at = ? AND entries.id < ?))", parameters: [query.cursor.createdAt, query.cursor.createdAt, query.cursor.id] }
+        ? { sql: "(entries.created_at, entries.id) < (?, ?)", parameters: [query.cursor.createdAt, query.cursor.id] }
         : afterEntryCursor(query.cursor);
       conditions.push(cursor.sql);
       parameters.push(...cursor.parameters);

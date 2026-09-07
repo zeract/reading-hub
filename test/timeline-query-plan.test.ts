@@ -58,6 +58,53 @@ beforeAll(() => { db = new ReadingDatabase(":memory:"); sourceId = populate(db, 
 afterAll(() => db.close());
 
 describe("publication timeline indexing", () => {
+  it.each(["current", "history"] as const)("seeks directly to an older %s collection page", (collection) => {
+    const query: EntryPageQuery = { collection, sort: "collected", pageSize: 100 };
+    // Jump near the end of the library; a small LIMIT alone does not prevent
+    // the query from scanning every newer card before applying its cursor.
+    const entries = db.listEntries({ collection, sort: "collected", limit: 5_000 });
+    const boundary = entries.at(-150)!;
+    query.cursor = { createdAt: boundary.createdAt, observedAt: boundary.observedAt!, id: boundary.id };
+    const plan = pagePlan(db, query);
+    expect(plan.some((row) => /SEARCH entries USING INDEX entries_collection.*created_at.*</.test(row.detail)), JSON.stringify(plan)).toBe(true);
+    expect(plan.filter((row) => /TEMP B-TREE/i.test(row.detail))).toEqual([]);
+    const offset = entries.findIndex((entry) => entry.id === boundary.id) + 1;
+    expect(db.listEntryPage(query).entries).toEqual(entries.slice(offset, offset + 100));
+  });
+
+  it("preserves collection order across timestamp ties and a deleted cursor", () => {
+    const database = new ReadingDatabase(":memory:");
+    try {
+      const sourceId = populate(database, 300);
+      // Historical imports often give a whole batch one collection time.
+      raw(database).exec("UPDATE entries SET created_at = 100 + (rowid % 3)");
+      database.dismissEntry("entry-000042");
+      database.dismissEntry("entry-000043");
+      const queries: EntryPageQuery[] = [
+        { collection: "current" }, { collection: "history" }, { dismissed: true },
+        { sourceId, collection: "current", read: true }, { favorite: true }
+      ];
+      for (const filter of queries) {
+        const query: EntryPageQuery = { ...filter, sort: "collected", pageSize: 7 };
+        const expected = database.listEntries({ ...query, limit: 5_000 });
+        const actual: Entry[] = [];
+        do {
+          const page = database.listEntryPage(query);
+          actual.push(...page.entries);
+          query.cursor = page.nextCursor;
+        } while (query.cursor && actual.length <= expected.length);
+        expect(actual).toEqual(expected);
+        expect(query.cursor).toBeUndefined();
+      }
+      const query: EntryPageQuery = { collection: "current", sort: "collected", pageSize: 7 };
+      const expected = database.listEntries({ ...query, limit: 5_000 });
+      const first = database.listEntryPage(query);
+      database.dismissEntry(first.nextCursor!.id);
+      // Continuation is a position, not a lookup of a row that must still exist.
+      expect(database.listEntryPage({ ...query, cursor: first.nextCursor }).entries).toEqual(expected.slice(7, 14));
+    } finally { database.close(); }
+  });
+
   it.each(["initialization", "migration"] as const)("closes a database handle after failed %s and permits retry", (phase) => {
     const directory = mkdtempSync(join(tmpdir(), "timeline-open-failure-"));
     const path = join(directory, "fixture.sqlite");
