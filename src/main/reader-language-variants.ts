@@ -1,6 +1,7 @@
 import { compactText } from "../shared/text";
 import { assertPublicUrl, canonicalizeUrl, toAbsoluteUrl } from "../shared/url";
 import type { ReaderLanguageVariant } from "../shared/types";
+import { htmlDocumentBaseUrl } from "./html-document-url";
 
 const READER_LANGUAGE_LABELS: Record<string, string> = {
   ar: "العربية",
@@ -27,7 +28,7 @@ type CheerioApi = ReturnType<typeof import("cheerio").load>;
  * language switch. This keeps source-specific URL conventions out of the
  * reader while avoiding unrelated navigation links.
  */
-export function discoverReaderLanguageVariants($: CheerioApi, pageUrl: string): ReaderLanguageVariant[] {
+export function discoverReaderLanguageVariants($: CheerioApi, pageUrl: string, resourceBaseUrl = htmlDocumentBaseUrl($, pageUrl)): ReaderLanguageVariant[] {
   if (isZhihuReaderUrl(pageUrl)) return [];
   const page = normaliseReaderVariantUrl(pageUrl, pageUrl);
   if (!page) return [];
@@ -43,7 +44,7 @@ export function discoverReaderLanguageVariants($: CheerioApi, pageUrl: string): 
 
   $("link[href], a[href]").each((_index: number, node: any) => {
     const element = $(node);
-    const target = normaliseReaderVariantUrl(element.attr("href"), pageUrl);
+    const target = normaliseReaderVariantUrl(element.attr("href"), resourceBaseUrl);
     if (!target) return;
     const tagName = String(node.tagName || "").toLowerCase();
     const rel = (element.attr("rel") || "").toLowerCase();

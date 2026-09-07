@@ -144,22 +144,24 @@ try {
   const finalPageUrl = "https://rendered.example/papers/index.html";
   const oversizedPageUrl = "https://rendered.example/oversized";
   const patchedDomPageUrl = "https://rendered.example/patched-dom";
+  const basedPageUrl = "https://rendered.example/posts/based.html";
   const checkedPages = [];
   const interceptRenderedPage = (_event, contents) => {
     contents.session.protocol.handle("https", (request) => {
       assert.equal(request.headers.get("cookie"), null);
       if (request.url === initialPageUrl) return new Response(null, { status: 302, headers: { location: finalPageUrl } });
       if (request.url === finalPageUrl) return new Response(`<article><h1>Fixture article</h1><p>${"Synthetic paragraph. ".repeat(50)}</p><img src="figure.svg"><a href="appendix.html">Fixture appendix</a></article>`, { headers: { "content-type": "text/html" } });
+      if (request.url === basedPageUrl) return new Response(`<head><base href="../assets/"></head><article><h1>Fixture article</h1><p>${"Synthetic paragraph. ".repeat(50)}</p><img src="figure.svg"><a href="appendix.html">Fixture appendix</a></article>`, { headers: { "content-type": "text/html" } });
       if (request.url === oversizedPageUrl) return new Response(`<script>window.Blob = class { get size() { return 0; } };</script><article>${"Synthetic content. ".repeat(200)}</article>`, { headers: { "content-type": "text/html" } });
       if (request.url === patchedDomPageUrl) return new Response('<script>Object.defineProperty(Element.prototype, "outerHTML", { get() { return "<article>Forged snapshot</article>"; } });</script><article>Actual DOM fixture</article>', { headers: { "content-type": "text/html" } });
-      if (request.url === "https://rendered.example/papers/figure.svg") return new Response('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>', { headers: { "content-type": "image/svg+xml" } });
+      if (["https://rendered.example/papers/figure.svg", "https://rendered.example/assets/figure.svg"].includes(request.url)) return new Response('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>', { headers: { "content-type": "image/svg+xml" } });
       return new Response(null, { status: 404 });
     });
   };
   app.on("web-contents-created", interceptRenderedPage);
   try {
     const renderer = new IsolatedPageRenderer({ async assertAllowed(url) {
-      assert([initialPageUrl, finalPageUrl, oversizedPageUrl, patchedDomPageUrl].includes(url)); checkedPages.push(url);
+      assert([initialPageUrl, finalPageUrl, oversizedPageUrl, patchedDomPageUrl, basedPageUrl].includes(url)); checkedPages.push(url);
     } });
     const page = await renderer.render(initialPageUrl);
     assert.equal(page.url, finalPageUrl);
@@ -168,6 +170,11 @@ try {
     assert.equal(article.article.url, finalPageUrl);
     assert(article.article.contentHtml.includes('src="https://rendered.example/papers/figure.svg"'));
     assert(article.article.contentHtml.includes('href="https://rendered.example/papers/appendix.html"'));
+    const basedPage = await renderer.render(basedPageUrl);
+    const basedArticle = extractReaderArticle(basedPage.html, basedPage.url, { id: "fixture-base", title: "Fixture", url: basedPageUrl });
+    assert.equal(basedArticle.article.url, basedPageUrl);
+    assert(basedArticle.article.contentHtml.includes('src="https://rendered.example/assets/figure.svg"'));
+    assert(basedArticle.article.contentHtml.includes('href="https://rendered.example/assets/appendix.html"'));
     await assert.rejects(renderer.render(oversizedPageUrl, { maxBytes: 256 }), RenderedPageTooLargeError);
     const cleanSnapshot = await renderer.render(patchedDomPageUrl);
     assert(cleanSnapshot.html.includes("Actual DOM fixture"));

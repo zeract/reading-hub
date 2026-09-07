@@ -16,6 +16,7 @@ import { ScientificMathRenderer, type MathJaxDocumentExpression, type MathMacroD
 import type { PageRenderer, RenderedPage } from "./page-renderer";
 import { discoverReaderLanguageVariants, mergeReaderLanguageVariants, sameCanonicalUrl } from "./reader-language-variants";
 import { RobotsDisallowedError } from "./robots";
+import { htmlDocumentBaseUrl } from "./html-document-url";
 
 const CONTENT_SELECTORS = [
   { selector: "article", priority: 7 },
@@ -290,6 +291,7 @@ type ExtractedArticle = { article: ReaderArticle; textLength: number };
 type PreparedReaderArticle = {
   rawContentHtml: string;
   pageUrl: string;
+  resourceBaseUrl: string;
   entry: Entry;
   title: string;
   author?: string;
@@ -607,8 +609,9 @@ function createFeedSummaryArticle(entry: Entry, source?: Source): ReaderArticle 
  */
 function prepareReaderArticle(html: string, pageUrl: string, entry: Entry): PreparedReaderArticle | undefined {
   const $ = load(html);
+  const resourceBaseUrl = htmlDocumentBaseUrl($, pageUrl);
   const renderProfile = resolveReaderProfile(pageUrl);
-  const languageVariants = discoverReaderLanguageVariants($, pageUrl);
+  const languageVariants = discoverReaderLanguageVariants($, pageUrl, resourceBaseUrl);
   const activeLanguage = languageVariants.find((variant) => sameCanonicalUrl(variant.url, pageUrl))?.language;
   const content = chooseContentCandidate(pickContentRoot($, renderProfile, pageUrl), extractReadabilityContent(html, pageUrl));
   if (!content) return undefined;
@@ -635,11 +638,12 @@ function prepareReaderArticle(html: string, pageUrl: string, entry: Entry): Prep
   const publishedAt = extractPagePublishedAt($) || content.publishedAt || entry.publishedAt;
   const coverCandidate = safeUrl(
     $("meta[property='og:image'], meta[name='twitter:image']").first().attr("content") || entry.imageUrl,
-    pageUrl
+    resourceBaseUrl
   );
   return {
     rawContentHtml: selectedContent.html() || "",
     pageUrl,
+    resourceBaseUrl,
     entry,
     title,
     author,
@@ -690,7 +694,7 @@ function finishReaderArticle(prepared: PreparedReaderArticle, sanitised: Sanitiz
 function prepareReaderExtraction(html: string, pageUrl: string, entry: Entry): PreparedReaderExtraction | undefined {
   const article = prepareReaderArticle(html, pageUrl, entry);
   if (!article) return undefined;
-  const content = prepareSanitizedContent(article.rawContentHtml, pageUrl);
+  const content = prepareSanitizedContent(article.rawContentHtml, pageUrl, article.resourceBaseUrl);
   // Head-level MathJax macro configuration is inertly parsed while the full
   // page is available. Include it in the document policy after capture so a
   // generic host with real formula scope does not accidentally take the
@@ -1073,10 +1077,10 @@ function readerContentQuality(root: any): number {
   return Math.min(text.length, 18_000) + blocks * 120 + headings * 90 + media * 70 - Math.round(linkDensity * Math.min(text.length, 12_000) * 0.7);
 }
 
-function prepareSanitizedContent(rawHtml: string, pageUrl: string): PreparedSanitizedContent {
+function prepareSanitizedContent(rawHtml: string, pageUrl: string, resourceBaseUrl = pageUrl): PreparedSanitizedContent {
   const $ = load(`<div id="reader-content">${rawHtml}</div>`);
   const root = $("#reader-content");
-  hydrateLazyImages($, root, pageUrl);
+  hydrateLazyImages($, root, resourceBaseUrl);
   // Drop thread containers before their nested TeX/image markup can enter
   // the formula or media pipeline. Preserve Math source assets at this point;
   // they are consumed and removed by the following formula pass.
@@ -1106,7 +1110,7 @@ function prepareSanitizedContent(rawHtml: string, pageUrl: string): PreparedSani
       continue;
     }
     if (tag === "img") {
-      const src = imageSource(element, pageUrl);
+      const src = imageSource(element, resourceBaseUrl);
       const alt = normalText(element.attr("alt") || "");
       removeAllAttributes(element);
       if (!src) {
@@ -1130,7 +1134,7 @@ function prepareSanitizedContent(rawHtml: string, pageUrl: string): PreparedSani
       continue;
     }
     if (tag === "a") {
-      const href = safeUrl(element.attr("href"), pageUrl);
+      const href = safeUrl(element.attr("href"), resourceBaseUrl);
       const label = normalText(element.text());
       // An image-only link is a common figure pattern (notably in Substack
       // posts). Calling `text(href)` on it would replace the nested picture
@@ -1149,7 +1153,7 @@ function prepareSanitizedContent(rawHtml: string, pageUrl: string): PreparedSani
     removeAllAttributes(element);
   }
   preserveTextMath($, root, formulas);
-  normaliseTeXCitationLinks($, root, pageUrl);
+  normaliseTeXCitationLinks($, root, resourceBaseUrl);
   materializeFormulaAnchors($, root, formulas);
   // Preserve only our already-sanitised template and formula IR. Retry paths
   // re-instantiate this inert DOM rather than selecting/extracting remote
