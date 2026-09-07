@@ -258,24 +258,17 @@ function parseJsonArray(value: string | null | undefined): string[] {
   }
 }
 
-function prepareFacetStatements(database: Database.Database) {
-  return {
-    upsert: database.prepare(`INSERT INTO facets (id, scheme, facet_key, label, created_at, updated_at)
+function prepareFacetWriter(database: Database.Database) {
+  const upsert = database.prepare(`INSERT INTO facets (id, scheme, facet_key, label, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(scheme, facet_key) DO UPDATE SET label = excluded.label, updated_at = excluded.updated_at`),
-    findId: database.prepare("SELECT id FROM facets WHERE scheme = ? AND facet_key = ?")
+      ON CONFLICT(scheme, facet_key) DO UPDATE SET label = excluded.label, updated_at = excluded.updated_at
+      RETURNING id`);
+  return (facet: Facet, now: number): string => {
+    // Return the retained ID on conflict, not the unused candidate UUID.
+    const row = upsert.get(randomUUID(), facet.scheme, facet.key, facet.label, now, now) as { id: string } | undefined;
+    if (!row) throw new Error("无法保存文章分类。");
+    return row.id;
   };
-}
-
-function persistFacet(
-  statements: ReturnType<typeof prepareFacetStatements>,
-  facet: Facet,
-  now: number
-): string {
-  statements.upsert.run(randomUUID(), facet.scheme, facet.key, facet.label, now, now);
-  const row = statements.findId.get(facet.scheme, facet.key) as { id: string } | undefined;
-  if (!row) throw new Error("无法保存文章分类。");
-  return row.id;
 }
 
 function accountFromRow(row: AccountRow): Account {
@@ -608,7 +601,7 @@ export class ReadingDatabase {
       throw new Error("导入全部历史时不能同时筛选文章分类。");
     }
     const now = Date.now();
-    const facetStatements = prepareFacetStatements(this.db);
+    const writeFacet = prepareFacetWriter(this.db);
     const insertScopeFacet = this.db.prepare("INSERT OR IGNORE INTO subscription_scope_facets (subscription_id, facet_id) VALUES (?, ?)");
     const clearScopeFacets = this.db.prepare("DELETE FROM subscription_scope_facets WHERE subscription_id = ?");
     this.db.transaction(() => {
@@ -619,7 +612,7 @@ export class ReadingDatabase {
         .run(subscription.id, scope.history.mode, scope.history.limit ?? null, now);
       clearScopeFacets.run(subscription.id);
       for (const facet of scope.facetSelections) {
-        insertScopeFacet.run(subscription.id, persistFacet(facetStatements, facet, now));
+        insertScopeFacet.run(subscription.id, writeFacet(facet, now));
       }
       if (!sameFacetSelections(subscription.scope.facetSelections, scope.facetSelections)) {
         this.resetSyncProgress(sourceId, now);
@@ -1100,7 +1093,7 @@ export class ReadingDatabase {
       VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(entry_id, source_id, provider_id, external_id) DO UPDATE SET
         provider_label = COALESCE(excluded.provider_label, entry_origins.provider_label), original_url = excluded.original_url, observed_at = excluded.observed_at`);
-    const facetStatements = prepareFacetStatements(this.db);
+    const writeFacet = prepareFacetWriter(this.db);
     const clearOriginFacets = this.db.prepare(`DELETE FROM entry_origin_facets
       WHERE entry_id = ? AND source_id = ? AND provider_id = ? AND external_id = ?`);
     const upsertOriginFacet = this.db.prepare(`INSERT OR IGNORE INTO entry_origin_facets
@@ -1146,7 +1139,7 @@ export class ReadingDatabase {
         if (entry.facets !== undefined) {
           clearOriginFacets.run(storedId, entry.sourceId, providerId, externalId);
           for (const facet of normaliseFacets(entry.facets)) {
-            upsertOriginFacet.run(storedId, entry.sourceId, providerId, externalId, persistFacet(facetStatements, facet, Date.now()));
+            upsertOriginFacet.run(storedId, entry.sourceId, providerId, externalId, writeFacet(facet, Date.now()));
           }
         }
         if (isNew) inserted += 1;
