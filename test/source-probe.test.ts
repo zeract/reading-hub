@@ -3,6 +3,18 @@ import { ResponseTooLargeError } from "../src/main/http";
 import { SourceProbe } from "../src/main/source-probe";
 
 describe("SourceProbe platform boundaries", () => {
+  it.each(["direct", "alternate"])("omits raw Feed HTML from the %s subscription preview", async (mode) => {
+    const feedUrl = "https://example.com/feed.json";
+    const http = { getText: vi.fn(async (url: string) => ({
+      url, status: 200, contentType: url === feedUrl ? "application/feed+json" : "text/html",
+      text: url === feedUrl ? JSON.stringify({ version: "https://jsonfeed.org/version/1.1", title: "Fixture", items: [{ id: "one", url: "https://example.com/one", title: "One", content_html: '<p onclick="unsafe()">Feed body</p>' }] })
+        : '<link rel="alternate" type="application/feed+json" href="/feed.json">'
+    })) };
+    const result = await new SourceProbe(http as any).probe(mode === "direct" ? feedUrl : "https://example.com/");
+    expect(result.kind).toBe("rss");
+    expect(result.preview[0]).not.toHaveProperty("feedContentHtml");
+    expect(result.preview[0].title).toBe("One");
+  });
   it("rejects X profile URLs before the generic web probe reads a robots-blocked page", async () => {
     const http = { getText: vi.fn() };
     const probe = new SourceProbe(http as any);

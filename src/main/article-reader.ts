@@ -7,7 +7,7 @@ import { compactText, parsePublishedAt } from "../shared/text";
 import { inlineDollarMathAt } from "../shared/tex";
 import { assertPublicUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl, toAbsoluteUrl } from "../shared/url";
 import type { Entry, ReaderArticle, ReaderFormulaDiagnostics, ReaderLanguageVariant, ReaderRenderProfile, Source } from "../shared/types";
-import { parseFeed } from "./feed";
+import { parseFeedForReading } from "./feed";
 import { abortError, awaitWithAbort, throwIfAborted } from "./cancellation";
 import { PublicHttpClient, type PublicRequestOptions } from "./http";
 import { extractPagePublishedAt } from "./extractor";
@@ -514,7 +514,7 @@ export class ArticleReader {
     );
     throwIfAborted(options?.signal);
     const requestedUrls = new Set([entry.canonicalUrl, canonicalizeUrl(entry.url)]);
-    const feed = await awaitWithAbort(parseFeed(response.text, response.url), options?.signal);
+    const feed = await awaitWithAbort(parseFeedForReading(response.text, response.url), options?.signal);
     throwIfAborted(options?.signal);
     const item = feed.entries.find((candidate) => {
       try {

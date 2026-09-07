@@ -154,20 +154,30 @@ function isFeedLikeQuery(rawUrl: string | undefined, pageUrl: string): boolean {
   }
 }
 
-export interface ParsedFeed {
+/** Untrusted body is main-process-only and opt-in for the reader sanitizer. */
+export interface TransientFeedEntry extends RawEntry { feedContentHtml?: string }
+
+export interface ParsedFeed<T extends RawEntry = RawEntry> {
   title: string;
-  entries: RawEntry[];
+  entries: T[];
   iconUrl?: string;
   /** Feed-declared public homepage; used only to discover an explicit archive link. */
   siteUrl?: string;
 }
 
+/** Subscription discovery and synchronization carry metadata only. */
 export async function parseFeed(text: string, feedUrl: string): Promise<ParsedFeed> {
+  const feed = await parseFeedForReading(text, feedUrl);
+  return { ...feed, entries: feed.entries.map(({ feedContentHtml: _body, ...metadata }) => metadata) };
+}
+
+/** The caller must sanitize body HTML before creating a ReaderArticle. */
+export async function parseFeedForReading(text: string, feedUrl: string): Promise<ParsedFeed<TransientFeedEntry>> {
   const normalizedText = text.replace(/^\uFEFF?\s*/, "");
   if (/^\{/.test(normalizedText)) return parseJsonFeed(normalizedText, feedUrl);
   const feed = await parser.parseString(text);
   const feedTitle = compactText(feed.title, 180);
-  const entries: RawEntry[] = [];
+  const entries: TransientFeedEntry[] = [];
   for (const item of feed.items || []) {
     const url = toAbsoluteUrl(item.link || item.guid, feedUrl);
     const title = compactText(item.title, 240);
@@ -203,7 +213,7 @@ export async function parseFeed(text: string, feedUrl: string): Promise<ParsedFe
  * only reject an exact source-home link or a clearly-labelled social link.
  */
 function isFeedNavigationLink(
-  entry: Pick<RawEntry, "url" | "title" | "publishedAt" | "summary" | "feedContentHtml" | "imageUrl">,
+  entry: Pick<TransientFeedEntry, "url" | "title" | "publishedAt" | "summary" | "feedContentHtml" | "imageUrl">,
   feedUrl: string,
   feedTitle: string | undefined
 ): boolean {
@@ -221,10 +231,10 @@ function isFeedNavigationLink(
   }
 }
 
-function parseJsonFeed(text: string, feedUrl: string): ParsedFeed {
+function parseJsonFeed(text: string, feedUrl: string): ParsedFeed<TransientFeedEntry> {
   const feed = JSON.parse(text);
   if (!feed.version || !Array.isArray(feed.items)) throw new Error("JSON 不符合 JSON Feed 格式。");
-  const entries: RawEntry[] = [];
+  const entries: TransientFeedEntry[] = [];
   for (const item of feed.items) {
     const url = toAbsoluteUrl(item.url || item.external_url || item.id, feedUrl);
     const title = compactText(item.title, 240);
@@ -305,6 +315,6 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function withFacets(entry: RawEntry, facets: Facet[]): RawEntry {
+function withFacets<T extends RawEntry>(entry: T, facets: Facet[]): T {
   return facets.length ? { ...entry, facets } : entry;
 }

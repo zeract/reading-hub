@@ -27,31 +27,32 @@ export class WeightedLruCache<K, V> {
     return entry.value;
   }
 
-  set(key: K, value: V): void {
+  set(key: K, value: V): boolean {
     this.pruneExpired();
-    this.forget(key);
+    this.delete(key);
     const weight = this.options.weight(key, value);
     const expiresAt = this.options.expiresAt?.(value);
     // Oversized/expired replacements must not leave an older value behind.
     // The current caller can still use its result without retaining it.
     if (!Number.isSafeInteger(weight) || weight < 0 || weight > this.options.maxWeight
-      || (expiresAt !== undefined && (!Number.isFinite(expiresAt) || expiresAt <= Date.now()))) return;
+      || (expiresAt !== undefined && (!Number.isFinite(expiresAt) || expiresAt <= Date.now()))) return false;
     // Make room before adding to avoid overflowing the accounting counter.
     while (this.entries.size >= this.options.maxEntries || this.retainedWeight > this.options.maxWeight - weight) {
-      this.forget(this.entries.keys().next().value!);
+      this.delete(this.entries.keys().next().value!);
     }
     this.entries.set(key, { value, weight, expiresAt });
     this.retainedWeight += weight;
+    return true;
   }
 
   private pruneExpired(): void {
     const now = Date.now();
     for (const [key, entry] of this.entries) {
-      if (entry.expiresAt !== undefined && entry.expiresAt <= now) this.forget(key);
+      if (entry.expiresAt !== undefined && entry.expiresAt <= now) this.delete(key);
     }
   }
 
-  private forget(key: K): void {
+  delete(key: K): void {
     const entry = this.entries.get(key);
     if (!entry) return;
     this.retainedWeight -= entry.weight;

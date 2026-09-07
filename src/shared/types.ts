@@ -132,12 +132,6 @@ export interface RawEntry {
   publishedAt?: number;
   summary?: string;
   imageUrl?: string;
-  /**
-   * Feed-supplied HTML used only while an already-subscribed Feed is being
-   * opened in the reader. It is never written to SQLite or returned by the
-   * database APIs.
-   */
-  feedContentHtml?: string;
   /** Provider-stable object id, never shown to the reader. */
   externalId?: string;
   /** DOI, arXiv id, canonical URL, or provider id used for cross-provider grouping. */

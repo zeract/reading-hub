@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { discoverFeedUrls, hasFeedSignature, looksLikeFeed, parseFeed } from "../src/main/feed";
+import { discoverFeedUrls, hasFeedSignature, looksLikeFeed, parseFeed, parseFeedForReading } from "../src/main/feed";
+
+it("returns subscription metadata without transferring untrusted Feed HTML", async () => {
+  const feed = await parseFeed(JSON.stringify({ version: "https://jsonfeed.org/version/1.1", title: "Fixture", items: [
+    { id: "one", url: "https://example.com/one", title: "One", content_html: '<script>private-body-marker</script><p>Article body</p>' }
+  ] }), "https://example.com/feed.json");
+  expect(feed.entries[0]).not.toHaveProperty("feedContentHtml");
+});
+
+it.each([
+  '<rss version="2.0"><channel><title>Fixture</title><item><title>One</title><link>https://example.com/one</link><description><![CDATA[<p>Body</p>]]></description></item></channel></rss>',
+  '<feed xmlns="http://www.w3.org/2005/Atom"><title>Fixture</title><entry><title>One</title><id>one</id><link href="https://example.com/one"/><content type="html">&lt;p&gt;Body&lt;/p&gt;</content></entry></feed>'
+])("preserves RSS/Atom metadata when opting out of the reader body", async (xml) => {
+  const reader = await parseFeedForReading(xml, "https://example.com/feed");
+  const metadata = await parseFeed(xml, "https://example.com/feed");
+  expect(reader.entries[0].feedContentHtml).toContain("<p>Body</p>");
+  const { feedContentHtml: _body, ...entry } = reader.entries[0];
+  expect(metadata.entries).toEqual([entry]);
+});
 
 describe("feed parser", () => {
   it("normalizes Atom/RSS fields into reader entries", async () => {
@@ -67,7 +85,7 @@ describe("feed parser", () => {
   });
 
   it("keeps a bounded feed body only on the transient parsed item", async () => {
-    const feed = await parseFeed(
+    const feed = await parseFeedForReading(
       `<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>测试订阅</title><item><title>完整条目</title><link>/post</link><description>卡片摘要</description><content:encoded><![CDATA[<p>订阅提供的 <strong>完整正文</strong></p>]]></content:encoded></item></channel></rss>`,
       "https://example.com/feed.xml"
     );
@@ -79,7 +97,7 @@ describe("feed parser", () => {
   });
 
   it("keeps JSON Feed content_html on the transient item", async () => {
-    const feed = await parseFeed(
+    const feed = await parseFeedForReading(
       JSON.stringify({ version: "https://jsonfeed.org/version/1", title: "JSON Feed", items: [{ id: "x", url: "/post", title: "JSON 条目", content_html: "<p>完整 JSON 正文</p>" }] }),
       "https://example.com/feed.json"
     );

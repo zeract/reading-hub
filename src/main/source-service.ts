@@ -1,3 +1,4 @@
+import { WeightedLruCache } from "./weighted-lru-cache";
 import { throwIfAborted } from "./cancellation";
 import { isRetiredXPublicProfile } from "../shared/source-capabilities";
 import { randomUUID } from "node:crypto";
@@ -24,10 +25,15 @@ import { parseXiaohongshuProfileUrl } from "./platform-profile-url";
 import { parseOpml } from "./opml";
 import { assertFeedSubscriptionUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 
-type PendingProbe = { expiresAt: number; probe: ProbeResult };
+type PendingProbe = { expiresAt: number; json: string };
 
 export class SourceService {
-  private readonly pending = new Map<string, PendingProbe>();
+  private readonly pending = new WeightedLruCache<string, PendingProbe>({
+    maxEntries: 64,
+    maxWeight: 8 * 1024 * 1024,
+    weight: (token, value) => 2 * (token.length + value.json.length) + 256,
+    expiresAt: (value) => value.expiresAt
+  });
 
   constructor(
     private readonly db: ReadingDatabase,
@@ -44,15 +50,18 @@ export class SourceService {
     throwIfAborted(signal);
     const probe = isXiaohongshuUrl(detected.url) ? manualProbe(detected.url, detected.preview, detected.title) : detected;
     const token = randomUUID();
-    this.pending.set(token, { expiresAt: Date.now() + 10 * 60_000, probe });
-    this.prunePending();
+    // Immutable metadata snapshot: callers cannot mutate a pending confirmation
+    // or invalidate cache accounting through the returned preview object.
+    if (!this.pending.set(token, { expiresAt: Date.now() + 10 * 60_000, json: JSON.stringify(probe) })) {
+      throw new Error("来源预览内容过大，无法保留，请尝试直接添加该站点的 Feed 地址。");
+    }
     return { token, probe };
   }
 
   async confirm(token: string): Promise<Source> {
     const pending = this.pending.get(token);
-    if (!pending || pending.expiresAt < Date.now()) throw new Error("预览已过期，请重新添加来源。");
-    const { probe } = pending;
+    if (!pending) throw new Error("预览已过期，请重新添加来源。");
+    const probe = JSON.parse(pending.json) as ProbeResult;
     const existing = this.db.getSourceByUrl(probe.url);
     if (existing) {
       const source = existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
@@ -338,11 +347,6 @@ export class SourceService {
       this.db.pauseSource(source.id, "X 不提供可由 Reading Hub 自动读取的公开订阅通道；此旧来源已停止刷新。可保留已有卡片，或删除来源后改用官方 API。");
     }
     return legacySources.length;
-  }
-
-  private prunePending(): void {
-    const now = Date.now();
-    for (const [token, item] of this.pending) if (item.expiresAt < now) this.pending.delete(token);
   }
 
   private async syncImportedSources(sources: Source[]): Promise<void> {

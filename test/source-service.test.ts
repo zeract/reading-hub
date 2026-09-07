@@ -43,6 +43,50 @@ function probeResult(overrides: Partial<ProbeResult> = {}): ProbeResult {
 }
 
 describe("SourceService initial acquisition", () => {
+  it("keeps confirmation independent of mutations to the returned preview", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const service = new SourceService(db, { probe: vi.fn().mockResolvedValue(probeResult({ kind: "manual" })) } as any, { savePreview: vi.fn() } as any, {} as any);
+    try {
+      const result = await service.preview("https://example.com/feed.xml");
+      result.probe.title = "Changed outside the service";
+      result.probe.preview.length = 0;
+      const saved = await service.confirm(result.token);
+      expect(saved.title).toBe("Example Feed");
+      await expect(service.confirm(result.token)).rejects.toThrow("预览已过期");
+    } finally { db.close(); }
+  });
+
+  it("evicts old snapshots by retained size and rejects an unretainable preview", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const probe = { probe: vi.fn().mockResolvedValue(probeResult({ kind: "manual", message: "x".repeat(1_500_000) })) };
+    const service = new SourceService(db, probe as any, { savePreview: vi.fn() } as any, {} as any);
+    try {
+      const first = await service.preview("https://example.com/feed.xml");
+      await service.preview("https://example.com/feed.xml");
+      const third = await service.preview("https://example.com/feed.xml");
+      await expect(service.confirm(first.token)).rejects.toThrow("预览已过期");
+      probe.probe.mockResolvedValueOnce(probeResult({ message: "x".repeat(4_200_000) }));
+      await expect(service.preview("https://example.com/feed.xml")).rejects.toThrow("来源预览内容过大");
+      expect((await service.confirm(third.token)).title).toBe("Example Feed");
+    } finally { db.close(); }
+  });
+
+  it("expires confirmation at the exact deadline and bounds pending previews", async () => {
+    vi.useFakeTimers();
+    const db = new ReadingDatabase(":memory:");
+    const sync = { savePreview: vi.fn(), syncSource: vi.fn() };
+    const service = new SourceService(db, { probe: vi.fn().mockResolvedValue(probeResult()) } as any, sync as any, {} as any);
+    try {
+      const first = await service.preview("https://example.com/feed.xml");
+      vi.advanceTimersByTime(10 * 60_000);
+      await expect(service.confirm(first.token)).rejects.toThrow("预览已过期");
+      const oldest = await service.preview("https://example.com/feed.xml");
+      for (let i = 0; i < 64; i++) await service.preview("https://example.com/feed.xml");
+      await expect(service.confirm(oldest.token)).rejects.toThrow("预览已过期");
+      expect(db.listSources()).toEqual([]);
+    } finally { db.close(); vi.useRealTimers(); }
+  });
+
   it("recovers the complete confirmed preview after restart when initial networking fails", async () => {
     const directory = mkdtempSync(join(tmpdir(), "reading-hub-confirmation-"));
     const path = join(directory, "library.sqlite");
@@ -227,15 +271,16 @@ describe("SourceService initial acquisition", () => {
       return probeResult();
     }) };
     const service = new SourceService(db, probe as never, {} as never, {} as never);
+    const pending = (service as any).pending;
+    const retain = vi.spyOn(pending, "set");
     try {
       await expect(service.preview("https://example.com/feed.xml", controller.signal)).rejects.toThrow("cancel preview");
-      const pending = (service as unknown as { pending: Map<string, unknown> }).pending;
-      expect(pending.size).toBe(0);
+      expect(retain).not.toHaveBeenCalled();
       expect(db.listSources()).toEqual([]);
       cancel = false;
       const retry = await service.preview("https://example.com/feed.xml");
-      expect(pending.has(retry.token)).toBe(true);
-      expect(pending.size).toBe(1);
+      expect(pending.get(retry.token)).toBeDefined();
+      expect(retain).toHaveBeenCalledTimes(1);
     } finally { db.close(); }
   });
 

@@ -5,6 +5,17 @@ afterEach(() => { vi.useRealTimers(); });
 const cache = (maxEntries = 3, maxWeight = 10) => new WeightedLruCache<string, string>({ maxEntries, maxWeight, weight: (key, value) => key.length + value.length });
 
 describe("weighted LRU retention contract", () => {
+  it("reports admission and releases deleted weight without evicting another entry", () => {
+    const store = cache();
+    expect(store.set("a", "1111")).toBe(true);
+    expect(store.set("b", "2222")).toBe(true);
+    store.delete("a"); store.delete("a");
+    expect(store.get("a")).toBeUndefined();
+    expect(store.set("c", "3333")).toBe(true);
+    expect(store.get("b")).toBe("2222");
+    expect(store.set("d", "x".repeat(10))).toBe(false);
+    expect(store.get("c")).toBe("3333");
+  });
   it("counts keys and values, keeping exact-budget entries and evicting the coldest", () => {
     const store = cache();
     store.set("a", "1111");

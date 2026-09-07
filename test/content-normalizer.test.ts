@@ -19,15 +19,14 @@ const source: Source = {
 };
 
 describe("ContentNormalizer", () => {
-  it("owns generic canonical URL, provenance, metadata hash, and transient entry fields", () => {
+  it("owns generic canonical URL, provenance, metadata hash, and collection metadata", () => {
     const raw = {
       url: "https://Example.com/post/?utm_source=feed#section",
       title: "A post",
       summary: "A summary",
       publishedAt: 123,
       observedAt: 456,
-      externalUrl: "https://example.com/external",
-      feedContentHtml: "<p>Transient feed body</p>"
+      externalUrl: "https://example.com/external"
     };
 
     const entry = contentNormalizer.normalize(raw, source);
@@ -40,8 +39,7 @@ describe("ContentNormalizer", () => {
       observedAt: 456,
       read: false,
       favorite: false,
-      externalUrl: raw.externalUrl,
-      feedContentHtml: raw.feedContentHtml
+      externalUrl: raw.externalUrl
     });
     expect(entry.id).toEqual(expect.any(String));
     expect(entry.createdAt).toBeGreaterThan(0);
