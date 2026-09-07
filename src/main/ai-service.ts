@@ -14,7 +14,8 @@ import { KeyedTaskQueue } from "./keyed-task-queue";
 import { Utf8LineDecoder } from "./utf8-line-decoder";
 import { chromiumFetch } from "./network";
 import { ApiRequestBoundaryError, fetchApiResponse } from "./api-response";
-import { CODEX_CLI_MODEL_OPTIONS, MAX_AI_ANSWER_LENGTH } from "../shared/types";
+import { AiAnswerBudget, truncateAiAnswer } from "./ai-answer-budget";
+import { CODEX_CLI_MODEL_OPTIONS } from "../shared/types";
 import type {
   AiAnswer,
   AiArticleContext,
@@ -138,14 +139,13 @@ export class AiService {
 
   /** The sole answer path emits text only, never provider events or diagnostics. */
   async askStream(request: AiQuestionRequest, onDelta: AiDeltaListener, signal?: AbortSignal): Promise<AiAnswer> {
-    let emittedLength = 0;
+    const budget = new AiAnswerBudget();
     let subscriber: AiDeltaListener | undefined = onDelta;
     const publish = (delta: string) => {
       if (!subscriber) return;
       throwIfAborted(signal, "AI 请求已取消。");
-      const accepted = delta.slice(0, MAX_AI_ANSWER_LENGTH - emittedLength);
+      const accepted = budget.take(delta);
       if (accepted) {
-        emittedLength += accepted.length;
         subscriber(accepted);
         // A subscriber can cancel synchronously while receiving a delta.
         throwIfAborted(signal, "AI 请求已取消。");
@@ -156,7 +156,7 @@ export class AiService {
       throwIfAborted(signal, "AI 请求已取消。");
       // A final snapshot may revise the draft. Bound it independently, rather
       // than replacing it with the accumulated incremental text.
-      return { ...answer, text: answer.text.slice(0, MAX_AI_ANSWER_LENGTH) };
+      return { ...answer, text: truncateAiAnswer(answer.text) };
     } finally {
       // A runner may keep publish for late callbacks. Release the caller's
       // closure (and its window/request context), rather than only muting it.
@@ -539,6 +539,7 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
     }
   }
   const reader = response.body.getReader();
+  const budget = new AiAnswerBudget();
   let answer = "";
   let receivedBytes = 0;
   const acceptEvent = (data: string) => {
@@ -553,9 +554,8 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
     assertProviderOutcome(event, protocol);
     const delta = protocol.readDelta(event);
     if (!delta) return;
-    const remaining = Math.max(0, MAX_AI_ANSWER_LENGTH - answer.length);
-    if (!remaining) return;
-    const accepted = delta.slice(0, remaining);
+    const accepted = budget.take(delta);
+    if (!accepted) return;
     answer += accepted;
     onDelta(accepted);
   };

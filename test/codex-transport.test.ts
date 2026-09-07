@@ -45,6 +45,44 @@ function answerFrames(server: boolean, answer: string): Buffer {
 }
 
 describe.each(["server", "exec"] as const)("local AI %s byte transport", (mode) => {
+  it.each([false, true])("never cuts a Unicode pair or fills the discarded position (split=%s)", async (split) => {
+    const expected = "a".repeat(39_999);
+    const cli = fixture(mode, (child, server) => {
+      for (const text of [expected, ...(split ? ["\ud83e", "\uddea"] : ["🧪"]), "later"]) {
+        const event = server
+          ? { method: "item/agentMessage/delta", params: { threadId: "fixture-thread", delta: text } }
+          : { type: "agent_message.delta", delta: text };
+        child.stdout.write(JSON.stringify(event) + "\n");
+      }
+      if (server) child.stdout.write(JSON.stringify({ method: "turn/completed", params: { threadId: "fixture-thread", turn: { status: "completed" } } }) + "\n");
+      else child.emit("close", 0);
+    });
+    const delta = vi.fn();
+    expect(await cli.askStream("Fixture", "Synthetic context", { effort: "medium" }, delta)).toBe(expected);
+    expect(delta).toHaveBeenCalledExactlyOnceWith(expected);
+  });
+
+  it("clips an authoritative revision independently of the exhausted draft budget", async () => {
+    const expected = "b".repeat(39_999);
+    const cli = fixture(mode, (child, server) => {
+      const initial = server
+        ? { method: "item/agentMessage/delta", params: { threadId: "fixture-thread", delta: "a".repeat(40_000) } }
+        : { type: "agent_message.delta", delta: "a".repeat(40_000) };
+      child.stdout.write(JSON.stringify(initial) + "\n");
+      const snapshot = expected + "𠮷later";
+      if (server) {
+        child.stdout.write(JSON.stringify({ method: "item/completed", params: { threadId: "fixture-thread", item: { type: "agentMessage", text: snapshot } } }) + "\n");
+        child.stdout.write(JSON.stringify({ method: "turn/completed", params: { threadId: "fixture-thread", turn: { status: "completed" } } }) + "\n");
+      } else {
+        child.stdout.write(answerFrames(false, snapshot));
+        child.emit("close", 0);
+      }
+    });
+    const delta = vi.fn();
+    expect(await cli.askStream("Fixture", "Synthetic context", { effort: "medium" }, delta)).toBe(expected);
+    expect(delta).toHaveBeenCalledExactlyOnceWith("a".repeat(40_000));
+  });
+
   it("preserves multilingual text when every UTF-8 byte arrives separately", async () => {
     const answer = "中文与 emoji 🧪 café";
     const cli = fixture(mode, (child, server) => {

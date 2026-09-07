@@ -3,7 +3,8 @@ import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { MAX_AI_ANSWER_LENGTH, type AiReasoningEffort } from "../shared/types";
+import type { AiReasoningEffort } from "../shared/types";
+import { AiAnswerBudget } from "./ai-answer-budget";
 import { awaitWithAbort, combineAbortSignals } from "./cancellation";
 import { ChildProcessScope } from "./child-process-scope";
 import { Utf8LineDecoder } from "./utf8-line-decoder";
@@ -350,7 +351,7 @@ class PersistentCodexAppServer {
         if (turnStartIssued) this.beginTurnDrain(threadId, new CodexCliError("AI 请求已取消。"));
       };
       const abortListener = () => abort();
-      this.activeTurns.set(threadId, { answer: "", onDelta, resolve, reject, timeout, abortSignal: signal, abortListener });
+      this.activeTurns.set(threadId, { answer: "", budget: new AiAnswerBudget(), onDelta, resolve, reject, timeout, abortSignal: signal, abortListener });
       if (signal?.aborted) {
         // No turn/start request has been issued yet, so there is no remote
         // model work to drain. Settle immediately instead of retaining this
@@ -460,9 +461,7 @@ class PersistentCodexAppServer {
 
   private appendTurnDelta(turn: ActiveAppServerTurn, delta: string): void {
     if (turn.draining) return;
-    const remaining = MAX_AI_ANSWER_LENGTH - turn.answer.length;
-    if (remaining <= 0) return;
-    const accepted = delta.slice(0, remaining);
+    const accepted = turn.budget.take(delta);
     if (!accepted) return;
     turn.answer += accepted;
     turn.onDelta(accepted);
@@ -471,17 +470,14 @@ class PersistentCodexAppServer {
   private acceptTurnSnapshot(turn: ActiveAppServerTurn, snapshot: string): void {
     if (turn.draining) return;
     if (!snapshot) return;
-    if (!turn.answer) {
-      this.appendTurnDelta(turn, snapshot);
-      return;
-    }
-    if (snapshot.startsWith(turn.answer)) {
-      this.appendTurnDelta(turn, snapshot.slice(turn.answer.length));
-      return;
-    }
+    const previous = turn.answer;
     // A revised final message is authoritative. The renderer gets that value
     // in its completion event and never sees a duplicate interim paragraph.
-    turn.answer = snapshot.slice(0, MAX_AI_ANSWER_LENGTH);
+    turn.answer = turn.budget.reset(snapshot);
+    if (turn.answer.startsWith(previous)) {
+      const delta = turn.answer.slice(previous.length);
+      if (delta) turn.onDelta(delta);
+    }
   }
 
   private finishTurn(threadId: string, result: { answer?: string; error?: Error }): void {
@@ -618,6 +614,7 @@ type PendingAppServerRequest = {
 
 type ActiveAppServerTurn = {
   answer: string;
+  budget: AiAnswerBudget;
   onDelta: CodexCliDeltaListener;
   resolve: (answer: string) => void;
   reject: (error: Error) => void;
@@ -649,6 +646,7 @@ function runCodexStream(processes: ChildProcessScope, command: string, instructi
       windowsHide: true
     }));
     let answer = "";
+    const budget = new AiAnswerBudget();
     let stderr = "";
     let failure: CodexCliError | undefined;
     let settled = false;
@@ -676,7 +674,7 @@ function runCodexStream(processes: ChildProcessScope, command: string, instructi
       if (settled || failure) return;
       const event = parseCodexEvent(line);
       if (!event) return;
-      const next = mergeCodexAnswer(answer, event);
+      const next = mergeCodexAnswer(answer, event, budget);
       answer = next.answer;
       if (next.delta) onDelta(next.delta);
     };
@@ -831,12 +829,12 @@ function parseCodexEvent(line: string): CodexMessageEvent | undefined {
   return undefined;
 }
 
-function mergeCodexAnswer(answer: string, event: CodexMessageEvent): { answer: string; delta: string } {
+function mergeCodexAnswer(answer: string, event: CodexMessageEvent, budget: AiAnswerBudget): { answer: string; delta: string } {
   if (!event.snapshot) {
-    const delta = event.text.slice(0, MAX_AI_ANSWER_LENGTH - answer.length);
+    const delta = budget.take(event.text);
     return { answer: answer + delta, delta };
   }
-  const snapshot = event.text.slice(0, MAX_AI_ANSWER_LENGTH);
+  const snapshot = budget.reset(event.text);
   if (snapshot === answer) return { answer, delta: "" };
   if (snapshot.startsWith(answer)) return { answer: snapshot, delta: snapshot.slice(answer.length) };
   // Revised snapshots are authoritative at completion, not append-only deltas.
