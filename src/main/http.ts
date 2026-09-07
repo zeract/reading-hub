@@ -6,6 +6,7 @@ import { chromiumFetch } from "./network";
 import { RobotsPolicy } from "./robots";
 import { fetchResponse } from "./fetch-response";
 import { WeightedLruCache } from "./weighted-lru-cache";
+import { SharedTaskMap } from "./shared-task-map";
 
 export interface TextResponse {
   url: string;
@@ -98,6 +99,7 @@ function networkFailureMessage(cause: unknown): string {
 export class PublicHttpClient {
   constructor(private readonly robots = new RobotsPolicy()) {}
 
+  private readonly imageTasks = new SharedTaskMap<string>();
   private readonly imageCache = new WeightedLruCache<string, string>({
     maxEntries: 24,
     maxWeight: 32 * 1_048_576,
@@ -197,15 +199,23 @@ export class PublicHttpClient {
   async getImageDataUrl(rawUrl: string, rawReferrer: string, options?: Pick<PublicRequestOptions, "signal">): Promise<string> {
     throwIfAborted(options?.signal);
     const referrer = assertPublicUrl(rawReferrer).toString();
-    let targetUrl = assertPublicUrl(rawUrl).toString();
+    const targetUrl = assertPublicUrl(rawUrl).toString();
     const cacheKey = `${referrer}\u0000${targetUrl}`;
     const cached = this.imageCache.get(cacheKey);
     if (cached) return cached;
+    return this.imageTasks.run(cacheKey, async (signal) => {
+      const result = await this.downloadImage(targetUrl, referrer, signal);
+      throwIfAborted(signal);
+      this.imageCache.set(cacheKey, result);
+      return result;
+    }, options?.signal);
+  }
 
+  private async downloadImage(targetUrl: string, referrer: string, signal: AbortSignal): Promise<string> {
     for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
-      throwIfAborted(options?.signal);
-      await this.robots.assertAllowed(targetUrl, { signal: options?.signal });
-      const request = withRequestTimeout(options?.signal, 20_000, "图片请求超时。请稍后重试，或检查网络与代理设置。");
+      throwIfAborted(signal);
+      await this.robots.assertAllowed(targetUrl, { signal });
+      const request = withRequestTimeout(signal, 20_000, "图片请求超时。请稍后重试，或检查网络与代理设置。");
       let response: Response | undefined;
       try {
         try {
@@ -221,7 +231,7 @@ export class PublicHttpClient {
           });
           throwIfAborted(request.signal);
         } catch (error) {
-          if (options?.signal?.aborted) throw abortError(options.signal);
+          if (signal.aborted) throw abortError(signal);
           throw new NetworkRequestError(error);
         }
         const location = response.headers.get("location");
@@ -242,9 +252,7 @@ export class PublicHttpClient {
           if (receivedBytes > maxBytes) throw new Error("图片响应超过 8 MB，已跳过加载。");
         }, request.signal));
         throwIfAborted(request.signal);
-        const result = `data:${contentType};base64,${bytes.toString("base64")}`;
-        this.imageCache.set(cacheKey, result);
-        return result;
+        return `data:${contentType};base64,${bytes.toString("base64")}`;
       } finally {
         discardResponseBody(response);
         request.dispose();

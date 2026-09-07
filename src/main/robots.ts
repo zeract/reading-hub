@@ -1,14 +1,14 @@
 import { assertPublicUrl } from "../shared/url";
-import { abortError, awaitWithAbort, throwIfAborted, withRequestTimeout } from "./cancellation";
+import { abortError, throwIfAborted, withRequestTimeout } from "./cancellation";
 import { discardResponseBody, readResponseBytes } from "./byte-limit";
 import { chromiumFetch } from "./network";
 import { isRobotsPathAllowed, parseRobots, type RobotsRule } from "./robots-rules";
 import { fetchResponse } from "./fetch-response";
 import { WeightedLruCache } from "./weighted-lru-cache";
+import { SharedTaskMap } from "./shared-task-map";
 
 type RobotsResult = { kind: "rules"; rules: RobotsRule[] } | { kind: "unavailable" } | { kind: "unreachable" };
 type CacheItem = { expiresAt: number; result: RobotsResult };
-type PendingPolicy = { controller: AbortController; promise: Promise<CacheItem>; waiters: number; finished: boolean };
 const MAX_ROBOTS_BYTES = 1_048_576;
 const POLICY_CACHE_MS = 24 * 60 * 60_000;
 const FAILURE_RETRY_MS = 60 * 60_000;
@@ -52,58 +52,24 @@ export class RobotsPolicy {
         + rule.parts.reduce((size, part) => size + 32 + part.length * 2, 0), 0)
       : 0)
   });
-  private readonly pending = new Map<string, PendingPolicy>();
+  private readonly pending = new SharedTaskMap<CacheItem>();
 
   async assertAllowed(rawUrl: string, options?: { signal?: AbortSignal }): Promise<void> {
     throwIfAborted(options?.signal);
     const url = assertPublicUrl(rawUrl);
     if (url.pathname === "/robots.txt" && !url.search) return;
     const origin = url.origin;
-    const item = this.cache.get(origin) ?? await this.joinLoad(origin, options?.signal);
+    const item = this.cache.get(origin) ?? await this.pending.run(origin, async (signal) => {
+      const loaded = await this.load(origin, signal);
+      throwIfAborted(signal);
+      this.cache.set(origin, loaded);
+      return loaded;
+    }, options?.signal);
     throwIfAborted(options?.signal);
     if (item.result.kind === "unreachable") throw new RobotsUnreachableError();
     if (item.result.kind === "rules" && !isRobotsPathAllowed(item.result.rules, url.pathname + url.search)) {
       throw new RobotsDisallowedError();
     }
-  }
-
-  private async joinLoad(origin: string, signal?: AbortSignal): Promise<CacheItem> {
-    let task = this.pending.get(origin);
-    if (!task) {
-      const controller = new AbortController();
-      const created: PendingPolicy = {
-        controller, waiters: 0, finished: false,
-        // Register the task and its first waiter before starting network work.
-        promise: Promise.resolve().then(() => this.load(origin, controller.signal)).then((item) => {
-          throwIfAborted(controller.signal);
-          this.cache.set(origin, item);
-          return item;
-        }).finally(() => {
-          created.finished = true;
-          if (this.pending.get(origin) === created) this.pending.delete(origin);
-        })
-      };
-      task = created;
-      this.pending.set(origin, task);
-    }
-    task.waiters++;
-    let released = false;
-    const release = () => {
-      if (released) return;
-      released = true;
-      signal?.removeEventListener("abort", release);
-      task.waiters--;
-      if (!task.waiters && !task.finished) {
-        if (this.pending.get(origin) === task) this.pending.delete(origin);
-        task.controller.abort();
-      }
-    };
-    // Release synchronously on cancellation so a late success cannot enter
-    // the cache between the last caller's abort and its Promise continuation.
-    signal?.addEventListener("abort", release, { once: true });
-    if (signal?.aborted) release();
-    try { return await awaitWithAbort(task.promise, signal); }
-    finally { release(); }
   }
 
   private async load(origin: string, signal?: AbortSignal): Promise<CacheItem> {
