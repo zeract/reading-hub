@@ -1,6 +1,6 @@
 import { assertFeedSubscriptionUrl, assertPublicUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 import { abortError, throwIfAborted, withRequestTimeout } from "./cancellation";
-import { concatenateBytes, discardResponseBody, formatByteLimit, readResponseBytes } from "./byte-limit";
+import { discardResponseBody, formatByteLimit, readResponseBytes } from "./byte-limit";
 import { hasFeedSignature, isAmbiguousFeedContentType, isExplicitFeedContentType } from "./feed";
 import { chromiumFetch } from "./network";
 import { RobotsPolicy } from "./robots";
@@ -299,17 +299,23 @@ type TextByteLimits = {
  * syntax. This avoids trusting a missing or misleading Content-Type header.
  */
 async function readTextWithinLimit(response: Response, limits: TextByteLimits, contentType: string, url: string, signal?: AbortSignal): Promise<string> {
-  const prefixChunks: Uint8Array[] = [];
   let prefixBytes = 0;
   const mayBeFeed = isExplicitFeedContentType(contentType) || isAmbiguousFeedContentType(contentType);
+  const prefix = mayBeFeed ? new Uint8Array(FEED_SIGNATURE_SNIFF_BYTES) : undefined;
+  let nextSniffAt = 1;
   let isFeed = false;
   const bytes = await readResponseBytes(response, (value, receivedBytes) => {
-    if (mayBeFeed && prefixBytes < FEED_SIGNATURE_SNIFF_BYTES) {
+    if (prefix && !isFeed && prefixBytes < prefix.length) {
       const remaining = FEED_SIGNATURE_SNIFF_BYTES - prefixBytes;
-      const prefix = value.byteLength <= remaining ? value : value.subarray(0, remaining);
-      prefixChunks.push(prefix);
-      prefixBytes += prefix.byteLength;
-      if (hasFeedSignature(decodeChunks(prefixChunks, prefixBytes))) isFeed = true;
+      const length = Math.min(value.byteLength, remaining);
+      prefix.set(value.subarray(0, length), prefixBytes);
+      prefixBytes += length;
+      // Geometric checkpoints bound rescanning for fragmented responses. A
+      // budget decision always inspects every prefix byte received so far.
+      if (prefixBytes >= nextSniffAt || receivedBytes > limits.maxBytes) {
+        isFeed = hasFeedSignature(new TextDecoder().decode(prefix.subarray(0, prefixBytes)));
+        nextSniffAt = Math.min(prefix.length, prefixBytes * 2);
+      }
     }
     const maxBytes = isFeed ? limits.maxFeedBytes : limits.maxBytes;
     if (isFeed && limits.declaredSize !== undefined && limits.declaredSize > limits.maxFeedBytes) {
@@ -327,10 +333,6 @@ async function readTextWithinLimit(response: Response, limits: TextByteLimits, c
     }
   }, signal);
   return new TextDecoder().decode(bytes);
-}
-
-function decodeChunks(chunks: Uint8Array[], byteLength: number): string {
-  return new TextDecoder().decode(concatenateBytes(chunks, byteLength));
 }
 
 function normalisedFeedByteLimit(options: PublicRequestOptions | undefined, maxBytes: number): number {
