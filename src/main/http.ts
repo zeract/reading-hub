@@ -4,6 +4,7 @@ import { concatenateBytes, discardResponseBody, formatByteLimit, readResponseByt
 import { hasFeedSignature, isAmbiguousFeedContentType, isExplicitFeedContentType } from "./feed";
 import { chromiumFetch } from "./network";
 import { RobotsPolicy } from "./robots";
+import { fetchResponse } from "./fetch-response";
 
 export interface TextResponse {
   url: string;
@@ -119,7 +120,8 @@ export class PublicHttpClient {
         // Redirects are followed explicitly so every destination is checked for
         // public-address and robots policy compliance.
         try {
-          response = await chromiumFetch(targetUrl, { headers, redirect: "manual", signal: request.signal });
+          response = await fetchResponse(chromiumFetch, targetUrl, { headers, redirect: "manual", signal: request.signal });
+          throwIfAborted(request.signal);
         } catch (error) {
           if (options?.signal?.aborted) throw abortError(options.signal);
           throw new NetworkRequestError(error);
@@ -157,6 +159,7 @@ export class PublicHttpClient {
             maxFeedBytes,
             declaredSize: Number.isFinite(declaredSize) ? declaredSize : undefined
           }, contentType, targetUrl, request.signal);
+          throwIfAborted(request.signal);
           return {
             url: targetUrl,
             status: response.status,
@@ -199,7 +202,7 @@ export class PublicHttpClient {
       let response: Response | undefined;
       try {
         try {
-          response = await chromiumFetch(targetUrl, {
+          response = await fetchResponse(chromiumFetch, targetUrl, {
             headers: {
               "User-Agent": "ReadingHub/0.1 (+local reader)",
               Accept: "image/avif,image/webp,image/apng,image/png,image/jpeg,image/gif,image/x-icon,image/vnd.microsoft.icon;q=0.9,*/*;q=0.1"
@@ -209,6 +212,7 @@ export class PublicHttpClient {
             referrerPolicy: "strict-origin-when-cross-origin",
             signal: request.signal
           });
+          throwIfAborted(request.signal);
         } catch (error) {
           if (options?.signal?.aborted) throw abortError(options.signal);
           throw new NetworkRequestError(error);
@@ -230,6 +234,7 @@ export class PublicHttpClient {
         const bytes = Buffer.from(await readResponseBytes(response, (_chunk, receivedBytes) => {
           if (receivedBytes > maxBytes) throw new Error("图片响应超过 8 MB，已跳过加载。");
         }, request.signal));
+        throwIfAborted(request.signal);
         const result = `data:${contentType};base64,${bytes.toString("base64")}`;
         this.imageCache.set(cacheKey, result);
         if (this.imageCache.size > 24) this.imageCache.delete(this.imageCache.keys().next().value!);

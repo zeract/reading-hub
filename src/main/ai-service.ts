@@ -11,6 +11,7 @@ import { CodexCliError, LocalCodexCli, type CodexCliRunner } from "./codex-cli";
 import { abortError, awaitWithAbort, throwIfAborted, withRequestTimeout } from "./cancellation";
 import { discardResponseBody, readResponseBytes } from "./byte-limit";
 import { KeyedTaskQueue } from "./keyed-task-queue";
+import { fetchResponse } from "./fetch-response";
 import { CODEX_CLI_MODEL_OPTIONS } from "../shared/types";
 import type {
   AiAnswer,
@@ -214,19 +215,16 @@ export class AiService {
     try {
       let response: Response;
       try {
-        const fetching = this.fetcher(endpoint, {
+        response = await fetchResponse(this.fetcher, endpoint, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
           body: JSON.stringify(body),
           signal: request.signal
-        }).then((result) => {
-          // A transport may resolve after cancellation won the wait. Release
-          // that otherwise unowned response without inspecting its contents.
-          if (request.signal.aborted) discardResponseBody(result);
-          throwIfAborted(request.signal);
-          return result;
         });
-        response = await awaitWithAbort(fetching, request.signal);
+        if (request.signal.aborted) {
+          discardResponseBody(response);
+          throwIfAborted(request.signal);
+        }
       } catch {
         if (parentSignal?.aborted) throw abortError(parentSignal, "AI 请求已取消。");
         if (request.signal.aborted) throw new AiServiceError(`${providerLabel} 请求超时，请稍后重试。`);

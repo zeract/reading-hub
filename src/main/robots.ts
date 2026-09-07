@@ -3,6 +3,7 @@ import { abortError, awaitWithAbort, throwIfAborted, withRequestTimeout } from "
 import { discardResponseBody, readResponseBytes } from "./byte-limit";
 import { chromiumFetch } from "./network";
 import { isRobotsPathAllowed, parseRobots, type RobotsRule } from "./robots-rules";
+import { fetchResponse } from "./fetch-response";
 
 type RobotsResult = { kind: "rules"; rules: RobotsRule[] } | { kind: "unavailable" } | { kind: "unreachable" };
 type CacheItem = { expiresAt: number; result: RobotsResult };
@@ -141,16 +142,12 @@ export class RobotsPolicy {
         let response: Response | undefined;
         try {
           throwIfAborted(request.signal);
-          const fetching = chromiumFetch(target, {
+          response = await fetchResponse(chromiumFetch, target, {
             headers: { "User-Agent": "ReadingHub/0.1 (+local reader)" },
             redirect: "manual",
             signal: request.signal
-          }).then((result) => {
-            if (request.signal.aborted) discardResponseBody(result);
-            throwIfAborted(request.signal);
-            return result;
           });
-          response = await awaitWithAbort(fetching, request.signal);
+          throwIfAborted(request.signal);
           const location = response.headers.get("location");
           if (location && response.status >= 300 && response.status < 400) {
             if (redirects === 5) return { expiresAt: Date.now() + POLICY_CACHE_MS, result: { kind: "unavailable" } };
