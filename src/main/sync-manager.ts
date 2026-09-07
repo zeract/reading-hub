@@ -142,6 +142,7 @@ export class SyncManager {
           const updated = this.db.markSuccess(effectiveSource, {
             etag: outcome.etag,
             lastModified: outcome.lastModified,
+            validatorUrl: outcome.validatorUrl,
             empty: !outcome.emptyIsHealthy && !outcome.notModified && outcome.entries.length === 0
           });
           const eventMessage = updated.status === "needs_review"

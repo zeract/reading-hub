@@ -8,7 +8,7 @@ import { MAX_FUTURE_PUBLICATION_SKEW_MS } from "../../shared/publication-date";
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 7;
+export const CURRENT_SCHEMA_VERSION = 8;
 
 type SqliteDatabase = Database.Database;
 
@@ -300,8 +300,16 @@ const MIGRATIONS: readonly SchemaMigration[] = [
       const owners = database.prepare("SELECT DISTINCT source_id FROM entries").all() as Array<{ source_id: string }>;
       for (const owner of owners) repairScourRedirectEntries(database, owner.source_id);
     }
+  },
+  {
+    version: 8,
+    name: "bind-http-validators-to-response-url",
+    up: (database) => {
+      // Legacy validators have no known response URL. Leave them unbound;
+      // the next successful full fetch establishes ownership without deleting content.
+      ensureColumn(database, "sources", "validator_url", "TEXT");
+    }
   }
-
 ];
 
 function ensureColumn(database: SqliteDatabase, table: "sources" | "entries" | "entry_origins", column: string, type: string): void {

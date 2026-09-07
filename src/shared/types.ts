@@ -56,6 +56,8 @@ export interface Source {
   refreshIntervalMinutes?: number;
   etag?: string;
   lastModified?: string;
+  /** Final HTTP response address to which the stored validators belong. */
+  validatorUrl?: string;
   lastCheckedAt?: number;
   lastSuccessfulAt?: number;
   nextCheckAt?: number;
@@ -322,6 +324,8 @@ export interface SyncResult {
   /** Undefined keeps the current HTTP validator; null removes it. */
   etag?: string | null;
   lastModified?: string | null;
+  /** Undefined preserves the binding; null removes it with the validators. */
+  validatorUrl?: string | null;
   extractionRule?: ExtractionRule;
   /** Persisted by the host after a connector has replayed upgraded metadata. */
   metadataRevision?: number;

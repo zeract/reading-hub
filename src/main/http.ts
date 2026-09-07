@@ -8,6 +8,7 @@ import { fetchResponse } from "./fetch-response";
 import { WeightedLruCache } from "./weighted-lru-cache";
 import { SharedTaskMap } from "./shared-task-map";
 import { TaskPool } from "./task-pool";
+import { validatorResourceUrl } from "./response-validators";
 
 export interface TextResponse {
   url: string;
@@ -17,6 +18,9 @@ export interface TextResponse {
   etag?: string;
   lastModified?: string;
 }
+
+/** Validators must identify the response representation they validate. */
+export type TextValidators = Pick<TextResponse, "url" | "etag" | "lastModified">;
 
 export interface PublicRequestOptions {
   maxBytes?: number;
@@ -110,19 +114,23 @@ export class PublicHttpClient {
     weight: (key, value) => 128 + (key.length + value.length) * 2
   });
 
-  async getText(rawUrl: string, cached?: { etag?: string; lastModified?: string }, options?: PublicRequestOptions): Promise<TextResponse> {
+  async getText(rawUrl: string, cached?: TextValidators, options?: PublicRequestOptions): Promise<TextResponse> {
     const maxBytes = options?.maxBytes ?? DEFAULT_SOURCE_DOCUMENT_MAX_BYTES;
     const maxFeedBytes = normalisedFeedByteLimit(options, maxBytes);
     const localFeed = options?.allowTrustedLoopbackFeed === true && isTrustedLoopbackFeedUrl(rawUrl);
     const localFeedOrigin = localFeed ? assertFeedSubscriptionUrl(rawUrl, true).origin : undefined;
     let targetUrl = localFeed ? assertFeedSubscriptionUrl(rawUrl, true).toString() : assertPublicUrl(rawUrl).toString();
-    const headers: Record<string, string> = {
+    const baseHeaders: Record<string, string> = {
       "User-Agent": "ReadingHub/0.1 (+local reader)",
       Accept: "application/atom+xml, application/rss+xml, application/feed+json, application/json, text/html;q=0.9, */*;q=0.1"
     };
-    if (cached?.etag) headers["If-None-Match"] = cached.etag;
-    if (cached?.lastModified) headers["If-Modified-Since"] = cached.lastModified;
+    const cachedUrl = cached?.url ? validatorResourceUrl(cached.url) : undefined;
     for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
+      const headers = { ...baseHeaders };
+      if (cachedUrl && cachedUrl === validatorResourceUrl(targetUrl)) {
+        if (cached?.etag) headers["If-None-Match"] = cached.etag;
+        if (cached?.lastModified) headers["If-Modified-Since"] = cached.lastModified;
+      }
       throwIfAborted(options?.signal);
       if (!localFeed) await this.robots.assertAllowed(targetUrl, { signal: options?.signal });
       const request = withRequestTimeout(options?.signal, 20_000, "该站点响应超时。请稍后重试，或检查网络与代理设置。");
@@ -138,7 +146,7 @@ export class PublicHttpClient {
           throw new NetworkRequestError(error);
         }
         const location = response.headers.get("location");
-        if (location && response.status >= 300 && response.status < 400) {
+        if (location && [301, 302, 303, 307, 308].includes(response.status)) {
           if (redirectCount === 5) throw new Error("重定向次数过多，已停止请求。");
           const redirected = new URL(location, targetUrl);
           if (localFeed) {
@@ -156,6 +164,9 @@ export class PublicHttpClient {
           lastModified: response.headers.get("last-modified") ?? undefined
         };
         if (response.status === 304) {
+          if (!headers["If-None-Match"] && !headers["If-Modified-Since"]) {
+            throw new Error("站点在未收到有效条件请求时返回了 304，无法确认内容未变化，请稍后重试。");
+          }
           return { url: targetUrl, status: 304, contentType: response.headers.get("content-type") ?? "", text: "", ...validators };
         }
         if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);

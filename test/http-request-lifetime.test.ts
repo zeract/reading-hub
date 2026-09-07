@@ -68,6 +68,6 @@ describe("public response header lifetime", () => {
       controller.abort(new Error("cancel conditional read"));
       return new Response(null, { status: 304 });
     });
-    await expect(client().getText("https://example.com/post", { etag: "fixture-etag" }, { signal: controller.signal })).rejects.toThrow("cancel conditional read");
+    await expect(client().getText("https://example.com/post", { url: "https://example.com/post", etag: "fixture-etag" }, { signal: controller.signal })).rejects.toThrow("cancel conditional read");
   });
 });

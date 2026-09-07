@@ -50,6 +50,7 @@ type SourceRow = {
   polling_enabled: number;
   refresh_interval_minutes?: number | null;
   etag: string | null;
+  validator_url?: string | null;
   last_modified: string | null;
   last_checked_at: number | null;
   last_successful_at?: number | null;
@@ -248,6 +249,7 @@ function sourceFromRow(row: SourceRow): Source {
     pollingEnabled: Boolean(row.polling_enabled),
     refreshIntervalMinutes: toOptionalNumber(row.refresh_interval_minutes ?? null),
     etag: row.etag ?? undefined,
+    validatorUrl: row.validator_url ?? undefined,
     lastModified: row.last_modified ?? undefined,
     lastCheckedAt: toOptionalNumber(row.last_checked_at),
     lastSuccessfulAt: toOptionalNumber(row.last_successful_at ?? null),
@@ -498,11 +500,12 @@ export class ReadingDatabase {
     this.db.transaction(() => {
       this.db.prepare(`UPDATE sources SET title = ?, category = ?, kind = ?, polling_enabled = ?, refresh_interval_minutes = ?,
         metadata_revision = CASE WHEN ? THEN NULL ELSE metadata_revision END,
-        extraction_rule = ?, etag = CASE WHEN ? THEN NULL ELSE etag END, last_modified = CASE WHEN ? THEN NULL ELSE last_modified END,
+        extraction_rule = ?, validator_url = CASE WHEN ? THEN NULL ELSE validator_url END,
+        etag = CASE WHEN ? THEN NULL ELSE etag END, last_modified = CASE WHEN ? THEN NULL ELSE last_modified END,
         status = CASE WHEN ? OR (? AND status = 'paused') THEN 'active' ELSE status END,
         next_check_at = ?, updated_at = ? WHERE id = ?`)
         .run(settings.title, normaliseSourceCategory(settings.category) ?? null, settings.kind, Number(settings.pollingEnabled), settings.refreshIntervalMinutes ?? null,
-          Number(kindChanged), extractionRule, Number(kindChanged), Number(kindChanged), Number(kindChanged), Number(settings.pollingEnabled), nextCheckAt, now, sourceId);
+          Number(kindChanged), extractionRule, Number(kindChanged), Number(kindChanged), Number(kindChanged), Number(kindChanged), Number(settings.pollingEnabled), nextCheckAt, now, sourceId);
       if (kindChanged) {
         // A checkpoint belongs to a protocol, not to its UI source identity.
         this.db.prepare("DELETE FROM sync_checkpoints WHERE subscription_id IN (SELECT id FROM subscriptions WHERE source_id = ?)").run(sourceId);
@@ -1155,7 +1158,7 @@ export class ReadingDatabase {
     this.db.prepare("UPDATE entries SET is_favorite = ? WHERE id = ?").run(Number(favorite), entryId);
   }
 
-  markSuccess(source: Source, update: Pick<SyncResult, "etag" | "lastModified"> & { empty?: boolean; requiresReview?: boolean }): Source {
+  markSuccess(source: Source, update: Pick<SyncResult, "etag" | "lastModified" | "validatorUrl"> & { empty?: boolean; requiresReview?: boolean }): Source {
     const now = Date.now();
     const emptyCount = update.empty ? source.consecutiveEmpty + 1 : 0;
     const requiresReview = update.requiresReview || (source.kind === "generic" && emptyCount >= 3);
@@ -1164,10 +1167,12 @@ export class ReadingDatabase {
     this.db
       .prepare(`UPDATE sources SET status = ?, etag = CASE WHEN ? THEN ? ELSE etag END,
         last_modified = CASE WHEN ? THEN ? ELSE last_modified END,
+        validator_url = CASE WHEN ? THEN ? ELSE validator_url END,
         last_checked_at = ?, last_successful_at = ?, next_check_at = ?, consecutive_empty = ?, failure_count = 0, last_error = NULL,
         updated_at = ? WHERE id = ?`)
       .run(status, Number(update.etag !== undefined), update.etag ?? null,
-        Number(update.lastModified !== undefined), update.lastModified ?? null, now, now, nextCheckAt, emptyCount, now, source.id);
+        Number(update.lastModified !== undefined), update.lastModified ?? null,
+        Number(update.validatorUrl !== undefined), update.validatorUrl ?? null, now, now, nextCheckAt, emptyCount, now, source.id);
     return this.getSource(source.id)!;
   }
 
@@ -1212,7 +1217,7 @@ export class ReadingDatabase {
     this.db.transaction(() => {
       this.db
         .prepare(`UPDATE sources SET extraction_rule = ?, status = 'active', consecutive_empty = 0,
-          etag = NULL, last_modified = NULL, next_check_at = ?, updated_at = ? WHERE id = ?`)
+          etag = NULL, last_modified = NULL, validator_url = NULL, next_check_at = ?, updated_at = ? WHERE id = ?`)
         .run(JSON.stringify(rule), Date.now(), Date.now(), sourceId);
       // A rule correction replaces uncertain extraction output with a verified
       // replay, while keeping favorites, recoverable deletions and shared origins.

@@ -11,12 +11,12 @@ import { loadGenericPage } from "./generic-page-loader";
 import { PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
 import { builtInManifest } from "./connector-registry";
-import { responseValidators } from "./response-validators";
+import { responseValidators, sourceValidators } from "./response-validators";
 
 /** RSS and public-web fetchers return the same host-owned sync contract. */
 export type FetchOutcome = Pick<
   SyncResult,
-  "entries" | "notModified" | "emptyIsHealthy" | "etag" | "lastModified" | "extractionRule" | "metadataRevision" | "iconUrl" | "checkpoint"
+  "entries" | "notModified" | "emptyIsHealthy" | "etag" | "lastModified" | "validatorUrl" | "extractionRule" | "metadataRevision" | "iconUrl" | "checkpoint"
 >;
 
 abstract class BaseConnector {
@@ -57,7 +57,7 @@ export class RssConnector extends BaseConnector implements ConnectorAdapter {
     const allowTrustedLoopbackFeed = source.config?.allowTrustedLoopbackFeed === true && isTrustedLoopbackFeedUrl(source.url);
     const response = await this.http.getText(
       source.url,
-      needsMetadataReplay ? undefined : { etag: source.etag, lastModified: source.lastModified },
+      needsMetadataReplay ? undefined : sourceValidators(source),
       { allowTrustedLoopbackFeed, signal }
     );
     const feed = response.status === 304 ? undefined : await parseFeed(response.text, response.url);
@@ -316,7 +316,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
     const page = await loadGenericPage(this.http, this.renderer, source.url, {
       cached: needsLegacyRuleAudit || needsPublicationDateAudit || needsFeedDiscoveryAudit
         ? undefined
-        : { etag: source.etag, lastModified: source.lastModified },
+        : sourceValidators(source),
       signal,
       preferRenderer: source.extractionRule?.rendererRequired === true
     });
@@ -401,7 +401,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
     // ETag 304 would leave legacy card fields (and filtered navigation links)
     // untouched indefinitely.
     const needsMetadataReplay = source.metadataRevision !== RSS_METADATA_REVISION;
-    const response = await this.http.getText(feedUrl, needsMetadataReplay ? undefined : { etag: source.etag, lastModified: source.lastModified }, { signal });
+    const response = await this.http.getText(feedUrl, needsMetadataReplay ? undefined : sourceValidators(source), { signal });
     if (response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true, ...responseValidators(response) };
     if (!looksLikeFeed(response.contentType, response.text)) throw new Error("来源声明的 Feed 已不再是有效订阅，请重新校准该来源。");
     const feed = await parseFeed(response.text, response.url);

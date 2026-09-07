@@ -3,13 +3,14 @@ import {
   NetworkRequestError,
   PublicHttpClient,
   ResponseTooLargeError,
+  type TextValidators,
   type TextResponse
 } from "./http";
 import { isAmbiguousFeedContentType, isExplicitFeedContentType } from "./feed";
 import type { PageRenderer } from "./page-renderer";
 
 export interface GenericPageLoadOptions {
-  cached?: Pick<TextResponse, "etag" | "lastModified">;
+  cached?: TextValidators;
   /** A previously verified page needs Chromium every time it is refreshed. */
   preferRenderer?: boolean;
   signal?: AbortSignal;

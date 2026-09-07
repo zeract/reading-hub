@@ -4,7 +4,7 @@ import { contentNormalizer } from "./content-normalizer";
 import type { ConnectorAdapter, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
 import { builtInManifest } from "./connector-registry";
 import { PublicHttpClient } from "./http";
-import { responseValidators } from "./response-validators";
+import { responseValidators, sourceValidators } from "./response-validators";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -25,10 +25,7 @@ export class XiaohongshuConnector implements ConnectorAdapter {
   constructor(private readonly http: PublicHttpClient) {}
 
   async sync(context: SyncContext): Promise<SyncResult> {
-    const response = await this.http.getText(context.source.url, {
-      etag: context.source.etag,
-      lastModified: context.source.lastModified
-    }, { signal: context.signal });
+    const response = await this.http.getText(context.source.url, sourceValidators(context.source), { signal: context.signal });
     if (response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true, ...responseValidators(response) };
     const entries = extractPublicXiaohongshuNotes(response.text, response.url);
     if (!entries.length) {

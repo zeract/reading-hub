@@ -32,7 +32,7 @@ function fixture(mode: Mode, path = ":memory:") {
   });
   return { db, sync, source, full, close: async () => { await sync.close(); db.close(); } };
 }
-beforeEach(() => network.fetch.mockReset());
+beforeEach(() => { network.fetch.mockReset(); });
 
 describe("HTTP response validator persistence", () => {
   it.each(["rss", "html", "declared-feed", "xiaohongshu"] as const)("replaces missing validators after a complete %s response", async (mode) => {
