@@ -1,6 +1,6 @@
 import { throwIfAborted } from "./cancellation";
 import type { RawEntry, Source, Subscription } from "../shared/types";
-import { entryMatchesSubscriptionScope, normaliseSubscriptionScope } from "../shared/subscription-scope";
+import { entryMatchesSubscriptionScope, sameSubscriptionScope } from "../shared/subscription-scope";
 import { redactDiagnosticMessage } from "./diagnostic-redaction";
 import { ContentMaintenance } from "./content-maintenance";
 import { ReadingDatabase } from "./database";
@@ -213,7 +213,7 @@ function currentSourceForSync(database: ReadingDatabase, initial: Source, initia
     || currentSubscription.accountId !== initialSubscription.accountId
     || currentSubscription.targetId !== initialSubscription.targetId
     || JSON.stringify(currentSubscription.config) !== JSON.stringify(initialSubscription.config)
-    || JSON.stringify(normaliseSubscriptionScope(currentSubscription.scope)) !== JSON.stringify(normaliseSubscriptionScope(initialSubscription.scope)))) {
+    || !sameSubscriptionScope(currentSubscription.scope, initialSubscription.scope))) {
     throw new SyncCancelledError("收集范围已更新，已取消旧的同步结果。");
   }
   // A calibration replaces the old cards and is an explicit user decision.

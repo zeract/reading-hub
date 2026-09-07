@@ -15,7 +15,7 @@ import type {
   SubscriptionDraft,
   SubscriptionScope
 } from "../shared/types";
-import { facetIdentity } from "../shared/subscription-scope";
+import { facetIdentity, sameSubscriptionScope } from "../shared/subscription-scope";
 import { ReadingDatabase } from "./database";
 import type { ConnectorRegistry } from "./connector-registry";
 import { isXiaohongshuUrl, manualProbe, SourceProbe } from "./source-probe";
@@ -254,7 +254,17 @@ export class SourceService {
       throw new Error("刷新间隔必须是预设的安全时间。");
     }
     const pollingEnabled = source.subscribed === false || settings.kind === "manual" || unsupportedXPublicProfile ? false : settings.pollingEnabled;
-    return this.db.updateSourceSettings(sourceId, { ...settings, title, category, pollingEnabled, refreshIntervalMinutes: pollingEnabled ? interval : undefined });
+    const updated = this.db.updateSourceSettings(sourceId, { ...settings, title, category, pollingEnabled, refreshIntervalMinutes: pollingEnabled ? interval : undefined });
+    if (updated.kind !== source.kind || updated.pollingEnabled !== source.pollingEnabled) this.sync.cancelSource(sourceId);
+    return updated;
+  }
+
+  /** A confirmed calibration replaces collected origins even for an identical
+   * rule. Cancel after commit so a late extraction cannot undo that reset. */
+  updateRule(sourceId: string, rule: Source["extractionRule"]): void {
+    if (!this.db.getSource(sourceId)) throw new Error("来源不存在。");
+    this.db.updateRule(sourceId, rule);
+    this.sync.cancelSource(sourceId);
   }
 
   /**
@@ -270,7 +280,9 @@ export class SourceService {
 
   /** Persist only user-owned collection scope; connector config stays opaque. */
   updateCollectionScope(sourceId: string, scope: SubscriptionScope): SourceCollectionSettings {
-    this.db.updateSubscriptionScope(sourceId, scope);
+    const previous = this.db.getSubscriptionForSource(sourceId);
+    const updated = this.db.updateSubscriptionScope(sourceId, scope);
+    if (!sameSubscriptionScope(previous?.scope, updated.scope)) this.sync.cancelSource(sourceId);
     return this.getCollectionSettings(sourceId);
   }
 
@@ -325,8 +337,9 @@ export class SourceService {
     const source = this.db.getSource(sourceId);
     if (!source) throw new Error("来源不存在。");
     if (subscribed && isRetiredXPublicProfile(source)) throw new Error("此旧来源不支持恢复，请通过官方账号连接。");
+    const updated = this.db.setSubscribed(sourceId, subscribed);
     this.sync.cancelSource(sourceId);
-    return this.db.setSubscribed(sourceId, subscribed);
+    return updated;
   }
 
   /** Compatibility for older renderer builds: removing a subscription retains cards. */

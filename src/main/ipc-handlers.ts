@@ -101,7 +101,7 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     return foregroundRequests.run(event.sender, (signal) => sources.inspectCollectionFacets(sourceId, signal));
   });
   handle(IPC_CHANNELS.source.updateRule, (_event, id: unknown, rule: unknown) =>
-    database.updateRule(requireEntityId(id), parseExtractionRule(rule)));
+    sources.updateRule(requireEntityId(id), parseExtractionRule(rule)));
   handle(IPC_CHANNELS.source.calibration, (event, id: unknown) => {
     const sourceId = requireEntityId(id);
     return foregroundRequests.run(event.sender, (signal) => sources.calibrate(sourceId, signal));

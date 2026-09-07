@@ -79,6 +79,16 @@ export function normaliseSubscriptionScope(value: SubscriptionScope | undefined)
   };
 }
 
+/** Labels and OR-selection order are presentation; history and facet IDs
+ * determine which records a connector may collect. */
+export function sameSubscriptionScope(left: SubscriptionScope | undefined, right: SubscriptionScope | undefined): boolean {
+  const identity = (scope: SubscriptionScope | undefined) => {
+    const normalized = normaliseSubscriptionScope(scope);
+    return JSON.stringify({ history: normalized.history, facets: normalized.facetSelections.map(facetIdentity).sort() });
+  };
+  return identity(left) === identity(right);
+}
+
 /** Current Feed entries pass with no selection; selected facets use OR semantics. */
 export function entryMatchesSubscriptionScope(
   entry: { facets?: readonly Facet[] },

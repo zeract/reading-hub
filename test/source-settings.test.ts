@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ReadingDatabase } from "../src/main/database";
 import { SourceService } from "../src/main/source-service";
 
 function serviceFor(database: ReadingDatabase): SourceService {
-  return new SourceService(database, undefined as never, undefined as never, undefined as never);
+  return new SourceService(database, undefined as never, { cancelSource: vi.fn() } as never, undefined as never);
 }
 
 describe("source settings", () => {
