@@ -467,10 +467,13 @@ export class ReadingDatabase {
     if (!source) throw new Error("来源不存在。");
     const now = Date.now();
     const kindChanged = source.kind !== settings.kind;
-    // SourceKind is a UI compatibility category, while connectorId identifies
-    // the host-owned protocol implementation. Editing a title/category must
-    // never silently switch a future connector back to the generic adapter.
-    const nextCheckAt = settings.pollingEnabled ? now + refreshDelay(settings.refreshIntervalMinutes) : null;
+    const scheduleChanged = kindChanged || source.pollingEnabled !== settings.pollingEnabled
+      || source.refreshIntervalMinutes !== settings.refreshIntervalMinutes;
+    // Renaming/moving a source must not postpone an already-due poll or replace
+    // a failure backoff. Recompute only when scheduling inputs actually change.
+    const nextCheckAt = scheduleChanged
+      ? settings.pollingEnabled ? now + refreshDelay(settings.refreshIntervalMinutes) : null
+      : source.nextCheckAt ?? null;
     const extractionRule = kindChanged && settings.kind !== "generic" ? null : source.extractionRule ? JSON.stringify(source.extractionRule) : null;
     this.db.transaction(() => {
       this.db.prepare(`UPDATE sources SET title = ?, category = ?, kind = ?, polling_enabled = ?, refresh_interval_minutes = ?,
@@ -481,6 +484,8 @@ export class ReadingDatabase {
         .run(settings.title, normaliseSourceCategory(settings.category) ?? null, settings.kind, Number(settings.pollingEnabled), settings.refreshIntervalMinutes ?? null,
           Number(kindChanged), extractionRule, Number(kindChanged), Number(settings.pollingEnabled), nextCheckAt, now, sourceId);
       if (kindChanged) {
+        // SourceKind is a UI compatibility category, while connectorId identifies
+        // the host-owned protocol. Only an explicit kind change switches adapters.
         // A checkpoint belongs to a protocol, not to its UI source identity.
         this.resetSyncProgress(sourceId, now);
         this.db.prepare("UPDATE subscriptions SET connector_id = ?, account_id = NULL, target_id = NULL, config_json = NULL, updated_at = ? WHERE source_id = ?")
