@@ -7,6 +7,7 @@ import type { AiReasoningEffort } from "../shared/types";
 import { awaitWithAbort, combineAbortSignals } from "./cancellation";
 import { ChildProcessScope } from "./child-process-scope";
 import { Utf8LineDecoder } from "./utf8-line-decoder";
+import { TaskPool } from "./task-pool";
 
 const CODEX_TIMEOUT_MS = 90_000;
 const CODEX_EXTENDED_TIMEOUT_MS = 180_000;
@@ -29,104 +30,6 @@ const APP_SERVER_CLIENT_INFO = { name: "reading-hub", title: "Reading Hub", vers
  * is still noticed on the next short polling window.
  */
 export const CODEX_COMMAND_DISCOVERY_TTL_MS = 5_000;
-
-/**
- * A small FIFO semaphore for the App Server bridge.  A release transfers its
- * permit directly to the oldest waiter instead of briefly returning it to the
- * pool.  That detail is important: otherwise a newly arriving request can
- * steal the permit between `release()` and the woken waiter's next microtask,
- * allowing the active turn count to exceed the configured limit.
- */
-export class BoundedAsyncSemaphore {
-  private available: number;
-  private closedError: Error | undefined;
-  private waiters: SemaphoreWaiter[] = [];
-
-  constructor(private readonly capacity: number) {
-    if (!Number.isInteger(capacity) || capacity < 1) {
-      throw new RangeError("BoundedAsyncSemaphore capacity must be a positive integer.");
-    }
-    this.available = capacity;
-  }
-
-  get activeCount(): number {
-    return this.capacity - this.available;
-  }
-
-  get queuedCount(): number {
-    return this.waiters.length;
-  }
-
-  acquire(options: { signal?: AbortSignal; abortError?: () => Error } = {}): Promise<() => void> {
-    if (this.closedError) return Promise.reject(this.closedError);
-    if (options.signal?.aborted) return Promise.reject(options.abortError?.() || new Error("Operation cancelled."));
-    if (this.available > 0) {
-      this.available -= 1;
-      return Promise.resolve(this.createLease());
-    }
-    return new Promise<() => void>((resolve, reject) => {
-      const waiter: SemaphoreWaiter = {
-        resolve: (release) => {
-          options.signal?.removeEventListener("abort", abort);
-          resolve(release);
-        },
-        reject: (error) => {
-          options.signal?.removeEventListener("abort", abort);
-          reject(error);
-        },
-        signal: options.signal,
-        abortError: options.abortError
-      };
-      const abort = () => {
-        const index = this.waiters.indexOf(waiter);
-        if (index < 0) return;
-        this.waiters.splice(index, 1);
-        waiter.reject(options.abortError?.() || new Error("Operation cancelled."));
-      };
-      if (options.signal) options.signal.addEventListener("abort", abort, { once: true });
-      this.waiters.push(waiter);
-    });
-  }
-
-  /** Rejects queued callers without revoking slots that have already started. */
-  close(error: Error): void {
-    if (this.closedError) return;
-    this.closedError = error;
-    for (const waiter of this.waiters.splice(0)) waiter.reject(error);
-  }
-
-  private createLease(): () => void {
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.release();
-    };
-  }
-
-  private release(): void {
-    let waiter = this.waiters.shift();
-    while (waiter) {
-      if (waiter.signal?.aborted) {
-        waiter.reject(waiter.abortError?.() || new Error("Operation cancelled."));
-        waiter = this.waiters.shift();
-        continue;
-      }
-      // Keep `available` unchanged: this is an atomic ownership hand-off,
-      // so a concurrent acquire must queue behind the already-reserved slot.
-      waiter.resolve(this.createLease());
-      return;
-    }
-    this.available = Math.min(this.capacity, this.available + 1);
-  }
-}
-
-type SemaphoreWaiter = {
-  resolve: (release: () => void) => void;
-  reject: (error: Error) => void;
-  signal?: AbortSignal;
-  abortError?: () => Error;
-};
 
 type CachedCodexCommand = { command: string | undefined; expiresAt: number };
 
@@ -344,7 +247,7 @@ class PersistentCodexAppServer {
   private activeTurns = new Map<string, ActiveAppServerTurn>();
   /** A cancellation may arrive before turn/start returns its turn id. */
   private pendingInterrupts = new Set<string>();
-  private turnSemaphore = new BoundedAsyncSemaphore(APP_SERVER_MAX_CONCURRENT_TURNS);
+  private readonly turnPool = new TaskPool(APP_SERVER_MAX_CONCURRENT_TURNS);
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(command: string, private readonly processes: ChildProcessScope) {
@@ -378,7 +281,7 @@ class PersistentCodexAppServer {
     this.stdoutLines.discard();
     this.clearIdleTimer();
     const failure = new CodexAppServerTransportError();
-    this.turnSemaphore.close(failure);
+    this.turnPool.close(failure);
     this.failAll(failure);
     const child = this.child;
     this.child = undefined;
@@ -388,7 +291,7 @@ class PersistentCodexAppServer {
 
   private acquireTurnSlot(signal?: AbortSignal): Promise<() => void> {
     if (this.disposed) throw new CodexAppServerTransportError();
-    return this.turnSemaphore.acquire({ signal, abortError: () => new CodexCliError("AI 请求已取消。") });
+    return this.turnPool.acquire({ signal, abortError: () => new CodexCliError("AI 请求已取消。") });
   }
 
   private async ensureReady(): Promise<void> {
@@ -452,7 +355,7 @@ class PersistentCodexAppServer {
       if (signal?.aborted) {
         // No turn/start request has been issued yet, so there is no remote
         // model work to drain. Settle immediately instead of retaining this
-        // semaphore lease forever.
+        // task-pool lease forever.
         this.finishTurn(threadId, { error: new CodexCliError("AI 请求已取消。") });
         return;
       }
@@ -467,7 +370,7 @@ class PersistentCodexAppServer {
         const turn = this.activeTurns.get(threadId);
         // A transport timeout occurs after JSON-RPC was written to stdin, so
         // the App Server may still create the turn after our local request
-        // expires. Do not release this turn's semaphore lease into a new
+        // expires. Do not release this turn's task-pool lease into a new
         // model request. Killing the shared bridge is the only safe way to
         // discard an unconfirmed turn (and it also handles a pending abort
         // whose interrupt cannot yet name a turn id).
@@ -635,7 +538,7 @@ class PersistentCodexAppServer {
   }
 
   /**
-   * Keep a semaphore lease while a cancelled/expired server turn is draining.
+   * Keep a task-pool lease while a cancelled/expired server turn is draining.
    * Releasing it when merely sending `turn/interrupt` lets rapid tab switches
    * briefly run more model turns than the configured cap. If the App Server
    * cannot confirm completion in a bounded interval, dispose its bridge so no
@@ -675,7 +578,7 @@ class PersistentCodexAppServer {
     this.child = undefined;
     if (child) void this.processes.terminate(child);
     const failure = this.initialized ? new CodexAppServerTransportError() : new CodexAppServerUnavailableError();
-    this.turnSemaphore.close(failure);
+    this.turnPool.close(failure);
     this.failAll(failure);
   }
 
@@ -690,7 +593,7 @@ class PersistentCodexAppServer {
   }
 
   private scheduleIdleDispose(): void {
-    if (this.disposed || this.activeTurns.size > 0 || this.turnSemaphore.activeCount > 0) return;
+    if (this.disposed || this.activeTurns.size > 0 || this.turnPool.activeCount > 0) return;
     this.clearIdleTimer();
     this.idleTimer = setTimeout(() => this.dispose(), APP_SERVER_IDLE_TIMEOUT_MS);
     this.idleTimer.unref();

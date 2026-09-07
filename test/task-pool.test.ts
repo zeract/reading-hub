@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { getEventListeners } from "node:events";
 import { TaskPool, TaskPoolFullError } from "../src/main/task-pool";
 
 function deferred() {
@@ -8,6 +9,138 @@ function deferred() {
 }
 
 describe("bounded task admission", () => {
+  it("closes queued and future admission without revoking active cleanup leases", async () => {
+    const pool = new TaskPool(1, 2);
+    const release = await pool.acquire();
+    const controller = new AbortController();
+    const failure = new Error("bridge closed");
+    const second = expect(pool.acquire({ signal: controller.signal })).rejects.toBe(failure);
+    const third = expect(pool.run(async () => "must not run")).rejects.toBe(failure);
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(1);
+
+    pool.close(failure);
+    pool.close(new Error("later close"));
+    expect(pool.activeCount).toBe(1);
+    expect(pool.queuedCount).toBe(0);
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+    controller.abort();
+    await Promise.all([second, third]);
+    await expect(pool.acquire()).rejects.toBe(failure);
+    release(); release();
+    expect(pool.activeCount).toBe(0);
+    await expect(pool.acquire()).rejects.toBe(failure);
+  });
+
+  it("does not release a handed-off lease through the previous owner's repeated cleanup", async () => {
+    const pool = new TaskPool(1);
+    const releaseFirst = await pool.acquire();
+    const second = pool.acquire();
+    releaseFirst();
+    releaseFirst();
+    const third = pool.acquire();
+    const releaseSecond = await second;
+    expect(pool.activeCount).toBe(1);
+    expect(pool.queuedCount).toBe(1);
+    releaseSecond();
+    const releaseThird = await third;
+    expect(pool.activeCount).toBe(1);
+    releaseThird();
+    expect(pool.activeCount).toBe(0);
+  });
+
+  it("leaves a reserved lease with its owner when cancellation races the promise continuation", async () => {
+    const pool = new TaskPool(1);
+    const releaseFirst = await pool.acquire();
+    const controller = new AbortController();
+    const second = pool.acquire({ signal: controller.signal });
+    releaseFirst();
+    controller.abort();
+    const releaseSecond = await second;
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+    expect(pool.activeCount).toBe(1);
+    releaseSecond();
+    expect(pool.activeCount).toBe(0);
+  });
+
+  it("uses caller-specific cancellation errors before admission and rejects invalid limits", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("private native details"));
+    const failure = new Error("AI 请求已取消。");
+    const pool = new TaskPool(1, 0);
+    await expect(pool.acquire({ signal: controller.signal, abortError: () => failure })).rejects.toBe(failure);
+    expect(pool.activeCount).toBe(0);
+    for (const capacity of [0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => new TaskPool(capacity)).toThrow(RangeError);
+    }
+    for (const maxQueued of [-1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => new TaskPool(1, maxQueued)).toThrow(RangeError);
+    }
+  });
+
+  it("atomically hands released App Server capacity to FIFO waiters", async () => {
+    const semaphore = new TaskPool(2);
+    let maxObservedActive = 0;
+    const observe = () => { maxObservedActive = Math.max(maxObservedActive, semaphore.activeCount); };
+
+    const releaseFirst = await semaphore.acquire();
+    observe();
+    const releaseSecond = await semaphore.acquire();
+    observe();
+    const third = semaphore.acquire();
+    const fourth = semaphore.acquire();
+    const fifth = semaphore.acquire();
+    expect(semaphore.activeCount).toBe(2);
+    expect(semaphore.queuedCount).toBe(3);
+
+    // While the third caller is being woken, a fresh fifth caller is already
+    // queued. The released slot must remain reserved for the third caller.
+    releaseFirst();
+    observe();
+    expect(semaphore.activeCount).toBe(2);
+    const releaseThird = await third;
+    observe();
+    expect(semaphore.activeCount).toBe(2);
+    expect(semaphore.queuedCount).toBe(2);
+
+    releaseSecond();
+    observe();
+    const releaseFourth = await fourth;
+    observe();
+    expect(semaphore.activeCount).toBe(2);
+    expect(semaphore.queuedCount).toBe(1);
+
+    releaseThird();
+    observe();
+    const releaseFifth = await fifth;
+    observe();
+    expect(semaphore.activeCount).toBe(2);
+    expect(semaphore.queuedCount).toBe(0);
+
+    releaseFourth();
+    releaseFifth();
+    observe();
+    expect(maxObservedActive).toBeLessThanOrEqual(2);
+    expect(semaphore.activeCount).toBe(0);
+  });
+
+  it("removes a cancelled queued caller without consuming a later slot", async () => {
+    const semaphore = new TaskPool(1);
+    const releaseFirst = await semaphore.acquire();
+    const controller = new AbortController();
+    const cancelled = semaphore.acquire({ signal: controller.signal, abortError: () => new Error("AI 请求已取消。") });
+    expect(semaphore.queuedCount).toBe(1);
+
+    controller.abort();
+    await expect(cancelled).rejects.toThrow("AI 请求已取消。");
+    expect(semaphore.queuedCount).toBe(0);
+
+    releaseFirst();
+    const releaseNext = await semaphore.acquire();
+    expect(semaphore.activeCount).toBe(1);
+    releaseNext();
+  });
+
+
   it("reserves capacity synchronously and rejects overflow without running it", async () => {
     const pool = new TaskPool(1, 1), gate = deferred();
     const first = pool.run(() => gate.promise);

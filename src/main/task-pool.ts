@@ -9,48 +9,69 @@ export class TaskPoolFullError extends Error {
 
 /** FIFO admission with bounded active and waiting work. Cancellation removes
  * queued work immediately. Active operations own their slot until they settle,
- * including cleanup; they must enforce their own deadlines and cancellation. */
+ * including cleanup; they must enforce their own deadlines and cancellation.
+ * Omitting maxQueued preserves an unbounded waiting queue.
+ * Explicit leases support work whose cleanup outlives the caller's response. */
 export class TaskPool {
   private active = 0;
-  private readonly waiting = new Set<() => void>();
+  private readonly waiting = new Set<{ start(): void; reject(error: Error): void }>();
+  private closedError?: Error;
 
-  constructor(private readonly concurrency: number, private readonly maxQueued: number) {
+  constructor(private readonly concurrency: number, private readonly maxQueued?: number) {
     if (!Number.isSafeInteger(concurrency) || concurrency < 1
-      || !Number.isSafeInteger(maxQueued) || maxQueued < 0) {
+      || (maxQueued !== undefined && (!Number.isSafeInteger(maxQueued) || maxQueued < 0))) {
       throw new RangeError("Task pool limits must be safe integers with positive concurrency and nonnegative queue capacity.");
     }
   }
 
+  get activeCount(): number { return this.active; }
+  get queuedCount(): number { return this.waiting.size; }
+
   async run<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const release = await this.acquire(signal);
+    const release = await this.acquire({ signal });
     try {
       throwIfAborted(signal);
       return await operation();
     } finally { release(); }
   }
 
-  private acquire(signal?: AbortSignal): Promise<() => void> {
-    throwIfAborted(signal);
+  acquire({ signal, abortError: cancelled }: { signal?: AbortSignal; abortError?: () => Error } = {}): Promise<() => void> {
+    if (this.closedError) return Promise.reject(this.closedError);
+    const cancellation = () => cancelled?.() ?? abortError(signal!);
+    if (signal?.aborted) return Promise.reject(cancellation());
     if (this.active < this.concurrency) {
       this.active++;
       return Promise.resolve(this.releaseSlot());
     }
-    if (this.waiting.size >= this.maxQueued) throw new TaskPoolFullError();
+    if (this.maxQueued !== undefined && this.waiting.size >= this.maxQueued) return Promise.reject(new TaskPoolFullError());
     return new Promise((resolve, reject) => {
-      const start = () => {
-        signal?.removeEventListener("abort", cancel);
-        this.active++;
-        resolve(this.releaseSlot());
+      const waiter = {
+        start: () => {
+          signal?.removeEventListener("abort", cancel);
+          this.active++;
+          resolve(this.releaseSlot());
+        },
+        reject: (error: Error) => {
+          signal?.removeEventListener("abort", cancel);
+          reject(error);
+        }
       };
       const cancel = () => {
-        this.waiting.delete(start);
-        signal?.removeEventListener("abort", cancel);
-        reject(abortError(signal!));
+        if (!this.waiting.delete(waiter)) return;
+        waiter.reject(cancellation());
       };
-      this.waiting.add(start);
+      this.waiting.add(waiter);
       signal?.addEventListener("abort", cancel, { once: true });
       if (signal?.aborted) cancel();
     });
+  }
+
+  /** Reject queued and future work, but let active owners finish cleanup. */
+  close(error: Error): void {
+    if (this.closedError) return;
+    this.closedError = error;
+    for (const waiter of this.waiting) waiter.reject(error);
+    this.waiting.clear();
   }
 
   private releaseSlot(): () => void {
@@ -64,7 +85,7 @@ export class TaskPool {
       const next = this.waiting.values().next().value;
       if (next) {
         this.waiting.delete(next);
-        next();
+        next.start();
       }
     };
   }

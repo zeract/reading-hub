@@ -5,7 +5,6 @@ const access = vi.hoisted(() => vi.fn());
 vi.mock("node:fs/promises", () => ({ access }));
 
 import {
-  BoundedAsyncSemaphore,
   CODEX_COMMAND_DISCOVERY_TTL_MS,
   CodexCliError,
   LocalCodexCli,
@@ -25,69 +24,6 @@ afterEach(() => {
 });
 
 describe("local Codex CLI invocation", () => {
-  it("atomically hands released App Server capacity to FIFO waiters", async () => {
-    const semaphore = new BoundedAsyncSemaphore(2);
-    let maxObservedActive = 0;
-    const observe = () => { maxObservedActive = Math.max(maxObservedActive, semaphore.activeCount); };
-
-    const releaseFirst = await semaphore.acquire();
-    observe();
-    const releaseSecond = await semaphore.acquire();
-    observe();
-    const third = semaphore.acquire();
-    const fourth = semaphore.acquire();
-    const fifth = semaphore.acquire();
-    expect(semaphore.activeCount).toBe(2);
-    expect(semaphore.queuedCount).toBe(3);
-
-    // While the third caller is being woken, a fresh fifth caller is already
-    // queued. The released slot must remain reserved for the third caller.
-    releaseFirst();
-    observe();
-    expect(semaphore.activeCount).toBe(2);
-    const releaseThird = await third;
-    observe();
-    expect(semaphore.activeCount).toBe(2);
-    expect(semaphore.queuedCount).toBe(2);
-
-    releaseSecond();
-    observe();
-    const releaseFourth = await fourth;
-    observe();
-    expect(semaphore.activeCount).toBe(2);
-    expect(semaphore.queuedCount).toBe(1);
-
-    releaseThird();
-    observe();
-    const releaseFifth = await fifth;
-    observe();
-    expect(semaphore.activeCount).toBe(2);
-    expect(semaphore.queuedCount).toBe(0);
-
-    releaseFourth();
-    releaseFifth();
-    observe();
-    expect(maxObservedActive).toBeLessThanOrEqual(2);
-    expect(semaphore.activeCount).toBe(0);
-  });
-
-  it("removes a cancelled queued caller without consuming a later slot", async () => {
-    const semaphore = new BoundedAsyncSemaphore(1);
-    const releaseFirst = await semaphore.acquire();
-    const controller = new AbortController();
-    const cancelled = semaphore.acquire({ signal: controller.signal, abortError: () => new CodexCliError("AI 请求已取消。") });
-    expect(semaphore.queuedCount).toBe(1);
-
-    controller.abort();
-    await expect(cancelled).rejects.toThrow("AI 请求已取消。");
-    expect(semaphore.queuedCount).toBe(0);
-
-    releaseFirst();
-    const releaseNext = await semaphore.acquire();
-    expect(semaphore.activeCount).toBe(1);
-    releaseNext();
-  });
-
   it("identifies caller cancellation before creating a local App Server turn", () => {
     const controller = new AbortController();
     controller.abort();
