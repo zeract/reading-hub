@@ -1103,7 +1103,11 @@ export class ReadingDatabase {
       for (const entry of records) {
         const identity = entry.canonicalIdentity ?? entry.canonicalUrl;
         const existing = exists.get(entry.canonicalUrl) as { id: string; canonical_identity: string | null } | undefined;
-        if (isDismissed.get(identity) || (existing && isDismissed.get(existing.canonical_identity ?? entry.canonicalUrl))) continue;
+        const previousIdentity = existing?.canonical_identity ?? entry.canonicalUrl;
+        // A canonical match normally has the same identity. Its first lookup
+        // already checked the tombstone; only a distinct stored identity needs
+        // a second check to prevent a provider rekey from reviving deletion.
+        if (isDismissed.get(identity) || (existing && previousIdentity !== identity && isDismissed.get(previousIdentity))) continue;
         const isNew = !existing;
         const providerId = entry.providerId ?? this.getSource(entry.sourceId)?.connectorId ?? "generic";
         const externalId = entry.externalId ?? "";

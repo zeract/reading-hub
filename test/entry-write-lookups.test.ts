@@ -11,7 +11,7 @@ const card = (sourceId: string, id: string, overrides: Partial<Entry> = {}): Ent
 });
 afterEach(() => vi.restoreAllMocks());
 
-it("uses one canonical lookup per accepted card for both inserts and duplicate replays", () => {
+it("checks each identity only once during inserts and duplicate replays", () => {
   const db = new ReadingDatabase(":memory:");
   try {
     const source = db.createSource({ url: "https://example.com/feed", title: "Fixture", kind: "rss", pollingEnabled: true });
@@ -20,7 +20,7 @@ it("uses one canonical lookup per accepted card for both inserts and duplicate r
     let lookups = 0;
     vi.spyOn(raw, "prepare").mockImplementation((sql: string) => {
       const statement = prepare(sql);
-      if (/^SELECT .* FROM entries WHERE canonical_url = \?$/.test(sql)) {
+      if (/^SELECT\b/.test(sql) && (/FROM dismissed_contents/.test(sql) || /\bentries\b[\s\S]*canonical_url/.test(sql))) {
         const get = statement.get.bind(statement);
         vi.spyOn(statement, "get").mockImplementation((...parameters: unknown[]) => { lookups++; return get(...parameters); });
       }
@@ -28,11 +28,45 @@ it("uses one canonical lookup per accepted card for both inserts and duplicate r
     });
     const entries = Array.from({ length: 5_000 }, (_, index) => card(source.id, `fixture-${index}`, { ingestionKind: index % 2 ? "history" : "current" }));
     expect(db.saveEntries(entries)).toBe(5_000);
-    expect(lookups).toBe(5_000);
+    expect(lookups).toBe(10_000);
     lookups = 0;
     expect(db.saveEntries(entries.map((entry) => ({ ...entry, id: `replay-${entry.id}`, title: "Updated fixture" })))).toBe(0);
-    expect(lookups).toBe(5_000);
+    expect(lookups).toBe(10_000);
     expect(db.getLibraryCounts()).toMatchObject({ collected: 2_500, history: 2_500 });
+  } finally { db.close(); }
+});
+
+it.each(["stored", "incoming"] as const)("honors the %s identity's tombstone before changing a retained card", (dismissed) => {
+  const db = new ReadingDatabase(":memory:");
+  try {
+    const source = db.createSource({ url: "https://example.com/feed", title: "Fixture", kind: "rss", pollingEnabled: true });
+    const original = card(source.id, "retained", { canonicalIdentity: "fixture:old" });
+    db.saveEntries([original]); db.markRead(original.id, true); db.markFavorite(original.id, true);
+    native(db).prepare("INSERT INTO dismissed_contents (canonical_identity, dismissed_at) VALUES (?, ?)")
+      .run(dismissed === "stored" ? "fixture:old" : "fixture:new", 123);
+    const revision = db.getLibraryRevision();
+    expect(db.saveEntries([card(source.id, "incoming", { canonicalUrl: original.canonicalUrl, canonicalIdentity: "fixture:new", title: "Must not overwrite", facets: [] })])).toBe(0);
+    expect(native(db).prepare("SELECT id, title, canonical_identity, is_read, is_favorite FROM entries").get()).toEqual({
+      id: "retained", title: "retained", canonical_identity: "fixture:old", is_read: 1, is_favorite: 1
+    });
+    expect(db.getLibraryRevision()).toBe(revision);
+    expect(native(db).prepare("SELECT COUNT(*) AS count FROM entry_origins").get()).toEqual({ count: 1 });
+  } finally { db.close(); }
+});
+
+it("uses a URL tombstone for a legacy existing identity but not for a new provider identity", () => {
+  const db = new ReadingDatabase(":memory:");
+  try {
+    const source = db.createSource({ url: "https://example.com/feed", title: "Fixture", kind: "rss", pollingEnabled: true });
+    const original = card(source.id, "retained", { canonicalIdentity: "fixture:object" });
+    native(db).prepare("INSERT INTO dismissed_contents (canonical_identity, dismissed_at) VALUES (?, ?)").run(original.canonicalUrl, 123);
+    expect(db.saveEntries([original])).toBe(1);
+    expect(db.getEntry(original.id)?.canonicalIdentity).toBe("fixture:object");
+    native(db).prepare("UPDATE entries SET canonical_identity = NULL WHERE id = ?").run(original.id);
+    const revision = db.getLibraryRevision();
+    expect(db.saveEntries([{ ...original, id: "replay", title: "Must stay dismissed" }])).toBe(0);
+    expect(db.getEntry(original.id)).toBeUndefined();
+    expect(db.getLibraryRevision()).toBe(revision);
   } finally { db.close(); }
 });
 
