@@ -23,7 +23,7 @@ import { SyncManager } from "./sync-manager";
 import { ZhihuFollowConnector } from "./zhihu-follow";
 import { parseXiaohongshuProfileUrl } from "./platform-profile-url";
 import { parseOpml } from "./opml";
-import { assertFeedSubscriptionUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
+import { assertFeedSubscriptionUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 
 type PendingProbe = { expiresAt: number; json: string };
 
@@ -62,7 +62,10 @@ export class SourceService {
     const pending = this.pending.get(token);
     if (!pending) throw new Error("预览已过期，请重新添加来源。");
     const probe = JSON.parse(pending.json) as ProbeResult;
-    const existing = this.db.getSourceByUrl(probe.url);
+    const identity = subscriptionUrlIdentity(probe);
+    // Prefer the exact row in a legacy library that already has duplicates.
+    const existing = this.db.getSourceByUrl(probe.url)
+      ?? this.db.listSources().find((source) => subscriptionUrlIdentity(source) === identity);
     if (existing) {
       const source = existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
       this.pending.delete(token);
@@ -111,14 +114,14 @@ export class SourceService {
 
   importOpml(text: string): { imported: number; existing: number; skipped: number } {
     const seen = new Set<string>();
-    const existingIdentities = new Set(this.db.listSources().map((source) => canonicalizeUrl(source.url)));
+    const existingIdentities = new Set(this.db.listSources().map(subscriptionUrlIdentity));
     const inputs: SourceInput[] = [];
     let existing = 0;
     let skipped = 0;
     for (const item of parseOpml(text)) {
       try {
         const url = assertFeedSubscriptionUrl(item.url, true).toString();
-        const identity = canonicalizeUrl(url);
+        const identity = subscriptionUrlIdentity({ url, kind: "rss" });
         if (seen.has(identity)) {
           existing += 1;
           continue;
@@ -367,4 +370,13 @@ function normalizedOptionalTitle(value: string | undefined): string | undefined 
   const title = value?.replace(/\s+/g, " ").trim();
   if (title && title.length > 120) throw new Error("来源名称最多 120 个字符。");
   return title || undefined;
+}
+
+/** Subscription identity describes the requested resource, not a collected
+ * article's canonical link. Preserve paths and all query parameters. Feed
+ * fragments never reach HTTP; rendered pages may use them for navigation. */
+function subscriptionUrlIdentity(source: Pick<Source, "url" | "kind">): string {
+  const url = new URL(source.url);
+  if (source.kind === "rss") url.hash = "";
+  return url.toString();
 }

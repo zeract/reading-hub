@@ -90,10 +90,10 @@ describe("OPML subscriptions", () => {
     expect(() => assertPublicUrl("http://[::1]:1200/feed")).toThrow("本机或私有网络");
   });
 
-  it("deduplicates an OPML URL against an existing subscription after canonicalization", () => {
+  it("deduplicates an OPML URL against an existing Feed with a different fragment", () => {
     const database = new ReadingDatabase(":memory:");
     database.createSource({
-      url: "https://example.com/feed.xml?utm_source=old-import",
+      url: "https://example.com/feed.xml#old-import",
       title: "Existing feed",
       kind: "rss",
       pollingEnabled: true
