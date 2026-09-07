@@ -1209,10 +1209,12 @@ export class ReadingDatabase {
     this.db.transaction(() => {
       this.db
         .prepare(`UPDATE sources SET extraction_rule = ?, status = 'active', consecutive_empty = 0,
-          next_check_at = ?, updated_at = ? WHERE id = ?`)
+          etag = NULL, last_modified = NULL, next_check_at = ?, updated_at = ? WHERE id = ?`)
         .run(JSON.stringify(rule), Date.now(), Date.now(), sourceId);
       // A rule correction replaces uncertain extraction output with a verified
       // replay, while keeping favorites, recoverable deletions and shared origins.
+      // Invalidate HTTP validators in this transaction: a 304 cannot rebuild
+      // the removed cards, even when the user confirms the same rule again.
       this.removeSourceOrigins(sourceId, true);
     })();
   }
