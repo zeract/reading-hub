@@ -218,7 +218,11 @@ export class AiService {
       ]
     };
     return this.postStreaming(endpoint, configuration.apiKey, payload, "OpenAI", signal, async (response, requestSignal) => {
-      const output = await readServerSentEvents(response, onDelta, readOpenAiStreamDelta, (body) => readOpenAiOutput(body as OpenAiResponse), requestSignal);
+      const output = await readServerSentEvents(response, onDelta, {
+        readDelta: readOpenAiStreamDelta,
+        readFallback: (body) => readOpenAiOutput(body as OpenAiResponse),
+        readError: readOpenAiError
+      }, requestSignal);
       if (!output) throw new AiServiceError("OpenAI 没有返回可显示的回答，请调整问题后重试。");
       return output;
     });
@@ -235,9 +239,13 @@ export class AiService {
       ]
     };
     return this.postStreaming(endpoint, configuration.apiKey, payload, "DeepSeek", signal, async (response, requestSignal) => {
-      const output = await readServerSentEvents(response, onDelta, readDeepSeekStreamDelta, (body) => {
-        const parsed = body as DeepSeekResponse;
-        return typeof parsed.choices?.[0]?.message?.content === "string" ? parsed.choices[0].message.content.trim() : "";
+      const output = await readServerSentEvents(response, onDelta, {
+        readDelta: readDeepSeekStreamDelta,
+        readFallback: (body) => {
+          const parsed = body as DeepSeekResponse;
+          return typeof parsed.choices?.[0]?.message?.content === "string" ? parsed.choices[0].message.content.trim() : "";
+        },
+        readError: readDeepSeekError
       }, requestSignal);
       if (!output) throw new AiServiceError("DeepSeek 没有返回可显示的回答，请调整问题后重试。");
       return output;
@@ -497,14 +505,21 @@ function readOpenAiOutput(response: OpenAiResponse): string {
     .trim();
 }
 
-type StreamDeltaReader = (event: Record<string, unknown>) => string | undefined;
+type ProviderResponseReader = {
+  readDelta: (event: Record<string, unknown>) => string | undefined;
+  readFallback: (body: unknown) => string;
+  readError: (body: Record<string, unknown>) => string | undefined;
+};
+
+const AI_GENERATION_FAILED = "服务在生成回答时返回错误，请稍后重试。";
+const AI_GENERATION_INCOMPLETE = "AI 回答未完整生成，请缩短问题或稍后重试。";
 
 /**
  * Read provider SSE without passing raw provider events across IPC. Responses
  * that do not negotiate SSE (for example a test double or a proxy fallback)
  * still complete safely as one text update.
  */
-async function readServerSentEvents(response: Response, onDelta: AiDeltaListener, readDelta: StreamDeltaReader, readFallback: (body: unknown) => string, signal: AbortSignal): Promise<string> {
+async function readServerSentEvents(response: Response, onDelta: AiDeltaListener, protocol: ProviderResponseReader, signal: AbortSignal): Promise<string> {
   throwIfAborted(signal);
   const contentType = response.headers?.get("content-type") || "";
   if (!response.body || !/text\/event-stream/i.test(contentType)) {
@@ -513,7 +528,8 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
         ? JSON.parse(new TextDecoder().decode(await readResponseBytes(response, (_chunk, bytes) => checkAiResponseSize(bytes), signal)))
         : await awaitWithAbort(response.json(), signal);
       throwIfAborted(signal);
-      const output = readFallback(body);
+      assertProviderOutcome(body, protocol);
+      const output = protocol.readFallback(body);
       if (output) onDelta(output);
       return output;
     } catch (error) {
@@ -534,9 +550,8 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
       return;
     }
     if (!isRecord(event)) return;
-    const providerError = streamErrorMessage(event);
-    if (providerError) throw new AiServiceError(providerError);
-    const delta = readDelta(event);
+    assertProviderOutcome(event, protocol);
+    const delta = protocol.readDelta(event);
     if (!delta) return;
     const remaining = Math.max(0, MAX_AI_ANSWER_LENGTH - answer.length);
     if (!remaining) return;
@@ -596,11 +611,37 @@ function readDeepSeekStreamDelta(event: Record<string, unknown>): string | undef
   return typeof content === "string" ? content : undefined;
 }
 
-function streamErrorMessage(event: Record<string, unknown>): string | undefined {
-  if (event.type !== "error" && !isRecord(event.error)) return undefined;
+function assertProviderOutcome(body: unknown, protocol: ProviderResponseReader): void {
+  if (!isRecord(body)) return;
   // Provider errors can echo request metadata. Keep this boundary deliberately
   // generic so remote diagnostics and credentials never reach the renderer.
-  return "服务在生成回答时返回错误，请稍后重试。";
+  const message = body.type === "error" || isRecord(body.error)
+    ? AI_GENERATION_FAILED
+    : protocol.readError(body);
+  if (message) throw new AiServiceError(message);
+}
+
+function readOpenAiError(body: Record<string, unknown>): string | undefined {
+  // SSE wraps the same Response object returned by a JSON fallback. Event
+  // types remain authoritative even when the error details are absent.
+  const response = isRecord(body.response) ? body.response : body;
+  if (body.type === "response.failed" || response.status === "failed" || isRecord(response.error)) return AI_GENERATION_FAILED;
+  if (body.type === "response.incomplete" || response.status === "incomplete" || response.status === "cancelled") return AI_GENERATION_INCOMPLETE;
+  return undefined;
+}
+
+function readDeepSeekError(body: Record<string, unknown>): string | undefined {
+  // Only the first choice is displayed. Progress/usage frames have no finish
+  // reason; a tool handoff cannot complete this text-only question workflow.
+  const choices = body.choices;
+  if (!Array.isArray(choices) || !isRecord(choices[0])) return undefined;
+  switch (choices[0].finish_reason) {
+    case "insufficient_system_resource": return AI_GENERATION_FAILED;
+    case "length":
+    case "content_filter":
+    case "tool_calls": return AI_GENERATION_INCOMPLETE;
+    default: return undefined;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1013,3 +1013,17 @@ AiService.askStream 现在拥有每次请求的输出状态，内部提供方方
 新增四项回归：三种结束路径均可回收，以及两个并发请求的对象数随各自完成从 2 变为 1 再变为 0，剩余活动请求仍能正常接收增量。全量 npm test 为 140 个文件、1289 项通过，npm run build、git diff --check 通过；已有输出限额、SSE、进程退出、IPC 窗口关闭和同步取消回归随全量通过。GC API 只在测试中使用，当前 Electron 的实验性提示不进入生产逻辑。原生网络与阅读器交互夹具均通过，核对了实际回调、取消、关闭及错误恢复路径。
 
 针对性审查确认 settled 与其直接捕获调用方的旧实现已删除，退出路径统一清除 subscriber，正常活动订阅不会提前丢失。本轮仅调整主进程内部引用所有权，未改变正文提取、图片、净化、渲染、布局或协议；未重跑上一轮全来源及视觉审计，其科学历史原文回退 Feed、24 个公式和首图未验证的限制保留。没有新增 IPC、密钥、日志、依赖或数据库迁移。需要完整重启应用，AGENTS.md 无需调整。
+
+## 后续迭代：统一 AI 提供方结果校验
+
+2026-09-08 检查 AI 协议边界发现，传输完成与回答完成被混用。SSE 仅识别顶层 error，遗漏 OpenAI 的 response.failed/response.incomplete 和 DeepSeek 的异常 finish_reason；JSON 回退直接提取正文，没有校验生成结果。有部分文本时会返回成功，失败事件后连接未关闭时则继续等待超时。最初 20 项回归在旧实现有 16 项失败。
+
+保留现有 Electron、受限 IPC、主进程服务与 React 的分层。将提供方适配契约收拢为 ProviderResponseReader，明确增量、JSON 正文和结果错误三个职责；两种传输格式都先经过 assertProviderOutcome，再发布文本。网络读取继续负责字节预算、超时、取消与释放 reader，提供方适配器负责解释响应语义，界面复用既有错误状态。无需增加框架、服务或新的 IPC 类型。
+
+依据 [OpenAI 官方流式事件契约](https://developers.openai.com/api/reference/resources/responses/streaming-events)，失败及未完成事件不能作为完成回答返回，JSON 的相应状态亦按相同规则处理。依据 [DeepSeek 官方 Chat Completions 契约](https://api-docs.deepseek.com/api/create-chat-completion/)，length、content_filter 和 insufficient_system_resource 分别表示达到限制、过滤或资源中断；当前纯文本问答未实现工具执行，因此 tool_calls 同样提示未完整生成。普通 stop、进度及用量帧保持原行为。没有要求兼容服务必须新增完成标记，也没有改变 EOF、模型和提示词约定。
+
+SSE 发生错误后保留已经显示的草稿，通过既有 IPC error 提示失败并停止后续文本，立即取消未读流；JSON 在发布部分正文之前拒绝。错误只使用固定本地文案，不传递远端诊断。新增 23 项测试覆盖两家提供方、两种格式、未关闭连接、同分块迟到文本、输出预算耗尽后的失败、失败后重试、缺少嵌套详情、取消快照和正常完成。测试使用合成响应及内存凭据，不调用真实模型。
+
+全量 npm test 为 141 个文件、1312 项通过，npm run build、npm run audit:style 与 git diff --check 通过。真实 Electron 网络与阅读器交互夹具通过；四档视觉检查通过，包括 125% 字号。原生审计使用已完成的构建直接运行相同 Electron 入口，避免重复构建。针对性审查确认旧 StreamDeltaReader/streamErrorMessage 已删除，所有 API 结果检查共用出口，失败、取消和预算路径保持资源清理。没有新增日志、密钥存储、依赖或数据迁移；需要完整重启应用。AGENTS.md 无长期规则变更。
+
+最终全来源阅读审计覆盖 32 个来源、63 个最新/历史样本，63 项 passed、0 项 issues，样本身份与上一轮一致；其中 58 项原文、4 项 Feed 正文、1 项 Feed 摘要。科学历史原文仍存在 Feed 回退覆盖缺口，此前原文的 24 个公式和首图不能据此声明通过。阅读器交互夹具同时覆盖 AI 回答与错误后的草稿显示。完整报告仅保留在临时目录，未提交本地来源身份、正文或数据库。
