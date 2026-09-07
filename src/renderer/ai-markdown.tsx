@@ -1,4 +1,4 @@
-import { Fragment, type JSX, type ReactNode } from "react";
+import { Fragment, memo, type JSX, type ReactNode } from "react";
 import { renderAiTeX, tokenizeAiMath } from "./ai-math";
 
 /**
@@ -7,7 +7,9 @@ import { renderAiTeX, tokenizeAiMath } from "./ai-math";
  * Mathematical delimiters are tokenised before emphasis, so TeX underscores
  * and asterisks can never be mistaken for Markdown formatting.
  */
-export function AiMarkdownContent({ text }: { text: string }) {
+// The input is immutable text. Reuse the rendered tree while a parent updates
+// its draft, layout, provider state or a different streaming message.
+export const AiMarkdownContent = memo(function AiMarkdownContent({ text }: { text: string }) {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let index = 0;
@@ -89,7 +91,7 @@ export function AiMarkdownContent({ text }: { text: string }) {
     }
   }
   return <div className="ai-message-content ai-markdown">{blocks}</div>;
-}
+});
 
 function startsBlock(lines: string[], index: number): boolean {
   if (index === 0) return false;

@@ -24,7 +24,16 @@ let pauseRead = false;
 let pendingRead;
 let readRequested;
 const cancelledReads = new Set();
+let aiRequests = 0;
+const aiAnswer = "## Fixture answer\n\nInline $x^2$.\n\n$$\ny=x+1\n$$";
 const channels = [
+  ["ai:list-providers", () => [{ id: "openai", label: "Fixture AI", model: "fixture", configured: true, requiresApiKey: true }]],
+  ["ai:ask-stream", (event, payload) => {
+    aiRequests++;
+    event.sender.send("ai:stream", { requestId: payload.requestId, type: "delta", text: "Fixture" });
+    event.sender.send("ai:stream", { requestId: payload.requestId, type: "complete", answer: { provider: "openai", model: "fixture", text: aiAnswer } });
+  }],
+  ["ai:cancel-stream", () => undefined],
   ["library:revision", () => database.getLibraryRevision()],
   ["source:list", () => database.listSources()],
   ["source:load-icon", () => undefined],
@@ -137,6 +146,20 @@ try {
   assert(database.getEntry("success").read, "Successful content must become read.");
   await waitFor(window, "document.querySelector('.article-body img')?.naturalWidth === 1");
   assert(imageLoads === 1, `A native body image error must invoke the proxy exactly once (observed ${imageLoads}).`);
+  await evaluate("document.querySelector('[aria-label=\"打开 AI 学习\"]').click()");
+  await waitFor(window, "document.querySelector('.reader-ai-panel option')?.textContent.includes('Fixture AI')");
+  await evaluate("{ const question = document.querySelector('#ai-question'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(question, 'Explain fixture'); question.dispatchEvent(new Event('input', { bubbles: true })); }");
+  await evaluate("document.querySelector('.ai-question').requestSubmit()");
+  await waitFor(window, "document.querySelectorAll('.ai-message.assistant .katex').length === 2 && !document.querySelector('#ai-question').disabled");
+  await evaluate("globalThis.fixtureAnswerFormula = document.querySelector('.ai-message.assistant .katex'); void 0");
+  for (const draft of ["N", "Ne", "New question"]) {
+    await evaluate(`{ const question = document.querySelector('#ai-question'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(question, ${JSON.stringify(draft)}); question.dispatchEvent(new Event('input', { bubbles: true })); }`);
+  }
+  await evaluate("document.querySelector('[aria-label=\"最小化 AI 学习助手\"]').click()");
+  await evaluate("document.querySelector('[aria-label=\"恢复 AI 学习助手\"]').click()");
+  assert(await evaluate("document.querySelector('.ai-message.assistant .katex') === globalThis.fixtureAnswerFormula"), "Completed answer formula nodes must survive draft and panel updates.");
+  assert(aiRequests === 1, "Editing a draft or minimizing the panel must not start a new AI request.");
+  await evaluate("document.querySelector('[aria-label=\"关闭 AI 学习助手\"]').click()");
   pauseRead = true;
   const readStarted = new Promise((resolve) => { readRequested = resolve; });
   await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Unavailable fixture\"]').click()");
@@ -210,10 +233,11 @@ try {
     assert(fits, `Academic identities or result scrolling do not fit ${width}px at ${scale}.`);
     await writeFile(path.join(tmpdir(), `reading-hub-academic-${width}.png`), (await window.capturePage()).toPNG());
   }
-  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/unsubscribe/restore, library layouts and four academic search layouts verified.");
+  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-answer-reuse/unsubscribe/restore, library layouts and four academic search layouts verified.");
 } catch (error) {
   failure = error;
   console.error(error);
+  console.error("Renderer fixture console:", messages.slice(-5));
 } finally {
   clearTimeout(startupWatchdog);
   unsubscribe();
