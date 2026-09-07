@@ -1094,9 +1094,8 @@ export class ReadingDatabase {
       provider_label = COALESCE(excluded.provider_label, entries.provider_label),
       external_id = COALESCE(excluded.external_id, entries.external_id),
       canonical_identity = COALESCE(excluded.canonical_identity, entries.canonical_identity)`);
-    const exists = this.db.prepare("SELECT canonical_identity FROM entries WHERE canonical_url = ?");
+    const exists = this.db.prepare("SELECT id, canonical_identity FROM entries WHERE canonical_url = ?");
     const isDismissed = this.db.prepare("SELECT 1 FROM dismissed_contents WHERE canonical_identity = ?");
-    const entryIdForCanonical = this.db.prepare("SELECT id FROM entries WHERE canonical_url = ?");
     const upsertOrigin = this.db.prepare(`INSERT INTO entry_origins (entry_id, source_id, provider_id, provider_label, external_id, original_url, observed_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(entry_id, source_id, provider_id, external_id) DO UPDATE SET
@@ -1110,7 +1109,7 @@ export class ReadingDatabase {
     const transaction = this.db.transaction((records: Entry[]) => {
       for (const entry of records) {
         const identity = entry.canonicalIdentity ?? entry.canonicalUrl;
-        const existing = exists.get(entry.canonicalUrl) as { canonical_identity: string | null } | undefined;
+        const existing = exists.get(entry.canonicalUrl) as { id: string; canonical_identity: string | null } | undefined;
         if (isDismissed.get(identity) || (existing && isDismissed.get(existing.canonical_identity ?? entry.canonicalUrl))) continue;
         const isNew = !existing;
         const providerId = entry.providerId ?? this.getSource(entry.sourceId)?.connectorId ?? "generic";
@@ -1129,9 +1128,11 @@ export class ReadingDatabase {
           ingestionKind: entry.ingestionKind ?? "current",
           canonicalIdentity: identity
         });
-        const stored = entryIdForCanonical.get(entry.canonicalUrl) as { id: string };
+        // The upsert retains an existing ID or inserts the supplied ID. Both
+        // are known in this transaction; no second canonical lookup is needed.
+        const storedId = existing?.id ?? entry.id;
         upsertOrigin.run(
-          stored.id,
+          storedId,
           entry.sourceId,
           providerId,
           entry.providerLabel ?? null,
@@ -1143,9 +1144,9 @@ export class ReadingDatabase {
         // existing source-origin taxonomy should be erased. An explicit empty
         // array is authoritative and clears stale facets for that origin.
         if (entry.facets !== undefined) {
-          clearOriginFacets.run(stored.id, entry.sourceId, providerId, externalId);
+          clearOriginFacets.run(storedId, entry.sourceId, providerId, externalId);
           for (const facet of normaliseFacets(entry.facets)) {
-            upsertOriginFacet.run(stored.id, entry.sourceId, providerId, externalId, persistFacet(facetStatements, facet, Date.now()));
+            upsertOriginFacet.run(storedId, entry.sourceId, providerId, externalId, persistFacet(facetStatements, facet, Date.now()));
           }
         }
         if (isNew) inserted += 1;
