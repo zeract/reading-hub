@@ -11,15 +11,6 @@ export class RequestAbortedError extends Error {
   }
 }
 
-export class InvalidJsonResponseError extends Error {
-  constructor() {
-    // Do not retain a parser exception or response snippet: remote bodies can
-    // contain personal data or echo authorization material.
-    super("接口返回的数据不完整或格式错误，请稍后重试。");
-    this.name = "InvalidJsonResponseError";
-  }
-}
-
 export function abortError(signal: AbortSignal, fallbackMessage = "操作已取消。"): Error {
   if (signal.reason instanceof Error) return signal.reason;
   if (typeof signal.reason === "string" && signal.reason.trim()) return new RequestAbortedError(signal.reason);
@@ -119,29 +110,4 @@ export function delayWithAbort(milliseconds: number, signal?: AbortSignal): Prom
     };
     signal?.addEventListener("abort", onAbort, { once: true });
   });
-}
-
-/** Keep timeout/cancellation alive through body consumption, then release listeners. */
-export async function requestJsonWithTimeout<T>(
-  fetcher: (url: string, init?: RequestInit) => Promise<Response>,
-  url: string, init: RequestInit, signal: AbortSignal | undefined, timeoutMs: number
-): Promise<{ response: Response; payload: T }> {
-  throwIfAborted(signal);
-  const request = withRequestTimeout(signal, timeoutMs, "请求响应超时。");
-  try {
-    const response = await awaitWithAbort(fetcher(url, { ...init, signal: request.signal }), request.signal);
-    let payload: T;
-    try {
-      payload = await awaitWithAbort(response.json(), request.signal) as T;
-    } catch {
-      throwIfAborted(request.signal);
-      if (response.ok) throw new InvalidJsonResponseError();
-      // Failed HTTP responses can legitimately contain HTML or no body. Keep
-      // the status available to callers for authorization/backoff handling.
-      payload = {} as T;
-    }
-    return { response, payload };
-  } finally {
-    request.dispose();
-  }
 }

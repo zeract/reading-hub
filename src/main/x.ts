@@ -1,4 +1,5 @@
-import { abortError, InvalidJsonResponseError, requestJsonWithTimeout, throwIfAborted } from "./cancellation";
+import { abortError, throwIfAborted } from "./cancellation";
+import { InvalidJsonResponseError, requestJsonWithTimeout } from "./json-response";
 import { KeyedTaskQueue } from "./keyed-task-queue";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";

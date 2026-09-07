@@ -1,4 +1,5 @@
-import { InvalidJsonResponseError, requestJsonWithTimeout, throwIfAborted } from "./cancellation";
+import { throwIfAborted } from "./cancellation";
+import { InvalidJsonResponseError, requestJsonWithTimeout } from "./json-response";
 import type { ConnectorAdapter, DiscoveryContext, RawEntry, Source, SubscriptionDraft, SyncContext, SyncResult } from "../shared/types";
 import { compactText } from "../shared/text";
 import { builtInManifest } from "./connector-registry";

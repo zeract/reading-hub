@@ -1,4 +1,5 @@
-import { requestJsonWithTimeout, throwIfAborted, delayWithAbort } from "./cancellation";
+import { throwIfAborted, delayWithAbort } from "./cancellation";
+import { requestJsonWithTimeout } from "./json-response";
 import { compactText } from "../shared/text";
 import { chromiumFetch } from "./network";
 import type { ConnectorAdapter, Followee, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";

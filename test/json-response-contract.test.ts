@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { InvalidJsonResponseError, requestJsonWithTimeout } from "../src/main/cancellation";
+import { InvalidJsonResponseError, requestJsonWithTimeout } from "../src/main/json-response";
 import { AcademicAuthorConnector } from "../src/main/academic";
 import { ReadingDatabase } from "../src/main/database";
 import { ConnectorRegistry } from "../src/main/connector-registry";
@@ -16,9 +16,9 @@ describe("JSON response contract", () => {
     await expect(requestJsonWithTimeout(async () => new Response(body), "https://example.com/api", {}, undefined, 1000)).rejects.toThrow();
   });
 
-  it.each(["academic", "x"] as const)("does not commit %s success or checkpoint on a malformed response", async (kind) => {
+  it.each([["academic", "malformed"], ["x", "malformed"], ["academic", "oversized"], ["x", "oversized"]] as const)("does not commit %s success or checkpoint on an %s response", async (kind, problem) => {
     const database = new ReadingDatabase(":memory:");
-    const fetcher = vi.fn(async () => new Response("<html>fixture gateway error</html>"));
+    const fetcher = vi.fn(async () => new Response("<html>fixture gateway error</html>", problem === "oversized" ? { headers: { "content-length": "8000001" } } : undefined));
     const account = database.saveAccount({ connectorId: "x", displayName: "Fixture", subjectId: "owner", keychainAccount: "x:fixture", scopes: [], status: "active" });
     const source = database.createSource({ url: "https://example.com/api", title: "Fixture", kind, accountId: kind === "x" ? account.id : undefined, config: { authorName: "Fixture", openAlexId: "A1" }, pollingEnabled: true });
     const subscription = database.getSubscriptionForSource(source.id)!;
@@ -39,6 +39,29 @@ describe("JSON response contract", () => {
     } finally { await manager.close(); database.close(); }
   });
 
+  it.each([401, 403, 429])("keeps X HTTP %i authorization semantics when its body is oversized", async (status) => {
+    const database = new ReadingDatabase(":memory:");
+    const account = database.saveAccount({ connectorId: "x", displayName: "Fixture", subjectId: "owner", keychainAccount: "x:fixture", scopes: [], status: "active" });
+    const source = database.createSource({ url: "https://example.com/api", title: "Fixture", kind: "x", accountId: account.id, pollingEnabled: true });
+    const subscription = database.getSubscriptionForSource(source.id)!;
+    database.saveCheckpoint(subscription.id, { sinceId: "100", data: { retained: true } });
+    const before = database.getCheckpoint(subscription.id);
+    const writeSecret = vi.fn();
+    const registry = new ConnectorRegistry();
+    registry.register(new XConnector(database, {
+      getConnectorSecret: async () => JSON.stringify({ accessToken: "fixture-token-only" }), setConnectorSecret: writeSecret
+    }, async () => undefined, async () => new Response("fixture-private-response-marker", { status, headers: { "content-length": "8000001" } })));
+    const manager = new SyncManager(database, registry);
+    try {
+      await expect(manager.syncSource(source.id)).rejects.toThrow();
+      expect(database.getAccount(account.id)?.status).toBe(status === 401 ? "expired" : "active");
+      expect(database.getCheckpoint(subscription.id)).toEqual(before);
+      expect(database.listEntries()).toEqual([]);
+      expect(writeSecret).not.toHaveBeenCalled();
+      expect(JSON.stringify(database.listSyncEvents())).not.toMatch(/fixture-private-response-marker|fixture-token-only/);
+    } finally { await manager.close(); database.close(); }
+  });
+
   it("returns genuine empty JSON results without treating them as corruption", async () => {
     const result = await requestJsonWithTimeout(async () => new Response('{"data":[]}'), "https://example.com/api", {}, undefined, 1000);
     expect(result.payload).toEqual({ data: [] });
@@ -51,7 +74,7 @@ describe("JSON response contract", () => {
   });
 
   it("does not retain parser messages or response contents in diagnostics", async () => {
-    const response = { ok: true, json: async () => { throw new SyntaxError("fixture-private-response-marker"); } } as unknown as Response;
+    const response = new Response('{"fixture-private-response-marker": invalid}');
     const failure = await requestJsonWithTimeout(async () => response, "https://example.com/api", {}, undefined, 1000).catch((error) => error);
     expect(failure).toBeInstanceOf(InvalidJsonResponseError);
     expect(failure.message).toContain("格式错误");
@@ -61,18 +84,25 @@ describe("JSON response contract", () => {
 
   it("keeps the timeout active through body consumption and removes its timer", async () => {
     vi.useFakeTimers();
-    const response = { ok: true, json: vi.fn(() => new Promise(() => undefined)) } as unknown as Response;
+    const pull = vi.fn(() => new Promise<void>(() => undefined));
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ pull, cancel }, { highWaterMark: 0 });
+    const response = new Response(body);
     const pending = requestJsonWithTimeout(async () => response, "https://example.com/api", {}, undefined, 100);
     const rejected = expect(pending).rejects.toThrow("请求响应超时");
     await vi.advanceTimersByTimeAsync(100);
     await rejected;
-    expect(response.json).toHaveBeenCalledTimes(1);
+    expect(pull).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
   });
 
   it("preserves caller cancellation instead of turning it into malformed JSON", async () => {
     const controller = new AbortController();
-    const response = { ok: true, json: async () => { controller.abort(new Error("cancel parsing")); throw new SyntaxError("incomplete"); } } as unknown as Response;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      pull() { controller.abort(new Error("cancel parsing")); throw new Error("fixture incomplete body"); }
+    }, { highWaterMark: 0 }));
     await expect(requestJsonWithTimeout(async () => response, "https://example.com/api", {}, controller.signal, 1000)).rejects.toThrow("cancel parsing");
   });
 

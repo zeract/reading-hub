@@ -4,7 +4,7 @@ import { RssConnector } from "../src/main/connectors";
 import { ConnectorRegistry } from "../src/main/connector-registry";
 import { ReadingDatabase } from "../src/main/database";
 import { SyncManager, SyncCancelledError } from "../src/main/sync-manager";
-import { requestJsonWithTimeout } from "../src/main/cancellation";
+import { requestJsonWithTimeout } from "../src/main/json-response";
 vi.mock("../src/main/network", () => ({ chromiumFetch: vi.fn() }));
 
 function library(kind: "rss" | "academic") {
@@ -26,12 +26,17 @@ describe("connector cancellation and health", () => {
 
   it("aborts response bodies as well as waiting for headers", async () => {
     const controller = new AbortController();
-    const response = { json: vi.fn(() => new Promise(() => undefined)) } as unknown as Response;
+    const pull = vi.fn(() => new Promise<void>(() => undefined));
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ pull, cancel }, { highWaterMark: 0 });
+    const response = new Response(body);
     const pending = requestJsonWithTimeout(async () => response, "https://example.com", {}, controller.signal, 20_000);
     const rejected = expect(pending).rejects.toThrow("cancel body");
-    await vi.waitFor(() => expect(response.json).toHaveBeenCalled());
+    await vi.waitFor(() => expect(pull).toHaveBeenCalled());
     controller.abort(new Error("cancel body"));
     await rejected;
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
   });
 
   it("shutdown aborts the RSS transport without persisting a failure or checkpoint", async () => {
