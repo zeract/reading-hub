@@ -9,7 +9,7 @@ import { ENTRY_ORDER_BY } from "./entry-order";
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 9;
+export const CURRENT_SCHEMA_VERSION = 10;
 
 type SqliteDatabase = Database.Database;
 
@@ -315,8 +315,27 @@ const MIGRATIONS: readonly SchemaMigration[] = [
     version: 9,
     name: "index-publication-timeline-order",
     up: (database) => {
+      // Freeze the historical comparator: later query changes must not make
+      // this migration depend on columns introduced by a newer version.
+      const order = "CASE WHEN published_at IS NULL THEN 1 ELSE 0 END ASC, COALESCE(published_at, -9007199254740991) DESC, COALESCE(observed_at, created_at) DESC, created_at DESC, id DESC";
       database.exec(`
         DROP INDEX entries_timeline;
+        CREATE INDEX entries_timeline ON entries(is_read, ${order});
+        CREATE INDEX entries_publication_order ON entries(${order});
+      `);
+      database.pragma("optimize");
+    }
+  },
+  {
+    version: 10,
+    name: "seek-publication-timeline-cursors",
+    up: (database) => {
+      database.exec(`
+        ALTER TABLE entries ADD COLUMN timeline_group INTEGER GENERATED ALWAYS AS (CASE WHEN published_at IS NULL THEN 0 ELSE 1 END) VIRTUAL;
+        ALTER TABLE entries ADD COLUMN timeline_published INTEGER GENERATED ALWAYS AS (COALESCE(published_at, -9007199254740991)) VIRTUAL;
+        ALTER TABLE entries ADD COLUMN timeline_observed INTEGER GENERATED ALWAYS AS (COALESCE(observed_at, created_at)) VIRTUAL;
+        DROP INDEX entries_timeline;
+        DROP INDEX entries_publication_order;
         CREATE INDEX entries_timeline ON entries(is_read, ${ENTRY_ORDER_BY});
         CREATE INDEX entries_publication_order ON entries(${ENTRY_ORDER_BY});
       `);

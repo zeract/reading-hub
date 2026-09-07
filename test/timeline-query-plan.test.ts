@@ -58,6 +58,57 @@ beforeAll(() => { db = new ReadingDatabase(":memory:"); sourceId = populate(db, 
 afterAll(() => db.close());
 
 describe("publication timeline indexing", () => {
+  it("keeps the legacy comparator for nulls, timestamp ties and later publication updates", () => {
+    const database = new ReadingDatabase(":memory:");
+    try {
+      populate(database, 300);
+      const native = raw(database);
+      const update = native.prepare("UPDATE entries SET published_at = ?, observed_at = ?, created_at = ? WHERE id = ?");
+      const dates = [null, Number.MIN_SAFE_INTEGER, -100, 0, 0.5, 100];
+      database.writeTransaction(() => {
+        for (let index = 0; index < 300; index++) update.run(dates[index % dates.length], index % 4 ? 10 : null, 10 + index % 3, `entry-${String(index).padStart(6, "0")}`);
+      });
+      // Independent SQL oracle from v9, including a dated value equal to the
+      // null sentinel. Group membership must still put every dated card first.
+      const expected = () => (native.prepare(`SELECT id FROM entries ORDER BY
+        CASE WHEN published_at IS NULL THEN 1 ELSE 0 END ASC,
+        COALESCE(published_at, -9007199254740991) DESC,
+        COALESCE(observed_at, created_at) DESC, created_at DESC, id DESC`).all() as Array<{ id: string }>).map((row) => row.id);
+      const verify = () => {
+        const query: EntryPageQuery = { pageSize: 7 };
+        const ids: string[] = [];
+        do {
+          const page = database.listEntryPage(query);
+          ids.push(...page.entries.map((entry) => entry.id));
+          query.cursor = page.nextCursor;
+        } while (query.cursor && ids.length <= 300);
+        expect(ids).toEqual(expected());
+        expect(query.cursor).toBeUndefined();
+      };
+      verify();
+      const entry = database.getEntry("entry-000000")!;
+      expect(entry.publishedAt).toBeUndefined();
+      expect(database.saveEntries([{ ...entry, publishedAt: 200 }])).toBe(0);
+      expect(database.listEntryPage().entries[0].id).toBe(entry.id);
+      verify();
+    } finally { database.close(); }
+  });
+
+  it.each([
+    ["dated", false], ["undated", false], ["dated", true], ["undated", true]
+  ] as const)("seeks all publication tie-breakers for a %s cursor (unread: %s)", (group, unread) => {
+    const query: EntryPageQuery = { pageSize: 100, ...(unread ? { read: false } : {}) };
+    const entries = db.listEntries({ ...query, limit: 5_000 });
+    const candidates = entries.filter((entry) => (entry.publishedAt === undefined) === (group === "undated"));
+    const boundary = candidates.at(-150)!;
+    query.cursor = { publishedAt: boundary.publishedAt, observedAt: boundary.observedAt!, createdAt: boundary.createdAt, id: boundary.id };
+    const plan = pagePlan(db, query);
+    expect(plan.some((row) => /SEARCH entries USING INDEX entries_(publication_order|timeline).*created_at,id\).*<\(/.test(row.detail)), JSON.stringify(plan)).toBe(true);
+    expect(plan.filter((row) => /TEMP B-TREE/i.test(row.detail))).toEqual([]);
+    const offset = entries.findIndex((entry) => entry.id === boundary.id) + 1;
+    expect(db.listEntryPage(query).entries).toEqual(entries.slice(offset, offset + 100));
+  });
+
   it.each(["current", "history"] as const)("seeks directly to an older %s collection page", (collection) => {
     const query: EntryPageQuery = { collection, sort: "collected", pageSize: 100 };
     // Jump near the end of the library; a small LIMIT alone does not prevent
@@ -137,7 +188,7 @@ describe("publication timeline indexing", () => {
     expect(plan.filter((row) => /TEMP B-TREE/i.test(row.detail))).toEqual([]);
   });
 
-  it("upgrades a v8 database without changing any retained page, read state, or tombstone", () => {
+  it.each([8, 9])("upgrades a v%s database atomically without changing retained data", (version) => {
     const directory = mkdtempSync(join(tmpdir(), "timeline-index-"));
     const path = join(directory, "fixture.sqlite");
     let database = new ReadingDatabase(path);
@@ -145,31 +196,40 @@ describe("publication timeline indexing", () => {
       const sourceId = populate(database, 300);
       database.dismissEntry("entry-000042");
       const native = raw(database);
-      // Recreate the exact pre-upgrade indexes even when this fixture starts
-      // under a newer binary; all row data and library revisions stay intact.
-      native.exec(`DROP INDEX IF EXISTS entries_publication_order;
-        DROP INDEX entries_timeline;
-        CREATE INDEX entries_timeline ON entries(is_read, published_at DESC, created_at DESC);
-        DELETE FROM schema_migrations WHERE version = 9;`);
-      const queries: EntryPageQuery[] = [{ pageSize: 200 }, { read: false }, { favorite: true }, { dismissed: true, sort: "collected" }];
+      const queries: EntryPageQuery[] = [{ pageSize: 200 }, { read: false }, { favorite: true }, { dismissed: true, sort: "collected" }, { cursor: database.listEntryPage().nextCursor }];
       const publicationQueries: EntryPageQuery[] = [{}, { read: false }, { favorite: true }, { sourceId }, { cursor: database.listEntryPage().nextCursor }];
-      const temporarySorts = (query: EntryPageQuery) => pagePlan(database, query).filter((row) => /TEMP B-TREE/i.test(row.detail));
-      expect(publicationQueries.every((query) => temporarySorts(query).length > 0)).toBe(true);
       const before = queries.map((query) => database.listEntryPage(query));
       const revision = database.getLibraryRevision();
-      const indexes = () => native.prepare("SELECT name, sql FROM sqlite_schema WHERE type = 'index' AND tbl_name = 'entries' ORDER BY name").all();
-      const previousIndexes = indexes();
+      // Recreate the actual old schema, including absence of generated keys.
+      native.exec(`DROP INDEX entries_publication_order; DROP INDEX entries_timeline;
+        ALTER TABLE entries DROP COLUMN timeline_group;
+        ALTER TABLE entries DROP COLUMN timeline_published;
+        ALTER TABLE entries DROP COLUMN timeline_observed;
+        DELETE FROM schema_migrations WHERE version > ${version};`);
+      const oldOrder = "CASE WHEN published_at IS NULL THEN 1 ELSE 0 END ASC, COALESCE(published_at, -9007199254740991) DESC, COALESCE(observed_at, created_at) DESC, created_at DESC, id DESC";
+      if (version === 8) native.exec("CREATE INDEX entries_timeline ON entries(is_read, published_at DESC, created_at DESC)");
+      else native.exec(`CREATE INDEX entries_timeline ON entries(is_read, ${oldOrder}); CREATE INDEX entries_publication_order ON entries(${oldOrder})`);
+      const rows = () => native.prepare("SELECT * FROM entries ORDER BY id").all();
+      const beforeRows = rows();
+      const schema = () => native.prepare("SELECT name, sql FROM sqlite_schema WHERE tbl_name = 'entries' ORDER BY name").all();
+      const previousSchema = schema();
       const optimize = vi.spyOn(native, "pragma").mockImplementationOnce(() => { throw new Error("Synthetic index migration failure"); });
       try { expect(() => migrateDatabaseSchema(native)).toThrow("Synthetic index migration failure"); }
       finally { optimize.mockRestore(); }
-      expect(indexes()).toEqual(previousIndexes);
-      expect(native.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 8 });
-      expect(queries.map((query) => database.listEntryPage(query))).toEqual(before);
+      expect(schema()).toEqual(previousSchema);
+      expect(native.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version });
+      expect(rows()).toEqual(beforeRows);
       database.close(); database = new ReadingDatabase(path);
       expect(queries.map((query) => database.listEntryPage(query))).toEqual(before);
       expect(database.getLibraryRevision()).toBe(revision);
       expect(database.listEntries({ dismissed: true }).map((entry) => entry.id)).toEqual(["entry-000042"]);
-      expect(publicationQueries.map(temporarySorts)).toEqual([[], [], [], [], []]);
+      for (const query of publicationQueries) expect(pagePlan(database, query).filter((row) => /TEMP B-TREE/i.test(row.detail))).toEqual([]);
+      // The physical row values survive unchanged; virtual keys are derived.
+      const current = raw(database);
+      const columns = (current.pragma("table_info(entries)") as Array<{ name: string }>).map((column) => column.name);
+      expect(current.prepare(`SELECT ${columns.join(",")} FROM entries ORDER BY id`).all()).toEqual(beforeRows);
+      database.close(); database = new ReadingDatabase(path);
+      expect(queries.map((query) => database.listEntryPage(query))).toEqual(before);
     } finally { database.close(); rmSync(directory, { recursive: true }); }
   });
 });
