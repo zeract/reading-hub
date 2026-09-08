@@ -143,6 +143,7 @@ export function App() {
     } catch (error) {
       await reload().catch(() => undefined);
       setNotice(errorMessage(error));
+      throw error;
     } finally {
       setBusy(false);
     }
@@ -175,21 +176,20 @@ export function App() {
     selectLibraryView(view);
   }, [selectLibraryView]);
 
-  const deleteSource = useCallback(async (source: Source): Promise<boolean> => {
+  const deleteSource = useCallback(async (source: Source): Promise<void> => {
     setBusy(true);
     try {
       await window.reader.setSourceSubscribed(source.id, source.subscribed === false);
       if (activeSourceId === source.id) clearActiveSource();
       setNotice(source.subscribed === false ? `已重新订阅「${source.title}」。` : `已取消订阅「${source.title}」，已有内容与收藏已保留。`);
       await reload();
-      return true;
     } catch (error) {
       setNotice(errorMessage(error));
-      return false;
+      throw error;
     } finally {
       setBusy(false);
     }
-  }, [activeSourceId, clearActiveSource, readingEntry?.sourceId, reload]);
+  }, [activeSourceId, clearActiveSource, reload]);
 
   const dismissEntry = useCallback(async (entry: Entry) => {
     setBusy(true);
@@ -212,7 +212,9 @@ export function App() {
         setNotice("此旧 X 公开来源已停止刷新：X 没有提供可合规自动读取的公开订阅接口。可保留已有卡片，或删除来源后使用官方 API。");
         return;
       }
-      void refresh(activeSource);
+      // The toolbar owns its notice; dialog callers receive the rejection
+      // so their local action cannot mistake a failed refresh for success.
+      void refresh(activeSource).catch(() => undefined);
       return;
     }
     void reload().then(() => setNotice("已重新载入收件箱。")).catch((error) => setNotice(errorMessage(error)));
@@ -309,7 +311,7 @@ export function App() {
         onRefresh={() => refresh(sourceDialog.source)}
         onCalibrate={() => setSourceDialog((current) => current?.token === sourceDialog.token
           ? { ...current, token: crypto.randomUUID(), mode: "calibration" } : current)}
-        onDelete={async () => { if (await deleteSource(sourceDialog.source)) closeSourceDialog(sourceDialog.token); }}
+        onDelete={async () => { await deleteSource(sourceDialog.source); closeSourceDialog(sourceDialog.token); }}
         onReconnectZhihu={async () => { await window.reader.connectZhihuFollow(); setNotice("已打开知乎登录窗口；登录完成后会自动同步。"); }}
       />}
     </main>

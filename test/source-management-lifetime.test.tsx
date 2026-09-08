@@ -23,6 +23,7 @@ let api: {
   refreshSource: ReturnType<typeof vi.fn>;
   getSourceCollectionSettings: ReturnType<typeof vi.fn>;
   updateSourceSettings: ReturnType<typeof vi.fn>;
+  updateSourceCollectionScope: ReturnType<typeof vi.fn>;
 };
 let saved: ReturnType<typeof vi.fn>;
 let refresh: ReturnType<typeof vi.fn>;
@@ -38,7 +39,8 @@ beforeEach(() => {
   api = {
     calibrateSource: vi.fn().mockResolvedValue(detected), updateRule: vi.fn().mockResolvedValue(undefined), refreshSource: vi.fn().mockResolvedValue(undefined),
     getSourceCollectionSettings: vi.fn().mockResolvedValue({ scope: { facetSelections: [], history: { mode: "none" } }, facets: [] }),
-    updateSourceSettings: vi.fn().mockResolvedValue(undefined)
+    updateSourceSettings: vi.fn().mockResolvedValue(undefined),
+    updateSourceCollectionScope: vi.fn().mockImplementation(async (_id, scope) => ({ scope, facets: [] }))
   };
   saved = vi.fn().mockResolvedValue(undefined); refresh = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(window, "reader", { configurable: true, value: api });
@@ -47,11 +49,51 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 
 describe("source management request lifetime", () => {
+  async function changeScope() {
+    api.getSourceCollectionSettings.mockResolvedValue({
+      scope: { facetSelections: [], history: { mode: "none" } },
+      facets: [{ scheme: "fixture", key: "science", label: "Science", sourceId: source.id, entryCount: 1 }]
+    });
+    await mount("settings");
+    await act(async () => container.querySelector<HTMLInputElement>('.facet-option input')!.click());
+  }
+
+  it("retries a failed post-save refresh without repeating the persisted scope change", async () => {
+    refresh.mockRejectedValueOnce(new Error("Refresh failed")); await changeScope();
+    await act(async () => submit());
+    expect(saved).not.toHaveBeenCalled(); expect(container.querySelector('.error')?.textContent).toBe("Refresh failed");
+    expect(container.querySelector('[role=status]')?.textContent).toContain("收集范围已保存，刷新尚未完成");
+    expect(api.updateSourceCollectionScope).toHaveBeenCalledOnce();
+    await act(async () => submit());
+    expect(refresh).toHaveBeenCalledTimes(2); expect(saved).toHaveBeenCalledOnce();
+    expect(api.updateSourceCollectionScope).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role=status]')).toBeNull();
+  });
+
+  it("satisfies the pending refresh through the explicit refresh action", async () => {
+    refresh.mockRejectedValueOnce(new Error("Refresh failed")); await changeScope();
+    await act(async () => submit());
+    await act(async () => button("立即刷新").click());
+    await act(async () => submit());
+    expect(refresh).toHaveBeenCalledTimes(2); expect(saved).toHaveBeenCalledOnce();
+    expect(api.updateSourceCollectionScope).toHaveBeenCalledOnce();
+  });
+
+  it("does not refresh a persisted scope again after the user disables polling", async () => {
+    refresh.mockRejectedValueOnce(new Error("Refresh failed")); await changeScope();
+    await act(async () => submit());
+    await act(async () => container.querySelector<HTMLInputElement>('.source-settings-toggle input')!.click());
+    await act(async () => submit());
+    expect(refresh).toHaveBeenCalledOnce(); expect(saved).toHaveBeenCalledOnce();
+  });
+
   it("excludes a second settings save and refresh in the same event batch", async () => {
     const pending = deferred<void>(); api.updateSourceSettings.mockReturnValue(pending.promise);
     await mount("settings");
     await act(async () => { submit(); submit(); button("立即刷新").click(); });
     expect(api.updateSourceSettings).toHaveBeenCalledOnce(); expect(refresh).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLInputElement>('.source-settings-body > label input')!.disabled).toBe(true);
+    expect(container.querySelector('.dialog-actions .primary')?.textContent).toBe("正在处理…");
     await act(async () => pending.resolve()); expect(saved).toHaveBeenCalledOnce();
   });
 
@@ -60,6 +102,7 @@ describe("source management request lifetime", () => {
     await mount("settings");
     await act(async () => { button("立即刷新").click(); submit(); });
     expect(api.updateSourceSettings).not.toHaveBeenCalled();
+    expect(container.querySelector('.dialog-actions .primary')?.textContent).toBe("正在处理…");
     await act(async () => pending.resolve());
   });
 

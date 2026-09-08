@@ -48,6 +48,9 @@ let completeObsoleteSearch;
 let managementRequested;
 let completeManagement;
 let managementWrites = 0;
+let managementFailure;
+let managementCollection;
+let managementScopeWrites = 0;
 const fixtureProviders = [
   { id: "openai", label: "Fixture AI", model: "fixture", configured: true, requiresApiKey: true },
   { id: "deepseek", label: "Fixture secondary AI", model: "fixture-secondary", configured: true, requiresApiKey: true }
@@ -60,7 +63,7 @@ const channels = [
     managementRequested?.();
   })]),
   ["source:calibration", () => ({ title: "Calibration fixture", url: "https://example.com", candidates: [{ label: "Fixture cards", confidence: 0.9, rule: { version: 1, itemRootSelector: "article" }, preview: [] }] })],
-  ["source:refresh", () => undefined],
+  ["source:refresh", () => { if (managementFailure === "refresh") throw new Error("Synthetic refresh failure"); }],
   ["academic:subscribe", () => new Promise((resolve) => {
     completeAcademicSubscription = () => resolve(source);
     academicSubscriptionRequested?.();
@@ -118,8 +121,16 @@ const channels = [
   ["entry:favorite", (_event, id, favorite) => database.markFavorite(id, favorite)],
   ["entry:dismiss", (_event, id) => database.dismissEntry(id)],
   ["entry:restore", (_event, id) => database.restoreEntry(id)],
-  ["source:set-subscribed", (_event, id, subscribed) => database.setSubscribed(id, subscribed)],
-  ["source:collection-settings", (_event, id) => database.getSourceCollectionSettings(id)],
+  ["source:set-subscribed", (_event, id, subscribed) => {
+    if (managementFailure === "subscription") throw new Error("Synthetic subscription failure");
+    return database.setSubscribed(id, subscribed);
+  }],
+  ["source:collection-settings", (_event, id) => managementCollection ?? database.getSourceCollectionSettings(id)],
+  ["source:update-collection-scope", (_event, _id, scope) => {
+    managementScopeWrites++;
+    managementCollection = { ...managementCollection, scope };
+    return managementCollection;
+  }],
   ["academic:search", (_event, query) => {
     if (query === "Obsolete Author") return new Promise((resolve) => {
       completeObsoleteSearch = () => resolve([{ targetId: "openalex:OBSOLETE", title: "Obsolete author" }]);
@@ -517,6 +528,59 @@ try {
     if (mode === "settings") assert(await evaluate("document.querySelector('.source-settings-form input').value === 'Replacement draft'"), "A reload from the old save must preserve the replacement draft.");
     await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
   }
+  await openManagement();
+  for (const [operation, label] of [["refresh", "立即刷新"], ["subscription", "取消订阅"]]) {
+    managementFailure = operation;
+    await clickText(".source-settings-operations button", label);
+    await waitFor(window, `document.querySelector('.source-settings-form > .error')?.textContent === 'Synthetic ${operation} failure'`);
+    assert(await evaluate("!document.querySelector('.source-settings-form .primary').disabled"), "A failed management operation must leave the current form available for retry.");
+    if (operation === "refresh") for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+      window.setSize(width, height); window.webContents.setZoomFactor(scale);
+      await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      assert(await evaluate(`(() => {
+        const error = document.querySelector('.source-settings-form > [role=alert]').getBoundingClientRect();
+        const footer = document.querySelector('.source-settings-form .dialog-actions').getBoundingClientRect();
+        return error.top >= 0 && error.bottom <= footer.top && footer.bottom <= innerHeight;
+      })()`), `Management errors and retry actions must remain visible at ${width}px and ${scale}.`);
+      await writeFile(path.join(tmpdir(), `reading-hub-management-error-${width}.png`), (await window.capturePage()).toPNG());
+    }
+  }
+  managementFailure = undefined;
+  await clickText(".source-settings-operations button", "立即刷新");
+  await waitFor(window, "!document.querySelector('.source-settings-form > .error') && !document.querySelector('.source-settings-form .primary').disabled");
+  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
+  await evaluate("window.fixtureUnhandled = 0; window.fixtureRejectionListener = () => { window.fixtureUnhandled++; }; window.addEventListener('unhandledrejection', window.fixtureRejectionListener); [...document.querySelectorAll('.source-filter')].find((item) => item.textContent.includes('Management fixture')).click()");
+  await waitFor(window, "Boolean(document.querySelector('[aria-label=\"刷新 Management fixture\"]'))");
+  managementFailure = "refresh";
+  await evaluate("document.querySelector('[aria-label=\"刷新 Management fixture\"]').click()");
+  await waitFor(window, "document.querySelector('.notice')?.textContent.includes('Synthetic refresh failure') && !document.querySelector('[aria-label=\"刷新 Management fixture\"]').disabled");
+  await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  assert(await evaluate("window.fixtureUnhandled === 0"), "Toolbar refresh errors must be handled after publishing the notice.");
+  await evaluate("window.removeEventListener('unhandledrejection', window.fixtureRejectionListener); delete window.fixtureRejectionListener; delete window.fixtureUnhandled");
+  managementCollection = { scope: { facetSelections: [], history: { mode: "none" } }, facets: [{ scheme: "fixture", key: "science", label: "Science", entryCount: 1 }] };
+  await openManagement();
+  await evaluate("document.querySelector('.facet-option input').click()");
+  const scopeSaveRequested = new Promise((resolve) => { managementRequested = resolve; });
+  await evaluate("document.querySelector('.source-settings-form').requestSubmit()");
+  await scopeSaveRequested;
+  completeManagement();
+  await waitFor(window, "document.querySelector('.source-settings-form > [role=status]')?.textContent.includes('收集范围已保存，刷新尚未完成')");
+  assert(managementScopeWrites === 1, "The selected scope must be saved once before refresh fails.");
+  window.setSize(1440, 900); window.webContents.setZoomFactor(1.25);
+  await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  assert(await evaluate(`(() => {
+    const status = document.querySelector('.source-settings-form > [role=status]').getBoundingClientRect();
+    const footer = document.querySelector('.source-settings-form .dialog-actions').getBoundingClientRect();
+    return status.top >= 0 && status.bottom <= footer.top && footer.bottom <= innerHeight;
+  })()`), "Partial-save status and retry action must fit at 125% font size.");
+  await writeFile(path.join(tmpdir(), "reading-hub-management-partial-save.png"), (await window.capturePage()).toPNG());
+  managementFailure = undefined;
+  const scopeRetryRequested = new Promise((resolve) => { managementRequested = resolve; });
+  await evaluate("document.querySelector('.source-settings-form').requestSubmit()");
+  await scopeRetryRequested;
+  completeManagement();
+  await waitFor(window, "!document.querySelector('.source-settings-form')");
+  assert(managementScopeWrites === 1, "Retrying the failed refresh must not repeat the saved scope write.");
   console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore/settings-draft/settings-save-lock/settings-close/modal-keyboard/modal-focus/image-preview-dismissal/source-preview-lifetime, library layouts and four academic/settings layouts verified.");
 } catch (error) {
   failure = error;
