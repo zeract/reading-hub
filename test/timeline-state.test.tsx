@@ -23,6 +23,46 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 async function render(update: Partial<typeof props> = {}) { await act(async () => root.render(<Timeline {...props} {...update} />)); }
 
+it("labels the requested read transition and exposes the confirmed favorite state", async () => {
+  await render();
+  const cards = [...container.querySelectorAll(".entry-card")];
+  for (const [index, card] of cards.entries()) {
+    const read = [...card.querySelectorAll<HTMLButtonElement>(".entry-actions button")].find((button) => button.textContent?.startsWith("标为"))!;
+    const favorite = card.querySelector<HTMLButtonElement>('[aria-label="收藏"]')!;
+    expect(read.textContent).toBe(entries[index].read ? "标为未读" : "标为已读");
+    expect(favorite.getAttribute("aria-pressed")).toBe(String(entries[index].favorite));
+    expect(favorite.title).toBe(entries[index].favorite ? "取消收藏" : "收藏");
+    await act(async () => { read.click(); favorite.click(); });
+    expect(props.onUpdateEntry).toHaveBeenCalledWith(entries[index], "read", !entries[index].read);
+    expect(props.onUpdateEntry).toHaveBeenCalledWith(entries[index], "favorite", !entries[index].favorite);
+  }
+});
+
+it("disables only the pending card field while keeping reading available", async () => {
+  await render({ isEntryUpdating: (id, field) => id === "first" && field === "favorite" });
+  const favorites = [...container.querySelectorAll<HTMLButtonElement>('.entry-actions [aria-label="收藏"]')];
+  expect(favorites.map((button) => button.disabled)).toEqual([true, false]);
+  await act(async () => favorites[0].click());
+  expect(props.onUpdateEntry).not.toHaveBeenCalled();
+  const open = container.querySelector<HTMLButtonElement>(".entry-actions button")!;
+  await act(async () => open.click());
+  expect(props.onOpenEntry).toHaveBeenCalledWith(entries[0]);
+});
+
+it("offers restoration as a non-destructive action in trash and prevents busy submission", async () => {
+  const restore = vi.fn(async () => undefined);
+  await render({ libraryView: "trash", onRestoreEntry: restore, busy: true });
+  expect(container.querySelector(".delete-entry")).toBeNull();
+  expect(container.querySelector('[aria-label="收藏"]')).toBeNull();
+  const button = container.querySelector<HTMLButtonElement>(".restore-entry")!;
+  expect(button.textContent).toBe("恢复内容");
+  await act(async () => button.click()); expect(restore).not.toHaveBeenCalled();
+  await render({ libraryView: "trash", onRestoreEntry: restore });
+  await act(async () => button.click());
+  expect(restore).toHaveBeenCalledWith(entries[0]);
+  expect(props.onDismissEntry).not.toHaveBeenCalled();
+});
+
 it.each(["unread", "favorite"] as const)("counts only visible cards after a committed %s change", async (libraryView) => {
   await render({ libraryView });
   expect(container.querySelectorAll(".entry-card")).toHaveLength(1);

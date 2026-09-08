@@ -145,9 +145,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .source-filter.selected .source-icon { background: var(--paper-bright); }
 .source-icon--rss { color: #a26b4d; }.source-icon--web { color: #527b9d; }.source-icon--link { color: #8a7a45; }.source-icon--x { color: #4f5358; }.source-icon--xiaohongshu { color: #b55c5c; }.source-icon--zhihu, .source-icon--zhihu-follow { color: #4f7d9f; }.source-icon--academic { color: #7667a2; }
 .source-title { display: block; min-width: 0; overflow: hidden; font-size: 12px; font-weight: 600; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.entry-actions button { padding: 0; border: 0; border-bottom: 1px solid transparent; background: transparent; color: var(--muted); font-size: 10px; }
-.entry-actions button:hover:not(:disabled) { border-bottom-color: currentColor; color: var(--ink); }
-.entry-actions .delete-entry, .entry-card.selected .entry-actions .delete-entry { color: var(--danger); }
+.entry-actions .action-button { --button-border: transparent; --button-surface: transparent; min-width: var(--control-height); padding: 4px 6px; }
+.entry-actions .action-button[aria-pressed="true"] { --button-ink: var(--accent-deep); --button-surface: var(--accent-wash); }
+.entry-actions .delete-entry { --button-ink: var(--danger); --button-hover: var(--danger-wash); }
 .empty-side { color: var(--muted); font-size: 11px; line-height: 1.6; }
 .sidebar-footer { padding: 8px 4px 0; border-top: 1px solid var(--line); }
 .sidebar-settings-button { display: inline-flex; align-items: center; gap: 7px; min-height: 27px; padding: 5px 7px; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--muted); font-size: 11px; }
@@ -192,11 +192,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .entry-copy { min-width: 0; flex: 1; }
 .entry-source, .byline { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .entry-source span { padding: 0 3px; }
-.entry-card.selected .entry-source, .entry-card.selected .byline, .entry-card.selected .summary, .entry-card.selected .entry-actions button { color: var(--ink-soft); }
+.entry-card.selected .entry-source, .entry-card.selected .byline, .entry-card.selected .summary { color: var(--ink-soft); }
 .entry-card h2 { display: -webkit-box; max-width: 100%; margin: 4px 0; overflow: hidden; color: inherit; font: 600 15px/1.4 var(--font-ui); letter-spacing: -.018em; overflow-wrap: anywhere; text-overflow: ellipsis; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .summary { display: -webkit-box; width: 100%; max-width: 100%; max-height: calc(1.48em * 2); margin: 0 0 6px; overflow: hidden; color: var(--ink-soft); font-size: 11px; line-height: 1.48; overflow-wrap: anywhere; text-overflow: ellipsis; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .entry-main img { width: 70px; height: 62px; align-self: center; border: 1px solid var(--line); border-radius: 6px; background: var(--shade); object-fit: cover; }
-.entry-actions { display: flex; gap: 9px; margin-top: 7px; padding-left: 1px; }
+.entry-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; padding-left: 1px; }
 .entry-facets { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 6px; }
 .entry-facets span { max-width: 100%; overflow: hidden; padding: 2px 5px; border: 1px solid var(--line); border-radius: 99px; background: var(--paper-deep); color: var(--ink-soft); font-size: 9px; font-weight: 650; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .entry-card.selected .entry-facets span { border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); background: var(--paper-bright); color: var(--accent-ink); }

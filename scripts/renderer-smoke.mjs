@@ -654,6 +654,11 @@ try {
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 3");
   await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Readable fixture\"]').click()");
   await waitFor(window, "Boolean(document.querySelector('.reader-article'))");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const tokens = getComputedStyle(document.documentElement); return [...document.querySelectorAll('.entry-actions button')].every(button => { const style = getComputedStyle(button); const rect = button.getBoundingClientRect(); const card = button.closest('.entry-card').getBoundingClientRect(); return style.fontSize === tokens.getPropertyValue('--control-font-size').trim() && style.fontWeight === '600' && style.minHeight === tokens.getPropertyValue('--control-height').trim() && style.borderRadius === tokens.getPropertyValue('--control-radius').trim() && rect.width >= 32 && rect.left >= card.left && rect.right <= card.right && rect.bottom <= card.bottom; }); })()"), "Card actions must share control typography and remain usable within each card.");
+    await writeFile(path.join(tmpdir(), `reading-hub-card-actions-${width}.png`), (await window.capturePage()).toPNG());
+  }
   pauseFavorite = true;
   const favoriteStarted = new Promise((resolve) => { favoriteRequested = resolve; });
   const previousFavoriteWrites = favoriteWrites;

@@ -149,6 +149,13 @@ function EntryCard({ entry, source, selected, onRead, isEntryUpdating, onOpen, o
       <div className="entry-copy"><p className="entry-source">{source?.title || "已保存内容"} <span>·</span> {date}{providers.length ? <><span>·</span>{providers.join(" / ")}</> : null}</p><h2>{entry.title}</h2>{entry.summary && <p className="summary">{entry.summary}</p>}{facets.length > 0 && <p className="entry-facets" aria-label="文章分类">{facets.map((facet) => <span key={`${facet.scheme}\u0000${facet.key}`}>{facet.label}</span>)}</p>}<p className="byline">{entry.author || "原文链接"}</p></div>
       {entry.imageUrl && <img src={entry.imageUrl} alt="" loading="lazy" />}
     </button>
-    <div className="entry-actions">{!deleted && <><button type="button" onClick={() => onOpen(entry)}>应用内阅读</button><button disabled={isEntryUpdating(entry.id, "read")} aria-label={entry.read ? "标为未读" : "标为已读"} onClick={() => void onRead(entry, "read", !entry.read)}>{entry.read ? "未读" : "已读"}</button><button disabled={isEntryUpdating(entry.id, "favorite")} aria-label="收藏" onClick={() => void onRead(entry, "favorite", !entry.favorite)}>{entry.favorite ? "★" : "☆"}</button></>}<button type="button" className="delete-entry" onClick={() => void onDismiss(entry)} disabled={busy}>{deleted ? "恢复内容" : "删除"}</button></div>
+    <div className="entry-actions">
+      {!deleted && <>
+        <button type="button" className="action-button" onClick={() => onOpen(entry)}>应用内阅读</button>
+        <button type="button" className="action-button" disabled={isEntryUpdating(entry.id, "read")} onClick={() => void onRead(entry, "read", !entry.read)}>{entry.read ? "标为未读" : "标为已读"}</button>
+        <button type="button" className="action-button" disabled={isEntryUpdating(entry.id, "favorite")} aria-label="收藏" aria-pressed={entry.favorite} title={entry.favorite ? "取消收藏" : "收藏"} onClick={() => void onRead(entry, "favorite", !entry.favorite)}>{entry.favorite ? "★" : "☆"}</button>
+      </>}
+      <button type="button" className={`action-button ${deleted ? "restore-entry" : "delete-entry"}`} onClick={() => void onDismiss(entry)} disabled={busy}>{deleted ? "恢复内容" : "删除"}</button>
+    </div>
   </article>;
 }
