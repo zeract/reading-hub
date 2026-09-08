@@ -9,6 +9,9 @@ import { configureChromiumNetwork, chromiumFetch } from "../dist/main/main/netwo
 import { requestJsonWithTimeout } from "../dist/main/main/json-response.js";
 import { IsolatedPageRenderer, RenderedPageTooLargeError } from "../dist/main/main/page-renderer.js";
 import { extractReaderArticle } from "../dist/main/main/article-reader.js";
+import { extractGenericPage } from "../dist/main/main/extractor.js";
+import { discoverFeedUrls } from "../dist/main/main/feed.js";
+import { findPublicArchiveUrls, parsePublishedArchive } from "../dist/main/main/archive-backfill.js";
 
 app.setPath("userData", await mkdtemp(join(tmpdir(), "reading-hub-ai-network-data-")));
 // The isolated renderer destroys its only window before returning its result.
@@ -151,7 +154,7 @@ try {
       assert.equal(request.headers.get("cookie"), null);
       if (request.url === initialPageUrl) return new Response(null, { status: 302, headers: { location: finalPageUrl } });
       if (request.url === finalPageUrl) return new Response(`<article><h1>Fixture article</h1><p>${"Synthetic paragraph. ".repeat(50)}</p><img src="figure.svg"><a href="appendix.html">Fixture appendix</a></article>`, { headers: { "content-type": "text/html" } });
-      if (request.url === basedPageUrl) return new Response(`<head><base href="../assets/"></head><article><h1>Fixture article</h1><p>${"Synthetic paragraph. ".repeat(50)}</p><img src="figure.svg"><a href="appendix.html">Fixture appendix</a></article>`, { headers: { "content-type": "text/html" } });
+      if (request.url === basedPageUrl) return new Response(`<head><base href="../assets/"><link rel="alternate" type="application/rss+xml" href="feed.xml"></head><article><h1>Fixture article</h1><time datetime="2026-08-02"></time><p>${"Synthetic paragraph. ".repeat(50)}</p><img src="figure.svg"><a href="appendix.html">Fixture appendix</a><a href="archive.html">Archives</a></article>`, { headers: { "content-type": "text/html" } });
       if (request.url === oversizedPageUrl) return new Response(`<script>window.Blob = class { get size() { return 0; } };</script><article>${"Synthetic content. ".repeat(200)}</article>`, { headers: { "content-type": "text/html" } });
       if (request.url === patchedDomPageUrl) return new Response('<script>Object.defineProperty(Element.prototype, "outerHTML", { get() { return "<article>Forged snapshot</article>"; } });</script><article>Actual DOM fixture</article>', { headers: { "content-type": "text/html" } });
       if (["https://rendered.example/papers/figure.svg", "https://rendered.example/assets/figure.svg"].includes(request.url)) return new Response('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>', { headers: { "content-type": "image/svg+xml" } });
@@ -175,6 +178,13 @@ try {
     assert.equal(basedArticle.article.url, basedPageUrl);
     assert(basedArticle.article.contentHtml.includes('src="https://rendered.example/assets/figure.svg"'));
     assert(basedArticle.article.contentHtml.includes('href="https://rendered.example/assets/appendix.html"'));
+    const listed = extractGenericPage(basedPage.html, basedPage.url, { version: 1, itemRootSelector: "article", titleSelector: "a:first-of-type" });
+    assert.equal(listed.entries[0].url, "https://rendered.example/assets/appendix.html");
+    assert.equal(listed.entries[0].imageUrl, "https://rendered.example/assets/figure.svg");
+    assert.deepEqual(discoverFeedUrls(basedPage.html, basedPage.url), ["https://rendered.example/assets/feed.xml"]);
+    assert.deepEqual(findPublicArchiveUrls(basedPage.html, basedPage.url), ["https://rendered.example/assets/archive.html"]);
+    assert.equal(parsePublishedArchive(basedPage.html, basedPage.url).length, 1);
+    assert.equal(parsePublishedArchive(basedPage.html, basedPage.url)[0].url, "https://rendered.example/assets/appendix.html");
     await assert.rejects(renderer.render(oversizedPageUrl, { maxBytes: 256 }), RenderedPageTooLargeError);
     const cleanSnapshot = await renderer.render(patchedDomPageUrl);
     assert(cleanSnapshot.html.includes("Actual DOM fixture"));

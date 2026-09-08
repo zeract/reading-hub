@@ -1,4 +1,12 @@
 import type { CheerioAPI } from "cheerio";
+import { assertPublicUrl, toAbsoluteUrl } from "../shared/url";
+
+/** Resolve a document resource without admitting private or credentialed URLs. */
+export function publicDocumentUrl(value: string | undefined, baseUrl: string): string | undefined {
+  const absolute = toAbsoluteUrl(value, baseUrl);
+  if (!absolute) return undefined;
+  try { return assertPublicUrl(absolute).toString(); } catch { return undefined; }
+}
 
 /** Resolve the first authored base href against the loaded document URL.
  * This is URL resolution, not permission to fetch: consumers must still

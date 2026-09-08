@@ -2,6 +2,7 @@ import RSSParser from "rss-parser";
 import { load } from "cheerio";
 import { compactText, parsePublishedAt } from "../shared/text";
 import { toAbsoluteUrl } from "../shared/url";
+import { htmlDocumentBaseUrl, publicDocumentUrl } from "./html-document-url";
 import type { Facet, RawEntry } from "../shared/types";
 import { publisherFacet, uniqueFacets } from "./content-facets";
 
@@ -40,8 +41,9 @@ export const RSS_METADATA_REVISION = 5;
  * Older generic sources are rechecked once for a declared Feed. A Feed is
  * preferable to structural page extraction because it carries stable ids and
  * publication timestamps, and it does not depend on a site's visual layout.
+ * Revision 2 replays pages whose relative Feed/card URLs ignored HTML base.
  */
-export const FEED_DISCOVERY_REVISION = 1;
+export const FEED_DISCOVERY_REVISION = 2;
 
 /** A MIME type that explicitly identifies a syndication document. */
 export function isExplicitFeedContentType(contentType: string): boolean {
@@ -103,9 +105,10 @@ export function looksLikeFeed(_contentType: string, text: string): boolean {
  */
 export function discoverFeedUrls(html: string, pageUrl: string): string[] {
   const $ = load(html);
+  const baseUrl = htmlDocumentBaseUrl($, pageUrl);
   const discovered: string[] = [];
   const add = (rawHref: string | undefined, declared = false) => {
-    const url = toAbsoluteUrl(rawHref, pageUrl);
+    const url = publicDocumentUrl(rawHref, baseUrl);
     if (!url || (!declared && !isLikelyFeedUrl(url)) || discovered.includes(url)) return;
     discovered.push(url);
   };
@@ -117,7 +120,7 @@ export function discoverFeedUrls(html: string, pageUrl: string): string[] {
     const href = link.attr("href");
     const declaredFeed = /(?:rss|atom|feed\+json|application\/(?:json|xml))/i.test(`${rel} ${type}`);
     if (declaredFeed) add(href, true);
-    else if (isLikelyFeedUrl(href, pageUrl)) add(href);
+    else if (isLikelyFeedUrl(href, baseUrl)) add(href);
   });
 
   $("a[href]").each((_index, node) => {
@@ -127,7 +130,7 @@ export function discoverFeedUrls(html: string, pageUrl: string): string[] {
     // visual button is an icon and has no accessible text. For less explicit
     // paths, require feed-related link text/metadata to avoid navigation.
     const label = `${link.text()} ${link.attr("title") || ""} ${link.attr("aria-label") || ""} ${link.attr("class") || ""}`;
-    if (isLikelyFeedUrl(href, pageUrl) || /(?:rss|atom|feed|subscribe|syndicat)/i.test(label) && isFeedLikeQuery(href, pageUrl)) add(href);
+    if (isLikelyFeedUrl(href, baseUrl) || /(?:rss|atom|feed|subscribe|syndicat)/i.test(label) && isFeedLikeQuery(href, baseUrl)) add(href);
   });
 
   return discovered.slice(0, 5);

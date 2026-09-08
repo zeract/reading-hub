@@ -1,7 +1,10 @@
 import { load } from "cheerio";
+import { htmlDocumentBaseUrl, publicDocumentUrl } from "./html-document-url";
 import { compactText, parsePublishedAt } from "../shared/text";
-import { isTaxonomyUrl, toAbsoluteUrl } from "../shared/url";
+import { isTaxonomyUrl } from "../shared/url";
 import type { CalibrationCandidate, ExtractionRule, RawEntry } from "../shared/types";
+
+type ExtractionUrls = { pageUrl: string; baseUrl: string };
 
 export interface ExtractionResult {
   title: string;
@@ -13,27 +16,28 @@ export interface ExtractionResult {
 
 export function extractGenericPage(html: string, pageUrl: string, existingRule?: ExtractionRule): ExtractionResult {
   const $ = load(html);
+  const urls = { pageUrl, baseUrl: htmlDocumentBaseUrl($, pageUrl) };
   const pageTitle = compactText($("meta[property='og:title']").attr("content") || $("title").text(), 180) || new URL(pageUrl).hostname;
-  const jsonLdEntries = extractJsonLd($, pageUrl);
+  const jsonLdEntries = extractJsonLd($, urls.baseUrl);
   if (jsonLdEntries.length >= 1) {
     return { title: pageTitle, entries: jsonLdEntries, confidence: jsonLdEntries.length >= 2 ? 0.91 : 0.7, fallback: false };
   }
 
   if (existingRule?.itemRootSelector) {
-    const entries = extractUsingRule($, pageUrl, existingRule);
-    const detected = detectRepeatedItems($, pageUrl);
+    const entries = extractUsingRule($, urls, existingRule);
+    const detected = detectRepeatedItems($, urls);
     if (shouldReplaceNarrowAutomaticRule(existingRule, entries, detected)) {
       return extractionResultFromDetected(pageTitle, detected);
     }
     if (entries.length) return { title: pageTitle, entries, rule: withAutomaticRuleRevision(existingRule), confidence: 0.88, fallback: false };
-    const fallback = openGraphFallback($, pageUrl, pageTitle);
+    const fallback = openGraphFallback($, urls, pageTitle);
     return { title: pageTitle, entries: fallback ? [fallback] : [], confidence: fallback ? 0.2 : 0, fallback: true };
   }
 
-  const detected = detectRepeatedItems($, pageUrl);
+  const detected = detectRepeatedItems($, urls);
   if (detected.entries.length) return extractionResultFromDetected(pageTitle, detected);
 
-  const fallback = openGraphFallback($, pageUrl, pageTitle);
+  const fallback = openGraphFallback($, urls, pageTitle);
   return { title: pageTitle, entries: fallback ? [fallback] : [], confidence: fallback ? 0.2 : 0, fallback: true };
 }
 
@@ -91,7 +95,7 @@ function extractJsonLd($: ReturnType<typeof load>, pageUrl: string): RawEntry[] 
   });
   const entries: RawEntry[] = [];
   for (const item of nodes) {
-    const url = toAbsoluteUrl(item.url || item.mainEntityOfPage?.["@id"], pageUrl);
+    const url = publicDocumentUrl(item.url || item.mainEntityOfPage?.["@id"], pageUrl);
     const title = compactText(item.headline || item.name, 240);
     if (!url || !title) continue;
     entries.push({
@@ -100,7 +104,7 @@ function extractJsonLd($: ReturnType<typeof load>, pageUrl: string): RawEntry[] 
       author: compactText(typeof item.author === "string" ? item.author : item.author?.name, 120),
       publishedAt: parsePublishedAt(item.datePublished || item.dateCreated),
       summary: compactText(item.description || item.articleBody, 500),
-      imageUrl: toAbsoluteUrl(typeof item.image === "string" ? item.image : item.image?.url || item.thumbnailUrl, pageUrl)
+      imageUrl: publicDocumentUrl(typeof item.image === "string" ? item.image : item.image?.url || item.thumbnailUrl, pageUrl)
     });
   }
   return entries;
@@ -148,13 +152,14 @@ function extractionResultFromDetected(title: string, detected: DetectedItems): E
 /** Produces human-readable candidates so people can repair a source without knowing CSS. */
 export function extractCalibrationCandidates(html: string, pageUrl: string): CalibrationCandidate[] {
   const $ = load(html);
+  const urls = { pageUrl, baseUrl: htmlDocumentBaseUrl($, pageUrl) };
   // A new or deliberately sparse blog can legitimately have one published
   // card. It remains a user-confirmed calibration candidate by default; only
   // a named Blog Posts section has enough additional structure to auto-enable
   // a single card without mistaking page chrome for content.
   return orderedCandidates([
-    ...collectSemanticBlogCandidates($, pageUrl),
-    ...collectCandidateGroups($, pageUrl, 1)
+    ...collectSemanticBlogCandidates($, urls),
+    ...collectCandidateGroups($, urls, 1)
   ])
     .slice(0, 5)
     .map((candidate) => ({
@@ -165,8 +170,8 @@ export function extractCalibrationCandidates(html: string, pageUrl: string): Cal
     }));
 }
 
-function detectRepeatedItems($: ReturnType<typeof load>, pageUrl: string): DetectedItems {
-  const semantic = collectSemanticBlogCandidates($, pageUrl)[0];
+function detectRepeatedItems($: ReturnType<typeof load>, urls: ExtractionUrls): DetectedItems {
+  const semantic = collectSemanticBlogCandidates($, urls)[0];
   if (semantic) {
     return {
       entries: semantic.entries,
@@ -175,7 +180,7 @@ function detectRepeatedItems($: ReturnType<typeof load>, pageUrl: string): Detec
       semanticSection: semantic.semanticSection
     };
   }
-  const best = collectCandidateGroups($, pageUrl)[0];
+  const best = collectCandidateGroups($, urls)[0];
   if (!best) return { entries: [], confidence: 0 };
   return {
     entries: best.entries,
@@ -210,7 +215,7 @@ function orderedCandidates(candidates: CandidateGroup[]): CandidateGroup[] {
  * while a dedicated "Blog Posts" / `#blogs` section can safely win over a
  * publication bibliography elsewhere on the same page.
  */
-function collectSemanticBlogCandidates($: ReturnType<typeof load>, pageUrl: string): CandidateGroup[] {
+function collectSemanticBlogCandidates($: ReturnType<typeof load>, urls: ExtractionUrls): CandidateGroup[] {
   const groups = new Map<string, { label: string; rule: ExtractionRule; nodes: any[] }>();
   $("h1,h2,h3,h4,h5,h6").each((_index, heading) => {
     if (!isExplicitBlogSection($, heading)) return;
@@ -219,7 +224,7 @@ function collectSemanticBlogCandidates($: ReturnType<typeof load>, pageUrl: stri
       const rootSelectors = new Map<string, any[]>();
       const links = scopeRoot.is("a[href]") ? scopeRoot.add(scopeRoot.find("a[href]")) : scopeRoot.find("a[href]");
       links.each((_linkIndex, link) => {
-        if (!isSameOriginContentLink($, link, pageUrl)) return;
+        if (!isSameOriginContentLink($, link, urls)) return;
         const root = semanticCardRoot($, link, scope);
         if (!root || isTaxonomyOrNavigation($, root)) return;
         const selector = semanticCardSelector($, heading, scope, root);
@@ -237,7 +242,7 @@ function collectSemanticBlogCandidates($: ReturnType<typeof load>, pageUrl: stri
         };
         const entries = uniqueEntries(
           nodes
-            .map((node) => entryFromElement($, node, pageUrl, rule))
+            .map((node) => entryFromElement($, node, urls, rule))
             .filter((item): item is RawEntry => Boolean(item))
         );
         if (!entries.length) continue;
@@ -259,7 +264,7 @@ function collectSemanticBlogCandidates($: ReturnType<typeof load>, pageUrl: stri
   return orderedCandidates([...groups.values()].map((group) => {
     const entries = uniqueEntries(
       group.nodes
-        .map((node) => entryFromElement($, node, pageUrl, group.rule))
+        .map((node) => entryFromElement($, node, urls, group.rule))
         .filter((item): item is RawEntry => Boolean(item))
     );
     const score = group.nodes.reduce((sum, node) => sum + semanticCardScore($, node), 0) / group.nodes.length + Math.min(entries.length, 10) * 0.08;
@@ -290,14 +295,14 @@ function sectionSiblings($: ReturnType<typeof load>, heading: any): any[] {
   return siblings;
 }
 
-function isSameOriginContentLink($: ReturnType<typeof load>, link: any, pageUrl: string): boolean {
+function isSameOriginContentLink($: ReturnType<typeof load>, link: any, urls: ExtractionUrls): boolean {
   if (isTaxonomyOrNavigation($, link)) return false;
-  const url = toAbsoluteUrl($(link).attr("href"), pageUrl);
+  const url = publicDocumentUrl($(link).attr("href"), urls.baseUrl);
   const title = compactText($(link).text(), 240);
-  if (!url || !title || url === pageUrl || isTaxonomyUrl(url)) return false;
+  if (!url || !title || url === urls.pageUrl || isTaxonomyUrl(url)) return false;
   try {
     const target = new URL(url);
-    const page = new URL(pageUrl);
+    const page = new URL(urls.pageUrl);
     if (target.origin !== page.origin) return false;
     if (/^\/assets\//i.test(target.pathname) || /\.(?:pdf|png|jpe?g|gif|svg|zip)$/i.test(target.pathname)) return false;
     return target.pathname !== "/";
@@ -366,7 +371,7 @@ function semanticCardScore($: ReturnType<typeof load>, element: any): number {
   return scoreItem($, element) + (title ? 0.35 : 0) + (hasDate ? 0.15 : 0) + (hasSummary ? 0.2 : 0);
 }
 
-function collectCandidateGroups($: ReturnType<typeof load>, pageUrl: string, minimumEntries = 2): CandidateGroup[] {
+function collectCandidateGroups($: ReturnType<typeof load>, urls: ExtractionUrls, minimumEntries = 2): CandidateGroup[] {
   const rawGroups = new Map<string, { label: string; nodes: any[] }>();
   const add = (selector: string, label: string, element: any) => {
     const group = rawGroups.get(selector) ?? { label, nodes: [] };
@@ -390,16 +395,19 @@ function collectCandidateGroups($: ReturnType<typeof load>, pageUrl: string, min
   $("a[href]").each((_, element) => {
     if (isTaxonomyOrNavigation($, element)) return;
     const href = $(element).attr("href");
-    const absolute = toAbsoluteUrl(href, pageUrl);
+    const absolute = publicDocumentUrl(href, urls.baseUrl);
     const text = compactText($(element).text(), 240);
     if (!absolute || isTaxonomyUrl(absolute) || !text || text.length < 18) return;
     try {
       const url = new URL(absolute);
-      const page = new URL(pageUrl);
+      const page = new URL(urls.pageUrl);
       if (url.origin !== page.origin) return;
       const firstSegment = url.pathname.split("/").filter(Boolean)[0];
       if (!firstSegment || !/^[a-z0-9_-]+$/i.test(firstSegment)) return;
       const selector = `a[href*="/${firstSegment}/"]`;
+      // The resolved prefix may come entirely from <base> rather than the
+      // authored href. Never offer a rule that cannot select its own nodes.
+      if (!$(element).is(selector)) return;
       const group = linkGroups.get(selector) ?? { label: `「/${firstSegment}/」文章链接`, nodes: [] };
       group.nodes.push(element);
       linkGroups.set(selector, group);
@@ -419,7 +427,7 @@ function collectCandidateGroups($: ReturnType<typeof load>, pageUrl: string, min
     const entries = uniqueEntries(
       group.nodes
         .slice(0, 500)
-        .map((node) => entryFromElement($, node, pageUrl, rule))
+        .map((node) => entryFromElement($, node, urls, rule))
         .filter((item): item is RawEntry => Boolean(item))
     );
     if (entries.length < minimumEntries) continue;
@@ -476,15 +484,15 @@ function scoreItem($: ReturnType<typeof load>, element: any): number {
   return (title ? 0.9 : 0) + (link.attr("href") ? 0.6 : 0) + (heading.length ? 0.35 : 0) + (hasDate ? 0.4 : 0) + (root.find("img").length ? 0.2 : 0) + (hasSummary ? 0.35 : 0) + (text.length > 100 ? 0.25 : 0);
 }
 
-function extractUsingRule($: ReturnType<typeof load>, pageUrl: string, rule: ExtractionRule): RawEntry[] {
+function extractUsingRule($: ReturnType<typeof load>, urls: ExtractionUrls, rule: ExtractionRule): RawEntry[] {
   return $(rule.itemRootSelector!)
     .toArray()
     .slice(0, 500)
-    .map((element) => entryFromElement($, element, pageUrl, rule))
+    .map((element) => entryFromElement($, element, urls, rule))
     .filter((item): item is RawEntry => Boolean(item));
 }
 
-function entryFromElement($: ReturnType<typeof load>, element: any, pageUrl: string, rule: ExtractionRule): RawEntry | undefined {
+function entryFromElement($: ReturnType<typeof load>, element: any, urls: ExtractionUrls, rule: ExtractionRule): RawEntry | undefined {
   const root = $(element);
   if (isTaxonomyOrNavigation($, element)) return undefined;
   const titleNode = rule.titleSelector
@@ -494,8 +502,8 @@ function entryFromElement($: ReturnType<typeof load>, element: any, pageUrl: str
   const fallbackLink = root.is("a[href]") ? root : root.find("a[href]").filter((_index: number, node: any) => Boolean(compactText($(node).text(), 240)?.length)).first();
   const linkNode = titleNode.is("a[href]") ? titleNode : titleLink.length ? titleLink : fallbackLink;
   const title = compactText(titleNode.text() || linkNode.text(), 240);
-  const url = toAbsoluteUrl(linkNode.attr("href"), pageUrl);
-  if (!title || !url || url === pageUrl || isTaxonomyUrl(url)) return undefined;
+  const url = publicDocumentUrl(linkNode.attr("href"), urls.baseUrl);
+  if (!title || !url || url === urls.pageUrl || isTaxonomyUrl(url)) return undefined;
   const timeNode = rule.timeSelector ? root.find(rule.timeSelector).first() : root.find("time,[datetime]").first();
   const authorNode = rule.authorSelector ? root.find(rule.authorSelector).first() : root.find("[rel='author'],.author,[class*='author']").first();
   const imageNode = rule.imageSelector ? root.find(rule.imageSelector).first() : root.find("img").first();
@@ -510,7 +518,7 @@ function entryFromElement($: ReturnType<typeof load>, element: any, pageUrl: str
     // global text-date parser for ordinary prose.
     publishedAt: parsePublishedAt(timeNode.attr("datetime") || timeNode.text() || nodeDateValue($, root)),
     summary: compactText(summaryNode.text(), 500),
-    imageUrl: toAbsoluteUrl(imageNode.attr("src") || imageNode.attr("data-src"), pageUrl)
+    imageUrl: publicDocumentUrl(imageNode.attr("src") || imageNode.attr("data-src"), urls.baseUrl)
   };
 }
 
@@ -662,9 +670,9 @@ function isCommentThreadContext($: ReturnType<typeof load>, root: any): boolean 
   });
 }
 
-function openGraphFallback($: ReturnType<typeof load>, pageUrl: string, title: string): RawEntry | undefined {
-  const url = toAbsoluteUrl($("meta[property='og:url']").attr("content"), pageUrl) || pageUrl;
+function openGraphFallback($: ReturnType<typeof load>, urls: ExtractionUrls, title: string): RawEntry | undefined {
+  const url = publicDocumentUrl($("meta[property='og:url']").attr("content"), urls.baseUrl) || urls.pageUrl;
   const description = compactText($("meta[property='og:description'],meta[name='description']").first().attr("content"), 500);
-  const imageUrl = toAbsoluteUrl($("meta[property='og:image']").attr("content"), pageUrl);
+  const imageUrl = publicDocumentUrl($("meta[property='og:image']").attr("content"), urls.baseUrl);
   return title ? { url, title, summary: description, imageUrl, publishedAt: extractPagePublishedAt($) } : undefined;
 }

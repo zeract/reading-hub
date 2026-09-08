@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { WeightedLruCache } from "./weighted-lru-cache";
 import { compactText, parsePublishedAt } from "../shared/text";
 import { inlineDollarMathAt } from "../shared/tex";
-import { assertPublicUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl, toAbsoluteUrl } from "../shared/url";
+import { assertPublicUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 import type { Entry, ReaderArticle, ReaderFormulaDiagnostics, ReaderLanguageVariant, ReaderRenderProfile, Source } from "../shared/types";
 import { parseFeedForReading } from "./feed";
 import { abortError, awaitWithAbort, throwIfAborted } from "./cancellation";
@@ -16,7 +16,7 @@ import { ScientificMathRenderer, type MathJaxDocumentExpression, type MathMacroD
 import type { PageRenderer, RenderedPage } from "./page-renderer";
 import { discoverReaderLanguageVariants, mergeReaderLanguageVariants, sameCanonicalUrl } from "./reader-language-variants";
 import { RobotsDisallowedError } from "./robots";
-import { htmlDocumentBaseUrl } from "./html-document-url";
+import { htmlDocumentBaseUrl, publicDocumentUrl as safeUrl } from "./html-document-url";
 
 const CONTENT_SELECTORS = [
   { selector: "article", priority: 7 },
@@ -2553,16 +2553,6 @@ function bestSrcsetUrl(value: string | undefined): string | undefined {
 function removeAllAttributes(element: any): void {
   const attributes = element.attr() as Record<string, string> | undefined;
   for (const name of Object.keys(attributes || {})) element.removeAttr(name);
-}
-
-function safeUrl(value: string | undefined, pageUrl: string): string | undefined {
-  const absolute = toAbsoluteUrl(value, pageUrl);
-  if (!absolute) return undefined;
-  try {
-    return assertPublicUrl(absolute).toString();
-  } catch {
-    return undefined;
-  }
 }
 
 function normalText(value: string): string {

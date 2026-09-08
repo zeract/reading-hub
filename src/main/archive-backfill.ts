@@ -5,6 +5,7 @@ import { compactText, parsePublishedAt } from "../shared/text";
 import { assertPublicUrl, canonicalizeContentUrl, isTaxonomyUrl, toAbsoluteUrl } from "../shared/url";
 import { PublicHttpClient } from "./http";
 import { canonicalFacetKey, publisherFacet, uniqueFacets } from "./content-facets";
+import { htmlDocumentBaseUrl } from "./html-document-url";
 
 /** A metadata-only archive is bounded independently from normal source pages. */
 export const MAX_ARCHIVE_DOCUMENT_BYTES = 8_000_000;
@@ -55,11 +56,12 @@ export function findPublicArchiveUrls(html: string, pageUrl: string): string[] {
  */
 export function parsePublishedArchive(html: string, pageUrl: string): RawEntry[] {
   const $ = load(html);
+  const baseUrl = htmlDocumentBaseUrl($, pageUrl);
   const page = assertPublicUrl(pageUrl);
   const entries = new Map<string, RawEntry & { score: number }>();
   for (const anchor of $("a[href]").toArray()) {
     const title = compactText($(anchor).text(), 240);
-    const rawUrl = toAbsoluteUrl($(anchor).attr("href"), pageUrl);
+    const rawUrl = toAbsoluteUrl($(anchor).attr("href"), baseUrl);
     if (!title || !rawUrl || isAuxiliaryArchiveAnchor($, anchor, title)) continue;
     let url: URL;
     try {
@@ -72,7 +74,7 @@ export function parsePublishedArchive(html: string, pageUrl: string): RawEntry[]
     const publishedAt = archiveDate($, scope);
     if (publishedAt === undefined) continue;
     const canonicalUrl = canonicalizeContentUrl(url.toString());
-    const facets = archiveEntryFacets($, scope, pageUrl, anchor);
+    const facets = archiveEntryFacets($, scope, pageUrl, baseUrl, anchor);
     const candidate = withFacets({ url: canonicalUrl, title, publishedAt, score: archiveAnchorScore($, anchor, title) }, facets);
     const existing = entries.get(canonicalUrl);
     if (!existing || candidate.score > existing.score) entries.set(canonicalUrl, candidate);
@@ -89,10 +91,11 @@ function archiveFacets(entries: RawEntry[]): Facet[] {
 
 function explicitArchiveUrls(html: string, pageUrl: string): string[] {
   const $ = load(html);
+  const baseUrl = htmlDocumentBaseUrl($, pageUrl);
   const page = assertPublicUrl(pageUrl);
   const urls: string[] = [];
   for (const anchor of $("a[href]").toArray()) {
-    const href = toAbsoluteUrl($(anchor).attr("href"), pageUrl);
+    const href = toAbsoluteUrl($(anchor).attr("href"), baseUrl);
     if (!href) continue;
     let url: URL;
     try {
@@ -110,7 +113,7 @@ function explicitArchiveUrls(html: string, pageUrl: string): string[] {
 function isExplicitArchiveAnchor($: CheerioAPI, anchor: any, url: URL): boolean {
   const label = compactText(`${$(anchor).text()} ${$(anchor).attr("title") || ""} ${$(anchor).attr("aria-label") || ""}`, 240)?.toLowerCase() || "";
   const path = url.pathname.toLowerCase();
-  return /(?:^|\/)(?:archive|archives)(?:\.(?:html?|php))?\/?$/i.test(path)
+  return isArchiveIndexPath(path)
     || /(?:archive|archives|all\s+(?:posts|articles)|历史文章|文章归档|归档)/i.test(label);
 }
 
@@ -134,12 +137,12 @@ function archiveDate($: CheerioAPI, scope: ReturnType<CheerioAPI>): number | und
  * date. Associate only declared taxonomy links from that same row; this
  * avoids guessing topics from a title, summary, or unrelated page navigation.
  */
-function archiveEntryFacets($: CheerioAPI, scope: ReturnType<CheerioAPI>, pageUrl: string, articleAnchor: any): Facet[] {
+function archiveEntryFacets($: CheerioAPI, scope: ReturnType<CheerioAPI>, pageUrl: string, baseUrl: string, articleAnchor: any): Facet[] {
   const page = assertPublicUrl(pageUrl);
   const values: Array<Facet | undefined> = [];
   for (const anchor of scope.find("a[href]").toArray()) {
     if (anchor === articleAnchor) continue;
-    const rawUrl = toAbsoluteUrl($(anchor).attr("href"), pageUrl);
+    const rawUrl = toAbsoluteUrl($(anchor).attr("href"), baseUrl);
     const label = compactText($(anchor).text(), 120);
     if (!rawUrl || !label || !isArchiveTaxonomyAnchor($, anchor, rawUrl)) continue;
     let target: URL;
@@ -189,7 +192,11 @@ function taxonomyPath(rawUrl: string): boolean {
 }
 
 function isArchiveTaxonomyUrl(rawUrl: string): boolean {
-  return isTaxonomyUrl(rawUrl) || taxonomyPath(rawUrl);
+  return isTaxonomyUrl(rawUrl) || taxonomyPath(rawUrl) || isArchiveIndexPath(new URL(rawUrl).pathname);
+}
+
+function isArchiveIndexPath(path: string): boolean {
+  return /(?:^|\/)(?:archive|archives)(?:\.(?:html?|php))?\/?$/i.test(path);
 }
 
 function decodePathSegment(value: string): string | undefined {
