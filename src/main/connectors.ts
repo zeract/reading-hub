@@ -7,6 +7,7 @@ import { inspectPublicArchiveFacets, MAX_ARCHIVE_DOCUMENT_BYTES, parsePublishedA
 import { contentNormalizer } from "./content-normalizer";
 import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage, extractPagePublishedAt, extractPublicationDateFromUrl, withPublicationDateRevision } from "./extractor";
 import { discoverFeedUrls, FEED_DISCOVERY_REVISION, looksLikeFeed, parseFeed, RSS_METADATA_REVISION } from "./feed";
+import { isManualExtractionRule } from "./extraction-rule";
 import { loadGenericPage } from "./generic-page-loader";
 import { PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
@@ -319,7 +320,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
     });
     if (page.response?.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true, ...responseValidators(page.response) };
 
-    for (const feedUrl of discoverFeedUrls(page.text, page.url)) {
+    for (const feedUrl of isManualExtractionRule(source.extractionRule) ? [] : discoverFeedUrls(page.text, page.url)) {
       try {
         const feedResponse = await this.http.getText(feedUrl, undefined, { signal });
         if (!looksLikeFeed(feedResponse.contentType, feedResponse.text)) continue;

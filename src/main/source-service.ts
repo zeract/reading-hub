@@ -266,7 +266,7 @@ export class SourceService {
    * rule. Cancel after commit so a late extraction cannot undo that reset. */
   updateRule(sourceId: string, rule: Source["extractionRule"]): void {
     if (!this.db.getSource(sourceId)) throw new Error("来源不存在。");
-    this.db.updateRule(sourceId, rule);
+    this.db.updateRule(sourceId, rule ? { ...rule, selection: "manual" } : rule);
     this.sync.cancelSource(sourceId);
   }
 

@@ -178,9 +178,11 @@ try {
     assert.equal(basedArticle.article.url, basedPageUrl);
     assert(basedArticle.article.contentHtml.includes('src="https://rendered.example/assets/figure.svg"'));
     assert(basedArticle.article.contentHtml.includes('href="https://rendered.example/assets/appendix.html"'));
-    const listed = extractGenericPage(basedPage.html, basedPage.url, { version: 1, itemRootSelector: "article", titleSelector: "a:first-of-type" });
+    const competingMetadata = '<script type="application/ld+json">{"@type":"Article","headline":"Unselected metadata","url":"https://rendered.example/unselected"}</script>';
+    const listed = extractGenericPage(basedPage.html + competingMetadata, basedPage.url, { version: 1, selection: "manual", itemRootSelector: "article", titleSelector: "a:first-of-type" });
     assert.equal(listed.entries[0].url, "https://rendered.example/assets/appendix.html");
     assert.equal(listed.entries[0].imageUrl, "https://rendered.example/assets/figure.svg");
+    assert.deepEqual(extractGenericPage(basedPage.html + competingMetadata, basedPage.url, { version: 1, selection: "manual", itemRootSelector: ".missing" }).entries, []);
     assert.deepEqual(discoverFeedUrls(basedPage.html, basedPage.url), ["https://rendered.example/assets/feed.xml"]);
     assert.deepEqual(findPublicArchiveUrls(basedPage.html, basedPage.url), ["https://rendered.example/assets/archive.html"]);
     assert.equal(parsePublishedArchive(basedPage.html, basedPage.url).length, 1);

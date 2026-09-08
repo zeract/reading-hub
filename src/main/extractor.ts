@@ -1,5 +1,6 @@
 import { load } from "cheerio";
 import { htmlDocumentBaseUrl, publicDocumentUrl } from "./html-document-url";
+import { isManualExtractionRule } from "./extraction-rule";
 import { compactText, parsePublishedAt } from "../shared/text";
 import { isTaxonomyUrl } from "../shared/url";
 import type { CalibrationCandidate, ExtractionRule, RawEntry } from "../shared/types";
@@ -18,16 +19,20 @@ export function extractGenericPage(html: string, pageUrl: string, existingRule?:
   const $ = load(html);
   const urls = { pageUrl, baseUrl: htmlDocumentBaseUrl($, pageUrl) };
   const pageTitle = compactText($("meta[property='og:title']").attr("content") || $("title").text(), 180) || new URL(pageUrl).hostname;
-  const jsonLdEntries = extractJsonLd($, urls.baseUrl);
+  const manual = isManualExtractionRule(existingRule);
+  const jsonLdEntries = manual ? [] : extractJsonLd($, urls.baseUrl);
   if (jsonLdEntries.length >= 1) {
     return { title: pageTitle, entries: jsonLdEntries, confidence: jsonLdEntries.length >= 2 ? 0.91 : 0.7, fallback: false };
   }
 
   if (existingRule?.itemRootSelector) {
     const entries = extractUsingRule($, urls, existingRule);
+    if (manual) return { title: pageTitle, entries, rule: withAutomaticRuleRevision(existingRule), confidence: entries.length ? 0.88 : 0, fallback: !entries.length };
     const detected = detectRepeatedItems($, urls);
-    if (shouldReplaceNarrowAutomaticRule(existingRule, entries, detected)) {
-      return extractionResultFromDetected(pageTitle, detected);
+    if (shouldReplaceAutomaticRule(existingRule, entries, detected)) {
+      const result = extractionResultFromDetected(pageTitle, detected);
+      if (existingRule.rendererRequired && result.rule) result.rule = { ...result.rule, rendererRequired: true };
+      return result;
     }
     if (entries.length) return { title: pageTitle, entries, rule: withAutomaticRuleRevision(existingRule), confidence: 0.88, fallback: false };
     const fallback = openGraphFallback($, urls, pageTitle);
@@ -46,11 +51,10 @@ export function extractGenericPage(html: string, pageUrl: string, existingRule?:
  * `/openstack/` posts on a blog archive), or a broad `li` rule that captures
  * a publication bibliography before a named Blog Posts section. On later
  * refreshes that rule used to prevent the now-better detector from seeing the
- * intended archive. A calibrated rule has field-level selectors and is
- * deliberately left alone; only simple automatically-generated roots may
- * self-heal.
+ * intended archive. Confirmed rules retain ownership even without field
+ * selectors. Legacy rules retain the conservative ownership fallback.
  */
-export const AUTOMATIC_RULE_REVISION = 4;
+export const AUTOMATIC_RULE_REVISION = 5;
 /**
  * Bump this only when the page-level publish-date parser gains a new safe
  * capability. Generic sources then make one unconditional request so entries
@@ -67,18 +71,19 @@ export function withPublicationDateRevision(rule?: ExtractionRule): ExtractionRu
   return base.publicationDateRevision === PUBLICATION_DATE_REVISION ? base : { ...base, publicationDateRevision: PUBLICATION_DATE_REVISION };
 }
 
-function shouldReplaceNarrowAutomaticRule(
+function shouldReplaceAutomaticRule(
   rule: ExtractionRule,
   current: RawEntry[],
   detected: DetectedItems
 ): boolean {
   if (!detected.rule || detected.confidence < 0.7) return false;
-  if (rule.rendererRequired || rule.titleSelector || rule.timeSelector || rule.authorSelector || rule.imageSelector || rule.summarySelector) return false;
+  if (isManualExtractionRule(rule)) return false;
   // A saved automatic broad list (`li`, for example) may accidentally
   // collect a bibliography from a personal homepage.  A named Blog Posts
   // section is a more specific replacement even while it has one post.
   if (detected.semanticSection === "blog") return true;
   if (detected.entries.length < 2) return false;
+  if (!current.length) return true;
   return detected.entries.length >= Math.max(current.length + 10, current.length * 2);
 }
 
@@ -237,6 +242,7 @@ function collectSemanticBlogCandidates($: ReturnType<typeof load>, urls: Extract
       for (const [selector, nodes] of rootSelectors) {
         const rule: ExtractionRule = {
           version: 1,
+          selection: "automatic",
           autoRepairRevision: AUTOMATIC_RULE_REVISION,
           itemRootSelector: selector
         };
@@ -423,7 +429,7 @@ function collectCandidateGroups($: ReturnType<typeof load>, urls: ExtractionUrls
     // dated posts. The former 100-item ceiling silently discarded exactly
     // those pages (for example Accela's complete archive).
     if (group.nodes.length < minimumEntries || group.nodes.length > 500) continue;
-    const rule: ExtractionRule = { version: 1, autoRepairRevision: AUTOMATIC_RULE_REVISION, itemRootSelector: selector };
+    const rule: ExtractionRule = { version: 1, selection: "automatic", autoRepairRevision: AUTOMATIC_RULE_REVISION, itemRootSelector: selector };
     const entries = uniqueEntries(
       group.nodes
         .slice(0, 500)

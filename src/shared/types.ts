@@ -15,6 +15,8 @@ export type AccountStatus = "active" | "expired" | "revoked" | "error";
 
 export interface ExtractionRule {
   version: 1;
+  /** Host-owned provenance: confirmed selectors must not be auto-replaced. */
+  selection?: "automatic" | "manual";
   /** Internal revision used to perform one safe automatic rule audit. */
   autoRepairRevision?: number;
   /** Internal revision used to re-read published dates after parser upgrades. */
