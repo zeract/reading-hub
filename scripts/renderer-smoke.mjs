@@ -59,6 +59,9 @@ let importRequested;
 let completeImport;
 let emptyLibrary = false;
 let libraryPageFailure = false;
+let completeFullscreenSnapshot;
+let fullscreenSnapshotRequested;
+const fullscreenSnapshotStarted = new Promise((resolve) => { fullscreenSnapshotRequested = resolve; });
 let smallLibraryPages = false;
 let nextLibraryPageFailure = false;
 let pauseLibraryPage = false;
@@ -206,7 +209,10 @@ const channels = [
     if (id === "failure") throw new Error("Deterministic offline fixture");
     return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", contentHtml: '<p>This is a deterministic reader fixture.</p><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image" data-reader-zoomable="true" tabindex="0">' } };
   }],
-  ["window:is-fullscreen", () => false]
+  ["window:is-fullscreen", () => new Promise((resolve) => {
+    completeFullscreenSnapshot = () => resolve(false);
+    fullscreenSnapshotRequested();
+  })]
 ];
 
 app.setPath("userData", path.join(tmpdir(), `reading-hub-renderer-smoke-${process.pid}`));
@@ -292,6 +298,20 @@ try {
   await verifyNavigationPolicy();
   await window.loadFile(renderer);
   await waitFor(window, "typeof window.reader === 'object' && typeof window.reader.listSources === 'function' && Boolean(document.querySelector('.shell'))");
+  await fullscreenSnapshotStarted;
+  window.webContents.send("window:fullscreen-changed", true);
+  await waitFor(window, "document.querySelector('.shell')?.classList.contains('shell--fullscreen')");
+  completeFullscreenSnapshot();
+  await evaluate("window.reader.listSources().then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))");
+  assert(await evaluate("document.querySelector('.shell').classList.contains('shell--fullscreen')"), "A late startup snapshot must not overwrite a newer fullscreen event.");
+  assert(await evaluate("getComputedStyle(document.querySelector('.shell')).getPropertyValue('--titlebar-leading-inset').trim() === '16px'"), "The fullscreen shell must reclaim the native window-button inset.");
+  await evaluate("document.querySelector('[aria-label=\"打开设置\"]').click()");
+  await waitFor(window, "document.querySelector('.settings-shell')?.classList.contains('settings-shell--fullscreen')");
+  window.webContents.send("window:fullscreen-changed", false);
+  await waitFor(window, "!document.querySelector('.settings-shell')?.classList.contains('settings-shell--fullscreen')");
+  await evaluate("document.querySelector('[aria-label=\"返回阅读器\"]').click()");
+  await waitFor(window, "!document.querySelector('.shell')?.classList.contains('shell--fullscreen')");
+  assert(await evaluate("getComputedStyle(document.querySelector('.shell')).getPropertyValue('--titlebar-leading-inset').trim() === '96px'"), "Returning from settings must retain the latest windowed titlebar inset.");
   const result = await window.webContents.executeJavaScript("window.reader.listSources().then((sources) => ({ sources, shell: Boolean(document.querySelector('.shell')) }))");
   if (!result.shell || !Array.isArray(result.sources)) throw new Error("预加载桥接未能完成最小 IPC 往返。");
   if (preloadErrors.length) throw new Error(`沙箱预加载加载失败：${preloadErrors.join("；")}`);

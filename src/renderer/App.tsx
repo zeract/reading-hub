@@ -13,6 +13,7 @@ import { useLibraryData } from "./use-library-data";
 import { useAsyncActivity } from "./use-async-activity";
 import { useLibraryNotice } from "./use-library-notice";
 import { useEntryMutations, type EntryMutationField } from "./use-entry-mutations";
+import { useWindowFullscreen } from "./use-window-fullscreen";
 
 type AppView = "library" | "settings";
 type SourceDialogSession = { token: string; mode: "settings" | "calibration"; source: Source };
@@ -60,18 +61,7 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [readerOnly, setReaderOnly] = useState(false);
   const [appView, setAppView] = useState<AppView>("library");
-  const [windowFullscreen, setWindowFullscreen] = useState(false);
-  useEffect(() => {
-    let mounted = true;
-    const unsubscribe = window.reader.onWindowFullscreenChange(setWindowFullscreen);
-    void window.reader.isWindowFullscreen().then((fullscreen) => {
-      if (mounted) setWindowFullscreen(fullscreen);
-    }).catch(() => undefined);
-    return () => {
-      mounted = false;
-      unsubscribe();
-    };
-  }, []);
+  const windowFullscreen = useWindowFullscreen();
 
   useEffect(() => {
     setSourceDialog((current) => {
