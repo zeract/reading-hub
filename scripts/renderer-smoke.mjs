@@ -31,9 +31,28 @@ let activeAiRequest;
 let blockMarkdownModule = true;
 let markdownModuleRequests = 0;
 const cancelledAiRequests = new Set();
+let providerLists = 0;
+let settingsSaves = 0;
+let pendingSettingsSave;
+let settingsRequested;
+const fixtureProviders = [
+  { id: "openai", label: "Fixture AI", model: "fixture", configured: true, requiresApiKey: true },
+  { id: "deepseek", label: "Fixture secondary AI", model: "fixture-secondary", configured: true, requiresApiKey: true }
+];
 const aiAnswer = "## Fixture answer\n\nInline $x^2$.\n\n$$\ny=x+1\n$$";
 const channels = [
-  ["ai:list-providers", () => [{ id: "openai", label: "Fixture AI", model: "fixture", configured: true, requiresApiKey: true }]],
+  ["ai:list-providers", () => { providerLists++; return fixtureProviders; }],
+  ["ai:configure", (_event, configuration) => {
+    settingsSaves++;
+    assert(configuration.apiKey === "", "Settings fixture must use no credentials.");
+    return new Promise((resolve) => {
+      pendingSettingsSave = () => {
+        fixtureProviders.find((provider) => provider.id === configuration.provider).model = configuration.model;
+        resolve();
+      };
+      settingsRequested?.();
+    });
+  }],
   ["ai:ask-stream", (event, payload) => {
     aiRequests++;
     activeAiRequest = payload.requestId;
@@ -274,7 +293,37 @@ try {
     assert(fits, `Academic identities or result scrolling do not fit ${width}px at ${scale}.`);
     await writeFile(path.join(tmpdir(), `reading-hub-academic-${width}.png`), (await window.capturePage()).toPNG());
   }
-  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore, library layouts and four academic search layouts verified.");
+  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
+  await evaluate("document.querySelector('[aria-label=\"打开设置\"]').click()");
+  await clickText(".settings-sidebar nav button", "AI 功能");
+  await waitFor(window, "document.querySelectorAll('.settings-ai-form select option').length === 2");
+  const listsBeforeSelection = providerLists;
+  await evaluate(`(() => { const provider = document.querySelector('.settings-ai-form select'); provider.value = 'deepseek'; provider.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await evaluate(`(() => { const input = document.querySelector('.settings-ai-form input:not([type="password"])'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'edited-fixture'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  assert(providerLists === listsBeforeSelection, "Provider selection must not rediscover and overwrite the draft.");
+  const saveRequested = new Promise((resolve) => { settingsRequested = resolve; });
+  await evaluate(`(() => { const form = document.querySelector('.settings-ai-form'); form.requestSubmit(); form.requestSubmit(); })()`);
+  await saveRequested;
+  assert(settingsSaves === 1, "Repeated native form submission must issue only one settings command.");
+  pendingSettingsSave();
+  await waitFor(window, "!document.querySelector('.settings-actions .primary').disabled && document.querySelector('.settings-ai-form input').value === 'edited-fixture'");
+  assert(await evaluate("document.querySelector('.settings-ai-form select').value === 'deepseek'"), "Save refresh must preserve the selected provider.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    window.setSize(width, height); window.webContents.setZoomFactor(scale);
+    await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    assert(await evaluate("document.documentElement.scrollWidth <= innerWidth + 1 && document.querySelector('.settings-content').scrollWidth <= document.querySelector('.settings-content').clientWidth + 1"), `Settings overflow at ${width}px and ${scale}.`);
+    await writeFile(path.join(tmpdir(), `reading-hub-settings-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  const lastSaveRequested = new Promise((resolve) => { settingsRequested = resolve; });
+  await evaluate("document.querySelector('.settings-ai-form').requestSubmit()");
+  await lastSaveRequested;
+  await evaluate("document.querySelector('[aria-label=\"返回阅读器\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.shell'))");
+  const listsBeforeCloseCompletion = providerLists;
+  pendingSettingsSave();
+  await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  assert(providerLists === listsBeforeCloseCompletion, "A closed settings view must not start another provider query.");
+  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore/settings-draft/settings-save-lock/settings-close, library layouts and four academic/settings layouts verified.");
 } catch (error) {
   failure = error;
   console.error(error);

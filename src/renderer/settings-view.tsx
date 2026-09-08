@@ -1,9 +1,10 @@
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort } from "../shared/types";
 import { CODEX_EFFORT_OPTIONS } from "./ai-options";
 import { errorMessage } from "./errors";
 import { adjustReaderFontScale, loadReaderPreferences, saveReaderPreferences, type ReaderPreferences } from "./reader-preferences";
 import { AppIcon } from "./ui-icons";
+import { LatestRequestGuard } from "./request-guard";
 
 type SettingsSection = "reading" | "ai";
 
@@ -18,28 +19,38 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const requests = useRef(new LatestRequestGuard());
+  const updating = useRef(false);
 
   useEffect(() => {
     saveReaderPreferences(preferences);
   }, [preferences]);
 
-  const reloadProviders = useCallback(async () => {
+  const reloadProviders = useCallback(async (revision: number, preferredId: AiProviderId) => {
     const next = await window.reader.listAiProviders();
+    if (!requests.current.isCurrent(revision)) return;
     setProviders(next);
-    const active = next.find((provider) => provider.id === providerId) || next[0];
+    const active = next.find((provider) => provider.id === preferredId) || next[0];
     if (!active) return;
     setProviderId(active.id);
     setModel(active.model);
     setEffort(active.effort || "medium");
-  }, [providerId]);
+  }, []);
 
-  useEffect(() => { void reloadProviders().catch((reason) => setError(errorMessage(reason))); }, [reloadProviders]);
+  useEffect(() => {
+    const revision = requests.current.begin();
+    void reloadProviders(revision, "codex-cli").catch((reason) => {
+      if (requests.current.isCurrent(revision)) setError(errorMessage(reason));
+    });
+    return () => requests.current.invalidate();
+  }, [reloadProviders]);
 
   const selected = providers.find((provider) => provider.id === providerId);
   const usingLocalCodex = selected?.id === "codex-cli";
   const requiresApiKey = selected?.requiresApiKey === true;
 
   function switchProvider(nextId: AiProviderId) {
+    if (updating.current) return;
     const next = providers.find((provider) => provider.id === nextId);
     setProviderId(nextId);
     setModel(next?.model || "");
@@ -48,42 +59,44 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
     setError(undefined);
   }
 
-  async function saveAiSettings(event: FormEvent) {
-    event.preventDefault();
-    if (!selected) return;
+  async function updateAiSettings(update: () => Promise<unknown>) {
+    if (!selected || updating.current) return;
+    // The ref locks the command before React renders disabled controls.
+    updating.current = true;
+    const revision = requests.current.begin();
     setBusy(true); setError(undefined);
     try {
-      await window.reader.configureAiProvider({
-        provider: providerId,
-        apiKey,
-        model,
-        effort: usingLocalCodex ? effort : undefined
-      });
+      await update();
+      if (!requests.current.isCurrent(revision)) return;
       setApiKey("");
-      await reloadProviders();
+      await reloadProviders(revision, providerId);
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (requests.current.isCurrent(revision)) setError(errorMessage(reason));
     } finally {
-      setBusy(false);
+      if (requests.current.isCurrent(revision)) {
+        updating.current = false;
+        setBusy(false);
+      }
     }
   }
 
+  async function saveAiSettings(event: FormEvent) {
+    event.preventDefault();
+    await updateAiSettings(() => window.reader.configureAiProvider({
+      provider: providerId,
+      apiKey,
+      model,
+      effort: usingLocalCodex ? effort : undefined
+    }));
+  }
+
   async function clearAiSettings() {
-    if (!selected) return;
+    if (!selected || updating.current) return;
     const message = usingLocalCodex
       ? "恢复本机 Codex 的默认模型与推理强度？"
       : `清除 ${selected.label} 的 API Key？`;
     if (!window.confirm(message)) return;
-    setBusy(true); setError(undefined);
-    try {
-      await window.reader.clearAiProvider(providerId);
-      setApiKey("");
-      await reloadProviders();
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await updateAiSettings(() => window.reader.clearAiProvider(providerId));
   }
 
   const adjustFont = (amount: number) => setPreferences((current) => ({
