@@ -117,21 +117,24 @@ function AppShell() {
 
   const importOpml = useCallback((): Promise<OpmlImportResult> => track(async () => {
     setNotice(undefined);
+    let result: OpmlImportResult;
     try {
-      const result = await window.reader.importOpml();
-      if (!result.cancelled) {
-        const details = [`导入 ${result.imported} 个 Feed`];
-        if (result.existing) details.push(`${result.existing} 个已存在`);
-        if (result.skipped) details.push(`${result.skipped} 个无效或不支持`);
-        setNotice(`${details.join("；")}。正在按安全限流初始化同步。`);
-        await reload();
-      }
-      return result;
+      result = await window.reader.importOpml();
     } catch (error) {
       const message = errorMessage(error);
       setNotice(message);
       throw error;
     }
+    if (!result.cancelled) {
+      const details = [`导入 ${result.imported} 个 Feed`];
+      if (result.existing) details.push(`${result.existing} 个已存在`);
+      if (result.skipped) details.push(`${result.skipped} 个无效或不支持`);
+      setNotice(`${details.join("；")}。正在按安全限流初始化同步。`);
+      // The import result is already committed. List recovery owns its error
+      // and retry; it cannot turn those counts into a failed import.
+      await reload().catch(() => undefined);
+    }
+    return result;
   }), [reload, setNotice, track]);
 
   const confirm = useCallback(async () => {
@@ -175,16 +178,17 @@ function AppShell() {
     selectLibraryView(view);
   }, [selectLibraryView]);
 
-  const deleteSource = useCallback((source: Source): Promise<void> => track(async () => {
+  const toggleSourceSubscription = useCallback((source: Source): Promise<void> => track(async () => {
     try {
       await window.reader.setSourceSubscribed(source.id, source.subscribed === false);
-      clearActiveSource(source.id);
-      setNotice(source.subscribed === false ? `已重新订阅「${source.title}」。` : `已取消订阅「${source.title}」，已有内容与收藏已保留。`);
-      await reload();
     } catch (error) {
       setNotice(errorMessage(error));
       throw error;
     }
+    clearActiveSource(source.id);
+    setNotice(source.subscribed === false ? `已重新订阅「${source.title}」。` : `已取消订阅「${source.title}」，已有内容与收藏已保留。`);
+    // Close the completed command's dialog even if its read model needs retry.
+    await reload().catch(() => undefined);
   }), [clearActiveSource, reload, setNotice, track]);
 
   const dismissEntry = useCallback((entry: Entry) => track(async () => {
@@ -321,7 +325,7 @@ function AppShell() {
         onRefresh={() => refresh(sourceDialog.source)}
         onCalibrate={() => setSourceDialog((current) => current?.token === sourceDialog.token
           ? { ...current, token: crypto.randomUUID(), mode: "calibration" } : current)}
-        onDelete={async () => { await deleteSource(sourceDialog.source); closeSourceDialog(sourceDialog.token); }}
+        onDelete={async () => { await toggleSourceSubscription(sourceDialog.source); closeSourceDialog(sourceDialog.token); }}
         onReconnectZhihu={async () => { await window.reader.connectZhihuFollow(); setNotice("已打开知乎登录窗口；登录完成后会自动同步。"); }}
       />}
     </main>

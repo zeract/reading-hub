@@ -65,6 +65,8 @@ let navigationCommandRequested;
 let completeNavigationCommand;
 let importRequested;
 let completeImport;
+let importRequests = 0;
+let subscriptionWrites = 0;
 let emptyLibrary = false;
 let libraryPageFailure = false;
 let completeFullscreenSnapshot;
@@ -99,7 +101,8 @@ const fixtureProviders = [
 const aiAnswer = "## Fixture answer\n\nInline $x^2$.\n\n$$\ny=x+1\n$$";
 const channels = [
   ["source:import-opml", () => new Promise((resolve) => {
-    completeImport = () => resolve({ cancelled: true, imported: 0, existing: 0, skipped: 0 });
+    importRequests++;
+    completeImport = (result = { cancelled: true, imported: 0, existing: 0, skipped: 0 }) => resolve(result);
     importRequested?.();
   })],
   ...["source:update-settings", "source:update-rule"].map((channel) => [channel, () => new Promise((resolve) => {
@@ -198,6 +201,7 @@ const channels = [
     return database.restoreEntry(id);
   }],
   ["source:set-subscribed", (_event, id, subscribed) => {
+    subscriptionWrites++;
     if (managementFailure === "subscription") throw new Error("Synthetic subscription failure");
     if (delayedNavigationCommand === "subscription") return deferNavigationCommand(() => database.setSubscribed(id, subscribed));
     return database.setSubscribed(id, subscribed);
@@ -568,8 +572,15 @@ try {
   assert(database.getEntry("history"), "Deleted content must be recoverable through the UI.");
   await evaluate("document.querySelector('.source-filter').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))");
   await waitFor(window, "Boolean(document.querySelector('.source-settings-form'))");
+  const previousSubscriptionWrites = subscriptionWrites;
+  libraryPageFailure = true;
   await clickText(".source-settings-operations button", "取消订阅");
+  await waitFor(window, "!document.querySelector('.source-settings-form') && document.querySelector('.notice')?.textContent.includes('Synthetic library failure')");
+  assert(database.getSource(source.id).subscribed === false, "A list failure must not invalidate a committed unsubscription.");
+  libraryPageFailure = false;
+  await evaluate("document.querySelector('[aria-label=\"重新载入收件箱\"]').click()");
   await waitFor(window, "Boolean(document.querySelector('.archived-sources')) && !document.querySelector('.source-settings-form')");
+  assert(subscriptionWrites === previousSubscriptionWrites + 1, "List recovery must not repeat a subscription write.");
   assert(database.getSource(source.id).subscribed === false && database.getEntry("success").favorite, "Unsubscribe must retain favorites.");
   await evaluate("document.querySelector('.archived-sources summary').focus()");
   await pressKey("Enter");
@@ -1150,7 +1161,25 @@ try {
   delayedNavigationCommand = undefined;
   completeNavigationCommand();
   await waitFor(window, "!document.querySelector('[aria-label=\"刷新 Activity fixture\"]').disabled");
+  const previousImports = importRequests;
+  await evaluate("document.querySelector('[aria-label=\"添加来源\"]').click()");
+  const successfulImportStarted = new Promise((resolve) => { importRequested = resolve; });
+  await clickText(".dialog-actions button", "导入 OPML…");
+  await successfulImportStarted;
+  libraryPageFailure = true;
+  completeImport({ cancelled: false, imported: 2, existing: 1, skipped: 1 });
+  await waitFor(window, "document.querySelector('.source-action-status')?.textContent === '已导入 2 个 Feed；1 个已存在；跳过 1 个。' && !document.querySelector('.connector-form .primary').disabled");
+  assert(await evaluate("!document.querySelector('.connector-form [role=alert]') && document.querySelector('.notice')?.textContent.includes('Synthetic library failure')"), "Committed import counts and a library read failure must retain separate outcomes.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const status = document.querySelector('.source-action-status').getBoundingClientRect(); const dialog = document.querySelector('.dialog').getBoundingClientRect(); return status.width > 0 && status.left >= dialog.left && status.right <= dialog.right && status.top >= dialog.top && status.bottom <= dialog.bottom; })()"), "Import results must remain visible at every viewport.");
+    await writeFile(path.join(tmpdir(), `reading-hub-source-results-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
+  libraryPageFailure = false;
+  await evaluate("document.querySelector('[aria-label=\"刷新 Activity fixture\"]').click()");
   await waitFor(window, "document.querySelector('.empty-state h2')?.textContent === '该来源还没有内容'");
+  assert(importRequests === previousImports + 1, "Recovering the library must not repeat an already completed import.");
   await clickText(".empty-state button", "查看来源设置");
   await waitFor(window, "Boolean(document.querySelector('.source-settings-form'))");
   await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
