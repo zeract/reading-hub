@@ -24,6 +24,8 @@ import {
 } from "./ipc-validation";
 import { RobotsDisallowedError } from "./robots";
 
+type LibraryObserver = { id: number; sender: Electron.WebContents; onDestroyed(): void };
+
 /**
  * The renderer receives only this small, validated IPC surface. Services stay
  * unaware of Electron events, windows, dialogs, and untrusted IPC payloads.
@@ -45,11 +47,27 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
   // stale renderer cannot cancel another window's AI turn by guessing an id.
   const aiStreamControllers = new Map<number, Map<string, AbortController>>();
   const foregroundRequests = new WindowRequestScope();
-  const observers = new Map<number, Electron.WebContents>();
+  const observers = new Map<number, LibraryObserver>();
+  function releaseObserver(observer: LibraryObserver): void {
+    if (observers.get(observer.id) !== observer) return;
+    observers.delete(observer.id);
+    observer.sender.removeListener("destroyed", observer.onDestroyed);
+  }
+  function observeLibrary(sender: Electron.WebContents): void {
+    const previous = observers.get(sender.id);
+    if (sender.isDestroyed()) { if (previous?.sender === sender) releaseObserver(previous); return; }
+    if (previous?.sender === sender) return;
+    if (previous) releaseObserver(previous);
+    const observer: LibraryObserver = { id: sender.id, sender, onDestroyed: () => releaseObserver(observer) };
+    observers.set(sender.id, observer);
+    sender.once("destroyed", observer.onDestroyed);
+    if (sender.isDestroyed()) releaseObserver(observer);
+  }
   const unsubscribeChanges = database?.onLibraryChanged?.((revision) => {
-    for (const [id, sender] of observers) {
+    for (const observer of observers.values()) {
+      const { sender } = observer;
       try {
-        if (sender.isDestroyed()) observers.delete(id);
+        if (sender.isDestroyed()) releaseObserver(observer);
         else sender.send(IPC_CHANNELS.entry.changed, revision);
       } catch {
         // One unavailable window must not prevent delivery to the others.
@@ -86,7 +104,7 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     return { cancelled: false, ...sources.importOpml(text) };
   }));
   handle(IPC_CHANNELS.source.list, (event) => {
-    observers.set(event.sender.id, event.sender);
+    observeLibrary(event.sender);
     return database.listSources();
   });
   handle(IPC_CHANNELS.source.subscribe, (_event, id: unknown, subscribed: unknown) => sources.setSubscribed(requireEntityId(id), requireBoolean(subscribed)));
@@ -241,7 +259,7 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
   return async () => {
     closing = true;
     unsubscribeChanges?.();
-    observers.clear();
+    for (const observer of observers.values()) releaseObserver(observer);
     for (const channel of channels) ipcMain.removeHandler(channel);
     foregroundRequests.close();
     await Promise.allSettled([...pending]);
