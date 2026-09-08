@@ -218,3 +218,28 @@ it("marks stale sidebar counts as unavailable and restores confirmed values", as
   expect([...container.querySelectorAll(".library-filter em")].map((item) => item.textContent)).toEqual(["2", "4", "0"]);
   expect(container.querySelector('[aria-label="计数暂未更新"]')).toBeNull();
 });
+
+
+it.each(["composition", "claimed"])("preserves a search draft when Escape belongs to %s", async (owner) => {
+  await render({ entrySearch: "中文草稿" });
+  const input = container.querySelector<HTMLInputElement>(".entry-search input")!;
+  const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true, isComposing: owner === "composition" });
+  if (owner === "claimed") event.preventDefault();
+  await act(async () => input.dispatchEvent(event));
+  expect(props.onEntrySearchChange).not.toHaveBeenCalled();
+  expect(input.value).toBe("中文草稿");
+});
+
+it("claims Escape when clearing search so a window-level dismiss handler cannot also act", async () => {
+  await render({ entrySearch: "Fixture" });
+  const input = container.querySelector<HTMLInputElement>(".entry-search input")!;
+  const seen: boolean[] = [];
+  const observe = (event: KeyboardEvent) => { seen.push(event.defaultPrevented); };
+  window.addEventListener("keydown", observe);
+  try {
+    await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(props.onEntrySearchChange).toHaveBeenCalledExactlyOnceWith("");
+    expect(document.activeElement).toBe(input);
+    expect(seen).toEqual([true]);
+  } finally { window.removeEventListener("keydown", observe); }
+});

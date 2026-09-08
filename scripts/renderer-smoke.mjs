@@ -451,6 +451,25 @@ try {
     await setViewport(width, height, scale);
     await evaluate("(() => { const paragraph = document.querySelector('.article-body p'); paragraph.scrollIntoView({ block: 'center' }); const range = document.createRange(); range.selectNodeContents(paragraph); const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range); paragraph.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); })()");
     await waitFor(window, "Boolean(document.querySelector('.reader-selection-toolbar'))");
+    await clickText(".reader-selection-toolbar button", "提问");
+    await evaluate("(() => { const input = document.querySelector('.reader-selection-toolbar input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '解释这段文字'); input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: true })); })()");
+    assert(await evaluate("document.querySelector('.reader-selection-toolbar input')?.value === '解释这段文字'"), "Composing Escape must preserve the selected-text question draft.");
+    if (width === 1720) {
+      await evaluate("(() => { const input = document.querySelector('.entry-search input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Readable'); input.dispatchEvent(new Event('input', { bubbles: true })); input.focus(); input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: true })); })()");
+      await waitFor(window, "document.querySelectorAll('.entry-card').length === 1");
+      assert(await evaluate("document.querySelector('.entry-search input').value === 'Readable' && Boolean(document.querySelector('.reader-selection-toolbar input'))"), "Composing Escape must leave both the search and selection workflow intact.");
+      await pressKey("Escape");
+      await waitFor(window, "document.querySelectorAll('.entry-card').length === 2");
+      assert(await evaluate("document.querySelector('.entry-search input').value === '' && document.querySelector('.reader-selection-toolbar input')?.value === '解释这段文字'"), "Search must claim ordinary Escape without dismissing the selection question.");
+    }
+    await evaluate("document.querySelector('.reader-selection-toolbar input').focus()");
+    await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    assert(await evaluate("(() => { const input = document.querySelector('.reader-selection-toolbar input'); const rect = input.getBoundingClientRect(); return input === document.activeElement && input.value === '解释这段文字' && rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight; })()"), "The preserved question and its focus must stay within the viewport.");
+    await writeFile(path.join(tmpdir(), `reading-hub-selection-escape-${width}.png`), (await window.capturePage()).toPNG());
+    await pressKey("Escape");
+    await waitFor(window, "!document.querySelector('.reader-selection-toolbar')");
+    await evaluate("(() => { const paragraph = document.querySelector('.article-body p'); const range = document.createRange(); range.selectNodeContents(paragraph); getSelection().removeAllRanges(); getSelection().addRange(range); paragraph.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); })()");
+    await waitFor(window, "Boolean(document.querySelector('.reader-selection-toolbar'))");
     await clickText(".reader-selection-toolbar button", "翻译");
     await waitFor(window, "Boolean(document.querySelector('.selection-assistant-card .ai-provider-feedback button'))");
     assert(aiRequests === 3 && await evaluate("!document.querySelector('.selection-assistant-settings')"), "Selection discovery failure must offer a read retry without prompting credential changes or starting AI.");

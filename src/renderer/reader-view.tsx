@@ -4,6 +4,7 @@ import { AppIcon } from "./ui-icons";
 import { ModalSurface } from "./modal-surface";
 import { DeferredAiMarkdownContent as AiMarkdownContent } from "./deferred-ai-markdown";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
+import { isUnclaimedEscape } from "./keyboard-events";
 import { buildAiArticleContext, collectAiArticleText } from "./ai-request";
 import { newAiRequestId, useAiStreamSubscription, useAiTextStream } from "./ai-stream";
 import { errorMessage } from "./errors";
@@ -140,7 +141,8 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   useEffect(() => {
     if (!textSelection) return;
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape" && !event.defaultPrevented && !document.querySelector("dialog[open]")) {
+      if (isUnclaimedEscape(event) && !document.querySelector("dialog[open]")) {
+        event.preventDefault();
         setTextSelection(undefined);
       }
     };

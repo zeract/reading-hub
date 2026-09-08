@@ -6,6 +6,7 @@ import type { LibraryView } from "./library-view";
 import type { SourceGroup } from "./source-groups";
 import { sourceHealthLabel } from "../shared/source-capabilities";
 import { AppIcon, SourceIcon, type AppIconName } from "./ui-icons";
+import { isUnclaimedEscape } from "./keyboard-events";
 
 function LibraryCount({ value, stale, title }: { value: number | ""; stale: boolean; title?: string }) {
   return <em title={stale ? "计数暂未更新，请重新载入。" : title} aria-label={stale ? "计数暂未更新" : undefined}>{stale ? "—" : value}</em>;
@@ -147,7 +148,10 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
         placeholder={`搜索 ${activeSource?.title || "当前列表"} 中的帖子`}
         onChange={(event) => onEntrySearchChange(event.currentTarget.value)}
         onKeyDown={(event) => {
-          if (event.key === "Escape") clearSearch();
+          if (isUnclaimedEscape(event.nativeEvent)) {
+            event.preventDefault();
+            clearSearch();
+          }
         }}
       />
       {entrySearch && <button type="button" className="entry-search-clear" onClick={clearSearch} aria-label="清除关键词">×</button>}

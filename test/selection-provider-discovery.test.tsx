@@ -21,7 +21,7 @@ beforeEach(async () => {
   await act(async () => root.render(<ReaderPreferencesProvider><ReaderView favoriteUpdating={false} entry={entry} onUpdateEntry={async () => true} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={settings} /></ReaderPreferencesProvider>));
 });
 afterEach(async () => { await act(async () => root.unmount()); getSelection()?.removeAllRanges(); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-async function translate() {
+async function selectText() {
   await act(async () => {
     const paragraph = container.querySelector(".article-body p")!;
     const range = document.createRange(); range.selectNodeContents(paragraph);
@@ -29,6 +29,9 @@ async function translate() {
     getSelection()!.removeAllRanges(); getSelection()!.addRange(range);
     paragraph.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
   });
+}
+async function translate() {
+  await selectText();
   await act(async () => [...container.querySelectorAll<HTMLButtonElement>(".reader-selection-toolbar button")].find((button) => button.textContent === "翻译")!.click());
 }
 async function retry() { await act(async () => container.querySelector<HTMLButtonElement>(".ai-provider-feedback button")!.click()); }
@@ -61,4 +64,21 @@ it("does not start translation when a retry completes after its card closes", as
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="关闭所选文字回答"]')!.click());
   await act(async () => resolve(providers));
   expect(container.querySelector(".selection-assistant-card")).toBeNull(); expect(start).not.toHaveBeenCalled();
+});
+
+
+it("keeps the selection question draft during IME Escape and dismisses on a later ordinary Escape", async () => {
+  await selectText();
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>(".reader-selection-toolbar button")].find((button) => button.textContent === "提问")!.click());
+  const input = container.querySelector<HTMLInputElement>(".reader-selection-toolbar input")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "解释这段文字");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", isComposing: true, bubbles: true, cancelable: true }));
+  });
+  expect(container.querySelector(".reader-selection-toolbar input")).toBe(input);
+  expect(input.value).toBe("解释这段文字");
+  expect(start).not.toHaveBeenCalled();
+  await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+  expect(container.querySelector(".reader-selection-toolbar")).toBeNull();
 });
