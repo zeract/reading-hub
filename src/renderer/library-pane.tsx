@@ -1,11 +1,11 @@
 import type { EntryMutationPending } from "./use-entry-mutations";
 import { TimelineEmptyState } from "./timeline-empty-state";
-import { useRef } from "react";
+import { useRef, type ReactNode } from "react";
 import type { Entry, LibraryCounts, Source } from "../shared/types";
 import type { LibraryView } from "./library-view";
 import type { SourceGroup } from "./source-groups";
 import { sourceHealthLabel } from "../shared/source-capabilities";
-import { AppIcon, SourceIcon } from "./ui-icons";
+import { AppIcon, SourceIcon, type AppIconName } from "./ui-icons";
 
 function LibraryCount({ value, stale, title }: { value: number | ""; stale: boolean; title?: string }) {
   return <em title={stale ? "计数暂未更新，请重新载入。" : title} aria-label={stale ? "计数暂未更新" : undefined}>{stale ? "—" : value}</em>;
@@ -24,6 +24,31 @@ function SourceHealth({ source, onEdit }: { source: Source; onEdit?: (source: So
   </section>;
 }
 
+function LibraryFilter({ view, currentView, label, icon, onSelect, children }: {
+  view: LibraryView; currentView?: LibraryView; label: string; icon: AppIconName; onSelect: (view: LibraryView) => void; children?: ReactNode;
+}) {
+  const selected = view === currentView;
+  return <button type="button" className={`library-filter ${selected ? "selected" : ""}`} aria-current={selected ? "page" : undefined} onClick={() => onSelect(view)}>
+    <span><AppIcon name={icon} />{label}</span>{children}
+  </button>;
+}
+
+function SourceNavigationRow({ source, selected, onSelect, onEdit }: {
+  source: Source; selected: boolean; onSelect: (sourceId: string) => void; onEdit: (source: Source) => void;
+}) {
+  const archived = source.subscribed === false;
+  return <div className="source-row" onContextMenu={(event) => { event.preventDefault(); onEdit(source); }} onKeyDown={(event) => {
+    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+      event.preventDefault(); onEdit(source);
+    }
+  }}>
+    <button type="button" className={`source-filter ${selected ? "selected" : ""}`} aria-current={selected ? "page" : undefined} onClick={() => onSelect(source.id)} title={`${source.title} · ${sourceHealthLabel(source)}（右键配置）`} aria-label={`查看 ${source.title}；右键打开来源设置`}>
+      <SourceIcon source={source} /><span className="source-title">{source.title}</span>{!archived && source.status !== "active" && <span className="source-health-indicator" aria-label={sourceHealthLabel(source)}>•</span>}
+    </button>
+    {archived && <button type="button" className="action-button source-settings-shortcut" onClick={() => onEdit(source)} aria-label={`打开 ${source.title} 的来源设置`} title="来源设置"><AppIcon name="settings" /></button>}
+  </div>;
+}
+
 export function SourceSidebar({ sources, groups, libraryView, activeSourceId, libraryCounts, countsStale, collapsedGroups, onSelectLibrary, onSelectSource, onToggleGroup, onEditSource, onOpenSettings }: {
   sources: Source[];
   groups: SourceGroup[];
@@ -38,38 +63,29 @@ export function SourceSidebar({ sources, groups, libraryView, activeSourceId, li
   onEditSource: (source: Source) => void;
   onOpenSettings: () => void;
 }) {
+  const archivedSources = sources.filter((source) => source.subscribed === false);
+  const navigation = { currentView: activeSourceId ? undefined : libraryView, onSelect: onSelectLibrary };
   return <aside className="sidebar">
     <nav className="library-nav" aria-label="阅读分类">
       <div className="section-title">阅读</div>
-      <button className={`library-filter ${libraryView === "collected" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("collected")}><span><AppIcon name="today" />新收集</span><LibraryCount value={libraryCounts.newArrivals || ""} stale={countsStale} title="自上次启动以来收集的新内容，不含历史回填" /></button>
-      <button className={`library-filter ${libraryView === "all" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("all")}><span><AppIcon name="folder" />全部内容</span></button>
-      <button className={`library-filter ${libraryView === "today" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("today")}><span><AppIcon name="today" />今日发布</span></button>
-      <button className={`library-filter ${libraryView === "unread" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("unread")}><span><AppIcon name="unread" />未读</span><LibraryCount value={libraryCounts.unread} stale={countsStale} /></button>
-      <button className={`library-filter ${libraryView === "favorite" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("favorite")}><span><AppIcon name="favorite" />收藏</span><LibraryCount value={libraryCounts.favorite} stale={countsStale} /></button>
-      <button className={`library-filter ${libraryView === "history" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("history")}><span><AppIcon name="folder" />历史回填</span></button>
-      <button className={`library-filter ${libraryView === "trash" ? "selected" : ""}`} onClick={() => onSelectLibrary("trash")}><span><AppIcon name="folder" />最近删除</span></button>
+      <LibraryFilter {...navigation} view="collected" label="新收集" icon="today"><LibraryCount value={libraryCounts.newArrivals || ""} stale={countsStale} title="自上次启动以来收集的新内容，不含历史回填" /></LibraryFilter>
+      <LibraryFilter {...navigation} view="all" label="全部内容" icon="folder" />
+      <LibraryFilter {...navigation} view="today" label="今日发布" icon="today" />
+      <LibraryFilter {...navigation} view="unread" label="未读" icon="unread"><LibraryCount value={libraryCounts.unread} stale={countsStale} /></LibraryFilter>
+      <LibraryFilter {...navigation} view="favorite" label="收藏" icon="favorite"><LibraryCount value={libraryCounts.favorite} stale={countsStale} /></LibraryFilter>
+      <LibraryFilter {...navigation} view="history" label="历史回填" icon="folder" />
+      <LibraryFilter {...navigation} view="trash" label="最近删除" icon="folder" />
     </nav>
     <section className="source-section" aria-labelledby="source-heading">
-      <div className="section-title" id="source-heading">来源 <span>{sources.filter((source) => source.subscribed !== false).length}</span></div>
+      <div className="section-title" id="source-heading">来源 <span>{sources.length - archivedSources.length}</span></div>
       <div className="source-list">
         {groups.map((group) => <section className="source-group" key={group.id}>
           <button type="button" className="source-group-heading" onClick={() => onToggleGroup(group.id)} aria-expanded={!collapsedGroups[group.id]}>
             <span className="source-group-label"><AppIcon name={collapsedGroups[group.id] ? "chevron-right" : "chevron-down"} /><AppIcon name="folder" /><span title={group.title}>{group.title}</span></span><em>{group.sources.length}</em>
           </button>
-          {!collapsedGroups[group.id] && group.sources.map((source) => (
-            <div className="source-row" key={source.id} onContextMenu={(event) => { event.preventDefault(); onEditSource(source); }}>
-              <button className={`source-filter ${activeSourceId === source.id ? "selected" : ""}`} onClick={() => onSelectSource(source.id)} onKeyDown={(event) => {
-                if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
-                  event.preventDefault();
-                  onEditSource(source);
-                }
-              }} title={`${source.title} · ${sourceHealthLabel(source)}（右键配置）`} aria-label={`查看 ${source.title}；右键打开来源设置`}>
-                <SourceIcon source={source} /><span className="source-title">{source.title}</span>{source.status !== "active" && <span className="source-health-indicator" aria-label={sourceHealthLabel(source)}>•</span>}
-              </button>
-            </div>
-          ))}
+          {!collapsedGroups[group.id] && group.sources.map((source) => <SourceNavigationRow key={source.id} source={source} selected={activeSourceId === source.id} onSelect={onSelectSource} onEdit={onEditSource} />)}
         </section>)}
-        {sources.some((source) => source.subscribed === false) && <details className="archived-sources"><summary>已取消订阅</summary>{sources.filter((source) => source.subscribed === false).map((source) => <div className="source-row" key={source.id}><button className={`source-filter ${activeSourceId === source.id ? "selected" : ""}`} onClick={() => onSelectSource(source.id)}><SourceIcon source={source} /><span className="source-title">{source.title}</span></button><button type="button" onClick={() => onEditSource(source)} aria-label={`重新订阅 ${source.title}`}>＋</button></div>)}</details>}
+        {archivedSources.length > 0 && <details className="archived-sources"><summary>已取消订阅</summary>{archivedSources.map((source) => <SourceNavigationRow key={source.id} source={source} selected={activeSourceId === source.id} onSelect={onSelectSource} onEdit={onEditSource} />)}</details>}
         {!sources.length && <p className="empty-side">先添加一个公开 Feed 或网页。</p>}
       </div>
     </section>

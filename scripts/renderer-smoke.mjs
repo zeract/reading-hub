@@ -453,8 +453,29 @@ try {
   await clickText(".source-settings-operations button", "取消订阅");
   await waitFor(window, "Boolean(document.querySelector('.archived-sources')) && !document.querySelector('.source-settings-form')");
   assert(database.getSource(source.id).subscribed === false && database.getEntry("success").favorite, "Unsubscribe must retain favorites.");
+  await evaluate("document.querySelector('.archived-sources summary').focus()");
+  await pressKey("Enter");
+  await waitFor(window, "document.querySelector('.archived-sources').open");
+  await evaluate("document.querySelector('.archived-sources .source-filter').click()");
+  await waitFor(window, "document.querySelector('.archived-sources .source-filter')?.getAttribute('aria-current') === 'page'");
+  assert(await evaluate("document.querySelectorAll('.sidebar [aria-current=\"page\"]').length === 1 && !document.querySelector('.library-filter[aria-current]')"), "An archived source must be the only current navigation destination.");
+  await evaluate("document.querySelector('.archived-sources .source-filter').focus()");
+  await pressKey("F10", ["shift"]);
+  await waitFor(window, "Boolean(document.querySelector('.source-settings-form'))");
+  assert(database.getSource(source.id).subscribed === false, "Opening archived source settings must not resubscribe it.");
+  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
+  await evaluate("document.querySelector('.source-settings-shortcut').click()");
+  await waitFor(window, "document.querySelector('.source-settings-form input')?.value === 'Workflow fixture'");
+  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const button = document.querySelector('.source-settings-shortcut'); const rect = button.getBoundingClientRect(); const row = button.closest('.source-row').getBoundingClientRect(); const style = getComputedStyle(button); const tokens = getComputedStyle(document.documentElement); return rect.width >= 32 && rect.height >= 32 && rect.right <= row.right && style.minHeight === tokens.getPropertyValue('--control-height').trim() && style.borderRadius === tokens.getPropertyValue('--control-radius').trim(); })()"), "Archived settings shortcuts must use shared dimensions and remain inside the source row.");
+    await writeFile(path.join(tmpdir(), `reading-hub-archived-navigation-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  await evaluate("document.querySelector('.archived-sources summary').click()");
   await clickText(".library-filter", "全部内容");
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 3");
+  assert(await evaluate("document.querySelectorAll('.sidebar [aria-current=\"page\"]').length === 1 && document.querySelector('.library-filter[aria-current]')?.textContent === '全部内容'"), "Library navigation must replace the archived source's current state.");
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25]]) {
     await setViewport(width, height, scale);
     const geometry = await evaluate(`({ overflow: document.documentElement.scrollWidth > innerWidth + 1, navBottom: document.querySelector('.library-nav').getBoundingClientRect().bottom, footerTop: document.querySelector('.sidebar-footer').getBoundingClientRect().top, sourcesHeight: document.querySelector('.source-list').clientHeight })`);

@@ -473,6 +473,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .source-health-error { margin-top: 8px; color: var(--ink-soft); }
 .source-health-indicator { color: var(--muted); flex: 0 0 auto; }
 .archived-sources { padding: 8px; font-size: 12px; color: var(--muted); }
-.archived-sources .source-row { display: flex; align-items: center; }
+.archived-sources .source-row { display: flex; align-items: center; gap: 4px; }
 .archived-sources .source-filter { flex: 1; min-width: 0; }
+.source-settings-shortcut { flex: 0 0 var(--control-height); width: var(--control-height); padding: 6px; }
 .archived-sources summary, .source-settings-form summary { cursor: pointer; }
