@@ -68,7 +68,7 @@ describe("source configuration and active synchronization", () => {
   });
 
   it.each(["settings", "scope", "rule", "subscription"])("does not cancel an active refresh when the %s write fails", async (change) => {
-    const { db, source, calls, sync, service, outcome } = fixture();
+    const { db, source, calls, sync, service, outcome } = fixture(change === "rule" ? "generic" : "rss");
     const pending = sync.syncSource(source.id);
     let write: ReturnType<typeof vi.spyOn> | undefined;
     try {

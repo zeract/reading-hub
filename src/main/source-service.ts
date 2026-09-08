@@ -1,6 +1,6 @@
 import { WeightedLruCache } from "./weighted-lru-cache";
 import { throwIfAborted } from "./cancellation";
-import { isRetiredXPublicProfile } from "../shared/source-capabilities";
+import { isRetiredXPublicProfile, sourceCapabilities } from "../shared/source-capabilities";
 import { randomUUID } from "node:crypto";
 import type {
   Account,
@@ -230,12 +230,20 @@ export class SourceService {
 
   async calibrate(sourceId: string, signal?: AbortSignal): Promise<CalibrationResult> {
     throwIfAborted(signal);
-    const source = this.db.getSource(sourceId);
-    if (!source) throw new Error("来源不存在。");
-    if (source.kind !== "generic") throw new Error("只有普通网页来源需要校准。");
+    const source = this.requireCalibratableSource(sourceId);
     const result = await this.probeService.calibrate(source.url, signal);
     throwIfAborted(signal);
+    this.requireCalibratableSource(sourceId);
     return result;
+  }
+
+  private requireCalibratableSource(sourceId: string): Source {
+    const source = this.db.getSource(sourceId);
+    if (!source) throw new Error("来源不存在。");
+    if (!sourceCapabilities(source).canCalibrate) {
+      throw new Error(source.kind !== "generic" ? "只有普通网页来源需要校准。" : "来源已取消订阅，请重新订阅后再校准。");
+    }
+    return source;
   }
 
   updateSettings(sourceId: string, settings: SourceSettings): Source {
@@ -265,7 +273,7 @@ export class SourceService {
   /** A confirmed calibration replaces collected origins even for an identical
    * rule. Cancel after commit so a late extraction cannot undo that reset. */
   updateRule(sourceId: string, rule: Source["extractionRule"]): void {
-    if (!this.db.getSource(sourceId)) throw new Error("来源不存在。");
+    this.requireCalibratableSource(sourceId);
     this.db.updateRule(sourceId, rule ? { ...rule, selection: "manual" } : rule);
     this.sync.cancelSource(sourceId);
   }
