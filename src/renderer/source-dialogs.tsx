@@ -209,29 +209,45 @@ function AcademicSourcePane({ onSaved }: { onSaved: () => Promise<void> }) {
 
 export function CalibrationDialog({ source, onClose, onSaved }: { source: Source; onClose: () => void; onSaved: () => Promise<void> }) {
   const [result, setResult] = useState<CalibrationResult>();
+  const [pending, setPending] = useState<"refresh" | "reload">();
   const { busy, error, run, invalidate } = useAsyncAction();
   const detect = useCallback(async () => {
     await run(async (isCurrent) => {
       setResult(undefined);
+      setPending(undefined);
       const detected = await window.reader.calibrateSource(source.id);
       if (isCurrent()) setResult(detected);
     });
   }, [source.id, run]);
   useEffect(() => { void detect(); return invalidate; }, [detect, invalidate]);
-  async function apply(candidate: CalibrationResult["candidates"][number]) {
-    await run(async () => {
-      await window.reader.updateRule(source.id, candidate.rule);
+
+  async function finish(isCurrent: () => boolean, stage: "refresh" | "reload") {
+    if (stage === "refresh") {
       await window.reader.refreshSource(source.id);
-      await onSaved();
+      if (isCurrent()) setPending("reload");
+    }
+    await onSaved();
+    if (isCurrent()) setPending(undefined);
+  }
+
+  async function apply(candidate: CalibrationResult["candidates"][number]) {
+    if (pending) return;
+    await run(async (isCurrent) => {
+      await window.reader.updateRule(source.id, candidate.rule);
+      // Rule confirmation resets collected origins. After it commits, retry
+      // only the unfinished follow-up, never the destructive write itself.
+      if (isCurrent()) setPending("refresh");
+      await finish(isCurrent, "refresh");
     });
   }
   return <Dialog title={`自动校准「${source.title}」`} onClose={onClose}>
     <p className="dialog-intro">无需了解 CSS。请从下方候选中选择一组看起来像该网站文章列表的卡片；应用会保存规则、移除之前误识别的卡片，并立即验证。</p>
     {busy && !result && <p className="dialog-intro">正在分析网页结构…</p>}
-    {result?.candidates.map((candidate, index) => <section className="calibration-candidate" key={`${candidate.label}-${index}`}><div><strong>{candidate.label}</strong><span>识别置信度 {Math.round(candidate.confidence * 100)}%</span></div><div className="preview-list">{candidate.preview.slice(0, 2).map((entry) => <div key={entry.url}><strong>{entry.title}</strong><span>{entry.summary || entry.url}</span></div>)}</div><button className="primary" onClick={() => void apply(candidate)} disabled={busy}>这组内容是正确的</button></section>)}
+    {result?.candidates.map((candidate, index) => <section className="calibration-candidate" key={`${candidate.label}-${index}`}><div><strong>{candidate.label}</strong><span>识别置信度 {Math.round(candidate.confidence * 100)}%</span></div><div className="preview-list">{candidate.preview.slice(0, 2).map((entry) => <div key={entry.url}><strong>{entry.title}</strong><span>{entry.summary || entry.url}</span></div>)}</div><button className="primary" onClick={() => void apply(candidate)} disabled={busy || Boolean(pending)}>这组内容是正确的</button></section>)}
     {result && !result.candidates.length && <p className="dialog-intro">{result.message}</p>}
-    {error && <p className="error">{error}</p>}
-    <div className="dialog-actions"><button type="button" onClick={onClose}>取消</button><button type="button" onClick={() => void detect()} disabled={busy}>重新自动检测</button></div>
+    {pending && <p className="source-settings-note calibration-status" role="status">{pending === "refresh" ? "规则已保存，来源刷新尚未完成。" : "规则已保存且来源已刷新，列表更新尚未完成。"}{busy ? "正在处理…" : "可重试继续，或关闭窗口稍后刷新。"}</p>}
+    {error && <p className="error calibration-error" role="alert" tabIndex={0}>{error}</p>}
+    <div className="dialog-actions"><button type="button" onClick={onClose}>{pending || busy ? "关闭" : "取消"}</button><button type="button" onClick={() => void detect()} disabled={busy || Boolean(pending)}>重新自动检测</button>{pending && <button type="button" className="primary" disabled={busy} onClick={() => void run((isCurrent) => finish(isCurrent, pending))}>{pending === "refresh" ? "重试刷新" : "重试更新列表"}</button>}</div>
   </Dialog>;
 }
 

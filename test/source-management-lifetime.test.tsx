@@ -140,6 +140,50 @@ describe("source management request lifetime", () => {
     await act(async () => button("这组内容是正确的").click()); expect(saved).toHaveBeenCalledOnce();
   });
 
+  it("retries a failed calibration refresh without resetting collected content again", async () => {
+    api.refreshSource.mockRejectedValueOnce(new Error("Refresh failed")); await mount("calibration");
+    await act(async () => button("这组内容是正确的").click());
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("规则已保存，来源刷新尚未完成");
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Refresh failed");
+    expect(button("这组内容是正确的").disabled).toBe(true);
+    expect(button("重新自动检测").disabled).toBe(true);
+    await act(async () => button("重试刷新").click());
+    expect(api.updateRule).toHaveBeenCalledOnce(); expect(api.refreshSource).toHaveBeenCalledTimes(2);
+    expect(saved).toHaveBeenCalledOnce(); expect(container.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("retries only the library reload after calibration and refresh have completed", async () => {
+    saved.mockRejectedValueOnce(new Error("Library read failed")); await mount("calibration");
+    await act(async () => button("这组内容是正确的").click());
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("规则已保存且来源已刷新，列表更新尚未完成");
+    await act(async () => button("重试更新列表").click());
+    expect(api.updateRule).toHaveBeenCalledOnce(); expect(api.refreshSource).toHaveBeenCalledOnce();
+    expect(saved).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps recovery pending across repeated failures and excludes duplicate retries", async () => {
+    api.refreshSource.mockRejectedValueOnce(new Error("First failure")).mockRejectedValueOnce(new Error("Second failure"));
+    await mount("calibration"); await act(async () => button("这组内容是正确的").click());
+    await act(async () => button("重试刷新").click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Second failure");
+    const pending = deferred<void>(); api.refreshSource.mockReturnValueOnce(pending.promise);
+    await act(async () => { button("重试刷新").click(); button("重试刷新").click(); });
+    expect(api.refreshSource).toHaveBeenCalledTimes(3); expect(api.updateRule).toHaveBeenCalledOnce();
+    expect(button("重试刷新").disabled).toBe(true);
+    await act(async () => pending.resolve()); expect(saved).toHaveBeenCalledOnce();
+  });
+
+  it("does not leak a closed calibration recovery into a replacement session", async () => {
+    api.refreshSource.mockRejectedValueOnce(new Error("Refresh failed")); await mount("calibration");
+    await act(async () => button("这组内容是正确的").click());
+    const pending = deferred<void>(); api.refreshSource.mockReturnValueOnce(pending.promise);
+    await act(async () => button("重试刷新").click());
+    await mount("calibration", "replacement");
+    await act(async () => pending.resolve());
+    expect(saved).toHaveBeenCalledOnce(); expect(button("这组内容是正确的").disabled).toBe(false);
+    expect(container.querySelector('[role="status"]')).toBeNull();
+  });
+
   it("does not publish a closed detection into a new calibration session", async () => {
     const pending = deferred<CalibrationResult>(); api.calibrateSource.mockReturnValueOnce(pending.promise);
     await mount("calibration"); await mount("calibration", "replacement");

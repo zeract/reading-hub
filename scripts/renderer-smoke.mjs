@@ -49,6 +49,7 @@ let completeObsoleteSearch;
 let managementRequested;
 let completeManagement;
 let managementWrites = 0;
+let managementRefreshes = 0;
 let managementFailure;
 let managementCollection;
 let managementScopeWrites = 0;
@@ -102,6 +103,8 @@ const channels = [
   })]),
   ["source:calibration", () => ({ title: "Calibration fixture", url: "https://example.com", candidates: [{ label: "Fixture cards", confidence: 0.9, rule: { version: 1, itemRootSelector: "article" }, preview: [] }] })],
   ["source:refresh", () => {
+    managementRefreshes++;
+    if (managementFailure === "calibration-refresh") throw new Error(`Synthetic calibration refresh failure ${"UnbrokenDiagnostic".repeat(35)}`);
     if (managementFailure === "refresh") throw new Error("Synthetic refresh failure");
     if (delayedNavigationCommand === "refresh") return deferNavigationCommand(() => undefined);
   }],
@@ -743,6 +746,28 @@ try {
     if (mode === "settings") assert(await evaluate("document.querySelector('.source-settings-form input').value === 'Replacement draft'"), "A reload from the old save must preserve the replacement draft.");
     await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
   }
+  await openManagement();
+  await clickText(".source-settings-operations button", "自动校准");
+  await waitFor(window, "Boolean(document.querySelector('.calibration-candidate button'))");
+  managementFailure = "calibration-refresh";
+  const calibrationRequested = new Promise((resolve) => { managementRequested = resolve; });
+  const beforeCalibrationWrites = managementWrites;
+  const beforeCalibrationRefreshes = managementRefreshes;
+  await clickText(".calibration-candidate button", "这组内容是正确的");
+  await calibrationRequested;
+  completeManagement();
+  await waitFor(window, "Boolean(document.querySelector('.calibration-error'))");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    await evaluate("document.querySelector('.dialog-actions .primary').scrollIntoView({ block: 'center' }); new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    assert(await evaluate("(() => { const error = document.querySelector('.calibration-error'); const retry = document.querySelector('.dialog-actions .primary'); const rect = retry.getBoundingClientRect(); const dialog = retry.closest('.dialog').getBoundingClientRect(); return document.querySelector('.calibration-status').getBoundingClientRect().top >= document.querySelector('.calibration-candidate').getBoundingClientRect().bottom + 8 && document.querySelector('.calibration-candidate button').disabled && document.querySelector('.dialog-actions button:nth-child(2)').disabled && document.querySelector('.dialog [role=status]').textContent.includes('规则已保存，来源刷新尚未完成') && error.scrollWidth <= error.clientWidth + 1 && error.clientHeight <= parseFloat(getComputedStyle(error).fontSize) * 9 + 1 && rect.top >= dialog.top && rect.bottom <= dialog.bottom && rect.right <= dialog.right && !retry.disabled; })()"), "Calibration recovery must keep committed candidates locked and its bounded error and retry reachable.");
+    await writeFile(path.join(tmpdir(), `reading-hub-calibration-recovery-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  managementFailure = undefined;
+  await evaluate("document.querySelector('.dialog-actions .primary').focus()");
+  await pressKey("Enter");
+  await waitFor(window, "!document.querySelector('.dialog')");
+  assert(managementWrites === beforeCalibrationWrites + 1 && managementRefreshes === beforeCalibrationRefreshes + 2, "Calibration recovery must retry only the failed refresh, without another rule reset.");
   await openManagement();
   for (const [operation, label] of [["refresh", "立即刷新"], ["subscription", "取消订阅"]]) {
     managementFailure = operation;
