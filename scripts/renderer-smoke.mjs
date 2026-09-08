@@ -35,12 +35,21 @@ let providerLists = 0;
 let settingsSaves = 0;
 let pendingSettingsSave;
 let settingsRequested;
+let previewRequested;
+const pendingPreviews = [];
 const fixtureProviders = [
   { id: "openai", label: "Fixture AI", model: "fixture", configured: true, requiresApiKey: true },
   { id: "deepseek", label: "Fixture secondary AI", model: "fixture-secondary", configured: true, requiresApiKey: true }
 ];
 const aiAnswer = "## Fixture answer\n\nInline $x^2$.\n\n$$\ny=x+1\n$$";
 const channels = [
+  ["source:preview", (_event, url) => {
+    const token = `fixture-preview-${pendingPreviews.length}`;
+    return new Promise((resolve) => {
+      pendingPreviews.push(() => resolve({ token, probe: { url, title: url, kind: "rss", confidence: 1, requiresReview: false, preview: [] } }));
+      previewRequested?.();
+    });
+  }],
   ["ai:list-providers", () => { providerLists++; return fixtureProviders; }],
   ["ai:configure", (_event, configuration) => {
     settingsSaves++;
@@ -313,6 +322,26 @@ try {
   await waitFor(window, "!document.querySelector('.dialog')");
   assert(await evaluate("document.activeElement === document.querySelector('[aria-label=\"添加来源\"]')"), "Closing a modal must restore its opener's focus.");
   await evaluate("document.querySelector('[aria-label=\"添加来源\"]').click()");
+  const previewStarted = new Promise((resolve) => { previewRequested = resolve; });
+  await evaluate(`(() => { const input = document.querySelector('#source-url'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'https://example.com/obsolete-feed'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await evaluate("document.querySelector('.connector-form').requestSubmit()");
+  await previewStarted;
+  await pressKey("Escape");
+  await waitFor(window, "!document.querySelector('.dialog')");
+  await evaluate("document.querySelector('[aria-label=\"添加来源\"]').click()");
+  pendingPreviews[0]();
+  await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  assert(await evaluate("document.querySelector('.dialog h2')?.textContent === '添加来源' && !document.querySelector('.preview-source-title')"), "A closed source form must not reopen confirmation over its replacement.");
+  const currentPreviewStarted = new Promise((resolve) => { previewRequested = resolve; });
+  await evaluate(`(() => { const input = document.querySelector('#source-url'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'https://example.com/current-feed'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await evaluate("document.querySelector('.connector-form').requestSubmit(); document.querySelector('.connector-form').requestSubmit()");
+  await currentPreviewStarted;
+  assert(pendingPreviews.length === 2, "Repeated form submission must not start another source probe.");
+  pendingPreviews[1]();
+  await waitFor(window, "document.querySelector('.preview-source-title')?.textContent === 'https://example.com/current-feed'");
+  await clickText(".dialog-actions button", "取消");
+  await waitFor(window, "!document.querySelector('.dialog')");
+  await evaluate("document.querySelector('[aria-label=\"添加来源\"]').click()");
   await clickText('[role="tab"]', "学术作者");
   await evaluate(`const query = document.querySelector('#academic-query'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(query, 'Alexander'); query.dispatchEvent(new Event('input', { bubbles: true }));`);
   await evaluate("document.querySelector('.connector-form').requestSubmit()");
@@ -361,7 +390,7 @@ try {
   pendingSettingsSave();
   await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   assert(providerLists === listsBeforeCloseCompletion, "A closed settings view must not start another provider query.");
-  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore/settings-draft/settings-save-lock/settings-close/modal-keyboard/modal-focus/image-preview-dismissal, library layouts and four academic/settings layouts verified.");
+  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore/settings-draft/settings-save-lock/settings-close/modal-keyboard/modal-focus/image-preview-dismissal/source-preview-lifetime, library layouts and four academic/settings layouts verified.");
 } catch (error) {
   failure = error;
   console.error(error);

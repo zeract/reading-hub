@@ -1,6 +1,7 @@
 import { sourceCapabilities } from "../shared/source-capabilities";
 import { useCallback, useEffect, useState } from "react";
-import type { Entry, OpmlImportResult, ProbeResult, Source } from "../shared/types";
+import type { Entry, OpmlImportResult, Source } from "../shared/types";
+import type { PendingPreview } from "../shared/ipc";
 import { errorMessage } from "./errors";
 import { Timeline, SourceSidebar } from "./library-pane";
 import type { LibraryView } from "./library-view";
@@ -10,7 +11,6 @@ import { AddSourceDialog, CalibrationDialog, isRetiredXPublicProfile, PreviewDia
 import { AppIcon } from "./ui-icons";
 import { useLibraryData } from "./use-library-data";
 
-type PendingPreview = { token: string; probe: ProbeResult };
 type AppView = "library" | "settings";
 
 /**
@@ -73,19 +73,10 @@ export function App() {
     if (!readingEntry) setReaderOnly(false);
   }, [readingEntry]);
 
-  const preview = useCallback(async (url: string) => {
-    if (!url.trim()) return;
-    setBusy(true);
+  const acceptPreview = useCallback((result: PendingPreview) => {
+    setPending(result);
+    setShowAddSource(false);
     setNotice(undefined);
-    try {
-      setPending(await window.reader.previewSource(url.trim()));
-      setShowAddSource(false);
-    } catch (error) {
-      setNotice(errorMessage(error));
-      throw error;
-    } finally {
-      setBusy(false);
-    }
   }, []);
 
   const importOpml = useCallback(async (): Promise<OpmlImportResult> => {
@@ -278,7 +269,7 @@ export function App() {
       {pending && <PreviewDialog pending={pending} onCancel={() => setPending(undefined)} onConfirm={() => void confirm()} busy={busy} />}
       {showAddSource && <AddSourceDialog
         onClose={() => setShowAddSource(false)}
-        onPreview={preview}
+        onPreview={acceptPreview}
         onImportOpml={importOpml}
         onZhihuStarted={async () => { setShowAddSource(false); setNotice("已打开知乎登录窗口；登录完成后会自动同步关注动态。"); await reload(); }}
         onXStarted={async () => { setShowAddSource(false); setNotice("X 已授权，正在同步关注账号的原创帖子。"); await reload(); }}

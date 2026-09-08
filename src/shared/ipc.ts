@@ -81,6 +81,7 @@ export const IPC_CHANNELS = {
 } as const;
 
 export type SourceSyncResult = { inserted: number; source: Source };
+export type PendingPreview = Awaited<ReturnType<ReaderApi["previewSource"]>>;
 
 /** Renderer-safe surface exposed by preload through `window.reader`. */
 export interface ReaderApi {

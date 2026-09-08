@@ -1,10 +1,11 @@
 import { isRetiredXPublicProfile, sourceCapabilities, sourceHealthLabel } from "../shared/source-capabilities";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ModalSurface } from "./modal-surface";
+import { LatestRequestGuard } from "./request-guard";
+import type { PendingPreview } from "../shared/ipc";
 import type {
   CalibrationResult,
   OpmlImportResult,
-  ProbeResult,
   Source,
   SourceCollectionSettings,
   SourceFacet,
@@ -14,7 +15,6 @@ import type {
 } from "../shared/types";
 import { errorMessage } from "./errors";
 
-type PendingPreview = { token: string; probe: ProbeResult };
 type AddSourceMethod = "public" | "zhihu" | "x" | "xiaohongshu" | "academic";
 
 export function PreviewDialog({ pending, onCancel, onConfirm, busy }: { pending: PendingPreview; onCancel: () => void; onConfirm: () => void; busy: boolean }) {
@@ -36,7 +36,7 @@ export function PreviewDialog({ pending, onCancel, onConfirm, busy }: { pending:
 
 export function AddSourceDialog({ onClose, onPreview, onImportOpml, onZhihuStarted, onXStarted, onXiaohongshuSaved, onAcademicSaved }: {
   onClose: () => void;
-  onPreview: (url: string) => Promise<void>;
+  onPreview: (preview: PendingPreview) => void;
   onImportOpml: () => Promise<OpmlImportResult>;
   onZhihuStarted: () => Promise<void>;
   onXStarted: () => Promise<void>;
@@ -66,31 +66,55 @@ export function AddSourceDialog({ onClose, onPreview, onImportOpml, onZhihuStart
   </Dialog>;
 }
 
-function PublicSourcePane({ onPreview, onImportOpml }: { onPreview: (url: string) => Promise<void>; onImportOpml: () => Promise<OpmlImportResult> }) {
+function PublicSourcePane({ onPreview, onImportOpml }: { onPreview: (preview: PendingPreview) => void; onImportOpml: () => Promise<OpmlImportResult> }) {
   const [url, setUrl] = useState("");
   const [error, setError] = useState<string>();
   const [imported, setImported] = useState<string>();
   const [busy, setBusy] = useState(false);
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    if (!url.trim()) return;
+  const requests = useRef(new LatestRequestGuard());
+  const operation = useRef<"preview" | "import" | undefined>(undefined);
+  useEffect(() => () => requests.current.invalidate(), []);
+
+  async function run(kind: "preview" | "import", task: (isCurrent: () => boolean) => Promise<void>) {
+    if (operation.current) return;
+    operation.current = kind;
+    const revision = requests.current.begin();
+    const isCurrent = () => requests.current.isCurrent(revision);
     setBusy(true); setError(undefined);
-    try { await onPreview(url.trim()); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
+    try { await task(isCurrent); }
+    catch (reason) { if (isCurrent()) setError(errorMessage(reason)); }
+    finally {
+      if (isCurrent()) { operation.current = undefined; setBusy(false); }
+    }
   }
-  async function importFile() {
-    setBusy(true); setError(undefined); setImported(undefined);
-    try {
-      const result = await onImportOpml();
-      if (!result.cancelled) setImported(`已导入 ${result.imported} 个 Feed${result.existing ? `；${result.existing} 个已存在` : ""}${result.skipped ? `；跳过 ${result.skipped} 个` : ""}。`);
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
+
+  function editUrl(value: string) {
+    setUrl(value); setError(undefined);
+    if (operation.current === "preview") {
+      requests.current.invalidate();
+      operation.current = undefined;
       setBusy(false);
     }
   }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!url.trim()) return;
+    await run("preview", async (isCurrent) => {
+      const result = await window.reader.previewSource(url.trim());
+      if (isCurrent()) onPreview(result);
+    });
+  }
+  async function importFile() {
+    await run("import", async (isCurrent) => {
+      setImported(undefined);
+      const result = await onImportOpml();
+      if (isCurrent() && !result.cancelled) setImported(`已导入 ${result.imported} 个 Feed${result.existing ? `；${result.existing} 个已存在` : ""}${result.skipped ? `；跳过 ${result.skipped} 个` : ""}。`);
+    });
+  }
   return <form className="connector-form" onSubmit={(event) => void submit(event)}>
     <label htmlFor="source-url">网址</label>
-    <input id="source-url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://… 或 http://…" type="url" required />
+    <input id="source-url" value={url} onChange={(event) => editUrl(event.target.value)} placeholder="https://… 或 http://…" type="url" required />
     <p className="dialog-intro">优先识别 RSS、Atom、JSON Feed；没有 Feed 时会从公开页面提取文章卡片。也可导入 OPML。明确添加的本机地址仅接受 RSS/Atom/JSON Feed，不能用于网页提取。X 主页请在“X 动态”中使用官方 API。</p>
     {error && <p className="error">{error}</p>}
     {imported && <p className="source-settings-note">{imported}</p>}
