@@ -33,6 +33,7 @@ export function App() {
     reloadError,
     clearReloadError,
     libraryCounts,
+    libraryCountsStale,
     activeSourceId,
     libraryView,
     entrySearch,
@@ -249,6 +250,7 @@ export function App() {
         libraryView={libraryView}
         activeSourceId={activeSourceId}
         libraryCounts={libraryCounts}
+        countsStale={libraryCountsStale}
         collapsedGroups={collapsedSourceGroups}
         onSelectLibrary={selectLibrary}
         onSelectSource={selectSource}

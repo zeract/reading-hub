@@ -12,7 +12,7 @@ let props: ComponentProps<typeof TimelineEmptyState>;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
-  props = { loading: false, failed: false, hasSources: true, view: "all", search: "", onClearSearch: vi.fn(), onRetry: vi.fn(), onAddSource: vi.fn(), onEditSource: vi.fn() };
+  props = { loading: false, failed: false, hasMore: false, hasSources: true, view: "all", search: "", onClearSearch: vi.fn(), onRetry: vi.fn(), onAddSource: vi.fn(), onEditSource: vi.fn() };
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 async function render(update: Partial<typeof props> = {}) { await act(async () => root.render(<TimelineEmptyState {...props} {...update} />)); }

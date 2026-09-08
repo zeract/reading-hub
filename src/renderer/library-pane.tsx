@@ -7,12 +7,17 @@ import type { SourceGroup } from "./source-groups";
 import { sourceHealthLabel } from "../shared/source-capabilities";
 import { AppIcon, SourceIcon } from "./ui-icons";
 
-export function SourceSidebar({ sources, groups, libraryView, activeSourceId, libraryCounts, collapsedGroups, onSelectLibrary, onSelectSource, onToggleGroup, onEditSource, onOpenSettings }: {
+function LibraryCount({ value, stale, title }: { value: number | ""; stale: boolean; title?: string }) {
+  return <em title={stale ? "计数暂未更新，请重新载入。" : title} aria-label={stale ? "计数暂未更新" : undefined}>{stale ? "—" : value}</em>;
+}
+
+export function SourceSidebar({ sources, groups, libraryView, activeSourceId, libraryCounts, countsStale, collapsedGroups, onSelectLibrary, onSelectSource, onToggleGroup, onEditSource, onOpenSettings }: {
   sources: Source[];
   groups: SourceGroup[];
   libraryView: LibraryView;
   activeSourceId?: string;
   libraryCounts: LibraryCounts;
+  countsStale: boolean;
   collapsedGroups: Record<string, boolean>;
   onSelectLibrary: (view: LibraryView) => void;
   onSelectSource: (sourceId?: string) => void;
@@ -23,11 +28,11 @@ export function SourceSidebar({ sources, groups, libraryView, activeSourceId, li
   return <aside className="sidebar">
     <nav className="library-nav" aria-label="阅读分类">
       <div className="section-title">阅读</div>
-      <button className={`library-filter ${libraryView === "collected" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("collected")}><span><AppIcon name="today" />新收集</span><em title="自上次启动以来收集的新内容，不含历史回填">{libraryCounts.newArrivals || ""}</em></button>
+      <button className={`library-filter ${libraryView === "collected" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("collected")}><span><AppIcon name="today" />新收集</span><LibraryCount value={libraryCounts.newArrivals || ""} stale={countsStale} title="自上次启动以来收集的新内容，不含历史回填" /></button>
       <button className={`library-filter ${libraryView === "all" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("all")}><span><AppIcon name="folder" />全部内容</span></button>
       <button className={`library-filter ${libraryView === "today" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("today")}><span><AppIcon name="today" />今日发布</span></button>
-      <button className={`library-filter ${libraryView === "unread" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("unread")}><span><AppIcon name="unread" />未读</span><em>{libraryCounts.unread}</em></button>
-      <button className={`library-filter ${libraryView === "favorite" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("favorite")}><span><AppIcon name="favorite" />收藏</span><em>{libraryCounts.favorite}</em></button>
+      <button className={`library-filter ${libraryView === "unread" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("unread")}><span><AppIcon name="unread" />未读</span><LibraryCount value={libraryCounts.unread} stale={countsStale} /></button>
+      <button className={`library-filter ${libraryView === "favorite" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("favorite")}><span><AppIcon name="favorite" />收藏</span><LibraryCount value={libraryCounts.favorite} stale={countsStale} /></button>
       <button className={`library-filter ${libraryView === "history" && !activeSourceId ? "selected" : ""}`} onClick={() => onSelectLibrary("history")}><span><AppIcon name="folder" />历史回填</span></button>
       <button className={`library-filter ${libraryView === "trash" ? "selected" : ""}`} onClick={() => onSelectLibrary("trash")}><span><AppIcon name="folder" />最近删除</span></button>
     </nav>
@@ -93,7 +98,8 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
     return true;
   });
   const title = activeSource?.title || ({ trash: "最近删除", all: "全部内容", collected: "新收集", history: "历史回填", today: "今日发布", unread: "未读文章", favorite: "收藏文章" } satisfies Record<LibraryView, string>)[libraryView];
-  const count = { value: hasMoreEntries ? `${entries.length}+` : entries.length, label: entrySearch.trim() ? "篇匹配" : "篇内容" };
+  const visibleCount = visibleEntries.length;
+  const count = { value: hasMoreEntries ? `${visibleCount}+` : visibleCount, label: entrySearch.trim() ? "篇匹配" : "篇内容" };
 
   return <section className="timeline" aria-label="文章列表">
     <header><div><p className="eyebrow">{activeSource ? "来源内容" : "阅读收件箱"}</p><h1>{title}</h1></div><span className="count">{count.value} {count.label}</span></header>
@@ -119,8 +125,8 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
     {notice && <div className="notice">{notice}{onUndo && <button type="button" disabled={busy} onClick={onUndo}>撤销删除</button>}<button onClick={onClearNotice}>×</button></div>}
     <div className="entry-list">
       {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntryId === entry.id} onRead={onUpdateEntry} isEntryUpdating={isEntryUpdating} onOpen={onOpenEntry} onDismiss={libraryView === "trash" ? onRestoreEntry || onDismissEntry : onDismissEntry} deleted={libraryView === "trash"} busy={busy} />)}
-      {!visibleEntries.length && <TimelineEmptyState loading={loadingEntries} failed={loadFailed} source={activeSource} hasSources={sourceById.size > 0} view={libraryView} search={entrySearch} onClearSearch={clearSearch} onRetry={onReload} onAddSource={onAddSource} onEditSource={onEditSource} />}
-      {hasMoreEntries && <div className="entry-load-more"><p>已加载 {entries.length} 篇内容</p><button type="button" onClick={onLoadMore} disabled={busy || loadingMoreEntries}>{loadingMoreEntries ? "正在加载…" : "加载更多"}</button></div>}
+      {!visibleCount && <TimelineEmptyState loading={loadingEntries} failed={loadFailed} hasMore={hasMoreEntries} source={activeSource} hasSources={sourceById.size > 0} view={libraryView} search={entrySearch} onClearSearch={clearSearch} onRetry={onReload} onAddSource={onAddSource} onEditSource={onEditSource} />}
+      {hasMoreEntries && <div className="entry-load-more"><p>已显示 {visibleCount} 篇内容</p><button type="button" onClick={onLoadMore} disabled={busy || loadingMoreEntries || loadingEntries}>{loadingMoreEntries ? "正在加载…" : "加载更多"}</button></div>}
     </div>
   </section>;
 }

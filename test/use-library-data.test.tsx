@@ -48,6 +48,23 @@ afterEach(async () => {
 });
 
 describe("library read-model", () => {
+  it("keeps failed counts stale through notice dismissal and retry until a successful read", async () => {
+    expect(library.libraryCountsStale).toBe(false);
+    listPage.mockRejectedValueOnce(new Error("List unavailable"));
+    await act(async () => { await library.reload().catch(() => undefined); });
+    expect(library.libraryCountsStale).toBe(true);
+    await act(async () => library.clearReloadError());
+    expect(library.libraryCountsStale).toBe(true);
+    let finish!: (page: EntryPage) => void;
+    listPage.mockImplementationOnce(() => new Promise<EntryPage>((resolve) => { finish = resolve; }));
+    let retried!: Promise<void>;
+    await act(async () => { retried = library.reload(); });
+    expect(library.loadingEntries).toBe(true);
+    expect(library.libraryCountsStale).toBe(true);
+    await act(async () => { finish({ entries: records.slice(0, 100) }); await retried; });
+    expect(library.libraryCountsStale).toBe(false);
+  });
+
   it("retains a committed flag in visible cards when the following refresh fails", async () => {
     const original = library.entries;
     const apply = library.applyEntryState;

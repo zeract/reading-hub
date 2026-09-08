@@ -713,6 +713,28 @@ try {
   await evaluate("document.querySelector('.reader-view .favorite-button').click()");
   await waitFor(window, "document.querySelector('.reader-view .favorite-button')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.reader-view .favorite-button').disabled");
   assert(database.getEntry("success").favorite, "The next toggle must use the committed value, not the stale list snapshot.");
+  await evaluate("[...document.querySelectorAll('.library-filter')].find(item => item.querySelector('span')?.textContent === '收藏').click()");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 1");
+  await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Readable fixture\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.reader-article')) && document.querySelector('.entry-card.selected')?.classList.contains('read')");
+  libraryPageFailure = true;
+  await evaluate("document.querySelector('.reader-view .favorite-button').click()");
+  await waitFor(window, "document.querySelector('.empty-state h2')?.textContent === '暂时无法载入内容' && !document.querySelector('.reader-view .favorite-button').disabled");
+  assert(await evaluate("document.querySelectorAll('.entry-card').length === 0 && document.querySelector('.timeline .count')?.textContent === '0 篇内容'"), "Removing the last visible favorite must also update the displayed count when refresh fails.");
+  assert(await evaluate("[...document.querySelectorAll('.library-filter em')].every(item => item.textContent === '—' && item.getAttribute('aria-label') === '计数暂未更新')"), "A failed reload must mark old sidebar counts as unavailable.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const timeline = document.querySelector('.timeline'); const count = timeline.querySelector('.count').getBoundingClientRect(); const retry = timeline.querySelector('.empty-state button').getBoundingClientRect(); const bounds = timeline.getBoundingClientRect(); return timeline.scrollWidth <= timeline.clientWidth + 1 && count.right <= bounds.right + 1 && retry.right <= bounds.right + 1; })()"), "The filtered count and retry action must remain inside the timeline.");
+    await writeFile(path.join(tmpdir(), `reading-hub-empty-favorite-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  libraryPageFailure = false;
+  await evaluate("document.querySelector('.reader-view .favorite-button').click()");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 1 && document.querySelector('.timeline .count')?.textContent === '1 篇内容' && !document.querySelector('.reader-view .favorite-button').disabled");
+  assert(await evaluate("[...document.querySelectorAll('.library-filter')].find(item => item.querySelector('span')?.textContent === '收藏')?.querySelector('em')?.textContent === '1'"), "Successful reload must restore the confirmed sidebar count.");
+  await clickText(".library-filter", "全部内容");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 3");
+  await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Readable fixture\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.reader-article'))");
   delayedNavigationCommand = "dismiss";
   const dismissalStarted = new Promise((resolve) => { navigationCommandRequested = resolve; });
   await evaluate("document.querySelector('.entry-card.selected .delete-entry').click()");

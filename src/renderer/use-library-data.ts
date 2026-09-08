@@ -17,6 +17,7 @@ export function useLibraryData() {
   const [sources, setSources] = useState<Source[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [libraryCounts, setLibraryCounts] = useState<LibraryCounts>(EMPTY_LIBRARY_COUNTS);
+  const [libraryCountsStale, setLibraryCountsStale] = useState(true);
   const [nextEntryCursor, setNextEntryCursor] = useState<EntryPageCursor>();
   const [loadingMoreEntries, setLoadingMoreEntries] = useState(false);
   const [reloadError, setReloadError] = useState<string>();
@@ -75,11 +76,13 @@ export function useLibraryData() {
       setEntries(nextPage.entries);
       setNextEntryCursor(nextPage.nextCursor);
       setLibraryCounts(nextLibraryCounts);
+      setLibraryCountsStale(false);
       setReloadError(undefined);
       setEntryLoadState("ready");
     } catch (error) {
       if (!isCurrent()) return;
       setReloadError(errorMessage(error));
+      setLibraryCountsStale(true);
       setEntryLoadState("error");
       throw error;
     } finally {
@@ -205,6 +208,7 @@ export function useLibraryData() {
     reloadError,
     clearReloadError: () => setReloadError(undefined),
     libraryCounts,
+    libraryCountsStale,
     activeSourceId,
     libraryView,
     entrySearch,

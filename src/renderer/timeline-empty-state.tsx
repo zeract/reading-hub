@@ -12,9 +12,10 @@ const EMPTY_VIEWS: Record<LibraryView, { title: string; description: string; ico
   trash: { title: "没有已删除内容", description: "删除的卡片会保留在本机，可在这里恢复。", icon: "folder" }
 };
 
-export function TimelineEmptyState({ loading, failed, source, hasSources, view, search, onClearSearch, onRetry, onAddSource, onEditSource }: {
+export function TimelineEmptyState({ loading, failed, hasMore, source, hasSources, view, search, onClearSearch, onRetry, onAddSource, onEditSource }: {
   loading: boolean;
   failed: boolean;
+  hasMore: boolean;
   source?: Source;
   hasSources: boolean;
   view: LibraryView;
@@ -31,6 +32,8 @@ export function TimelineEmptyState({ loading, failed, source, hasSources, view, 
   } else if (failed) {
     state = { title: "暂时无法载入内容", description: "可以重试载入，已保存的内容不会因此删除。", icon: "refresh" };
     action = { label: "重新载入", run: onRetry };
+  } else if (hasMore) {
+    state = { title: "还有内容尚未载入", description: "当前已载入的文章不符合筛选条件，可以继续加载更多。", icon: "reading" };
   } else if (search.trim()) {
     state = { title: "没有找到匹配内容", description: `没有找到“${search.trim()}”。搜索只匹配标题、作者和摘要，不会读取或保存文章全文。`, icon: "search" };
     action = { label: "清除搜索", run: onClearSearch };
