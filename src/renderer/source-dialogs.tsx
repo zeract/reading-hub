@@ -17,8 +17,26 @@ import { errorMessage } from "./errors";
 
 type AddSourceMethod = "public" | "zhihu" | "x" | "xiaohongshu" | "academic";
 
-export function PreviewDialog({ pending, onCancel, onConfirm, busy }: { pending: PendingPreview; onCancel: () => void; onConfirm: () => void; busy: boolean }) {
+export function PreviewDialog({ pending, onCancel, onConfirm }: { pending: PendingPreview; onCancel: () => void; onConfirm: () => Promise<void> }) {
   const { probe } = pending;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const saving = useRef(false);
+  const requests = useRef(new LatestRequestGuard());
+  useEffect(() => () => requests.current.invalidate(), []);
+
+  async function save() {
+    if (saving.current) return;
+    saving.current = true;
+    const revision = requests.current.begin();
+    setBusy(true); setError(undefined);
+    try { await onConfirm(); }
+    catch (reason) { if (requests.current.isCurrent(revision)) setError(errorMessage(reason)); }
+    finally {
+      if (requests.current.isCurrent(revision)) { saving.current = false; setBusy(false); }
+    }
+  }
+
   return <Dialog title="确认来源" onClose={onCancel} className="dialog--preview">
     <div className="preview-dialog__body">
       <p className="dialog-intro"><strong className="preview-source-title" title={probe.title}>{probe.title}</strong><br />{probe.kind === "rss" ? "已发现 Feed，将自动更新。" : probe.kind === "manual" ? "小红书分享链接将作为一次性卡片保存。" : probe.requiresReview ? "结构识别置信度较低，保存后需要校正规则。" : "已识别公开页面结构，将自动更新。"}</p>
@@ -29,8 +47,10 @@ export function PreviewDialog({ pending, onCancel, onConfirm, busy }: { pending:
           return <div key={entry.url} role="listitem"><strong title={title}>{title}</strong><span title={summary}>{summary}</span></div>;
         })}
       </div>
+      {busy && <p className="source-settings-note" role="status">来源正在保存，关闭窗口不会中止操作。</p>}
+      {error && <p className="error" role="alert">{error}</p>}
     </div>
-    <div className="dialog-actions dialog-actions--fixed"><button onClick={onCancel}>取消</button><button className="primary" onClick={onConfirm} disabled={busy}>保存来源</button></div>
+    <div className="dialog-actions dialog-actions--fixed"><button type="button" onClick={onCancel}>{busy ? "关闭" : "取消"}</button><button type="button" className="primary" onClick={() => void save()} disabled={busy}>{busy ? "保存中…" : "保存来源"}</button></div>
   </Dialog>;
 }
 

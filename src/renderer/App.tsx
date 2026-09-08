@@ -103,17 +103,10 @@ export function App() {
 
   const confirm = useCallback(async () => {
     if (!pending) return;
-    setBusy(true);
-    try {
-      const source = await window.reader.confirmSource(pending.token);
-      setPending(undefined);
-      setNotice(source.status === "needs_review" ? "已保存，但需要校正提取规则后才会自动刷新。" : "来源已添加。");
-      await reload();
-    } catch (error) {
-      setNotice(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
+    const source = await window.reader.confirmSource(pending.token);
+    setPending((current) => current?.token === pending.token ? undefined : current);
+    setNotice(source.status === "needs_review" ? "已保存，但需要校正提取规则后才会自动刷新。" : "来源已添加。");
+    await reload();
   }, [pending, reload]);
 
   const refresh = useCallback(async (source: Source) => {
@@ -266,7 +259,7 @@ export function App() {
         onOpenSettings={() => setAppView("settings")}
       /> : <ReaderPlaceholder />}
 
-      {pending && <PreviewDialog pending={pending} onCancel={() => setPending(undefined)} onConfirm={() => void confirm()} busy={busy} />}
+      {pending && <PreviewDialog key={pending.token} pending={pending} onCancel={() => setPending(undefined)} onConfirm={confirm} />}
       {showAddSource && <AddSourceDialog
         onClose={() => setShowAddSource(false)}
         onPreview={acceptPreview}

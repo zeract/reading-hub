@@ -9,9 +9,8 @@ const styles = readFileSync(resolve(process.cwd(), "src/renderer/styles.css"), "
 describe("source preview dialog", () => {
   it("keeps the scrolling preview body separate from the fixed confirmation actions", () => {
     const html = renderToStaticMarkup(<PreviewDialog
-      busy={false}
       onCancel={() => undefined}
-      onConfirm={() => undefined}
+      onConfirm={async () => undefined}
       pending={{
         token: "preview-token",
         probe: {

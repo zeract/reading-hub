@@ -37,12 +37,21 @@ let pendingSettingsSave;
 let settingsRequested;
 let previewRequested;
 const pendingPreviews = [];
+let confirmationMode = "failure";
+let confirmationRequests = 0;
+let confirmationRequested;
+let completeConfirmation;
 const fixtureProviders = [
   { id: "openai", label: "Fixture AI", model: "fixture", configured: true, requiresApiKey: true },
   { id: "deepseek", label: "Fixture secondary AI", model: "fixture-secondary", configured: true, requiresApiKey: true }
 ];
 const aiAnswer = "## Fixture answer\n\nInline $x^2$.\n\n$$\ny=x+1\n$$";
 const channels = [
+  ["source:confirm", () => {
+    confirmationRequests++;
+    if (confirmationMode === "failure") throw new Error("Synthetic confirmation failure");
+    return new Promise((resolve) => { completeConfirmation = () => resolve(source); confirmationRequested?.(); });
+  }],
   ["source:preview", (_event, url) => {
     const token = `fixture-preview-${pendingPreviews.length}`;
     return new Promise((resolve) => {
@@ -339,6 +348,32 @@ try {
   assert(pendingPreviews.length === 2, "Repeated form submission must not start another source probe.");
   pendingPreviews[1]();
   await waitFor(window, "document.querySelector('.preview-source-title')?.textContent === 'https://example.com/current-feed'");
+  await clickText(".dialog-actions button", "保存来源");
+  await waitFor(window, "document.querySelector('.dialog [role=\"alert\"]')?.textContent.includes('Synthetic confirmation failure') && !document.querySelector('.dialog-actions .primary').disabled");
+  assert(await evaluate("document.querySelector('.dialog [role=\"alert\"]').textContent === 'Synthetic confirmation failure'"), "UI errors must omit the Electron transport wrapper.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    window.setSize(width, height); window.webContents.setZoomFactor(scale);
+    await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    assert(await evaluate(`(() => { const dialog = document.querySelector('.dialog'); const error = dialog.querySelector('[role="alert"]').getBoundingClientRect(); const actions = dialog.querySelector('.dialog-actions').getBoundingClientRect(); return dialog.scrollWidth <= dialog.clientWidth + 1 && error.left >= 0 && error.right <= innerWidth + 1 && error.bottom <= actions.top && actions.bottom <= innerHeight; })()`), `Confirmation error and actions must fit ${width}px at ${scale}.`);
+    await writeFile(path.join(tmpdir(), `reading-hub-confirmation-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  confirmationMode = "pending";
+  const confirmationStarted = new Promise((resolve) => { confirmationRequested = resolve; });
+  await evaluate("document.querySelector('.dialog-actions .primary').click(); document.querySelector('.dialog-actions .primary').click()");
+  await confirmationStarted;
+  assert(confirmationRequests === 2, "Retry must start only one confirmation command.");
+  await clickText(".dialog-actions button", "关闭");
+  await waitFor(window, "!document.querySelector('.dialog')");
+  await evaluate("document.querySelector('[aria-label=\"添加来源\"]').click()");
+  const replacementStarted = new Promise((resolve) => { previewRequested = resolve; });
+  await evaluate(`(() => { const input = document.querySelector('#source-url'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'https://example.com/replacement-feed'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await evaluate("document.querySelector('.connector-form').requestSubmit()");
+  await replacementStarted;
+  pendingPreviews[2]();
+  await waitFor(window, "document.querySelector('.preview-source-title')?.textContent === 'https://example.com/replacement-feed'");
+  completeConfirmation();
+  await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  assert(await evaluate("document.querySelector('.preview-source-title')?.textContent === 'https://example.com/replacement-feed' && !document.querySelector('.dialog-actions .primary').disabled"), "A late successful confirmation must preserve the replacement preview and its controls.");
   await clickText(".dialog-actions button", "取消");
   await waitFor(window, "!document.querySelector('.dialog')");
   await evaluate("document.querySelector('[aria-label=\"添加来源\"]').click()");
