@@ -62,6 +62,10 @@ let pauseLibraryPage = false;
 let completeLibraryPage;
 let libraryPageRequested;
 let restoreFailure = false;
+let pauseFavorite = false;
+let favoriteRequested;
+let completeFavorite;
+let favoriteWrites = 0;
 function deferNavigationCommand(operation) {
   return new Promise((resolve, reject) => {
     completeNavigationCommand = () => {
@@ -149,7 +153,14 @@ const channels = [
   }],
   ["entry:counts", () => emptyLibrary ? { unread: 0, favorite: 0, today: 0 } : database.getLibraryCounts()],
   ["entry:read", (_event, id, read) => database.markRead(id, read)],
-  ["entry:favorite", (_event, id, favorite) => database.markFavorite(id, favorite)],
+  ["entry:favorite", (_event, id, favorite) => {
+    favoriteWrites++;
+    if (pauseFavorite && id === "success") return new Promise((resolve) => {
+      completeFavorite = () => { database.markFavorite(id, favorite); database.publishChanges(); resolve(); };
+      favoriteRequested?.();
+    });
+    return database.markFavorite(id, favorite);
+  }],
   ["entry:dismiss", (_event, id) => delayedNavigationCommand === "dismiss"
     ? deferNavigationCommand(() => database.dismissEntry(id)) : database.dismissEntry(id)],
   ["entry:restore", (_event, id) => {
@@ -641,6 +652,29 @@ try {
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 3");
   await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Readable fixture\"]').click()");
   await waitFor(window, "Boolean(document.querySelector('.reader-article'))");
+  pauseFavorite = true;
+  const favoriteStarted = new Promise((resolve) => { favoriteRequested = resolve; });
+  const previousFavoriteWrites = favoriteWrites;
+  await evaluate("document.querySelector('.reader-view .favorite-button').click()");
+  await favoriteStarted;
+  assert(await evaluate("document.querySelector('.entry-card.selected [aria-label=\"收藏\"]').disabled"), "Saving a reader favorite must also disable the same list action.");
+  await evaluate("document.querySelector('.entry-card.selected [aria-label=\"收藏\"]').click()");
+  assert(favoriteWrites === previousFavoriteWrites + 1, "The same pending favorite must not be written twice.");
+  await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Historical fixture\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.reader-article')) && document.querySelector('.entry-card.selected h2')?.textContent === 'Historical fixture'");
+  assert(await evaluate("!document.querySelector('.reader-view .favorite-button').disabled"), "A pending favorite must not block a different article.");
+  await evaluate("document.querySelector('.reader-view .favorite-button').click()");
+  await waitFor(window, "document.querySelector('.reader-view .favorite-button')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.reader-view .favorite-button').disabled");
+  pauseFavorite = false;
+  completeFavorite();
+  await waitFor(window, "[...document.querySelectorAll('.entry-card')].find(card => card.querySelector('h2')?.textContent === 'Readable fixture')?.querySelector('[aria-label=\"收藏\"]')?.textContent === '☆'");
+  assert(await evaluate("document.querySelector('.reader-view .favorite-button')?.getAttribute('aria-pressed') === 'true'"), "An old favorite completion must not change the current article.");
+  await evaluate("document.querySelector('.reader-view .favorite-button').click()");
+  await waitFor(window, "document.querySelector('.reader-view .favorite-button')?.getAttribute('aria-pressed') === 'false' && !document.querySelector('.reader-view .favorite-button').disabled");
+  await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Readable fixture\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.reader-article')) && !document.querySelector('.reader-view .favorite-button').disabled");
+  await evaluate("document.querySelector('.entry-card.selected [aria-label=\"收藏\"]').click()");
+  await waitFor(window, "document.querySelector('.reader-view .favorite-button')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.reader-view .favorite-button').disabled");
   delayedNavigationCommand = "dismiss";
   const dismissalStarted = new Promise((resolve) => { navigationCommandRequested = resolve; });
   await evaluate("document.querySelector('.entry-card.selected .delete-entry').click()");

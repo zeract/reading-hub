@@ -26,7 +26,7 @@ beforeEach(async () => {
     onAiStream: vi.fn(() => () => undefined), startAiStream: start, cancelAiStream: vi.fn(async () => undefined)
   } });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
-  await act(async () => root.render(<ReaderView entry={entry} onUpdateEntry={async () => true} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} />));
+  await act(async () => root.render(<ReaderView favoriteUpdating={false} entry={entry} onUpdateEntry={async () => true} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} />));
   await click("打开 AI 学习");
   list.mockImplementation(() => new Promise<AiProviderSettings[]>((resolve, reject) => pending.push({ resolve, reject })));
 });

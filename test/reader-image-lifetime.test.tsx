@@ -8,7 +8,7 @@ const card: Entry = { id: "one", sourceId: "source", url: "https://example.com/o
 let root: Root, container: HTMLDivElement;
 let load: ReturnType<typeof vi.fn>, cancel: ReturnType<typeof vi.fn>;
 async function render(id = "one") {
-  await act(async () => root.render(<StrictMode><ReaderView entry={{ ...card, id }} onUpdateEntry={async () => true} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} /></StrictMode>));
+  await act(async () => root.render(<StrictMode><ReaderView favoriteUpdating={false} entry={{ ...card, id }} onUpdateEntry={async () => true} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} /></StrictMode>));
 }
 async function failImage(selector = ".reader-cover"): Promise<HTMLImageElement> {
   const image = container.querySelector<HTMLImageElement>(selector)!;

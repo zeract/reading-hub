@@ -12,7 +12,7 @@ let update: ReturnType<typeof vi.fn>;
 let read: ReturnType<typeof vi.fn>;
 let cancelRead: ReturnType<typeof vi.fn>;
 async function render(entry = card, strict = false) {
-  const view = <ReaderView entry={entry} onUpdateEntry={update} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} />;
+  const view = <ReaderView favoriteUpdating={false} entry={entry} onUpdateEntry={update} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} />;
   await act(async () => root.render(strict ? <StrictMode>{view}</StrictMode> : view));
 }
 beforeEach(() => {

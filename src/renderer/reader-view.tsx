@@ -61,10 +61,11 @@ export function ReaderPlaceholder() {
   </section>;
 }
 
-export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleReaderOnly, onOpenSettings }: {
+export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, readerOnly, onToggleReaderOnly, onOpenSettings }: {
   entry: Entry;
   source?: Source;
   onUpdateEntry: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>;
+  favoriteUpdating: boolean;
   readerOnly: boolean;
   onToggleReaderOnly: () => void;
   onOpenSettings: () => void;
@@ -82,7 +83,6 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
   const [textSelection, setTextSelection] = useState<ReaderTextSelection>();
   const [selectionQuestion, setSelectionQuestion] = useState("");
   const [preferredAiProviderId, setPreferredAiProviderId] = useState<AiProviderId>("codex-cli");
-  const [favoriteUpdating, setFavoriteUpdating] = useState(false);
   const [languageSwitching, setLanguageSwitching] = useState<string>();
   const [languageSwitchError, setLanguageSwitchError] = useState<string>();
   const articleBodyElement = useRef<HTMLDivElement>(null);
@@ -277,15 +277,6 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
       request.finish();
     }
   }
-  async function toggleFavorite() {
-    if (favoriteUpdating) return;
-    setFavoriteUpdating(true);
-    try {
-      await onUpdateEntry(entry, "favorite", !entry.favorite);
-    } finally {
-      setFavoriteUpdating(false);
-    }
-  }
 
   const readerStyle = { "--reader-font-scale": String(preferences.fontScale) } as CSSProperties & Record<"--reader-font-scale", string>;
   const setPreset = (preset: ReaderPreset) => setPreferences((current) => ({ ...current, preset }));
@@ -334,7 +325,7 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
         {languageSwitchError && <span className="reader-language-error" role="status" title={languageSwitchError}>{languageSwitchError}</span>}
       </div>
       <div className="reader-toolbar-actions">
-        <button type="button" className={`toolbar-icon-button favorite-button${entry.favorite ? " is-favorite" : ""}`} aria-pressed={entry.favorite} aria-label={entry.favorite ? "取消收藏" : "收藏文章"} title={entry.favorite ? "取消收藏" : "收藏文章"} disabled={favoriteUpdating} onClick={() => void toggleFavorite()}>{entry.favorite ? "★" : "☆"}</button>
+        <button type="button" className={`toolbar-icon-button favorite-button${entry.favorite ? " is-favorite" : ""}`} aria-pressed={entry.favorite} aria-label={entry.favorite ? "取消收藏" : "收藏文章"} title={entry.favorite ? "取消收藏" : "收藏文章"} disabled={favoriteUpdating} onClick={() => void onUpdateEntry(entry, "favorite", !entry.favorite)}>{entry.favorite ? "★" : "☆"}</button>
         <button type="button" className="toolbar-icon-button ai-toggle" aria-pressed={assistantVisible} aria-label={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} title={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} disabled={!article} onClick={toggleAssistant}>✦</button>
         <button type="button" className="toolbar-icon-button reader-focus-toggle" aria-pressed={readerOnly} aria-label={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} title={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} onClick={onToggleReaderOnly}>⛶</button>
         <button type="button" className="toolbar-icon-button external-button" aria-label="在浏览器中打开原文" title="在浏览器中打开原文" onClick={() => void window.reader.openExternal(article?.url || entry.url)}>↗</button>

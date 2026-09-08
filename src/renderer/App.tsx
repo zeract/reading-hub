@@ -12,6 +12,7 @@ import { AppIcon } from "./ui-icons";
 import { useLibraryData } from "./use-library-data";
 import { useAsyncActivity } from "./use-async-activity";
 import { useLibraryNotice } from "./use-library-notice";
+import { useEntryMutations, type EntryMutationField } from "./use-entry-mutations";
 
 type AppView = "library" | "settings";
 type SourceDialogSession = { token: string; mode: "settings" | "calibration"; source: Source };
@@ -149,18 +150,10 @@ export function App() {
     }
   }), [reload, setNotice, track]);
 
-  const updateEntry = useCallback(async (entry: Entry, field: "read" | "favorite", value: boolean): Promise<boolean> => {
-    try {
-      if (field === "read") await window.reader.markRead(entry.id, value);
-      else await window.reader.markFavorite(entry.id, value);
-      setReadingEntry((current) => current?.id === entry.id ? { ...current, [field]: value } : current);
-      await reload();
-      return true;
-    } catch (error) {
-      setNotice(errorMessage(error));
-      return false;
-    }
-  }, [reload, setNotice]);
+  const commitEntryState = useCallback((entryId: string, field: EntryMutationField, value: boolean) => {
+    setReadingEntry((current) => current?.id === entryId ? { ...current, [field]: value } : current);
+  }, []);
+  const { updateEntry, isEntryUpdating } = useEntryMutations({ onCommitted: commitEntryState, reload, onError: setNotice });
 
   const openReader = useCallback((entry: Entry) => {
     setReadingEntry(entry);
@@ -276,6 +269,7 @@ export function App() {
         onClearNotice={() => { setNotice(undefined); clearReloadError(); }}
         onEntrySearchChange={setEntrySearch}
         onUpdateEntry={updateEntry}
+        isEntryUpdating={isEntryUpdating}
         onOpenEntry={openReader}
         onDismissEntry={dismissEntry}
         onLoadMore={() => void loadMoreEntries().catch((error) => setNotice(errorMessage(error)))}
@@ -284,6 +278,7 @@ export function App() {
         entry={readingEntry}
         source={sourceById.get(readingEntry.sourceId)}
         onUpdateEntry={updateEntry}
+        favoriteUpdating={isEntryUpdating(readingEntry.id, "favorite")}
         readerOnly={readerOnly}
         onToggleReaderOnly={() => setReaderOnly((current) => !current)}
         onOpenSettings={() => setAppView("settings")}

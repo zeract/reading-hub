@@ -1,3 +1,4 @@
+import type { EntryMutationPending } from "./use-entry-mutations";
 import { TimelineEmptyState } from "./timeline-empty-state";
 import { useRef } from "react";
 import type { Entry, LibraryCounts, Source } from "../shared/types";
@@ -58,7 +59,7 @@ export function SourceSidebar({ sources, groups, libraryView, activeSourceId, li
   </aside>;
 }
 
-export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, activeSource, libraryView, entrySearch, entries, hasMoreEntries, loadingMoreEntries, sourceById, readingEntryId, notice, busy, onUndo, onEditSource, onClearNotice, onEntrySearchChange, onUpdateEntry, onOpenEntry, onDismissEntry, onRestoreEntry, onLoadMore }: {
+export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, activeSource, libraryView, entrySearch, entries, hasMoreEntries, loadingMoreEntries, sourceById, readingEntryId, notice, busy, onUndo, onEditSource, onClearNotice, onEntrySearchChange, onUpdateEntry, isEntryUpdating, onOpenEntry, onDismissEntry, onRestoreEntry, onLoadMore }: {
   loadingEntries: boolean;
   loadFailed: boolean;
   onReload: () => void;
@@ -78,6 +79,7 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
   onClearNotice: () => void;
   onEntrySearchChange: (search: string) => void;
   onUpdateEntry: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>;
+  isEntryUpdating: EntryMutationPending;
   onOpenEntry: (entry: Entry) => void;
   onDismissEntry: (entry: Entry) => Promise<void>;
   onRestoreEntry?: (entry: Entry) => Promise<void>;
@@ -116,14 +118,14 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
     </form>}
     {notice && <div className="notice">{notice}{onUndo && <button type="button" disabled={busy} onClick={onUndo}>撤销删除</button>}<button onClick={onClearNotice}>×</button></div>}
     <div className="entry-list">
-      {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntryId === entry.id} onRead={onUpdateEntry} onOpen={onOpenEntry} onDismiss={libraryView === "trash" ? onRestoreEntry || onDismissEntry : onDismissEntry} deleted={libraryView === "trash"} busy={busy} />)}
+      {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntryId === entry.id} onRead={onUpdateEntry} isEntryUpdating={isEntryUpdating} onOpen={onOpenEntry} onDismiss={libraryView === "trash" ? onRestoreEntry || onDismissEntry : onDismissEntry} deleted={libraryView === "trash"} busy={busy} />)}
       {!visibleEntries.length && <TimelineEmptyState loading={loadingEntries} failed={loadFailed} source={activeSource} hasSources={sourceById.size > 0} view={libraryView} search={entrySearch} onClearSearch={clearSearch} onRetry={onReload} onAddSource={onAddSource} onEditSource={onEditSource} />}
       {hasMoreEntries && <div className="entry-load-more"><p>已加载 {entries.length} 篇内容</p><button type="button" onClick={onLoadMore} disabled={busy || loadingMoreEntries}>{loadingMoreEntries ? "正在加载…" : "加载更多"}</button></div>}
     </div>
   </section>;
 }
 
-function EntryCard({ entry, source, selected, onRead, onOpen, onDismiss, busy, deleted }: { deleted?: boolean; entry: Entry; source?: Source; selected: boolean; onRead: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>; onOpen: (entry: Entry) => void; onDismiss: (entry: Entry) => Promise<void>; busy: boolean }) {
+function EntryCard({ entry, source, selected, onRead, isEntryUpdating, onOpen, onDismiss, busy, deleted }: { isEntryUpdating: EntryMutationPending; deleted?: boolean; entry: Entry; source?: Source; selected: boolean; onRead: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>; onOpen: (entry: Entry) => void; onDismiss: (entry: Entry) => Promise<void>; busy: boolean }) {
   const date = entry.publishedAt
     ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(entry.publishedAt)
     : entry.observedAt ? `收集于 ${new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(entry.observedAt)}` : "刚刚收集";
@@ -137,6 +139,6 @@ function EntryCard({ entry, source, selected, onRead, onOpen, onDismiss, busy, d
       <div className="entry-copy"><p className="entry-source">{source?.title || "已保存内容"} <span>·</span> {date}{providers.length ? <><span>·</span>{providers.join(" / ")}</> : null}</p><h2>{entry.title}</h2>{entry.summary && <p className="summary">{entry.summary}</p>}{facets.length > 0 && <p className="entry-facets" aria-label="文章分类">{facets.map((facet) => <span key={`${facet.scheme}\u0000${facet.key}`}>{facet.label}</span>)}</p>}<p className="byline">{entry.author || "原文链接"}</p></div>
       {entry.imageUrl && <img src={entry.imageUrl} alt="" loading="lazy" />}
     </button>
-    <div className="entry-actions">{!deleted && <><button type="button" onClick={() => onOpen(entry)}>应用内阅读</button><button aria-label={entry.read ? "标为未读" : "标为已读"} onClick={() => void onRead(entry, "read", !entry.read)}>{entry.read ? "未读" : "已读"}</button><button aria-label="收藏" onClick={() => void onRead(entry, "favorite", !entry.favorite)}>{entry.favorite ? "★" : "☆"}</button></>}<button type="button" className="delete-entry" onClick={() => void onDismiss(entry)} disabled={busy}>{deleted ? "恢复内容" : "删除"}</button></div>
+    <div className="entry-actions">{!deleted && <><button type="button" onClick={() => onOpen(entry)}>应用内阅读</button><button disabled={isEntryUpdating(entry.id, "read")} aria-label={entry.read ? "标为未读" : "标为已读"} onClick={() => void onRead(entry, "read", !entry.read)}>{entry.read ? "未读" : "已读"}</button><button disabled={isEntryUpdating(entry.id, "favorite")} aria-label="收藏" onClick={() => void onRead(entry, "favorite", !entry.favorite)}>{entry.favorite ? "★" : "☆"}</button></>}<button type="button" className="delete-entry" onClick={() => void onDismiss(entry)} disabled={busy}>{deleted ? "恢复内容" : "删除"}</button></div>
   </article>;
 }
