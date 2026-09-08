@@ -20,7 +20,7 @@ const fixture = vi.hoisted(() => {
       setWindowOpenHandler: vi.fn(),
       on: (event: string, listener: (...args: any[]) => void) => this.listeners.set(event, listener),
       removeListener: (event: string) => this.listeners.delete(event),
-      executeJavaScriptInIsolatedWorld: () => capture()
+      executeJavaScriptInIsolatedWorld: async () => { const html = await capture(); return typeof html === "string" ? { html, url: this.url } : html; }
     };
     constructor() { windows.push(this); }
     async loadURL(url: string) { this.url = url; await navigate(this); if (fixture.status !== undefined) this.listeners.get("did-navigate")?.({}, url, fixture.status, "Untrusted remote status"); }

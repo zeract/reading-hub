@@ -42,9 +42,13 @@ export interface RenderedPageCapture {
 /** Observe before navigation: loadURL resolving only proves loading finished,
  * not that the server returned an article. Only main-frame responses count;
  * an image or iframe failure must not invalidate a successful document. */
-export function observeRenderedPage(contents: Pick<WebContents, "on" | "removeListener" | "executeJavaScriptInIsolatedWorld" | "getURL">): RenderedPageCapture {
+export function observeRenderedPage(contents: Pick<WebContents, "on" | "removeListener" | "executeJavaScriptInIsolatedWorld">): RenderedPageCapture {
   let status: number | undefined;
-  const onNavigation = (_event: Electron.Event, _url: string, responseCode: number) => { status = responseCode; };
+  let revision = 0;
+  const onNavigation = (_event: Electron.Event, _url: string, responseCode: number) => {
+    status = responseCode;
+    revision += 1;
+  };
   contents.on("did-navigate", onNavigation);
   const assertSuccess = () => {
     if (status === undefined || !Number.isInteger(status) || status < 100) {
@@ -56,10 +60,12 @@ export function observeRenderedPage(contents: Pick<WebContents, "on" | "removeLi
     async read(options) {
       throwIfAborted(options?.signal);
       assertSuccess();
+      const capturedRevision = revision;
       const page = await readRenderedPage(contents, options);
-      // A committed error navigation while DOM capture was pending must not
-      // lend the earlier document's success to the replacement error page.
+      // Even a reload to the same URL is a different document. Its HTTP status
+      // must not be paired with a snapshot captured before it committed.
       assertSuccess();
+      if (capturedRevision !== revision) throw new Error("页面在读取过程中发生跳转，请重试。");
       return page;
     },
     dispose() { contents.removeListener("did-navigate", onNavigation); }
@@ -68,24 +74,28 @@ export function observeRenderedPage(contents: Pick<WebContents, "on" | "removeLi
 
 /** Capture a bounded DOM using built-ins that page JavaScript cannot replace.
  * The caller owns navigation, access policy and destruction of its window. */
-export async function readRenderedPage(contents: Pick<WebContents, "executeJavaScriptInIsolatedWorld" | "getURL">, options?: PageRenderOptions): Promise<RenderedPage> {
+export async function readRenderedPage(contents: Pick<WebContents, "executeJavaScriptInIsolatedWorld">, options?: PageRenderOptions): Promise<RenderedPage> {
   throwIfAborted(options?.signal);
   const requestedLimit = options?.maxBytes;
   const maxBytes = requestedLimit !== undefined && Number.isFinite(requestedLimit) && requestedLimit > 0
     ? Math.floor(requestedLimit) : DEFAULT_DOCUMENT_MAX_BYTES;
   const request = withRequestTimeout(options?.signal, 5_000, "页面内容读取超时，请重试。");
   try {
-    const html: unknown = await awaitWithAbort(contents.executeJavaScriptInIsolatedWorld(DOCUMENT_WORLD_ID, [{ code: `(() => {
+    const snapshot: unknown = await awaitWithAbort(contents.executeJavaScriptInIsolatedWorld(DOCUMENT_WORLD_ID, [{ code: `(() => {
       const html = document.documentElement ? document.documentElement.outerHTML : "";
-      return new Blob([html]).size <= ${maxBytes} ? html : null;
+      return new Blob([html]).size <= ${maxBytes} ? { html, url: document.URL } : null;
     })()` }]), request.signal);
     throwIfAborted(request.signal);
-    if (html === null) throw new RenderedPageTooLargeError(maxBytes);
-    if (typeof html !== "string") throw new Error("页面内容读取失败，请重试。");
+    if (snapshot === null) throw new RenderedPageTooLargeError(maxBytes);
+    if (typeof snapshot !== "object" || !snapshot || Array.isArray(snapshot)
+      || !("html" in snapshot) || typeof snapshot.html !== "string"
+      || !("url" in snapshot) || typeof snapshot.url !== "string") throw new Error("页面内容读取失败，请重试。");
     // Defense at the host boundary as well. The isolated-world check keeps
     // normal oversized DOMs from crossing IPC in the first place.
-    if (Buffer.byteLength(html, "utf8") > maxBytes) throw new RenderedPageTooLargeError(maxBytes);
-    return { html, url: assertPublicUrl(contents.getURL()).toString() };
+    if (Buffer.byteLength(snapshot.html, "utf8") > maxBytes) throw new RenderedPageTooLargeError(maxBytes);
+    // URL and HTML were read synchronously in the same isolated script. A later
+    // history/fragment update must not change the base of the returned HTML.
+    return { html: snapshot.html, url: assertPublicUrl(snapshot.url).toString() };
   } finally {
     request.dispose();
   }

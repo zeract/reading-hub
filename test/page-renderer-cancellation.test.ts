@@ -16,7 +16,7 @@ const electron = vi.hoisted(() => {
       setWindowOpenHandler: vi.fn(),
       on: vi.fn((event: string, listener: (...args: any[]) => void) => this.listeners.set(event, listener)),
       removeListener: vi.fn((event: string) => this.listeners.delete(event)),
-      executeJavaScriptInIsolatedWorld: vi.fn((_world: number, scripts: Array<{ code: string }>) => renderState.readDocument(scripts[0].code))
+      executeJavaScriptInIsolatedWorld: vi.fn(async (_world: number, scripts: Array<{ code: string }>) => { const html = await renderState.readDocument(scripts[0].code); return typeof html === "string" ? { html, url: this.url } : html; })
     };
     readonly loadURL = vi.fn(async (...args: unknown[]) => { this.url = String(args[0]); await renderState.loadURL(...args); this.listeners.get("did-navigate")?.({}, this.url, 200, "OK"); });
 

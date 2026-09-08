@@ -148,17 +148,32 @@ try {
   const oversizedPageUrl = "https://rendered.example/oversized";
   const patchedDomPageUrl = "https://rendered.example/patched-dom";
   const basedPageUrl = "https://rendered.example/posts/based.html";
+  const snapshotPageUrl = "https://rendered.example/snapshots/original.html";
+  const snapshotReloadUrl = "https://rendered.example/snapshots/reloaded.html";
+  const changedHistoryUrls = [];
   const checkedPages = [];
   const statusPageUrl = (status) => `https://rendered.example/http-status/${status}`;
   const interceptRenderedPage = (_event, contents) => {
+    const executeSnapshot = contents.executeJavaScriptInIsolatedWorld.bind(contents);
+    contents.executeJavaScriptInIsolatedWorld = async (...args) => {
+      const capturedUrl = contents.getURL();
+      const result = await executeSnapshot(...args);
+      if (capturedUrl === snapshotPageUrl) {
+        await contents.executeJavaScript('history.replaceState(null, "", "/after-history/current.html"); document.querySelector("article").textContent = "Changed after snapshot";');
+        changedHistoryUrls.push(contents.getURL());
+      }
+      if (capturedUrl === snapshotReloadUrl) await contents.loadURL(snapshotReloadUrl);
+      return result;
+    };
     contents.session.protocol.handle("https", (request) => {
       assert.equal(request.headers.get("cookie"), null);
       if (request.url.startsWith("https://rendered.example/http-status/")) return new Response(`<article><h1>Readable error fixture</h1><p>${"This is an HTTP error, not an article. ".repeat(40)}</p></article>`, { status: Number(request.url.split("/").at(-1)), headers: { "content-type": "text/html" } });
       if (request.url === initialPageUrl) return new Response(null, { status: 302, headers: { location: finalPageUrl } });
       if (request.url === finalPageUrl) return new Response(`<article><h1>Fixture article</h1><p>${"Synthetic paragraph. ".repeat(50)}</p><img src="figure.svg"><a href="appendix.html">Fixture appendix</a></article>`, { headers: { "content-type": "text/html" } });
       if (request.url === basedPageUrl) return new Response(`<head><base href="../assets/"><link rel="alternate" type="application/rss+xml" href="feed.xml"></head><article><h1>Fixture article</h1><time datetime="2026-08-02"></time><p>${"Synthetic paragraph. ".repeat(50)}</p><img src="figure.svg"><a href="appendix.html">Fixture appendix</a><a href="archive.html">Archives</a></article>`, { headers: { "content-type": "text/html" } });
+      if ([snapshotPageUrl, snapshotReloadUrl].includes(request.url)) return new Response(`<article><h1>Original snapshot</h1><p>${"Original snapshot body. ".repeat(40)}</p><a href="appendix.html">Fixture appendix</a></article>`, { headers: { "content-type": "text/html" } });
       if (request.url === oversizedPageUrl) return new Response(`<script>window.Blob = class { get size() { return 0; } };</script><article>${"Synthetic content. ".repeat(200)}</article>`, { headers: { "content-type": "text/html" } });
-      if (request.url === patchedDomPageUrl) return new Response('<script>Object.defineProperty(Element.prototype, "outerHTML", { get() { return "<article>Forged snapshot</article>"; } });</script><article>Actual DOM fixture</article>', { headers: { "content-type": "text/html" } });
+      if (request.url === patchedDomPageUrl) return new Response('<script>Object.defineProperty(Element.prototype, "outerHTML", { get() { return "<article>Forged snapshot</article>"; } }); Object.defineProperty(Document.prototype, "URL", { get() { return "https://forged.example/"; } });</script><article>Actual DOM fixture</article>', { headers: { "content-type": "text/html" } });
       if (["https://rendered.example/papers/figure.svg", "https://rendered.example/assets/figure.svg"].includes(request.url)) return new Response('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>', { headers: { "content-type": "image/svg+xml" } });
       return new Response(null, { status: 404 });
     });
@@ -166,7 +181,7 @@ try {
   app.on("web-contents-created", interceptRenderedPage);
   try {
     const renderer = new IsolatedPageRenderer({ async assertAllowed(url) {
-      assert([initialPageUrl, finalPageUrl, oversizedPageUrl, patchedDomPageUrl, basedPageUrl].includes(url) || url.startsWith("https://rendered.example/http-status/")); checkedPages.push(url);
+      assert([initialPageUrl, finalPageUrl, oversizedPageUrl, patchedDomPageUrl, basedPageUrl, snapshotPageUrl, snapshotReloadUrl].includes(url) || url.startsWith("https://rendered.example/http-status/")); checkedPages.push(url);
     } });
     const page = await renderer.render(initialPageUrl);
     assert.equal(page.url, finalPageUrl);
@@ -192,6 +207,14 @@ try {
     await assert.rejects(renderer.render(oversizedPageUrl, { maxBytes: 256 }), RenderedPageTooLargeError);
     const cleanSnapshot = await renderer.render(patchedDomPageUrl);
     assert(cleanSnapshot.html.includes("Actual DOM fixture"));
+    assert.equal(cleanSnapshot.url, patchedDomPageUrl);
+    const stableSnapshot = await renderer.render(snapshotPageUrl);
+    assert.equal(stableSnapshot.url, snapshotPageUrl);
+    assert(stableSnapshot.html.includes("Original snapshot body."));
+    assert.deepEqual(changedHistoryUrls, ["https://rendered.example/after-history/current.html"]);
+    const stableArticle = extractReaderArticle(stableSnapshot.html, stableSnapshot.url, { id: "snapshot", title: "Snapshot", url: snapshotPageUrl });
+    assert(stableArticle.article.contentHtml.includes('href="https://rendered.example/snapshots/appendix.html"'));
+    await assert.rejects(renderer.render(snapshotReloadUrl), /页面在读取过程中发生跳转/);
     for (const status of [403, 404, 429, 503]) await assert.rejects(renderer.render(statusPageUrl(status)), { name: "RenderedPageHttpError", status });
   } finally { app.removeListener("web-contents-created", interceptRenderedPage); }
   console.log("Reading Hub network smoke test passed: AI semantic completion and final snapshots, LF/CRLF/CR, JSON, proxy and credential isolation, plus native rendered-page redirects and relative article URLs verified.");

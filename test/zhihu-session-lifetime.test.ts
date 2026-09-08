@@ -18,7 +18,7 @@ vi.mock("electron", async () => {
     destroyed = false;
     url = "https://www.zhihu.com/follow";
     webContents = Object.assign(new EventEmitter(), {
-      getURL: () => this.url, setWindowOpenHandler: vi.fn(), stop: vi.fn(), executeJavaScriptInIsolatedWorld: mocks.evaluate
+      getURL: () => this.url, setWindowOpenHandler: vi.fn(), stop: vi.fn(), executeJavaScriptInIsolatedWorld: async () => { const html = await mocks.evaluate(); return typeof html === "string" ? { html, url: this.url } : html; }
     });
     loadURL = async (url: string) => { await mocks.navigate(url); this.url = url; this.webContents.emit("did-navigate", {}, url, mocks.status, "Untrusted remote status"); };
     constructor(readonly options: unknown) { super(); mocks.windows.push(this); mocks.created(); }
