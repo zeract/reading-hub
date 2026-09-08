@@ -110,11 +110,12 @@ function PublicSourcePane({ onPreview, onImportOpml }: { onPreview: (preview: Pe
 }
 
 function ZhihuSourcePane({ onStarted }: { onStarted: () => Promise<void> }) {
-  const [error, setError] = useState<string>();
-  const [busy, setBusy] = useState(false);
+  const { busy, error, run } = useAsyncAction();
   async function submit() {
-    setBusy(true); setError(undefined);
-    try { await window.reader.connectZhihuFollow(); await onStarted(); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
+    await run(async () => {
+      await window.reader.connectZhihuFollow();
+      await onStarted();
+    });
   }
   return <section className="source-method-pane">
     <p className="dialog-intro">将打开 Reading Hub 自己的知乎登录窗口。登录后会读取“关注”动态中的公开卡片，包括关注用户的创作及其公开互动；不会读取或复制 Chrome 的 Cookie。</p>
@@ -127,12 +128,13 @@ function ZhihuSourcePane({ onStarted }: { onStarted: () => Promise<void> }) {
 
 function XSourcePane({ onStarted }: { onStarted: () => Promise<void> }) {
   const [clientId, setClientId] = useState("");
-  const [error, setError] = useState<string>();
-  const [busy, setBusy] = useState(false);
+  const { busy, error, run } = useAsyncAction();
   async function submit(event: FormEvent) {
     event.preventDefault();
-    setBusy(true); setError(undefined);
-    try { await window.reader.connectX(clientId); await onStarted(); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
+    await run(async () => {
+      await window.reader.connectX(clientId);
+      await onStarted();
+    });
   }
   return <section className="source-method-pane">
     <p className="dialog-intro">X 当前未提供可由 Reading Hub 在免 API 模式下自动读取的公开博主时间线，因此“公开博主”订阅已下线。应用不会使用 Cookie、登录态或私有 Web API 绕过此限制。</p>
@@ -145,20 +147,14 @@ function XSourcePane({ onStarted }: { onStarted: () => Promise<void> }) {
 function XiaohongshuSourcePane({ onSaved }: { onSaved: () => Promise<void> }) {
   const [url, setUrl] = useState("");
   const [title, setTitle] = useState("");
-  const [error, setError] = useState<string>();
-  const [busy, setBusy] = useState(false);
+  const { busy, error, run } = useAsyncAction();
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!url.trim()) return;
-    setBusy(true); setError(undefined);
-    try {
+    await run(async () => {
       await window.reader.subscribeXiaohongshuProfile({ url: url.trim(), title: title.trim() || undefined });
       await onSaved();
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    });
   }
   return <section className="source-method-pane profile-source-pane">
     <p className="dialog-intro">输入小红书公开博主主页，例如 <code>https://www.xiaohongshu.com/user/profile/用户ID</code>。Reading Hub 直接读取 robots 允许的公开页面中已有的结构化笔记卡片，不需要本地或远程 RSSHub。</p>
