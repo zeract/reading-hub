@@ -10,6 +10,7 @@ import { SettingsView } from "./settings-view";
 import { AddSourceDialog, CalibrationDialog, isRetiredXPublicProfile, PreviewDialog, SourceSettingsDialog } from "./source-dialogs";
 import { AppIcon } from "./ui-icons";
 import { useLibraryData } from "./use-library-data";
+import { useAsyncActivity } from "./use-async-activity";
 
 type AppView = "library" | "settings";
 type SourceDialogSession = { token: string; mode: "settings" | "calibration"; source: Source };
@@ -44,7 +45,7 @@ export function App() {
   const [pending, setPending] = useState<PendingPreview>();
   const [notice, setNotice] = useState<string>();
   const [deletedEntry, setDeletedEntry] = useState<Entry>();
-  const [busy, setBusy] = useState(false);
+  const { busy, track } = useAsyncActivity();
   const [addSourceSession, setAddSourceSession] = useState<string>();
   const [sourceDialog, setSourceDialog] = useState<SourceDialogSession>();
   const [collapsedSourceGroups, setCollapsedSourceGroups] = useState<Record<string, boolean>>({});
@@ -104,8 +105,7 @@ export function App() {
     await reload();
   }, [closeAddSource, reload]);
 
-  const importOpml = useCallback(async (): Promise<OpmlImportResult> => {
-    setBusy(true);
+  const importOpml = useCallback((): Promise<OpmlImportResult> => track(async () => {
     setNotice(undefined);
     try {
       const result = await window.reader.importOpml();
@@ -121,10 +121,8 @@ export function App() {
       const message = errorMessage(error);
       setNotice(message);
       throw error;
-    } finally {
-      setBusy(false);
     }
-  }, [reload]);
+  }), [reload, track]);
 
   const confirm = useCallback(async () => {
     if (!pending) return;
@@ -134,8 +132,7 @@ export function App() {
     await reload();
   }, [pending, reload]);
 
-  const refresh = useCallback(async (source: Source) => {
-    setBusy(true);
+  const refresh = useCallback((source: Source) => track(async () => {
     try {
       await window.reader.refreshSource(source.id);
       await reload();
@@ -144,10 +141,8 @@ export function App() {
       await reload().catch(() => undefined);
       setNotice(errorMessage(error));
       throw error;
-    } finally {
-      setBusy(false);
     }
-  }, [reload]);
+  }), [reload, track]);
 
   const updateEntry = useCallback(async (entry: Entry, field: "read" | "favorite", value: boolean): Promise<boolean> => {
     try {
@@ -176,8 +171,7 @@ export function App() {
     selectLibraryView(view);
   }, [selectLibraryView]);
 
-  const deleteSource = useCallback(async (source: Source): Promise<void> => {
-    setBusy(true);
+  const deleteSource = useCallback((source: Source): Promise<void> => track(async () => {
     try {
       await window.reader.setSourceSubscribed(source.id, source.subscribed === false);
       clearActiveSource(source.id);
@@ -186,13 +180,10 @@ export function App() {
     } catch (error) {
       setNotice(errorMessage(error));
       throw error;
-    } finally {
-      setBusy(false);
     }
-  }, [clearActiveSource, reload]);
+  }), [clearActiveSource, reload, track]);
 
-  const dismissEntry = useCallback(async (entry: Entry) => {
-    setBusy(true);
+  const dismissEntry = useCallback((entry: Entry) => track(async () => {
     try {
       await window.reader.dismissEntry(entry.id);
       setDeletedEntry(entry);
@@ -201,10 +192,19 @@ export function App() {
       await reload();
     } catch (error) {
       setNotice(errorMessage(error));
-    } finally {
-      setBusy(false);
     }
-  }, [reload]);
+  }), [reload, track]);
+
+  const restoreEntry = useCallback((entry: Entry) => track(async () => {
+    try {
+      await window.reader.restoreEntry(entry.id);
+      setDeletedEntry((current) => current?.id === entry.id ? undefined : current);
+      setNotice("内容已恢复。");
+      await reload();
+    } catch (error) {
+      setNotice(errorMessage(error));
+    }
+  }), [reload, track]);
 
   const refreshCurrentView = useCallback(() => {
     if (activeSource) {
@@ -257,18 +257,8 @@ export function App() {
         readingEntryId={readingEntry?.id}
         notice={reloadError ?? notice}
         busy={busy}
-        onUndo={deletedEntry && notice === `已删除「${deletedEntry.title}」。` && !reloadError ? () => {
-          setBusy(true);
-          void window.reader.restoreEntry(deletedEntry.id).then(async () => {
-            setDeletedEntry(undefined); setNotice("内容已恢复。"); await reload();
-          }).catch((error) => setNotice(errorMessage(error))).finally(() => setBusy(false));
-        } : undefined}
-        onRestoreEntry={async (entry) => {
-          setBusy(true);
-          try { await window.reader.restoreEntry(entry.id); setDeletedEntry(undefined); setNotice("内容已恢复。"); await reload(); }
-          catch (error) { setNotice(errorMessage(error)); }
-          finally { setBusy(false); }
-        }}
+        onUndo={deletedEntry && notice === `已删除「${deletedEntry.title}」。` && !reloadError ? () => void restoreEntry(deletedEntry) : undefined}
+        onRestoreEntry={restoreEntry}
         onEditSource={openSourceSettings}
         onClearNotice={() => { setNotice(undefined); setDeletedEntry(undefined); clearReloadError(); }}
         onEntrySearchChange={setEntrySearch}

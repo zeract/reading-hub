@@ -54,6 +54,8 @@ let managementScopeWrites = 0;
 let delayedNavigationCommand;
 let navigationCommandRequested;
 let completeNavigationCommand;
+let importRequested;
+let completeImport;
 function deferNavigationCommand(operation) {
   return new Promise((resolve, reject) => {
     completeNavigationCommand = () => {
@@ -69,6 +71,10 @@ const fixtureProviders = [
 ];
 const aiAnswer = "## Fixture answer\n\nInline $x^2$.\n\n$$\ny=x+1\n$$";
 const channels = [
+  ["source:import-opml", () => new Promise((resolve) => {
+    completeImport = () => resolve({ cancelled: true, imported: 0, existing: 0, skipped: 0 });
+    importRequested?.();
+  })],
   ...["source:update-settings", "source:update-rule"].map((channel) => [channel, () => new Promise((resolve) => {
     managementWrites++;
     completeManagement = () => resolve();
@@ -631,6 +637,29 @@ try {
   completeNavigationCommand();
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 2 && !document.querySelector('[aria-label=\"重新载入收件箱\"]').disabled");
   assert(await evaluate("Boolean(document.querySelector('.reader-article')) && document.querySelector('.entry-card.selected h2')?.textContent === 'Historical fixture'"), "Finishing deletion of the previous article must not close the current reader.");
+  await clickText(".notice button", "撤销删除");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 3 && document.querySelector('.notice')?.textContent.includes('内容已恢复')");
+  assert(database.getEntry("success").favorite, "Undo must restore the original content and preserve its favorite state.");
+  database.createSource({ url: "https://example.com/activity", title: "Activity fixture", kind: "generic", pollingEnabled: true });
+  database.publishChanges();
+  await waitFor(window, "[...document.querySelectorAll('.source-filter')].some((item) => item.textContent.includes('Activity fixture'))");
+  await evaluate("[...document.querySelectorAll('.source-filter')].find((item) => item.textContent.includes('Activity fixture')).click()");
+  await waitFor(window, "Boolean(document.querySelector('[aria-label=\"刷新 Activity fixture\"]'))");
+  delayedNavigationCommand = "refresh";
+  const backgroundRefreshStarted = new Promise((resolve) => { navigationCommandRequested = resolve; });
+  await evaluate("document.querySelector('[aria-label=\"刷新 Activity fixture\"]').click()");
+  await backgroundRefreshStarted;
+  await evaluate("document.querySelector('[aria-label=\"添加来源\"]').click()");
+  const importStarted = new Promise((resolve) => { importRequested = resolve; });
+  await clickText(".dialog-actions button", "导入 OPML…");
+  await importStarted;
+  completeImport();
+  await waitFor(window, "!document.querySelector('.connector-form .primary').disabled");
+  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
+  assert(await evaluate("document.querySelector('[aria-label=\"刷新 Activity fixture\"]').disabled"), "Finishing OPML import must not clear busy state while another refresh remains pending.");
+  delayedNavigationCommand = undefined;
+  completeNavigationCommand();
+  await waitFor(window, "!document.querySelector('[aria-label=\"刷新 Activity fixture\"]').disabled");
   console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore/settings-draft/settings-save-lock/settings-close/modal-keyboard/modal-focus/image-preview-dismissal/source-preview-lifetime, library layouts and four academic/settings layouts verified.");
 } catch (error) {
   failure = error;
