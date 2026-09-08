@@ -21,6 +21,7 @@ export function useLibraryData() {
   const [nextEntryCursor, setNextEntryCursor] = useState<EntryPageCursor>();
   const [loadingMoreEntries, setLoadingMoreEntries] = useState(false);
   const [reloadError, setReloadError] = useState<string>();
+  const [paginationError, setPaginationError] = useState<string>();
   const [entryLoadState, setEntryLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [selection, setSelection] = useState<LibrarySelection>({ view: "collected", search: "" });
   const { sourceId: activeSourceId, view: libraryView, search: entrySearch } = selection;
@@ -78,6 +79,7 @@ export function useLibraryData() {
       setLibraryCounts(nextLibraryCounts);
       setLibraryCountsStale(false);
       setReloadError(undefined);
+      setPaginationError(undefined);
       setEntryLoadState("ready");
     } catch (error) {
       if (!isCurrent()) return;
@@ -136,6 +138,7 @@ export function useLibraryData() {
     setEntries([]);
     setEntryLoadState("loading");
     setReloadError(undefined);
+    setPaginationError(undefined);
   }, []);
 
   const navigateLibrary = useCallback((requested: LibrarySelection) => {
@@ -178,8 +181,11 @@ export function useLibraryData() {
       setEntries((current) => mergeEntryPages(current, nextPage.entries));
       setNextEntryCursor(nextPage.nextCursor);
       loadedPageCount.current += 1;
+      setPaginationError(undefined);
     } catch (error) {
-      if (generation === pageGeneration.current) throw error;
+      // A failed next page leaves the loaded snapshot and cursor intact.
+      // Its error belongs to this query, never to a global mutation notice.
+      if (generation === pageGeneration.current) setPaginationError(errorMessage(error));
     } finally {
       if (generation === pageGeneration.current) {
         loadingMore.current = false;
@@ -206,6 +212,7 @@ export function useLibraryData() {
     loadingEntries: entryLoadState === "loading",
     entryLoadFailed: entryLoadState === "error",
     reloadError,
+    paginationError,
     clearReloadError: () => setReloadError(undefined),
     libraryCounts,
     libraryCountsStale,

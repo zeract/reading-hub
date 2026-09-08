@@ -40,7 +40,7 @@ body { min-width: 840px; margin: 0; background: var(--paper); }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; transition: background-color .14s ease, border-color .14s ease, color .14s ease; }
 button:disabled { cursor: not-allowed; opacity: .5; }
-button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .notice-message:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .notice-message:focus-visible, .entry-pagination-error:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* Shared action controls; local rules own placement, not competing skins. */
 .action-button,
@@ -176,8 +176,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .notice-close { width: 28px; height: 28px; font-size: 17px; }
 .notice-actions { grid-column: 1 / -1; display: flex; }
 .entry-list { display: grid; }
-.entry-load-more { display: grid; justify-items: start; gap: 7px; padding: 17px 10px 24px 22px; color: var(--muted); font-size: 11px; }
+.entry-load-more { display: grid; min-width: 0; justify-items: start; gap: 7px; padding: 17px 10px 24px 22px; color: var(--muted); font-size: 11px; }
 .entry-load-more p { margin: 0; }
+.entry-pagination-error { max-width: 100%; max-height: 9em; overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; color: var(--danger); line-height: 1.45; }
 .entry-load-more button { min-width: 96px; }
 
 .entry-card { position: relative; padding: 12px 10px 10px 22px; border-bottom: 1px solid var(--line); border-radius: 6px; transition: background-color .14s ease,color .14s ease,box-shadow .14s ease; }

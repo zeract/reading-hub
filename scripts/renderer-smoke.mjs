@@ -59,6 +59,8 @@ let importRequested;
 let completeImport;
 let emptyLibrary = false;
 let libraryPageFailure = false;
+let smallLibraryPages = false;
+let nextLibraryPageFailure = false;
 let pauseLibraryPage = false;
 let completeLibraryPage;
 let libraryPageRequested;
@@ -150,8 +152,9 @@ const channels = [
   ["entry:cancel-image", (_event, requestId) => { cancelledImages.add(requestId); }],
   ["entry:list-page", (_event, query) => {
     if (libraryPageFailure) throw new Error("Synthetic library failure");
+    if (query.cursor && nextLibraryPageFailure) throw new Error(`Synthetic next page failure ${"UnbrokenDiagnostic".repeat(32)}`);
     if (pauseLibraryPage) return new Promise((resolve) => { completeLibraryPage = () => resolve({ entries: [] }); libraryPageRequested?.(); });
-    return emptyLibrary ? { entries: [] } : database.listEntryPage(query);
+    return emptyLibrary ? { entries: [] } : database.listEntryPage(smallLibraryPages ? { ...query, pageSize: 1 } : query);
   }],
   ["entry:counts", () => emptyLibrary ? { unread: 0, favorite: 0, today: 0 } : database.getLibraryCounts()],
   ["entry:read", (_event, id, read) => database.markRead(id, read)],
@@ -766,6 +769,27 @@ try {
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 2 && !document.querySelector('[aria-label=\"重新载入收件箱\"]').disabled");
   assert(await evaluate("[...document.querySelectorAll('.notice button')].some((button) => button.textContent === '撤销删除')"), "Successful deletion must retain its undo after the failed read model recovers.");
   assert(await evaluate("Boolean(document.querySelector('.reader-article')) && document.querySelector('.entry-card.selected h2')?.textContent === 'Historical fixture'"), "Finishing deletion of the previous article must not close the current reader.");
+  smallLibraryPages = true;
+  nextLibraryPageFailure = true;
+  await clickText(".library-filter", "全部内容");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 1 && Boolean(document.querySelector('.entry-load-more button'))");
+  await clickText(".entry-load-more button", "加载更多");
+  await waitFor(window, "document.querySelector('.entry-pagination-error')?.textContent.includes('Synthetic next page failure') && !document.querySelector('.entry-load-more button').disabled");
+  assert(await evaluate("document.querySelectorAll('.entry-card').length === 1 && [...document.querySelectorAll('.notice button')].some(button => button.textContent === '撤销删除')"), "A page failure must retain loaded cards and the independent deletion undo.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const footer = document.querySelector('.entry-load-more'); footer.scrollIntoView({block:'end'}); const error = footer.querySelector('.entry-pagination-error'); const retry = footer.querySelector('button'); const bounds = document.querySelector('.timeline').getBoundingClientRect(); const rect = retry.getBoundingClientRect(); error.focus(); error.scrollTop = 100; return document.activeElement === error && error.scrollTop > 0 && error.scrollWidth <= error.clientWidth + 1 && footer.scrollWidth <= footer.clientWidth + 1 && rect.left >= bounds.left && rect.right <= bounds.right && rect.bottom <= innerHeight; })()"), "Long page errors must scroll within the list while retry remains reachable.");
+    await writeFile(path.join(tmpdir(), `reading-hub-pagination-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  nextLibraryPageFailure = false;
+  await clickText(".entry-load-more button", "重试加载");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 2 && !document.querySelector('.entry-pagination-error')");
+  assert(await evaluate("[...document.querySelectorAll('.notice button')].some(button => button.textContent === '撤销删除')"), "A successful page retry must not replace the pending undo.");
+  smallLibraryPages = false;
+  await clickText(".library-filter", "全部内容");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 2 && !document.querySelector('.entry-load-more')");
+  await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Historical fixture\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.reader-article'))");
   restoreFailure = `Synthetic restore failure ${"UnbrokenDiagnostic".repeat(32)}`;
   await clickText(".notice button", "撤销删除");
   await waitFor(window, "document.querySelector('.notice')?.textContent.includes('Synthetic restore failure') && !document.querySelector('[aria-label=\"重新载入收件箱\"]').disabled");

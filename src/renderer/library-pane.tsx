@@ -64,7 +64,7 @@ export function SourceSidebar({ sources, groups, libraryView, activeSourceId, li
   </aside>;
 }
 
-export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, activeSource, libraryView, entrySearch, entries, hasMoreEntries, loadingMoreEntries, sourceById, readingEntryId, notice, busy, onUndo, onEditSource, onClearNotice, onEntrySearchChange, onUpdateEntry, isEntryUpdating, onOpenEntry, onDismissEntry, onRestoreEntry, onLoadMore }: {
+export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, activeSource, libraryView, entrySearch, entries, hasMoreEntries, loadingMoreEntries, paginationError, sourceById, readingEntryId, notice, busy, onUndo, onEditSource, onClearNotice, onEntrySearchChange, onUpdateEntry, isEntryUpdating, onOpenEntry, onDismissEntry, onRestoreEntry, onLoadMore }: {
   loadingEntries: boolean;
   loadFailed: boolean;
   onReload: () => void;
@@ -75,6 +75,7 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
   entries: Entry[];
   hasMoreEntries: boolean;
   loadingMoreEntries: boolean;
+  paginationError?: string;
   sourceById: Map<string, Source>;
   readingEntryId?: string;
   notice?: string;
@@ -130,7 +131,11 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
     <div className="entry-list">
       {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntryId === entry.id} onRead={onUpdateEntry} isEntryUpdating={isEntryUpdating} onOpen={onOpenEntry} onDismiss={onDismissEntry} onRestore={onRestoreEntry} deleted={libraryView === "trash"} busy={busy} />)}
       {!visibleCount && <TimelineEmptyState loading={loadingEntries} failed={loadFailed} hasMore={hasMoreEntries} source={activeSource} hasSources={sourceById.size > 0} view={libraryView} search={entrySearch} onClearSearch={clearSearch} onRetry={onReload} onAddSource={onAddSource} onEditSource={onEditSource} />}
-      {hasMoreEntries && <div className="entry-load-more"><p>已显示 {visibleCount} 篇内容</p><button type="button" onClick={onLoadMore} disabled={busy || loadingMoreEntries || loadingEntries}>{loadingMoreEntries ? "正在加载…" : "加载更多"}</button></div>}
+      {hasMoreEntries && <div className="entry-load-more">
+        <p>已显示 {visibleCount} 篇内容</p>
+        {paginationError && <p className="entry-pagination-error" role="alert" tabIndex={0}>暂时无法加载更多：{paginationError}</p>}
+        <button type="button" onClick={onLoadMore} disabled={busy || loadingMoreEntries || loadingEntries}>{loadingMoreEntries ? "正在加载…" : paginationError ? "重试加载" : "加载更多"}</button>
+      </div>}
     </div>
   </section>;
 }

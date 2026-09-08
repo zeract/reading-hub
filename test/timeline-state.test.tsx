@@ -106,6 +106,27 @@ it("disables pagination during a full refresh and re-enables it when ready", asy
   await act(async () => button.click()); expect(props.onLoadMore).toHaveBeenCalledOnce();
 });
 
+it("keeps page retry feedback separate from the current undo notice", async () => {
+  const undo = vi.fn();
+  const paginationError = '<img src="invalid" onerror="alert(1)">';
+  await render({ paginationError, notice: "已删除文章", onUndo: undo });
+  const error = container.querySelector<HTMLElement>(".entry-pagination-error")!;
+  expect(error.textContent).toBe(`暂时无法加载更多：${paginationError}`);
+  expect(error.getAttribute("role")).toBe("alert");
+  expect(error.tabIndex).toBe(0);
+  expect(error.querySelector("img")).toBeNull();
+  const retry = container.querySelector<HTMLButtonElement>(".entry-load-more button")!;
+  expect(retry.textContent).toBe("重试加载");
+  await act(async () => retry.click()); expect(props.onLoadMore).toHaveBeenCalledOnce();
+  await act(async () => container.querySelector<HTMLButtonElement>(".notice-actions button")!.click());
+  expect(undo).toHaveBeenCalledOnce();
+  await render({ paginationError, loadingMoreEntries: true });
+  expect(retry.disabled).toBe(true); expect(retry.textContent).toBe("正在加载…");
+  await render();
+  expect(container.querySelector(".entry-pagination-error")).toBeNull();
+  expect(retry.textContent).toBe("加载更多");
+});
+
 it("keeps load failure ahead of the incomplete-page explanation", async () => {
   await render({ entries: [entries[1]], libraryView: "favorite", loadFailed: true });
   expect(container.querySelector(".count")?.textContent).toBe("0+ 篇内容");

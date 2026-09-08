@@ -31,6 +31,7 @@ export function App() {
     loadingEntries,
     entryLoadFailed,
     reloadError,
+    paginationError,
     clearReloadError,
     libraryCounts,
     libraryCountsStale,
@@ -272,6 +273,7 @@ export function App() {
         entries={entries}
         hasMoreEntries={hasMoreEntries}
         loadingMoreEntries={loadingMoreEntries}
+        paginationError={paginationError}
         sourceById={sourceById}
         readingEntryId={readingEntry?.id}
         notice={reloadError ?? notice?.message}
@@ -285,7 +287,7 @@ export function App() {
         isEntryUpdating={isEntryUpdating}
         onOpenEntry={openReader}
         onDismissEntry={dismissEntry}
-        onLoadMore={() => void loadMoreEntries().catch((error) => setNotice(errorMessage(error)))}
+        onLoadMore={() => void loadMoreEntries()}
       />
       {readingEntry ? <ReaderView
         entry={readingEntry}

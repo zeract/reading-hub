@@ -48,6 +48,47 @@ afterEach(async () => {
 });
 
 describe("library read-model", () => {
+  it("owns page failure without invalidating existing cards or counts and retries the same cursor", async () => {
+    const before = library.entries;
+    listPage.mockRejectedValueOnce(new Error("Next page unavailable"));
+    await act(async () => library.loadMoreEntries());
+    const failedQuery = listPage.mock.lastCall![0];
+    expect(library.paginationError).toBe("Next page unavailable");
+    expect(library.reloadError).toBeUndefined();
+    expect(library.entryLoadFailed).toBe(false);
+    expect(library.libraryCountsStale).toBe(false);
+    expect(library.entries).toBe(before);
+    expect(library.hasMoreEntries).toBe(true);
+    expect(library.loadingMoreEntries).toBe(false);
+    await act(async () => library.loadMoreEntries());
+    expect(listPage.mock.lastCall![0]).toEqual(failedQuery);
+    expect(library.entries).toHaveLength(200);
+    expect(library.paginationError).toBeUndefined();
+  });
+
+  it.each(["refresh", "navigation"])("clears page failure after %s replaces its query result", async (action) => {
+    listPage.mockRejectedValueOnce(new Error("Next page unavailable"));
+    await act(async () => library.loadMoreEntries());
+    expect(library.paginationError).toBe("Next page unavailable");
+    await act(async () => action === "refresh" ? library.reload() : library.selectSource("other"));
+    expect(library.paginationError).toBeUndefined();
+  });
+
+  it.each(["refresh", "navigation", "unmount"])("ignores a delayed page failure after %s", async (action) => {
+    let reject!: (error: Error) => void;
+    listPage.mockImplementationOnce(() => new Promise<EntryPage>((_resolve, fail) => { reject = fail; }));
+    let loading!: Promise<void>;
+    await act(async () => { loading = library.loadMoreEntries(); });
+    await act(async () => {
+      if (action === "refresh") await library.reload();
+      else if (action === "navigation") library.selectSource("other");
+      else root.render(null);
+    });
+    await act(async () => { reject(new Error("Obsolete page failure")); await loading; });
+    expect(library.paginationError).toBeUndefined();
+    expect(library.reloadError).toBeUndefined();
+  });
+
   it("keeps failed counts stale through notice dismissal and retry until a successful read", async () => {
     expect(library.libraryCountsStale).toBe(false);
     listPage.mockRejectedValueOnce(new Error("List unavailable"));
