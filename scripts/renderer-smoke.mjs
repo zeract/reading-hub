@@ -61,6 +61,7 @@ let libraryPageFailure = false;
 let pauseLibraryPage = false;
 let completeLibraryPage;
 let libraryPageRequested;
+let restoreFailure = false;
 function deferNavigationCommand(operation) {
   return new Promise((resolve, reject) => {
     completeNavigationCommand = () => {
@@ -151,7 +152,11 @@ const channels = [
   ["entry:favorite", (_event, id, favorite) => database.markFavorite(id, favorite)],
   ["entry:dismiss", (_event, id) => delayedNavigationCommand === "dismiss"
     ? deferNavigationCommand(() => database.dismissEntry(id)) : database.dismissEntry(id)],
-  ["entry:restore", (_event, id) => database.restoreEntry(id)],
+  ["entry:restore", (_event, id) => {
+    if (restoreFailure) throw new Error("Synthetic restore failure");
+    if (delayedNavigationCommand === "restore") return deferNavigationCommand(() => database.restoreEntry(id));
+    return database.restoreEntry(id);
+  }],
   ["source:set-subscribed", (_event, id, subscribed) => {
     if (managementFailure === "subscription") throw new Error("Synthetic subscription failure");
     if (delayedNavigationCommand === "subscription") return deferNavigationCommand(() => database.setSubscribed(id, subscribed));
@@ -646,9 +651,25 @@ try {
   completeNavigationCommand();
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 2 && !document.querySelector('[aria-label=\"重新载入收件箱\"]').disabled");
   assert(await evaluate("Boolean(document.querySelector('.reader-article')) && document.querySelector('.entry-card.selected h2')?.textContent === 'Historical fixture'"), "Finishing deletion of the previous article must not close the current reader.");
+  restoreFailure = true;
+  await clickText(".notice button", "撤销删除");
+  await waitFor(window, "document.querySelector('.notice')?.textContent.includes('Synthetic restore failure') && !document.querySelector('[aria-label=\"重新载入收件箱\"]').disabled");
+  assert(await evaluate("[...document.querySelectorAll('.notice button')].some((button) => button.textContent === '撤销删除')"), "A failed undo must retain the retry action.");
+  restoreFailure = false;
   await clickText(".notice button", "撤销删除");
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 3 && document.querySelector('.notice')?.textContent.includes('内容已恢复')");
   assert(database.getEntry("success").favorite, "Undo must restore the original content and preserve its favorite state.");
+  await evaluate("document.querySelector('.entry-card.selected .delete-entry').click()");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 2 && !document.querySelector('[aria-label=\"重新载入收件箱\"]').disabled");
+  delayedNavigationCommand = "restore";
+  const undoStarted = new Promise((resolve) => { navigationCommandRequested = resolve; });
+  await clickText(".notice button", "撤销删除");
+  await undoStarted;
+  await clickText(".notice button", "×");
+  delayedNavigationCommand = undefined;
+  completeNavigationCommand();
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 3 && !document.querySelector('[aria-label=\"重新载入收件箱\"]').disabled");
+  assert(await evaluate("!document.querySelector('.notice')"), "Completing an undo must not resurrect a dismissed notice.");
   database.createSource({ url: "https://example.com/activity", title: "Activity fixture", kind: "generic", pollingEnabled: true });
   database.publishChanges();
   await waitFor(window, "[...document.querySelectorAll('.source-filter')].some((item) => item.textContent.includes('Activity fixture'))");

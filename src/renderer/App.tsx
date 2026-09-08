@@ -11,6 +11,7 @@ import { AddSourceDialog, CalibrationDialog, isRetiredXPublicProfile, PreviewDia
 import { AppIcon } from "./ui-icons";
 import { useLibraryData } from "./use-library-data";
 import { useAsyncActivity } from "./use-async-activity";
+import { useLibraryNotice } from "./use-library-notice";
 
 type AppView = "library" | "settings";
 type SourceDialogSession = { token: string; mode: "settings" | "calibration"; source: Source };
@@ -45,8 +46,8 @@ export function App() {
     clearActiveSource
   } = useLibraryData();
   const [pending, setPending] = useState<PendingPreview>();
-  const [notice, setNotice] = useState<string>();
-  const [deletedEntry, setDeletedEntry] = useState<Entry>();
+  const { notice, show: setNotice, updateIfCurrent: updateNotice } = useLibraryNotice();
+  const undoEntry = notice?.undoEntry;
   const { busy, track } = useAsyncActivity();
   const [addSourceSession, setAddSourceSession] = useState<string>();
   const [sourceDialog, setSourceDialog] = useState<SourceDialogSession>();
@@ -95,7 +96,7 @@ export function App() {
     setPending(result);
     setAddSourceSession(undefined);
     setNotice(undefined);
-  }, []);
+  }, [setNotice]);
 
   const closeAddSource = useCallback((session: string) => {
     setAddSourceSession((current) => current === session ? undefined : current);
@@ -107,7 +108,7 @@ export function App() {
     closeAddSource(session);
     setNotice(message);
     await reload();
-  }, [closeAddSource, reload]);
+  }, [closeAddSource, reload, setNotice]);
 
   const importOpml = useCallback((): Promise<OpmlImportResult> => track(async () => {
     setNotice(undefined);
@@ -126,7 +127,7 @@ export function App() {
       setNotice(message);
       throw error;
     }
-  }), [reload, track]);
+  }), [reload, setNotice, track]);
 
   const confirm = useCallback(async () => {
     if (!pending) return;
@@ -134,7 +135,7 @@ export function App() {
     setPending((current) => current?.token === pending.token ? undefined : current);
     setNotice(source.status === "needs_review" ? "已保存，但需要校正提取规则后才会自动刷新。" : "来源已添加。");
     await reload();
-  }, [pending, reload]);
+  }, [pending, reload, setNotice]);
 
   const refresh = useCallback((source: Source) => track(async () => {
     try {
@@ -146,7 +147,7 @@ export function App() {
       setNotice(errorMessage(error));
       throw error;
     }
-  }), [reload, track]);
+  }), [reload, setNotice, track]);
 
   const updateEntry = useCallback(async (entry: Entry, field: "read" | "favorite", value: boolean): Promise<boolean> => {
     try {
@@ -159,7 +160,7 @@ export function App() {
       setNotice(errorMessage(error));
       return false;
     }
-  }, [reload]);
+  }, [reload, setNotice]);
 
   const openReader = useCallback((entry: Entry) => {
     setReadingEntry(entry);
@@ -185,30 +186,34 @@ export function App() {
       setNotice(errorMessage(error));
       throw error;
     }
-  }), [clearActiveSource, reload, track]);
+  }), [clearActiveSource, reload, setNotice, track]);
 
   const dismissEntry = useCallback((entry: Entry) => track(async () => {
     try {
       await window.reader.dismissEntry(entry.id);
-      setDeletedEntry(entry);
       setReadingEntry((current) => current?.id === entry.id ? undefined : current);
-      setNotice(`已删除「${entry.title}」。`);
+      setNotice(`已删除「${entry.title}」。`, entry);
       await reload();
     } catch (error) {
       setNotice(errorMessage(error));
     }
-  }), [reload, track]);
+  }), [reload, setNotice, track]);
 
-  const restoreEntry = useCallback((entry: Entry) => track(async () => {
+  const restoreEntry = useCallback((entry: Entry, noticeId?: string) => track(async () => {
     try {
       await window.reader.restoreEntry(entry.id);
-      setDeletedEntry((current) => current?.id === entry.id ? undefined : current);
-      setNotice("内容已恢复。");
-      await reload();
     } catch (error) {
-      setNotice(errorMessage(error));
+      const message = errorMessage(error);
+      if (noticeId) updateNotice(noticeId, { message, undoEntry: entry });
+      else setNotice(message);
+      return;
     }
-  }), [reload, track]);
+    if (noticeId) updateNotice(noticeId, { message: "内容已恢复。" });
+    else setNotice("内容已恢复。");
+    // The read model owns reload errors. A failed list read must not turn
+    // an already successful restoration back into a pending undo.
+    await reload().catch(() => undefined);
+  }), [reload, setNotice, track, updateNotice]);
 
   const refreshCurrentView = useCallback(() => {
     if (activeSource) {
@@ -222,7 +227,7 @@ export function App() {
       return;
     }
     void reload().then(() => setNotice("已重新载入收件箱。")).catch((error) => setNotice(errorMessage(error)));
-  }, [activeSource, refresh, reload]);
+  }, [activeSource, refresh, reload, setNotice]);
 
   if (appView === "settings") {
     return <SettingsView onClose={() => setAppView("library")} windowFullscreen={windowFullscreen} />;
@@ -263,12 +268,12 @@ export function App() {
         loadingMoreEntries={loadingMoreEntries}
         sourceById={sourceById}
         readingEntryId={readingEntry?.id}
-        notice={reloadError ?? notice}
+        notice={reloadError ?? notice?.message}
         busy={busy}
-        onUndo={deletedEntry && notice === `已删除「${deletedEntry.title}」。` && !reloadError ? () => void restoreEntry(deletedEntry) : undefined}
+        onUndo={notice && undoEntry && !reloadError ? () => void restoreEntry(undoEntry, notice.id) : undefined}
         onRestoreEntry={restoreEntry}
         onEditSource={openSourceSettings}
-        onClearNotice={() => { setNotice(undefined); setDeletedEntry(undefined); clearReloadError(); }}
+        onClearNotice={() => { setNotice(undefined); clearReloadError(); }}
         onEntrySearchChange={setEntrySearch}
         onUpdateEntry={updateEntry}
         onOpenEntry={openReader}
