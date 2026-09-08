@@ -18,6 +18,11 @@ database.markFavorite("success", true);
 const fixtureImage = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 let pauseImages = false;
 let imageLoads = 0;
+let sourceIconReads = 0;
+let pauseSourceIcons = true;
+const pendingSourceIcons = [];
+let sourceIconRequested;
+const sourceIconStarted = new Promise((resolve) => { sourceIconRequested = resolve; });
 let pendingImage;
 let imageRequested;
 const cancelledImages = new Set();
@@ -152,7 +157,11 @@ const channels = [
   ["ai:cancel-stream", (_event, requestId) => { cancelledAiRequests.add(requestId); }],
   ["library:revision", () => database.getLibraryRevision()],
   ["source:list", () => emptyLibrary ? [] : database.listSources()],
-  ["source:load-icon", () => undefined],
+  ["source:load-icon", () => {
+    sourceIconReads++;
+    if (!pauseSourceIcons) return undefined;
+    return new Promise((resolve) => { pendingSourceIcons.push(resolve); sourceIconRequested(); });
+  }],
   ["entry:load-image", (_event, _id, _url, requestId) => {
     assert(typeof requestId === "string" && requestId.startsWith("image-"), "Image IPC must carry an opaque request id.");
     imageLoads++;
@@ -330,6 +339,14 @@ try {
   const preloadError = messages.find((message) => /Unable to load preload script|module not found/i.test(message));
   if (preloadError) throw new Error(`沙箱预加载加载失败：${preloadError}`);
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 2");
+  await sourceIconStarted;
+  await evaluate("globalThis.failedSourceIcons = 0; document.addEventListener('error', event => { if (event.target instanceof HTMLImageElement && event.target.closest('.source-icon')) failedSourceIcons++; }, true)");
+  const initialSourceIconReads = sourceIconReads;
+  pauseSourceIcons = false;
+  for (const resolve of pendingSourceIcons) resolve("data:image/png;base64,ZmFrZQ==");
+  await waitFor(window, "failedSourceIcons === 1 && Boolean(document.querySelector('.source-icon--rss svg')) && !document.querySelector('.source-icon--favicon')");
+  await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  assert(sourceIconReads === initialSourceIconReads, "A real favicon decode failure must restore the local mark without retrying IPC.");
   assert(await evaluate("document.querySelector('.timeline h1').textContent === '新收集'"), "The initial view must show collection order.");
   await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Unavailable fixture\"]').click()");
   await waitFor(window, "Boolean(document.querySelector('.reader-failure'))");

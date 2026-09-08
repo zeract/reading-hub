@@ -48,6 +48,10 @@ export function SourceIcon({ source }: { source: Source }) {
   }, [source.id, source.url, source.kind, source.iconUrl, source.config?.sourceProvider, source.config?.rsshubPlatform]);
 
   return <span className={`source-icon source-icon--${kind}${favicon ? " source-icon--favicon" : ""}`} aria-hidden="true">
-    {favicon ? <img src={favicon} alt="" /> : <AppIcon name={kind} />}
+    {favicon ? <img key={favicon} src={favicon} alt="" onError={() => {
+      // A fetch can succeed while Chromium cannot decode its bytes. Keep the
+      // local mark, and never let an obsolete image clear a newer response.
+      setFavicon((current) => current === favicon ? undefined : current);
+    }} /> : <AppIcon name={kind} />}
   </span>;
 }

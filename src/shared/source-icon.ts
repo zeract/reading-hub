@@ -22,13 +22,13 @@ const iconKindBySource: Record<Source["kind"], SourceIconKind> = {
 export function sourceIconKind(source: Source): SourceIconKind {
   if (source.config?.sourceProvider === "rsshub") return source.config.rsshubPlatform === "xiaohongshu" ? "xiaohongshu" : "x";
   const host = sourceHostname(source.url);
-  if (host === "x.com" || host.endsWith(".x.com") || host === "twitter.com" || host.endsWith(".twitter.com")) return "x";
-  if (host === "www.zhihu.com" || host.endsWith(".zhihu.com")) return source.kind === "zhihu_follow" ? "zhihu-follow" : "zhihu";
-  if (host.endsWith("xiaohongshu.com")) return "xiaohongshu";
+  if (belongsToDomain(host, "x.com") || belongsToDomain(host, "twitter.com")) return "x";
+  if (belongsToDomain(host, "zhihu.com")) return source.kind === "zhihu_follow" ? "zhihu-follow" : "zhihu";
+  if (belongsToDomain(host, "xiaohongshu.com")) return "xiaohongshu";
   return iconKindBySource[source.kind];
 }
 
-/** Returns only a public same-site favicon URL; malformed and local sources use the local fallback. */
+/** Returns a public declared icon or same-site favicon; malformed and local sources use the local fallback. */
 export function sourceFaviconCandidate(source: Source): string | undefined {
   if (source.iconUrl) {
     try {
@@ -53,4 +53,8 @@ function sourceHostname(rawUrl: string): string {
   } catch {
     return "";
   }
+}
+
+function belongsToDomain(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`);
 }

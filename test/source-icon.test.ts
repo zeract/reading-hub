@@ -36,3 +36,16 @@ describe("source icons", () => {
     expect(sourceFaviconCandidate(source({ url: "http://localhost:3000/feed" }))).toBeUndefined();
   });
 });
+
+
+it.each([
+  ["zhihu.com", "zhihu"], ["www.zhihu.com", "zhihu"], ["column.zhihu.com", "zhihu"],
+  ["xiaohongshu.com", "xiaohongshu"], ["www.xiaohongshu.com", "xiaohongshu"],
+  ["notxiaohongshu.com", "rss"], ["xiaohongshu.com.example.org", "rss"],
+  ["notzhihu.com", "rss"], ["zhihu.com.example.org", "rss"],
+  ["x.com", "x"], ["twitter.com", "x"], ["notx.com", "rss"]
+])("matches platform icon domains at label boundaries: %s", (host, expected) => {
+  const item = source({ url: `https://${host}/feed` });
+  expect(sourceIconKind(item)).toBe(expected);
+  expect(sourceFaviconCandidate(item)).toBe(expected === "rss" ? `https://${host}/favicon.ico` : undefined);
+});
