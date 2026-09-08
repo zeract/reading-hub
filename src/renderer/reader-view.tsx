@@ -1,5 +1,6 @@
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AiArticleContext, AiProviderId, AiProviderSettings, AiSelectionContext, AiSelectionIntent, Entry, ReaderArticle, Source } from "../shared/types";
+import { AppIcon } from "./ui-icons";
 import { DeferredAiMarkdownContent as AiMarkdownContent } from "./deferred-ai-markdown";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { buildAiArticleContext, collectAiArticleText } from "./ai-request";
@@ -54,8 +55,8 @@ function* textNodeValues(root: Node): Generator<string> {
 
 export function ReaderPlaceholder() {
   return <section className="reader-placeholder" aria-label="选择文章开始阅读">
-    <div className="reader-placeholder-mark">RH<br /><span>01</span></div>
-    <div><p className="eyebrow">YOUR READING DESK</p><h2>选择一篇文章<br />开始阅读</h2><p>来源、时间与阅读状态会保留在本机。<br />正文始终来自原始发布者。</p></div>
+    <div className="reader-placeholder-mark" aria-hidden="true"><AppIcon name="reading" /></div>
+    <div><h2>选择一篇文章，开始阅读</h2><p>从左侧列表打开文章。<br />阅读进度与收藏会保留在本机。</p></div>
   </section>;
 }
 

@@ -165,6 +165,7 @@ try {
   assert(database.getEntry("success").read, "Successful content must become read.");
   await waitFor(window, "document.querySelector('.article-body img')?.naturalWidth === 1");
   assert(imageLoads === 1, `A native body image error must invoke the proxy exactly once (observed ${imageLoads}).`);
+  await writeFile(path.join(tmpdir(), "reading-hub-reader.png"), (await window.capturePage()).toPNG());
   await evaluate("document.querySelector('[aria-label=\"打开 AI 学习\"]').click()");
   await waitFor(window, "document.querySelector('.reader-ai-panel option')?.textContent.includes('Fixture AI')");
   assert(markdownModuleRequests === 0, "The library, reader and empty assistant must not load AI Markdown code.");

@@ -58,7 +58,7 @@ function page(mathJaxSvg) {
         <img id="fixture-image" src="${largeImage}" alt="large fixture" />
         <table><thead><tr><th>来源</th><th>状态</th></tr></thead><tbody><tr><td>OpenAlex</td><td>正常</td></tr></tbody></table>
       </div></article></div><div class="reader-selection-underlines" aria-hidden="true"><span id="selection-underline" style="left: 58vw; top: 302px; width: 124px"></span></div><section class="reader-selection-toolbar" id="selection-toolbar" style="left: 58vw; top: 308px"><button>翻译</button><button>解释</button><button>提问</button><button>×</button></section><aside class="selection-assistant-card" id="selection-card" data-placement="below" style="left: 56vw; top: 356px; width: min(330px,calc(100vw - 32px)); max-height: 250px"><header><div><p>解释所选文字</p><strong>本机 Codex</strong></div><button>×</button></header><blockquote>“这段选中的文章文字会保留在就地回答旁边。”</blockquote><div class="selection-assistant-answer"><p>这是一个和正文紧邻的流式回答卡片，长内容将在卡片内滚动。</p><pre class="ai-code-block" id="selection-card-code"><code>selection_answer_must_not_expand_the_reading_workspace_0123456789</code></pre></div></aside><aside class="reader-ai-panel" id="assistant-panel"><header><div><strong>AI 学习助手</strong><p>提问时才会发送文章摘录。</p></div><div class="assistant-header-actions"><button class="panel-icon-button">−</button><button class="panel-icon-button">×</button></div></header><div class="ai-messages"><div class="ai-message" id="assistant-markdown"><strong>AI</strong><div class="ai-message-content ai-markdown"><h2 class="ai-markdown-heading">推导摘要</h2><p class="ai-markdown-paragraph">这是一段 <strong>Markdown</strong> 回答。</p><ul class="ai-markdown-list"><li>列表项</li><li><code class="ai-inline-code">inline_code</code></li></ul><pre class="ai-code-block" id="assistant-code"><code>very_long_identifier_that_must_scroll_instead_of_overflowing_the_assistant_sidebar_0123456789</code></pre><div class="ai-table-wrap"><table><thead><tr><th>方法</th><th>复杂度</th></tr></thead><tbody><tr><td>线性</td><td>O(n)</td></tr></tbody></table></div></div></div></div><form class="ai-question"><label>向文章提问</label><textarea>这个公式表达什么？</textarea><button class="primary">发送问题</button></form></aside></div>
-    </section></main><div class="modal-backdrop" style="visibility:hidden" aria-hidden="true"><section class="dialog dialog--preview" id="preview-dialog"><header><h2>确认来源</h2><button>×</button></header><div class="preview-dialog__body" id="preview-dialog-body"><p class="dialog-intro"><strong class="preview-source-title">一个特别长的来源名称，用于验证预览弹窗不会因为名称而出现横向滚动</strong></p><div class="preview-list preview-list--source" role="list">${previewItems}</div></div><div class="dialog-actions dialog-actions--fixed" id="preview-dialog-actions"><button>取消</button><button class="primary">保存来源</button></div></section></div>${collectionScopeFixture}<div class="reader-image-lightbox" id="image-lightbox" hidden><section class="reader-image-lightbox__frame"><button class="reader-image-lightbox__close">×</button><img id="lightbox-image" src="${largeImage}" alt="large fixture preview" /></section></div></body></html>`;
+    </section></main><div class="modal-backdrop" style="visibility:hidden" aria-hidden="true"><section class="dialog dialog--preview" id="preview-dialog"><header><h2>确认来源</h2><button>×</button></header><div class="preview-dialog__body" id="preview-dialog-body"><p class="dialog-intro"><strong class="preview-source-title">一个特别长的来源名称，用于验证预览弹窗不会因为名称而出现横向滚动</strong></p><div class="preview-list preview-list--source" role="list">${previewItems}</div></div><div class="dialog-actions dialog-actions--fixed" id="preview-dialog-actions"><button>取消</button><button class="primary">保存来源</button></div></section></div>${collectionScopeFixture}<div class="reader-image-lightbox" id="image-lightbox" hidden><section class="reader-image-lightbox__frame"><button class="reader-image-lightbox__close">×</button><img id="lightbox-image" src="${largeImage}" alt="large fixture preview" /></section></div><div style="position:fixed;visibility:hidden;pointer-events:none" aria-hidden="true"><div class="settings-actions" id="settings-control-fixture"><button>取消</button><button class="primary">保存设置</button><button class="danger">移除</button></div></div></body></html>`;
 }
 
 function overlaps(a, b) {
@@ -339,6 +339,20 @@ async function auditViewport(window, viewport, mathJaxSvg) {
           controls: controls.map((control) => ({ left: control.left, right: control.right, top: control.top, bottom: control.bottom }))
         } : undefined;
       })(),
+      controls: (() => {
+        const inspect = (selector) => {
+          const element = document.querySelector(selector);
+          if (!element) return undefined;
+          const style = getComputedStyle(element);
+          return { font: style.fontFamily, size: style.fontSize, weight: style.fontWeight, radius: style.borderRadius, background: style.backgroundColor, minHeight: parseFloat(style.minHeight) };
+        };
+        return {
+          primary: ['.ai-question .primary', '.dialog-actions .primary', '#settings-control-fixture .primary'].map(inspect),
+          headings: ['.timeline h1', '.entry-card h2', '.dialog h2', '.reader-ai-panel > header strong'].map(inspect),
+          article: inspect('.article-body'),
+          inlineStrong: (() => { const style = getComputedStyle(document.querySelector('#assistant-markdown .ai-markdown-paragraph strong')); return { display: style.display, transform: style.textTransform, size: style.fontSize }; })()
+        };
+      })(),
       theme: (() => {
         const root = getComputedStyle(document.documentElement);
         const underline = document.querySelector('#selection-underline');
@@ -438,6 +452,12 @@ async function auditViewport(window, viewport, mathJaxSvg) {
   if (!geometry.theme || geometry.theme.accent !== "#4f7ea8" || geometry.theme.selectionAccent !== "#4f7ea8" || !geometry.theme.underline?.includes("79, 126, 168") || !geometry.theme.cardShadow?.includes("rgba(27, 32, 39, 0.12)") || geometry.theme.selectedEntry !== "rgb(220, 232, 245)" || geometry.theme.selectedSource !== "rgb(220, 232, 245)") {
     failures.push("原生蓝色选中状态、划词状态或浮层层级未保持一致");
   }
+  const primaryControls = geometry.controls?.primary || [];
+  if (primaryControls.length !== 3 || primaryControls.some((control) => !control || control.minHeight < 32)
+    || ['font', 'size', 'weight', 'radius', 'background'].some((property) => new Set(primaryControls.map((control) => control?.[property])).size !== 1)
+    || geometry.controls.headings.some((heading) => !heading || heading.font !== primaryControls[0]?.font)
+    || geometry.controls.article?.font === primaryControls[0]?.font) failures.push("跨面板按钮与界面字体不统一，或正文字体角色丢失");
+  if (geometry.controls?.inlineStrong?.display !== 'inline' || geometry.controls.inlineStrong.transform !== 'none') failures.push("AI 正文加粗被角色标签样式污染");
   const shouldDockAssistant = geometry.viewport && geometry.viewport.width >= 1380;
   if (shouldDockAssistant && geometry.assistant && geometry.assistant.panel.left < geometry.assistant.scroll.right - 1) {
     failures.push("超宽窗口中的 AI 学习面板覆盖了正文滚动区，而非停靠在右侧");

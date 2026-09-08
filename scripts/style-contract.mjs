@@ -13,6 +13,13 @@ for (const character of css) {
 }
 if (depth !== 0) failures.push("CSS 存在未匹配的花括号");
 if (/!important\b/.test(css)) failures.push("阅读器样式不允许使用 !important 覆盖层级");
+const componentStyles = css.replace(/:root\s*\{[^}]*\}/, "");
+for (const declaration of componentStyles.matchAll(/\bfont(?:-family)?:\s*([^;}]+)/g)) {
+  if (!declaration[1].includes("var(--font-") && declaration[1].trim() !== "inherit") {
+    failures.push("组件字体必须复用界面、正文或代码字体变量");
+    break;
+  }
+}
 if (/\.article-body\s+\*\s*\{/.test(css)) failures.push("正文不允许使用无约束的后代通配选择器");
 if (/\.article-body\s+img\s*\{[^}]*\bwidth\s*:\s*\d+px/i.test(css)) failures.push("正文图片不得使用固定像素宽度");
 if (!/\.article-body\s+img\s*\{[^}]*max-width:\s*min\(100%,\s*34em\)/s.test(css)) failures.push("正文图片缺少阅读列宽度约束");
