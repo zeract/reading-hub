@@ -48,6 +48,12 @@ npm run rebuild:electron
 - 本机 Codex CLI 不读取、复制或存储 Codex 的登录凭证。它会调用已登录 CLI 的 `codex exec --ephemeral --sandbox read-only`，通过标准输入传入同样受限的文章摘录，并仅读取最终回答。可在“设置”中从下拉菜单选择 CLI 默认模型，或 GPT-5.6 的 Sol、Terra、Luna；并选择 `low`、`medium`、`high`、`xhigh`、`max` 推理强度。模型与强度偏好保存在 macOS Keychain，不进入 SQLite。首次使用前请在终端执行 `codex`，用 ChatGPT 账户完成登录；CLI 未安装或未登录时会明确提示。
 - 为控制发送范围，每次提问只会发送当前文章提取后的前 18,000 个字符、标题、来源和链接；AI 面板关闭后，对话仅留在当前界面内存中。
 
+## 工程文档
+
+- [当前架构与状态归属](docs/architecture.md)
+- [界面规范](docs/ui-design.md)
+- [逐轮审查与验证记录](docs/architecture-review.md)
+
 ## 质量检查
 
 ```bash

@@ -1084,6 +1084,41 @@ describe("article reader extraction", () => {
     expect(content).toContain("图片说明。");
   });
 
+  it("keeps a noscript image when its preceding image is a different authored figure", () => {
+    const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p>
+      <img src="/first.png" alt="第一张图"><noscript><img src="/second.png" alt="第二张图"></noscript>
+      </article>`, entry.url, entry);
+    const images = load(result?.article.contentHtml || "")("img");
+    expect(images.toArray().map((image) => image.attribs.src)).toEqual([
+      "https://example.com/first.png", "https://example.com/second.png"
+    ]);
+    expect(images.eq(1).attr("alt")).toBe("第二张图");
+  });
+
+  it("processes every safe noscript image without copying executable markup", () => {
+    const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p>
+      <noscript><img src="javascript:alert(1)"><img src="/first.png" alt="第一张图" onerror="alert(1)">
+      <a href="javascript:alert(1)"><img src="/second.png" alt="第二张图"></a></noscript>
+      </article>`, entry.url, entry);
+    const content = result?.article.contentHtml || "";
+    const images = load(content)("img");
+    expect(images.toArray().map((image) => image.attribs.src)).toEqual([
+      "https://example.com/first.png", "https://example.com/second.png"
+    ]);
+    expect(content).not.toMatch(/onerror|javascript:|noscript/);
+  });
+
+  it("merges a matching fallback but preserves additional distinct fallback images", () => {
+    const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p>
+      <figure><img src="/first.png"><noscript><img src="/first.png" alt="第一张图">
+      <img src="/second.png" alt="第二张图"></noscript></figure></article>`, entry.url, entry);
+    const images = load(result?.article.contentHtml || "")("img");
+    expect(images.toArray().map((image) => image.attribs.src)).toEqual([
+      "https://example.com/first.png", "https://example.com/second.png"
+    ]);
+    expect(images.eq(0).attr("alt")).toBe("第一张图");
+  });
+
   it("does not remove the same image when it is intentionally used in separate figures", () => {
     const image = "https://example.com/images/reused-diagram.png";
     const result = extractReaderArticle(

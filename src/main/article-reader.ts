@@ -1237,38 +1237,41 @@ function hydrateLazyImages($: ReturnType<typeof load>, root: any, pageUrl: strin
 
   root.find("noscript").each((_index: number, node: any) => {
     const fallback = load($(node).text() || $(node).html() || "", {}, false);
-    const fallbackImage = fallback("img").first();
-    if (!fallbackImage.length) return;
+    const fallbackImages = fallback("img");
+    if (!fallbackImages.length) return;
     const previousImage = $(node).prev("img");
-    const fallbackSrc = imageSource(fallbackImage, pageUrl);
-    const equivalentSibling = $(node).siblings("img").toArray().map((sibling: any) => $(sibling)).find((image: any) => {
-      const siblingSrc = imageSource(image, pageUrl);
-      return sameImageAsset(fallbackSrc, siblingSrc);
-    });
-    // WordPress's lightbox block places a static <noscript> image immediately
-    // before its lazy image sibling. They can resolve to different generated
-    // sizes of one asset, so retaining both creates two visible figures.
-    if (equivalentSibling) {
+    const replacement = $("<div>");
+    fallbackImages.each((_fallbackIndex, fallbackNode) => {
+      const fallbackImage = fallback(fallbackNode);
+      const fallbackSrc = imageSource(fallbackImage, pageUrl);
+      if (!fallbackSrc) return;
+      const equivalentSibling = $(node).siblings("img").toArray().map((sibling: any) => $(sibling)).find((image: any) => {
+        return sameImageAsset(fallbackSrc, imageSource(image, pageUrl));
+      });
+      // WordPress can put the static fallback before a lazy sibling. Merge
+      // only an equivalent asset; adjacency alone does not establish identity.
+      if (equivalentSibling) {
+        const alt = normalText(fallbackImage.attr("alt") || "");
+        if (alt && !normalText(equivalentSibling.attr("alt") || "")) equivalentSibling.attr("alt", alt);
+        return;
+      }
+      if (previousImage.length && !imageSource(previousImage, pageUrl)) {
+        previousImage.attr("data-reader-noscript-src", fallbackSrc);
+        const srcset = fallbackImage.attr("data-srcset") || fallbackImage.attr("srcset");
+        if (srcset && !previousImage.attr("data-reader-noscript-srcset")) previousImage.attr("data-reader-noscript-srcset", srcset);
+        const alt = normalText(fallbackImage.attr("alt") || "");
+        if (alt && !normalText(previousImage.attr("alt") || "")) previousImage.attr("alt", alt);
+        return;
+      }
+      // Keep every distinct fallback in author order. Copy only validated
+      // image data, never the fallback's links, event handlers, or wrappers.
+      const image = $("<img>");
+      image.attr("src", fallbackSrc);
       const alt = normalText(fallbackImage.attr("alt") || "");
-      if (alt && !normalText(equivalentSibling.attr("alt") || "")) equivalentSibling.attr("alt", alt);
-      $(node).remove();
-      return;
-    }
-    if (previousImage.length) {
-      if (fallbackSrc && !imageSource(previousImage, pageUrl)) previousImage.attr("data-reader-noscript-src", fallbackSrc);
-      const srcset = fallbackImage.attr("data-srcset") || fallbackImage.attr("srcset");
-      if (srcset && !previousImage.attr("data-reader-noscript-srcset")) previousImage.attr("data-reader-noscript-srcset", srcset);
-      // The fallback has now been merged into the preceding lazy image. It
-      // must not survive the sanitizer as a second visible <img>.
-      $(node).remove();
-      return;
-    }
-    if (!fallbackSrc) return;
-    const image = $("<img>");
-    image.attr("src", fallbackSrc);
-    const alt = normalText(fallbackImage.attr("alt") || "");
-    if (alt) image.attr("alt", alt);
-    $(node).replaceWith(image);
+      if (alt) image.attr("alt", alt);
+      replacement.append(image);
+    });
+    $(node).replaceWith(replacement.children());
   });
   removeLocalDuplicateImages($, root, pageUrl);
 }
