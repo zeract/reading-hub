@@ -165,7 +165,7 @@ const channels = [
   ["entry:dismiss", (_event, id) => delayedNavigationCommand === "dismiss"
     ? deferNavigationCommand(() => database.dismissEntry(id)) : database.dismissEntry(id)],
   ["entry:restore", (_event, id) => {
-    if (restoreFailure) throw new Error("Synthetic restore failure");
+    if (restoreFailure) throw new Error(typeof restoreFailure === "string" ? restoreFailure : "Synthetic restore failure");
     if (delayedNavigationCommand === "restore") return deferNavigationCommand(() => database.restoreEntry(id));
     return database.restoreEntry(id);
   }],
@@ -745,10 +745,18 @@ try {
   completeNavigationCommand();
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 2 && !document.querySelector('[aria-label=\"重新载入收件箱\"]').disabled");
   assert(await evaluate("Boolean(document.querySelector('.reader-article')) && document.querySelector('.entry-card.selected h2')?.textContent === 'Historical fixture'"), "Finishing deletion of the previous article must not close the current reader.");
-  restoreFailure = true;
+  restoreFailure = `Synthetic restore failure ${"UnbrokenDiagnostic".repeat(32)}`;
   await clickText(".notice button", "撤销删除");
   await waitFor(window, "document.querySelector('.notice')?.textContent.includes('Synthetic restore failure') && !document.querySelector('[aria-label=\"重新载入收件箱\"]').disabled");
   assert(await evaluate("[...document.querySelectorAll('.notice button')].some((button) => button.textContent === '撤销删除')"), "A failed undo must retain the retry action.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const notice = document.querySelector('.notice'); const bounds = notice.getBoundingClientRect(); return notice.scrollWidth <= notice.clientWidth + 1 && [...notice.querySelectorAll('button')].every(button => { const rect = button.getBoundingClientRect(); return rect.left >= bounds.left && rect.right <= bounds.right && rect.bottom <= bounds.bottom; }); })()"), "Long notices must keep undo and close controls inside the notification.");
+    assert(await evaluate("(() => { const undo = [...document.querySelectorAll('.notice button')].find(button => button.textContent === '撤销删除'); const style = getComputedStyle(undo); const tokens = getComputedStyle(document.documentElement); return style.fontSize === tokens.getPropertyValue('--control-font-size').trim() && style.fontWeight === '600' && style.minHeight === tokens.getPropertyValue('--control-height').trim() && style.borderRadius === tokens.getPropertyValue('--control-radius').trim(); })()"), "Notice undo must use shared action typography and dimensions.");
+    assert(await evaluate("(() => { const message = document.querySelector('.notice-message'); message.focus(); message.scrollTop = 100; return document.activeElement === message && message.scrollTop > 0 && message.scrollWidth <= message.clientWidth + 1 && Boolean(document.querySelector('.notice [aria-label=\"关闭通知\"]')); })()"), "Long notice text must remain readable through its own focusable scroll region.");
+    await evaluate("document.querySelector('.notice-message').scrollTop = 0");
+    await writeFile(path.join(tmpdir(), `reading-hub-notice-${width}.png`), (await window.capturePage()).toPNG());
+  }
   restoreFailure = false;
   await clickText(".notice button", "撤销删除");
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 3 && document.querySelector('.notice')?.textContent.includes('内容已恢复')");

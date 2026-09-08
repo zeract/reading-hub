@@ -122,7 +122,11 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
       />
       {entrySearch && <button type="button" className="entry-search-clear" onClick={clearSearch} aria-label="清除关键词">×</button>}
     </form>}
-    {notice && <div className="notice">{notice}{onUndo && <button type="button" disabled={busy} onClick={onUndo}>撤销删除</button>}<button onClick={onClearNotice}>×</button></div>}
+    {notice && <div className="notice">
+      <p className="notice-message" role="status" tabIndex={0}>{notice}</p>
+      <button type="button" className="notice-close" aria-label="关闭通知" title="关闭通知" onClick={onClearNotice}>×</button>
+      {onUndo && <div className="notice-actions"><button type="button" className="action-button" disabled={busy} onClick={onUndo}>撤销删除</button></div>}
+    </div>}
     <div className="entry-list">
       {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntryId === entry.id} onRead={onUpdateEntry} isEntryUpdating={isEntryUpdating} onOpen={onOpenEntry} onDismiss={libraryView === "trash" ? onRestoreEntry || onDismissEntry : onDismissEntry} deleted={libraryView === "trash"} busy={busy} />)}
       {!visibleCount && <TimelineEmptyState loading={loadingEntries} failed={loadFailed} hasMore={hasMoreEntries} source={activeSource} hasSources={sourceById.size > 0} view={libraryView} search={entrySearch} onClearSearch={clearSearch} onRetry={onReload} onAddSource={onAddSource} onEditSource={onEditSource} />}

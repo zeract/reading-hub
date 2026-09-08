@@ -65,6 +65,33 @@ it("shows the final empty-view explanation only when there is no next page", asy
   expect(container.querySelector(".entry-load-more")).toBeNull();
 });
 
+it("exposes notice text separately from clearly labelled actions", async () => {
+  const notice = '<img src="invalid" onerror="alert(1)">\nA long diagnostic';
+  const undo = vi.fn();
+  await render({ notice, onUndo: undo });
+  const message = container.querySelector<HTMLElement>(".notice-message")!;
+  expect(message.textContent).toBe(notice);
+  expect(message.getAttribute("role")).toBe("status");
+  expect(message.tabIndex).toBe(0);
+  expect(container.querySelector(".notice img")).toBeNull();
+  await act(async () => container.querySelector<HTMLButtonElement>(".notice-actions button")!.click());
+  expect(undo).toHaveBeenCalledOnce();
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="关闭通知"]')!.click());
+  expect(props.onClearNotice).toHaveBeenCalledOnce();
+});
+
+it("keeps notice dismissal available while an undo is busy", async () => {
+  const undo = vi.fn();
+  await render({ notice: "Restoring", onUndo: undo, busy: true });
+  const retry = container.querySelector<HTMLButtonElement>(".notice-actions button")!;
+  const dismiss = container.querySelector<HTMLButtonElement>('[aria-label="关闭通知"]')!;
+  expect(retry.disabled).toBe(true); expect(dismiss.disabled).toBe(false);
+  await act(async () => { retry.click(); dismiss.click(); });
+  expect(undo).not.toHaveBeenCalled(); expect(props.onClearNotice).toHaveBeenCalledOnce();
+  await render({ notice: "Another message" });
+  expect(container.querySelector(".notice-actions")).toBeNull();
+});
+
 
 it("marks stale sidebar counts as unavailable and restores confirmed values", async () => {
   const sidebar = { sources: [], groups: [], libraryView: "favorite" as const, libraryCounts: { unread: 4, favorite: 1, today: 0, newArrivals: 2 },
