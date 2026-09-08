@@ -61,4 +61,61 @@ it("removes an old undo when a normal message replaces it and keeps callbacks st
   await act(async () => notices.show("Refreshed"));
   expect(notices.notice?.undoEntry).toBeUndefined();
   expect(notices.show).toBe(initial.show); expect(notices.updateIfCurrent).toBe(initial.updateIfCurrent);
+  expect(notices.begin).toBe(initial.begin);
+});
+
+it("reserves one completion while keeping the current notice visible", async () => {
+  await act(async () => notices.show("Existing", entry));
+  const existing = notices.notice;
+  const publish = notices.begin();
+  expect(notices.notice).toBe(existing);
+  await act(async () => publish("Refresh completed"));
+  expect(notices.notice?.message).toBe("Refresh completed");
+  expect(notices.notice?.undoEntry).toBeUndefined();
+  await act(async () => publish("Repeated completion"));
+  expect(notices.notice?.message).toBe("Refresh completed");
+});
+
+it("invalidates pending completion when a notice is shown or dismissed before React renders", async () => {
+  await act(async () => {
+    const old = notices.begin();
+    notices.show("Deleted", entry);
+    old("Old completion");
+  });
+  expect(notices.notice?.undoEntry).toBe(entry);
+  await act(async () => {
+    const old = notices.begin();
+    notices.show(undefined);
+    old("Late failure");
+  });
+  expect(notices.notice).toBeUndefined();
+});
+
+it("reserves completion for the latest action even before either action displays a notice", async () => {
+  const first = notices.begin(); const second = notices.begin();
+  await act(async () => first("Old"));
+  expect(notices.notice).toBeUndefined();
+  await act(async () => second("Current"));
+  expect(notices.notice?.message).toBe("Current");
+});
+
+it("treats an explicit clear of an empty notice as invalidation", async () => {
+  const publish = notices.begin();
+  await act(async () => notices.show(undefined));
+  await act(async () => publish("Late"));
+  expect(notices.notice).toBeUndefined();
+});
+
+it("invalidates a publisher only when an owned notice update actually applies", async () => {
+  await act(async () => notices.show("Deleted", entry));
+  const id = notices.notice!.id;
+  const first = notices.begin();
+  await act(async () => notices.updateIfCurrent("obsolete-id", { message: "Ignored" }));
+  await act(async () => first("Current"));
+  expect(notices.notice?.message).toBe("Current");
+  const second = notices.begin();
+  await act(async () => notices.updateIfCurrent(notices.notice!.id, { message: "Updated" }));
+  await act(async () => second("Late"));
+  expect(notices.notice?.message).toBe("Updated");
+  expect(notices.notice?.id).not.toBe(id);
 });

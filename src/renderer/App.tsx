@@ -56,7 +56,7 @@ function AppShell() {
     clearActiveSource
   } = useLibraryData();
   const [pending, setPending] = useState<PendingPreview>();
-  const { notice, show: setNotice, updateIfCurrent: updateNotice } = useLibraryNotice();
+  const { notice, show: setNotice, updateIfCurrent: updateNotice, begin: beginNotice } = useLibraryNotice();
   const undoEntry = notice?.undoEntry;
   const { busy, track } = useAsyncActivity();
   const [addSourceSession, setAddSourceSession] = useState<string>();
@@ -143,16 +143,17 @@ function AppShell() {
   }, [pending, reload, setNotice]);
 
   const refresh = useCallback((source: Source) => track(async () => {
+    const publish = beginNotice();
     try {
       await window.reader.refreshSource(source.id);
       await reload();
-      setNotice(`已检查「${source.title}」。`);
+      publish(`已检查「${source.title}」。`);
     } catch (error) {
       await reload().catch(() => undefined);
-      setNotice(errorMessage(error));
+      publish(errorMessage(error));
       throw error;
     }
-  }), [reload, setNotice, track]);
+  }), [beginNotice, reload, track]);
 
   const commitEntryState = useCallback((entryId: string, field: EntryMutationField, value: boolean) => {
     applyEntryState(entryId, field, value);
@@ -227,8 +228,9 @@ function AppShell() {
       void refresh(activeSource).catch(() => undefined);
       return;
     }
-    void reload().then(() => setNotice("已重新载入收件箱。")).catch((error) => setNotice(errorMessage(error)));
-  }, [activeSource, refresh, reload, setNotice]);
+    const publish = beginNotice();
+    void reload().then(() => publish("已重新载入收件箱。")).catch((error) => publish(errorMessage(error)));
+  }, [activeSource, beginNotice, refresh, reload, setNotice]);
 
   if (appView === "settings") {
     return <SettingsView onClose={() => setAppView("library")} windowFullscreen={windowFullscreen} />;

@@ -347,6 +347,23 @@ try {
   await waitFor(window, "failedSourceIcons === 1 && Boolean(document.querySelector('.source-icon--rss svg')) && !document.querySelector('.source-icon--favicon')");
   await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   assert(sourceIconReads === initialSourceIconReads, "A real favicon decode failure must restore the local mark without retrying IPC.");
+  pauseLibraryPage = true;
+  const oldRefreshStarted = new Promise((resolve) => { libraryPageRequested = resolve; });
+  await evaluate("document.querySelector('[aria-label=\"重新载入收件箱\"]').click()");
+  await oldRefreshStarted;
+  pauseLibraryPage = false;
+  await evaluate("[...document.querySelectorAll('.entry-card')].find(card => card.querySelector('h2').textContent === 'Unavailable fixture').querySelector('.delete-entry').click()");
+  await waitFor(window, "Boolean(document.querySelector('.notice-actions')) && document.querySelectorAll('.entry-card').length === 1");
+  completeLibraryPage();
+  await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const undo = document.querySelector('.notice-actions button'); const notice = document.querySelector('.notice'); if (!undo || !notice?.textContent.includes('Unavailable fixture')) return false; const rect = undo.getBoundingClientRect(); const bounds = notice.getBoundingClientRect(); return rect.width > 0 && rect.left >= bounds.left && rect.right <= bounds.right && rect.bottom <= bounds.bottom; })()"), "An obsolete refresh must preserve the later deletion's visible undo at every viewport.");
+    await writeFile(path.join(tmpdir(), `reading-hub-refresh-notice-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  await clickText(".notice-actions button", "撤销删除");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 2 && !document.querySelector('.notice-actions')");
+  await evaluate("document.querySelector('[aria-label=\"关闭通知\"]').click()");
   assert(await evaluate("document.querySelector('.timeline h1').textContent === '新收集'"), "The initial view must show collection order.");
   await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Unavailable fixture\"]').click()");
   await waitFor(window, "Boolean(document.querySelector('.reader-failure'))");
