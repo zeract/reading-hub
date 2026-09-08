@@ -15,9 +15,10 @@ const electron = vi.hoisted(() => {
       getURL: () => this.url,
       setWindowOpenHandler: vi.fn(),
       on: vi.fn((event: string, listener: (...args: any[]) => void) => this.listeners.set(event, listener)),
+      removeListener: vi.fn((event: string) => this.listeners.delete(event)),
       executeJavaScriptInIsolatedWorld: vi.fn((_world: number, scripts: Array<{ code: string }>) => renderState.readDocument(scripts[0].code))
     };
-    readonly loadURL = vi.fn((...args: unknown[]) => { this.url = String(args[0]); return renderState.loadURL(...args); });
+    readonly loadURL = vi.fn(async (...args: unknown[]) => { this.url = String(args[0]); await renderState.loadURL(...args); this.listeners.get("did-navigate")?.({}, this.url, 200, "OK"); });
 
     readonly options: Record<string, unknown>;
 

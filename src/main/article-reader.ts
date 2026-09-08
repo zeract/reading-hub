@@ -14,6 +14,7 @@ import { isHtmlDocumentContentType, PublicHttpClient, type PublicRequestOptions 
 import { extractPagePublishedAt } from "./extractor";
 import { ScientificMathRenderer, type MathJaxDocumentExpression, type MathMacroDefinition } from "./mathjax-renderer";
 import type { PageRenderer, RenderedPage } from "./page-renderer";
+import { RenderedPageHttpError } from "./rendered-document";
 import { discoverReaderLanguageVariants, mergeReaderLanguageVariants, sameCanonicalUrl } from "./reader-language-variants";
 import { RobotsDisallowedError } from "./robots";
 import { htmlDocumentBaseUrl, publicDocumentUrl as safeUrl } from "./html-document-url";
@@ -436,12 +437,14 @@ export class ArticleReader {
     }
 
     let renderedPage: RenderedPage | undefined;
+    let renderedFailure: unknown;
     try {
       renderedPage = usesZhihuSession && this.renderWithZhihuSession
         ? await this.renderWithZhihuSession(targetUrl, options)
         : await this.renderer.render(targetUrl, options);
     } catch (error) {
       if (options?.signal?.aborted) throw abortError(options.signal);
+      renderedFailure = error;
       // Keep a usable static article when Chromium rendering is unavailable.
     }
     throwIfAborted(options?.signal);
@@ -451,13 +454,16 @@ export class ArticleReader {
       return this.rememberLanguageVariants(entry.id, renderedArticle.article, knownLanguageVariants, options?.signal);
     }
     if (staticArticle) return this.rememberLanguageVariants(entry.id, staticArticle.article, knownLanguageVariants, options?.signal);
+    // An observed HTTP failure is more useful than an earlier transport error.
+    // Preserve local Feed fallbacks before surfacing this fixed diagnostic.
+    const failure = renderedFailure instanceof RenderedPageHttpError ? renderedFailure : staticFailure;
     // A public original can intermittently reject a reader request (or time
     // out) even though its RSS response already supplied a body. That body is
     // part of the user's subscription, so re-fetch and sanitise it in memory
     // before surfacing an avoidable read error. This never retries a blocked
     // original page and never persists full Feed content.
     if (!allowFeedFallback) {
-      if (staticFailure) throw staticFailure;
+      if (failure) throw failure;
       throw new ArticleContentUnavailableError();
     }
     const feedBody = await awaitWithAbort(this.readTransientFeedBody(entry, source, options), options?.signal).catch(() => {
@@ -467,7 +473,7 @@ export class ArticleReader {
     if (feedBody) return this.rememberLanguageVariants(entry.id, feedBody, knownLanguageVariants, options?.signal);
     const feedSummary = createFeedSummaryArticle(entry, source);
     if (feedSummary) return this.rememberLanguageVariants(entry.id, feedSummary, knownLanguageVariants, options?.signal);
-    if (staticFailure) throw staticFailure;
+    if (failure) throw failure;
     throw new ArticleContentUnavailableError();
   }
 

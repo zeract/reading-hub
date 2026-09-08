@@ -8,7 +8,7 @@ import { extractZhihuFollowPage } from "./zhihu-follow-parser";
 import { configureChromiumSession } from "./network";
 import { createBackgroundWindow } from "./background-window";
 import { guardMainFrameNavigation } from "./navigation-policy";
-import { readRenderedPage, type PageRenderOptions, type RenderedPage } from "./rendered-document";
+import { observeRenderedPage, type RenderedPageCapture, type PageRenderOptions, type RenderedPage } from "./rendered-document";
 
 const FOLLOW_URL = "https://www.zhihu.com/follow";
 const PARTITION = "persist:reading-hub-zhihu-follow";
@@ -89,13 +89,13 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
   }
 
   async fetchEntries(signal?: AbortSignal): Promise<RawEntry[]> {
-    return this.withReadingWindow(signal, async (window, signal) => {
+    return this.withReadingWindow(signal, async (window, signal, capture) => {
       await awaitWithAbort(window.loadURL(FOLLOW_URL), signal);
       if (!isFollowUrl(window.webContents.getURL())) {
         throw new Error("知乎登录已失效，请点击“重新登录知乎”后再刷新关注动态。");
       }
       await delayWithAbort(1_200, signal);
-      const page = await readRenderedPage(window.webContents, { signal });
+      const page = await capture.read({ signal });
       if (!isFollowUrl(page.url)) throw new Error("知乎登录已失效，请点击“重新登录知乎”后再刷新关注动态。");
       const entries = extractZhihuFollowPage(page.html, page.url);
       if (!entries.length) throw new Error("未能识别知乎关注动态中的公开内容，请在知乎登录窗口完成登录后重试。");
@@ -116,10 +116,10 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
     throwIfAborted(options?.signal);
     const url = assertPublicUrl(rawUrl).toString();
     if (!isZhihuUrl(url)) throw new Error("只能在知乎授权会话中打开知乎内容。");
-    return this.withReadingWindow(options?.signal, async (window, signal) => {
+    return this.withReadingWindow(options?.signal, async (window, signal, capture) => {
       await awaitWithAbort(window.loadURL(url), signal);
       await delayWithAbort(900, signal);
-      const page = await readRenderedPage(window.webContents, { ...options, signal });
+      const page = await capture.read({ ...options, signal });
       if (!isZhihuUrl(page.url)) throw new Error("只能在知乎授权会话中打开知乎内容。");
       return page;
     });
@@ -128,7 +128,7 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
   /** Reading windows belong to both their caller and the current session.
    * Clearing authentication invalidates configuration, navigation and DOM
    * extraction together, including callers without their own signal. */
-  private async withReadingWindow<T>(caller: AbortSignal | undefined, operation: (window: BrowserWindow, signal: AbortSignal) => Promise<T>): Promise<T> {
+  private async withReadingWindow<T>(caller: AbortSignal | undefined, operation: (window: BrowserWindow, signal: AbortSignal, capture: RenderedPageCapture) => Promise<T>): Promise<T> {
     const scope = combineAbortSignals(caller, this.readingSession.signal);
     // One budget includes admission, proxy configuration, navigation and DOM
     // extraction. A stalled background read must release its sync queue slot.
@@ -136,12 +136,14 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
     const signal = request.signal;
     try {
       const window = await this.createWindow(false, signal);
+      const capture = observeRenderedPage(window.webContents);
       try {
         throwIfAborted(signal);
-        const result = await awaitWithAbort(operation(window, signal), signal);
+        const result = await awaitWithAbort(operation(window, signal, capture), signal);
         throwIfAborted(signal);
         return result;
       } finally {
+        capture.dispose();
         if (!window.isDestroyed()) window.destroy();
       }
     } finally { request.dispose(); scope.dispose(); }

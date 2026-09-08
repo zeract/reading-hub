@@ -149,9 +149,11 @@ try {
   const patchedDomPageUrl = "https://rendered.example/patched-dom";
   const basedPageUrl = "https://rendered.example/posts/based.html";
   const checkedPages = [];
+  const statusPageUrl = (status) => `https://rendered.example/http-status/${status}`;
   const interceptRenderedPage = (_event, contents) => {
     contents.session.protocol.handle("https", (request) => {
       assert.equal(request.headers.get("cookie"), null);
+      if (request.url.startsWith("https://rendered.example/http-status/")) return new Response(`<article><h1>Readable error fixture</h1><p>${"This is an HTTP error, not an article. ".repeat(40)}</p></article>`, { status: Number(request.url.split("/").at(-1)), headers: { "content-type": "text/html" } });
       if (request.url === initialPageUrl) return new Response(null, { status: 302, headers: { location: finalPageUrl } });
       if (request.url === finalPageUrl) return new Response(`<article><h1>Fixture article</h1><p>${"Synthetic paragraph. ".repeat(50)}</p><img src="figure.svg"><a href="appendix.html">Fixture appendix</a></article>`, { headers: { "content-type": "text/html" } });
       if (request.url === basedPageUrl) return new Response(`<head><base href="../assets/"><link rel="alternate" type="application/rss+xml" href="feed.xml"></head><article><h1>Fixture article</h1><time datetime="2026-08-02"></time><p>${"Synthetic paragraph. ".repeat(50)}</p><img src="figure.svg"><a href="appendix.html">Fixture appendix</a><a href="archive.html">Archives</a></article>`, { headers: { "content-type": "text/html" } });
@@ -164,7 +166,7 @@ try {
   app.on("web-contents-created", interceptRenderedPage);
   try {
     const renderer = new IsolatedPageRenderer({ async assertAllowed(url) {
-      assert([initialPageUrl, finalPageUrl, oversizedPageUrl, patchedDomPageUrl, basedPageUrl].includes(url)); checkedPages.push(url);
+      assert([initialPageUrl, finalPageUrl, oversizedPageUrl, patchedDomPageUrl, basedPageUrl].includes(url) || url.startsWith("https://rendered.example/http-status/")); checkedPages.push(url);
     } });
     const page = await renderer.render(initialPageUrl);
     assert.equal(page.url, finalPageUrl);
@@ -190,6 +192,7 @@ try {
     await assert.rejects(renderer.render(oversizedPageUrl, { maxBytes: 256 }), RenderedPageTooLargeError);
     const cleanSnapshot = await renderer.render(patchedDomPageUrl);
     assert(cleanSnapshot.html.includes("Actual DOM fixture"));
+    for (const status of [403, 404, 429, 503]) await assert.rejects(renderer.render(statusPageUrl(status)), { name: "RenderedPageHttpError", status });
   } finally { app.removeListener("web-contents-created", interceptRenderedPage); }
   console.log("Reading Hub network smoke test passed: AI semantic completion and final snapshots, LF/CRLF/CR, JSON, proxy and credential isolation, plus native rendered-page redirects and relative article URLs verified.");
 } catch (error) {

@@ -4,7 +4,7 @@ import { awaitWithAbort, delayWithAbort, throwIfAborted, withRequestTimeout } fr
 import { configureChromiumSession } from "./network";
 import { RobotsPolicy } from "./robots";
 import { createBackgroundWindow } from "./background-window";
-import { readRenderedPage, type PageRenderOptions, type RenderedPage } from "./rendered-document";
+import { observeRenderedPage, type RenderedPageCapture, type PageRenderOptions, type RenderedPage } from "./rendered-document";
 
 export { RenderedPageTooLargeError } from "./rendered-document";
 export type { PageRenderOptions, RenderedPage } from "./rendered-document";
@@ -28,6 +28,7 @@ export class IsolatedPageRenderer implements PageRenderer {
     const request = withRequestTimeout(options?.signal, RENDER_TASK_TIMEOUT_MS, RENDER_TIMEOUT_MESSAGE);
     let isolatedSession: ReturnType<typeof session.fromPartition> | undefined;
     let window: BrowserWindow | undefined;
+    let capture: RenderedPageCapture | undefined;
     let failed = true;
     const stopAndDestroy = () => {
       try {
@@ -59,18 +60,20 @@ export class IsolatedPageRenderer implements PageRenderer {
           spellcheck: false
         }
       });
+      capture = observeRenderedPage(window.webContents);
       request.signal.addEventListener("abort", stopAndDestroy, { once: true });
       throwIfAborted(request.signal);
       window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       window.webContents.on("will-attach-webview", (event) => event.preventDefault());
       await loadWithVerifiedRedirects(window, this.robots, url, request.signal);
       await delayWithAbort(800, request.signal);
-      const page = await readRenderedPage(window.webContents, { ...options, signal: request.signal });
+      const page = await capture.read({ ...options, signal: request.signal });
       throwIfAborted(request.signal);
       failed = false;
       return page;
     } finally {
       try {
+        capture?.dispose();
         request.signal.removeEventListener("abort", stopAndDestroy);
         stopAndDestroy();
         if (isolatedSession) {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 const mocks = vi.hoisted(() => ({
   windows: [] as any[],
+  status: 200,
   created: vi.fn(),
   configure: vi.fn(async () => undefined),
   navigate: vi.fn(async (_url?: string) => undefined),
@@ -19,7 +20,7 @@ vi.mock("electron", async () => {
     webContents = Object.assign(new EventEmitter(), {
       getURL: () => this.url, setWindowOpenHandler: vi.fn(), stop: vi.fn(), executeJavaScriptInIsolatedWorld: mocks.evaluate
     });
-    loadURL = async (url: string) => { await mocks.navigate(url); this.url = url; };
+    loadURL = async (url: string) => { await mocks.navigate(url); this.url = url; this.webContents.emit("did-navigate", {}, url, mocks.status, "Untrusted remote status"); };
     constructor(readonly options: unknown) { super(); mocks.windows.push(this); mocks.created(); }
     isDestroyed() { return this.destroyed; }
     destroy() { if (!this.destroyed) { this.destroyed = true; this.emit("closed"); } }
@@ -43,7 +44,7 @@ function barrier<T>() {
   return { wait, release };
 }
 beforeEach(() => {
-  vi.useFakeTimers(); vi.clearAllMocks(); mocks.windows.length = 0;
+  vi.useFakeTimers(); vi.clearAllMocks(); mocks.windows.length = 0; mocks.status = 200;
   mocks.configure.mockResolvedValue(undefined); mocks.navigate.mockResolvedValue(undefined);
   mocks.evaluate.mockResolvedValue("Fixture HTML"); mocks.clear.mockResolvedValue(undefined);
 });
@@ -337,4 +338,21 @@ it("records timeout backoff, permits immediate retry and deduplicates after rest
     navigated.release(); connector.close(); await pending; await manager.close(); db.close();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+
+describe.each(["feed", "article"] as const)("Zhihu %s response status", (kind) => {
+  it.each([401, 403, 404, 410, 429, 500, 503])("rejects HTTP %s without interpreting error HTML", async (status) => {
+    mocks.status = status;
+    const connector = new ZhihuFollowConnector();
+    try {
+      const outcome = read(connector, kind).catch((error) => error);
+      await vi.advanceTimersByTimeAsync(1_200);
+      expect(await outcome).toMatchObject({ message: `页面请求失败（HTTP ${status}），无法读取正文。` });
+      expect(mocks.evaluate).not.toHaveBeenCalled();
+      expect(mocks.extract).not.toHaveBeenCalled();
+      expect(mocks.windows[0].isDestroyed()).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { connector.close(); }
+  });
 });

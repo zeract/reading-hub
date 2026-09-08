@@ -27,6 +27,45 @@ export class RenderedPageTooLargeError extends Error {
   }
 }
 
+export class RenderedPageHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`页面请求失败（HTTP ${status}），无法读取正文。`);
+    this.name = "RenderedPageHttpError";
+  }
+}
+
+export interface RenderedPageCapture {
+  read(options?: PageRenderOptions): Promise<RenderedPage>;
+  dispose(): void;
+}
+
+/** Observe before navigation: loadURL resolving only proves loading finished,
+ * not that the server returned an article. Only main-frame responses count;
+ * an image or iframe failure must not invalidate a successful document. */
+export function observeRenderedPage(contents: Pick<WebContents, "on" | "removeListener" | "executeJavaScriptInIsolatedWorld" | "getURL">): RenderedPageCapture {
+  let status: number | undefined;
+  const onNavigation = (_event: Electron.Event, _url: string, responseCode: number) => { status = responseCode; };
+  contents.on("did-navigate", onNavigation);
+  const assertSuccess = () => {
+    if (status === undefined || !Number.isInteger(status) || status < 100) {
+      throw new Error("未能确认页面的 HTTP 响应，已停止提取。");
+    }
+    if (status < 200 || status >= 300) throw new RenderedPageHttpError(status);
+  };
+  return {
+    async read(options) {
+      throwIfAborted(options?.signal);
+      assertSuccess();
+      const page = await readRenderedPage(contents, options);
+      // A committed error navigation while DOM capture was pending must not
+      // lend the earlier document's success to the replacement error page.
+      assertSuccess();
+      return page;
+    },
+    dispose() { contents.removeListener("did-navigate", onNavigation); }
+  };
+}
+
 /** Capture a bounded DOM using built-ins that page JavaScript cannot replace.
  * The caller owns navigation, access policy and destruction of its window. */
 export async function readRenderedPage(contents: Pick<WebContents, "executeJavaScriptInIsolatedWorld" | "getURL">, options?: PageRenderOptions): Promise<RenderedPage> {
