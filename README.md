@@ -53,6 +53,7 @@ npm run rebuild:electron
 - [当前架构与状态归属](docs/architecture.md)
 - [界面规范](docs/ui-design.md)
 - [逐轮审查与验证记录](docs/architecture-review.md)
+- [架构重构与界面统一验收](docs/completion-audit.md)
 
 ## 质量检查
 
