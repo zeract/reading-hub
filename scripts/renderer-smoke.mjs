@@ -82,6 +82,7 @@ function deferNavigationCommand(operation) {
     navigationCommandRequested?.();
   });
 }
+let providerListFailure = false;
 const fixtureProviders = [
   { id: "openai", label: "Fixture AI", model: "fixture", configured: true, requiresApiKey: true },
   { id: "deepseek", label: "Fixture secondary AI", model: "fixture-secondary", configured: true, requiresApiKey: true }
@@ -118,7 +119,7 @@ const channels = [
       previewRequested?.();
     });
   }],
-  ["ai:list-providers", () => { providerLists++; return fixtureProviders; }],
+  ["ai:list-providers", () => { providerLists++; if (providerListFailure) throw new Error(`Synthetic provider discovery failure ${"UnbrokenDiagnostic".repeat(35)}`); return fixtureProviders; }],
   ["ai:configure", (_event, configuration) => {
     settingsSaves++;
     assert(configuration.apiKey === "", "Settings fixture must use no credentials.");
@@ -577,9 +578,21 @@ try {
   await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   assert(await evaluate("Boolean(document.querySelector('#source-url'))"), "An older academic subscription must not close a replacement add-source dialog.");
   await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
+  providerListFailure = true;
   await evaluate("document.querySelector('[aria-label=\"打开设置\"]').click()");
   await clickText(".settings-sidebar nav button", "AI 功能");
-  await waitFor(window, "document.querySelectorAll('.settings-ai-form select option').length === 2");
+  await waitFor(window, "Boolean(document.querySelector('.settings-provider-error'))");
+  assert(await evaluate("document.querySelector('.settings-actions .primary').disabled && document.querySelector('.settings-ai-form select').disabled && !document.querySelector('.settings-ai-form input')"), "Failed initial provider discovery must disable writes and omit unavailable configuration fields.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const error = document.querySelector('.settings-provider-error'); const button = document.querySelector('.settings-provider-feedback button'); button.scrollIntoView({ block: 'nearest' }); const rect = button.getBoundingClientRect(); const style = getComputedStyle(button); const tokens = getComputedStyle(document.documentElement); return document.documentElement.scrollWidth <= innerWidth + 1 && error.scrollWidth <= error.clientWidth + 1 && error.clientHeight <= parseFloat(getComputedStyle(error).fontSize) * 9 + 1 && rect.bottom <= innerHeight + 1 && style.minHeight === tokens.getPropertyValue('--control-height').trim() && style.borderRadius === tokens.getPropertyValue('--control-radius').trim(); })()"), "Provider read errors must wrap and scroll while keeping the shared retry button reachable.");
+    await writeFile(path.join(tmpdir(), `reading-hub-provider-discovery-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  providerListFailure = false;
+  await evaluate("document.querySelector('.settings-provider-feedback button').focus()");
+  await pressKey("Enter");
+  await waitFor(window, "!document.querySelector('.settings-provider-feedback') && document.querySelectorAll('.settings-ai-form select option').length === 2");
+  assert(settingsSaves === 0, "Retrying initial provider discovery must not write configuration.");
   const listsBeforeSelection = providerLists;
   await evaluate(`(() => { const provider = document.querySelector('.settings-ai-form select'); provider.value = 'deepseek'; provider.dispatchEvent(new Event('change', { bubbles: true })); })()`);
   await evaluate(`(() => { const input = document.querySelector('.settings-ai-form input:not([type="password"])'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'edited-fixture'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
@@ -588,8 +601,15 @@ try {
   await evaluate(`(() => { const form = document.querySelector('.settings-ai-form'); form.requestSubmit(); form.requestSubmit(); })()`);
   await saveRequested;
   assert(settingsSaves === 1, "Repeated native form submission must issue only one settings command.");
+  providerListFailure = true;
   pendingSettingsSave();
+  await waitFor(window, "document.querySelector('.settings-provider-feedback')?.textContent.includes('设置操作已完成')");
+  assert(await evaluate("document.querySelector('.settings-actions .primary').disabled && document.querySelector('.settings-actions .danger').disabled"), "A committed settings update must not be repeated to recover a failed read.");
+  assert(fixtureProviders.find((provider) => provider.id === "deepseek").model === "edited-fixture", "The settings write must remain committed during failed discovery.");
+  providerListFailure = false;
+  await evaluate("document.querySelector('.settings-provider-feedback button').click()");
   await waitFor(window, "!document.querySelector('.settings-actions .primary').disabled && document.querySelector('.settings-ai-form input').value === 'edited-fixture'");
+  assert(settingsSaves === 1, "Discovery retry must recover the saved provider without another write.");
   assert(await evaluate("document.querySelector('.settings-ai-form select').value === 'deepseek'"), "Save refresh must preserve the selected provider.");
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
     await setViewport(width, height, scale);

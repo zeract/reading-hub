@@ -4,6 +4,7 @@ import { CODEX_EFFORT_OPTIONS } from "./ai-options";
 import { ReaderPreferenceStatus, useReaderPreferences } from "./reader-preferences-context";
 import { AppIcon } from "./ui-icons";
 import { useAsyncAction } from "./use-async-action";
+import { errorMessage } from "./errors";
 
 type SettingsSection = "reading" | "ai";
 
@@ -16,33 +17,44 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState<AiReasoningEffort>("medium");
   const [apiKey, setApiKey] = useState("");
-  const { busy, error, run, clearError, fail, isRunning } = useAsyncAction();
+  const { busy, error, run, clearError, isRunning } = useAsyncAction();
+  const [providerState, setProviderState] = useState<"loading" | "ready" | "error">("loading");
+  const [providerError, setProviderError] = useState<string>();
+  const [updateCommitted, setUpdateCommitted] = useState(false);
 
   const reloadProviders = useCallback(async (isCurrent: () => boolean, preferredId: AiProviderId) => {
-    const next = await window.reader.listAiProviders();
-    if (!isCurrent()) return;
-    setProviders(next);
-    const active = next.find((provider) => provider.id === preferredId) || next[0];
-    if (!active) return;
-    setProviderId(active.id);
-    setModel(active.model);
-    setEffort(active.effort || "medium");
+    setProviderState("loading");
+    setProviderError(undefined);
+    try {
+      const next = await window.reader.listAiProviders();
+      if (!isCurrent()) return;
+      const active = next.find((provider) => provider.id === preferredId) || next[0];
+      if (!active) throw new Error("没有可用的 AI 服务，请重新读取配置。");
+      setProviders(next);
+      setProviderId(active.id);
+      setModel(active.model);
+      setEffort(active.effort || "medium");
+      setProviderState("ready");
+      setUpdateCommitted(false);
+    } catch (reason) {
+      if (!isCurrent()) return;
+      setProviderError(errorMessage(reason));
+      setProviderState("error");
+    }
   }, []);
 
   useEffect(() => {
-    let current = true;
-    void reloadProviders(() => current, "codex-cli").catch((reason) => {
-      if (current) fail(reason);
-    });
-    return () => { current = false; };
-  }, [reloadProviders, fail]);
+    void run((isCurrent) => reloadProviders(isCurrent, "codex-cli"));
+  }, [reloadProviders, run]);
 
   const selected = providers.find((provider) => provider.id === providerId);
   const usingLocalCodex = selected?.id === "codex-cli";
   const requiresApiKey = selected?.requiresApiKey === true;
 
+  const controlsDisabled = busy || providerState !== "ready";
+
   function switchProvider(nextId: AiProviderId) {
-    if (isRunning()) return;
+    if (isRunning() || providerState !== "ready") return;
     const next = providers.find((provider) => provider.id === nextId);
     setProviderId(nextId);
     setModel(next?.model || "");
@@ -52,11 +64,12 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
   }
 
   async function updateAiSettings(update: () => Promise<unknown>) {
-    if (!selected) return;
+    if (!selected || providerState !== "ready") return;
     await run(async (isCurrent) => {
       await update();
       if (!isCurrent()) return;
       setApiKey("");
+      setUpdateCommitted(true);
       await reloadProviders(isCurrent, providerId);
     });
   }
@@ -72,7 +85,7 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
   }
 
   async function clearAiSettings() {
-    if (!selected || isRunning()) return;
+    if (!selected || isRunning() || providerState !== "ready") return;
     const message = usingLocalCodex
       ? "恢复本机 Codex 的默认模型与推理强度？"
       : `清除 ${selected.label} 的 API Key？`;
@@ -107,18 +120,24 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
         <header><p className="eyebrow">AI 功能</p><h1>服务与连接</h1><p>密钥仅写入 macOS Keychain，不保存在数据库或页面中。</p></header>
         <form className="settings-card settings-ai-form" onSubmit={(event) => void saveAiSettings(event)}>
           <h2>AI 服务</h2>
-          <label>服务<select value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={busy}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
+          {providerState !== "ready" && <div className="settings-provider-feedback">
+            {providerState === "loading" ? <p role="status">正在读取 AI 服务配置…</p> : <>
+              <p className="settings-provider-error" role="alert" tabIndex={0}>{updateCommitted ? "设置操作已完成，但无法重新读取配置。" : "无法读取 AI 服务配置。"}{providerError}</p>
+              <button type="button" className="action-button" disabled={busy} onClick={() => void run((isCurrent) => reloadProviders(isCurrent, providerId))}>重新读取</button>
+            </>}
+          </div>}
+          <label>服务<select value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={controlsDisabled}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
           {usingLocalCodex ? <>
-            <label>模型<select value={model} onChange={(event) => setModel(event.target.value)} disabled={busy}>{CODEX_CLI_MODEL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
-            <label>推理强度<select value={effort} onChange={(event) => setEffort(event.target.value as AiReasoningEffort)} disabled={busy}>{CODEX_EFFORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+            <label>模型<select value={model} onChange={(event) => setModel(event.target.value)} disabled={controlsDisabled}>{CODEX_CLI_MODEL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+            <label>推理强度<select value={effort} onChange={(event) => setEffort(event.target.value as AiReasoningEffort)} disabled={controlsDisabled}>{CODEX_EFFORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
             <p className="settings-help">模型可用性取决于 Codex/ChatGPT 账户；较高推理强度会延长回答时间。</p>
-          </> : <>
-            <label>模型<input value={model} onChange={(event) => setModel(event.target.value)} placeholder={selected?.model || "模型名称"} required disabled={busy} /></label>
-            <label>API Key<input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" autoComplete="off" placeholder={selected?.configured ? "留空则保留现有密钥" : "仅保存到 macOS Keychain"} required={requiresApiKey && !selected?.configured} disabled={busy} /></label>
-          </>}
+          </> : selected ? <>
+            <label>模型<input value={model} onChange={(event) => setModel(event.target.value)} placeholder={selected?.model || "模型名称"} required disabled={controlsDisabled} /></label>
+            <label>API Key<input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" autoComplete="off" placeholder={selected?.configured ? "留空则保留现有密钥" : "仅保存到 macOS Keychain"} required={requiresApiKey && !selected?.configured} disabled={controlsDisabled} /></label>
+          </> : null}
           {selected?.availabilityMessage && <p className="settings-help">{selected.availabilityMessage}</p>}
-          {error && <p className="error">{error}</p>}
-          <div className="settings-actions"><button type="submit" className="primary" disabled={!selected || busy}>{busy ? "正在保存…" : "保存设置"}</button>{selected?.configured && <button type="button" className="danger" onClick={() => void clearAiSettings()} disabled={busy}>{usingLocalCodex ? "恢复默认" : "清除密钥"}</button>}</div>
+          {error && <p className="error settings-provider-error" role="alert" tabIndex={0}>{error}</p>}
+          <div className="settings-actions"><button type="submit" className="primary" disabled={!selected || controlsDisabled}>{providerState === "loading" ? "正在读取…" : busy ? "正在保存…" : "保存设置"}</button>{selected?.configured && <button type="button" className="danger" onClick={() => void clearAiSettings()} disabled={controlsDisabled}>{usingLocalCodex ? "恢复默认" : "清除密钥"}</button>}</div>
         </form>
       </>}
     </section>

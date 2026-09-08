@@ -99,17 +99,22 @@ describe("AI settings request lifetime", () => {
     await act(async () => operation.resolve());
   });
 
-  it("holds the command lock through refresh and releases it after refresh failure", async () => {
+  it("retries only discovery after a committed save fails to refresh", async () => {
     const refresh = deferred<AiProviderSettings[]>(); list.mockReturnValueOnce(refresh.promise);
     await act(async () => submit());
     await act(async () => submit());
     expect(configure).toHaveBeenCalledTimes(1);
     expect(container.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled).toBe(true);
     await act(async () => refresh.reject(new Error("Synthetic refresh failure")));
-    expect(container.querySelector(".error")?.textContent).toBe("Synthetic refresh failure");
+    expect(container.querySelector(".settings-provider-feedback")?.textContent).toContain("设置操作已完成");
+    expect(container.querySelector(".settings-provider-feedback")?.textContent).toContain("Synthetic refresh failure");
+    expect(container.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled).toBe(true);
     await act(async () => submit());
-    expect(configure).toHaveBeenCalledTimes(2);
-    expect(container.querySelector(".error")).toBeNull();
+    expect(configure).toHaveBeenCalledTimes(1);
+    await act(async () => container.querySelector<HTMLButtonElement>(".settings-provider-feedback button")!.click());
+    expect(configure).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".settings-provider-feedback")).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled).toBe(false);
   });
 
   it("ignores the first mount response after StrictMode restarts discovery", async () => {
@@ -142,4 +147,70 @@ describe("AI settings request lifetime", () => {
     expect(clear).toHaveBeenLastCalledWith("openai");
     expect(container.querySelector(".error")).toBeNull();
   });
+});
+
+async function reopen() {
+  await act(async () => root.render(null));
+  await act(async () => root.render(<ReaderPreferencesProvider><SettingsView onClose={() => undefined} windowFullscreen={false} /></ReaderPreferencesProvider>));
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("nav button")].find((button) => button.textContent === "AI 功能")!.click());
+}
+
+it("shows pending discovery, then permits one read-only retry after startup failure", async () => {
+  const discovery = deferred<AiProviderSettings[]>(); list.mockReturnValueOnce(discovery.promise);
+  await reopen();
+  expect(container.querySelector('[role="status"]')?.textContent).toContain("正在读取");
+  expect(container.querySelector<HTMLSelectElement>(".settings-ai-form select")!.disabled).toBe(true);
+  await act(async () => discovery.reject(new Error("Synthetic discovery failure")));
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Synthetic discovery failure");
+  const retry = deferred<AiProviderSettings[]>(); list.mockReturnValueOnce(retry.promise);
+  const before = list.mock.calls.length;
+  await act(async () => { const button = container.querySelector<HTMLButtonElement>(".settings-provider-feedback button")!; button.click(); button.click(); });
+  expect(list).toHaveBeenCalledTimes(before + 1);
+  await act(async () => retry.resolve(providers));
+  expect(container.querySelector(".settings-provider-feedback")).toBeNull();
+  expect(selected()).toBe("codex-cli");
+  expect(configure).not.toHaveBeenCalled(); expect(clear).not.toHaveBeenCalled();
+});
+
+it("keeps a committed clear distinct from failed refresh and recovers the selected provider", async () => {
+  await select("openai");
+  list.mockRejectedValueOnce(new Error("Synthetic clear refresh failure"));
+  await act(async () => container.querySelector<HTMLButtonElement>(".settings-actions .danger")!.click());
+  expect(clear).toHaveBeenCalledExactlyOnceWith("openai");
+  expect(container.querySelector(".settings-provider-feedback")?.textContent).toContain("设置操作已完成");
+  list.mockResolvedValueOnce(providers.map((provider) => ({ ...provider, configured: false })));
+  await act(async () => container.querySelector<HTMLButtonElement>(".settings-provider-feedback button")!.click());
+  expect(selected()).toBe("openai");
+  expect(container.querySelector(".settings-actions .danger")).toBeNull();
+  expect(clear).toHaveBeenCalledTimes(1);
+});
+
+it("treats an empty provider list as recoverable without enabling an unusable form", async () => {
+  list.mockResolvedValueOnce([]); await reopen();
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("没有可用的 AI 服务");
+  expect(container.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled).toBe(true);
+  await act(async () => container.querySelector<HTMLButtonElement>(".settings-provider-feedback button")!.click());
+  expect(selected()).toBe("codex-cli");
+});
+
+it("ignores a discovery retry that resolves after the view is replaced", async () => {
+  list.mockRejectedValueOnce(new Error("Synthetic discovery failure")); await reopen();
+  const retry = deferred<AiProviderSettings[]>(); list.mockReturnValueOnce(retry.promise);
+  await act(async () => container.querySelector<HTMLButtonElement>(".settings-provider-feedback button")!.click());
+  await reopen();
+  await act(async () => retry.resolve(providers.map((provider) => ({ ...provider, label: "Obsolete retry" }))));
+  expect(container.textContent).not.toContain("Obsolete retry");
+  expect(container.querySelector(".settings-provider-feedback")).toBeNull();
+});
+
+it("preserves the committed outcome across failed retries and renders diagnostics as text", async () => {
+  list.mockRejectedValueOnce(new Error("First refresh failure"));
+  await act(async () => submit());
+  list.mockRejectedValueOnce(new Error("<script>synthetic diagnostic</script>"));
+  await act(async () => container.querySelector<HTMLButtonElement>(".settings-provider-feedback button")!.click());
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("设置操作已完成");
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("<script>synthetic diagnostic</script>");
+  expect(container.querySelector("script")).toBeNull();
+  expect(container.querySelector<HTMLElement>('[role="alert"]')?.tabIndex).toBe(0);
+  expect(configure).toHaveBeenCalledTimes(1);
 });
