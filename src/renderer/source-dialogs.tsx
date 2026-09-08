@@ -13,7 +13,6 @@ import type {
   SubscriptionDraft,
   SubscriptionScope
 } from "../shared/types";
-import { errorMessage } from "./errors";
 
 type AddSourceMethod = "public" | "zhihu" | "x" | "xiaohongshu" | "academic";
 
@@ -209,24 +208,21 @@ function AcademicSourcePane({ onSaved }: { onSaved: () => Promise<void> }) {
 
 export function CalibrationDialog({ source, onClose, onSaved }: { source: Source; onClose: () => void; onSaved: () => Promise<void> }) {
   const [result, setResult] = useState<CalibrationResult>();
-  const [error, setError] = useState<string>();
-  const [busy, setBusy] = useState(true);
+  const { busy, error, run, invalidate } = useAsyncAction();
   const detect = useCallback(async () => {
-    setBusy(true); setError(undefined);
-    try { setResult(await window.reader.calibrateSource(source.id)); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
-  }, [source.id]);
-  useEffect(() => { void detect(); }, [detect]);
+    await run(async (isCurrent) => {
+      setResult(undefined);
+      const detected = await window.reader.calibrateSource(source.id);
+      if (isCurrent()) setResult(detected);
+    });
+  }, [source.id, run]);
+  useEffect(() => { void detect(); return invalidate; }, [detect, invalidate]);
   async function apply(candidate: CalibrationResult["candidates"][number]) {
-    setBusy(true); setError(undefined);
-    try {
+    await run(async () => {
       await window.reader.updateRule(source.id, candidate.rule);
       await window.reader.refreshSource(source.id);
       await onSaved();
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    });
   }
   return <Dialog title={`自动校准「${source.title}」`} onClose={onClose}>
     <p className="dialog-intro">无需了解 CSS。请从下方候选中选择一组看起来像该网站文章列表的卡片；应用会保存规则、移除之前误识别的卡片，并立即验证。</p>
@@ -267,8 +263,7 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
   const [refresh, setRefresh] = useState<"default" | "30" | "60" | "120" | "240" | "720" | "1440">(source.refreshIntervalMinutes ? String(source.refreshIntervalMinutes) as "30" | "60" | "120" | "240" | "720" | "1440" : "default");
   const [collection, setCollection] = useState<SourceCollectionSettings>();
   const [initialCollectionScope, setInitialCollectionScope] = useState<SubscriptionScope>();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
+  const { busy, error, run, fail } = useAsyncAction();
   const legacyRssHubFeed = source.config?.sourceProvider === "rsshub";
   const retiredXPublicProfile = isRetiredXPublicProfile(source);
   const capabilities = sourceCapabilities(source);
@@ -284,15 +279,14 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
         setInitialCollectionScope(settings.scope);
       })
       .catch((reason) => {
-        if (active) setError(errorMessage(reason));
+        if (active) fail(reason);
       });
     return () => { active = false; };
-  }, [source.id]);
+  }, [source.id, fail]);
 
   async function save(event: FormEvent) {
     event.preventDefault();
-    setBusy(true); setError(undefined);
-    try {
+    await run(async (isCurrent) => {
       await window.reader.updateSourceSettings(source.id, {
         title,
         category,
@@ -308,36 +302,22 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
         && Boolean(collection && initialCollectionScope && !sameCollectionScope(collection.scope, initialCollectionScope));
       if (scopeChanged && collection) {
         const persisted = await window.reader.updateSourceCollectionScope(source.id, collection.scope);
-        setCollection(persisted);
-        setInitialCollectionScope(persisted.scope);
+        if (isCurrent()) {
+          setCollection(persisted);
+          setInitialCollectionScope(persisted.scope);
+        }
         // Scope changes deliberately take effect now: this is the only path
         // that can start an explicitly chosen historical import.
         if (capabilities.canPoll && pollingEnabled) await onRefresh();
       }
       await onSaved();
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function runOperation(operation: () => void | Promise<void>) {
-    if (busy) return;
-    setBusy(true); setError(undefined);
-    try {
-      await operation();
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   async function inspectCollectionFacets() {
-    await runOperation(async () => {
+    await run(async (isCurrent) => {
       const facets = await window.reader.inspectSourceCollectionFacets(source.id);
-      setCollection((current) => current ? { ...current, facets } : current);
+      if (isCurrent()) setCollection((current) => current ? { ...current, facets } : current);
     });
   }
 
@@ -345,36 +325,38 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
     setCollection((current) => current ? { ...current, scope: update(current.scope) } : current);
   }
 
-  return <Dialog title={`配置「${source.title}」`} onClose={onClose}>
+  return <Dialog title={`配置「${source.title}」`} onClose={onClose} className="dialog--source-settings">
     <form className="source-settings-form" onSubmit={(event) => void save(event)}>
-      <label>来源名称<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} required autoFocus /></label>
-      <label>来源文件夹<input value={category} onChange={(event) => setCategory(event.target.value)} maxLength={60} placeholder="留空则自动归类" /></label>
-      <p className="source-settings-note">来源文件夹仅保存在本机，用于将来源整理为可折叠的分组；它不会过滤文章。</p>
-      <details><summary>高级设置</summary><label>信源类型<select value={kind} onChange={(event) => setKind(event.target.value as SourceKind)} disabled={typeLocked || busy}>
-        {typeLocked ? <option value={source.kind}>{sourceKindLabel(source.kind)}</option> : PUBLIC_SOURCE_KINDS.map((item) => <option key={item} value={item}>{sourceKindLabel(item)}</option>)}
-      </select></label>
-      {typeLocked && <p className="source-settings-note">{retiredXPublicProfile ? "此旧 X 公开来源已停止刷新：X 没有提供可合规自动读取的公开订阅接口。已有卡片会保留；如需继续同步，请删除它后使用官方 API。" : legacyRssHubFeed ? "已保存的 RSSHub Feed 仍使用 RSS 连接器；这里可调整名称和刷新频率。" : "平台来源的类型及账号绑定由内置连接器管理；这里仍可调整名称和刷新频率。"}</p>}
-      </details>
-      <label className="source-settings-toggle"><input type="checkbox" checked={!manual && pollingEnabled} onChange={(event) => setPollingEnabled(event.target.checked)} disabled={manual || !capabilities.canPoll || busy} />自动刷新</label>
-      <label>刷新时间<select value={refresh} onChange={(event) => setRefresh(event.target.value as typeof refresh)} disabled={manual || retiredXPublicProfile || !pollingEnabled || busy}>{REFRESH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-      {manual && <p className="source-settings-note">分享链接是一次性阅读卡片，不会自动轮询。</p>}
-      <label>来源地址<input value={source.url} readOnly aria-readonly="true" /></label>
-      {collection && <CollectionScopeEditor
-        source={source}
-        settings={collection}
-        disabled={busy}
-        onInspect={() => void inspectCollectionFacets()}
-        onChange={updateCollectionScope}
-      />}
-      <dl className="source-settings-details"><div><dt>当前状态</dt><dd>{sourceHealthLabel(source)}</dd></div><div><dt>实际连接器</dt><dd>{sourceConnectorLabel(source)}</dd></div></dl>
-      {source.lastError && <p className="error">{source.lastError}</p>}
-      <p className="source-settings-note">最近成功：{source.lastSuccessfulAt ? new Date(source.lastSuccessfulAt).toLocaleString("zh-CN") : "尚未检查"}；下次检查：{source.nextCheckAt && capabilities.canRefresh ? new Date(source.nextCheckAt).toLocaleString("zh-CN") : "未安排"}</p>
-      <div className="source-settings-operations">{capabilities.canRefresh && <button type="button" onClick={() => void runOperation(onRefresh)} disabled={busy}>立即刷新</button>}{capabilities.canCalibrate && <button type="button" onClick={() => void runOperation(onCalibrate)} disabled={busy}>自动校准</button>}{capabilities.canReconnect && <button type="button" onClick={() => void runOperation(onReconnectZhihu)} disabled={busy}>重新登录知乎</button>}<button type="button" className="danger" onClick={() => void runOperation(onDelete)} disabled={busy || (source.subscribed === false && !capabilities.canSubscribe)}>{source.subscribed === false ? "重新订阅" : "取消订阅"}</button><button type="button" className="danger" disabled={busy} onClick={() => void runOperation(async () => {
-        if (!window.confirm("清理该来源独有且未收藏的内容？其他来源共享的内容和收藏会保留。")) return;
-        await window.reader.clearSourceContent(source.id); await onSaved();
-      })}>清理未收藏内容</button></div>
+      <div className="source-settings-body">
+        <label>来源名称<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} required autoFocus /></label>
+        <label>来源文件夹<input value={category} onChange={(event) => setCategory(event.target.value)} maxLength={60} placeholder="留空则自动归类" /></label>
+        <p className="source-settings-note">来源文件夹仅保存在本机，用于将来源整理为可折叠的分组；它不会过滤文章。</p>
+        <details><summary>高级设置</summary><label>信源类型<select value={kind} onChange={(event) => setKind(event.target.value as SourceKind)} disabled={typeLocked || busy}>
+          {typeLocked ? <option value={source.kind}>{sourceKindLabel(source.kind)}</option> : PUBLIC_SOURCE_KINDS.map((item) => <option key={item} value={item}>{sourceKindLabel(item)}</option>)}
+        </select></label>
+        {typeLocked && <p className="source-settings-note">{retiredXPublicProfile ? "此旧 X 公开来源已停止刷新：X 没有提供可合规自动读取的公开订阅接口。已有卡片会保留；如需继续同步，请删除它后使用官方 API。" : legacyRssHubFeed ? "已保存的 RSSHub Feed 仍使用 RSS 连接器；这里可调整名称和刷新频率。" : "平台来源的类型及账号绑定由内置连接器管理；这里仍可调整名称和刷新频率。"}</p>}
+        </details>
+        <label className="source-settings-toggle"><input type="checkbox" checked={!manual && pollingEnabled} onChange={(event) => setPollingEnabled(event.target.checked)} disabled={manual || !capabilities.canPoll || busy} />自动刷新</label>
+        <label>刷新时间<select value={refresh} onChange={(event) => setRefresh(event.target.value as typeof refresh)} disabled={manual || retiredXPublicProfile || !pollingEnabled || busy}>{REFRESH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        {manual && <p className="source-settings-note">分享链接是一次性阅读卡片，不会自动轮询。</p>}
+        <label>来源地址<input value={source.url} readOnly aria-readonly="true" /></label>
+        {collection && <CollectionScopeEditor
+          source={source}
+          settings={collection}
+          disabled={busy}
+          onInspect={() => void inspectCollectionFacets()}
+          onChange={updateCollectionScope}
+        />}
+        <dl className="source-settings-details"><div><dt>当前状态</dt><dd>{sourceHealthLabel(source)}</dd></div><div><dt>实际连接器</dt><dd>{sourceConnectorLabel(source)}</dd></div></dl>
+        {source.lastError && <p className="error">{source.lastError}</p>}
+        <p className="source-settings-note">最近成功：{source.lastSuccessfulAt ? new Date(source.lastSuccessfulAt).toLocaleString("zh-CN") : "尚未检查"}；下次检查：{source.nextCheckAt && capabilities.canRefresh ? new Date(source.nextCheckAt).toLocaleString("zh-CN") : "未安排"}</p>
+        <div className="source-settings-operations">{capabilities.canRefresh && <button type="button" onClick={() => void run(onRefresh)} disabled={busy}>立即刷新</button>}{capabilities.canCalibrate && <button type="button" onClick={() => void run(onCalibrate)} disabled={busy}>自动校准</button>}{capabilities.canReconnect && <button type="button" onClick={() => void run(onReconnectZhihu)} disabled={busy}>重新登录知乎</button>}<button type="button" className="danger" onClick={() => void run(onDelete)} disabled={busy || (source.subscribed === false && !capabilities.canSubscribe)}>{source.subscribed === false ? "重新订阅" : "取消订阅"}</button><button type="button" className="danger" disabled={busy} onClick={() => void run(async () => {
+          if (!window.confirm("清理该来源独有且未收藏的内容？其他来源共享的内容和收藏会保留。")) return;
+          await window.reader.clearSourceContent(source.id); await onSaved();
+        })}>清理未收藏内容</button></div>
+      </div>
       {error && <p className="error">{error}</p>}
-      <div className="dialog-actions"><button type="button" onClick={onClose} disabled={busy}>取消</button><button className="primary" disabled={busy}>{busy ? "正在保存…" : "保存配置"}</button></div>
+      <div className="dialog-actions dialog-actions--fixed"><button type="button" onClick={onClose} disabled={busy}>取消</button><button className="primary" disabled={busy}>{busy ? "正在保存…" : "保存配置"}</button></div>
     </form>
   </Dialog>;
 }

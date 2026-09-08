@@ -45,12 +45,22 @@ let academicSubscriptionRequested;
 let completeAcademicSubscription;
 let academicSearchRequested;
 let completeObsoleteSearch;
+let managementRequested;
+let completeManagement;
+let managementWrites = 0;
 const fixtureProviders = [
   { id: "openai", label: "Fixture AI", model: "fixture", configured: true, requiresApiKey: true },
   { id: "deepseek", label: "Fixture secondary AI", model: "fixture-secondary", configured: true, requiresApiKey: true }
 ];
 const aiAnswer = "## Fixture answer\n\nInline $x^2$.\n\n$$\ny=x+1\n$$";
 const channels = [
+  ...["source:update-settings", "source:update-rule"].map((channel) => [channel, () => new Promise((resolve) => {
+    managementWrites++;
+    completeManagement = () => resolve();
+    managementRequested?.();
+  })]),
+  ["source:calibration", () => ({ title: "Calibration fixture", url: "https://example.com", candidates: [{ label: "Fixture cards", confidence: 0.9, rule: { version: 1, itemRootSelector: "article" }, preview: [] }] })],
+  ["source:refresh", () => undefined],
   ["academic:subscribe", () => new Promise((resolve) => {
     completeAcademicSubscription = () => resolve(source);
     academicSubscriptionRequested?.();
@@ -455,6 +465,58 @@ try {
   pendingSettingsSave();
   await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   assert(providerLists === listsBeforeCloseCompletion, "A closed settings view must not start another provider query.");
+  database.createSource({ url: "https://example.com/management", title: "Management fixture", kind: "generic", pollingEnabled: true });
+  database.publishChanges();
+  const openManagement = async () => {
+    await waitFor(window, "[...document.querySelectorAll('.source-filter')].some((item) => item.textContent.includes('Management fixture'))");
+    await evaluate("[...document.querySelectorAll('.source-filter')].find((item) => item.textContent.includes('Management fixture')).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))");
+    await waitFor(window, "Boolean(document.querySelector('.source-settings-form'))");
+  };
+  for (const mode of ["settings", "calibration"]) {
+    await openManagement();
+    if (mode === "calibration") {
+      await clickText(".source-settings-operations button", "自动校准");
+      await waitFor(window, "Boolean(document.querySelector('.calibration-candidate button'))");
+    }
+    for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+      window.setSize(width, height); window.webContents.setZoomFactor(scale);
+      await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      assert(await evaluate("document.documentElement.scrollWidth <= innerWidth + 1 && document.querySelector('.dialog').scrollWidth <= document.querySelector('.dialog').clientWidth + 1"), `${mode} dialog overflow at ${width}px and ${scale}.`);
+      if (mode === "settings") {
+        assert(await evaluate(`(() => {
+          const body = document.querySelector('.source-settings-body');
+          const footer = document.querySelector('.source-settings-form .dialog-actions');
+          const fits = () => body.getBoundingClientRect().bottom <= footer.getBoundingClientRect().top + 1 && footer.getBoundingClientRect().bottom <= innerHeight;
+          const top = footer.getBoundingClientRect().top;
+          body.scrollTop = body.scrollHeight;
+          const valid = fits() && footer.getBoundingClientRect().top === top;
+          body.scrollTop = 0;
+          return valid;
+        })()`), `Settings save actions must remain visible while the form scrolls at ${width}px and ${scale}.`);
+      }
+      await writeFile(path.join(tmpdir(), `reading-hub-management-${mode}-${width}.png`), (await window.capturePage()).toPNG());
+    }
+    const requested = new Promise((resolve) => { managementRequested = resolve; });
+    const before = managementWrites;
+    await evaluate(mode === "settings"
+      ? "(() => { const form = document.querySelector('.source-settings-form'); form.requestSubmit(); form.requestSubmit(); })()"
+      : "(() => { const button = document.querySelector('.calibration-candidate button'); button.click(); button.click(); })()");
+    await requested;
+    assert(managementWrites === before + 1, `Repeated ${mode} submission must start one write.`);
+    await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
+    await openManagement();
+    if (mode === "calibration") {
+      await clickText(".source-settings-operations button", "自动校准");
+      await waitFor(window, "Boolean(document.querySelector('.calibration-candidate button'))");
+    } else {
+      await evaluate("(() => { const input = document.querySelector('.source-settings-form input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Replacement draft'); input.dispatchEvent(new Event('input', { bubbles: true })); })()");
+    }
+    completeManagement();
+    await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    assert(await evaluate(mode === "settings" ? "Boolean(document.querySelector('.source-settings-form'))" : "Boolean(document.querySelector('.calibration-candidate'))"), `An older ${mode} write must not close a replacement session for the same source.`);
+    if (mode === "settings") assert(await evaluate("document.querySelector('.source-settings-form input').value === 'Replacement draft'"), "A reload from the old save must preserve the replacement draft.");
+    await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
+  }
   console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore/settings-draft/settings-save-lock/settings-close/modal-keyboard/modal-focus/image-preview-dismissal/source-preview-lifetime, library layouts and four academic/settings layouts verified.");
 } catch (error) {
   failure = error;

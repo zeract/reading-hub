@@ -12,6 +12,7 @@ import { AppIcon } from "./ui-icons";
 import { useLibraryData } from "./use-library-data";
 
 type AppView = "library" | "settings";
+type SourceDialogSession = { token: string; mode: "settings" | "calibration"; source: Source };
 
 /**
  * The application shell owns cross-feature state and coordinates safe IPC
@@ -45,8 +46,7 @@ export function App() {
   const [deletedEntry, setDeletedEntry] = useState<Entry>();
   const [busy, setBusy] = useState(false);
   const [addSourceSession, setAddSourceSession] = useState<string>();
-  const [activeRuleSource, setActiveRuleSource] = useState<Source>();
-  const [editingSource, setEditingSource] = useState<Source>();
+  const [sourceDialog, setSourceDialog] = useState<SourceDialogSession>();
   const [collapsedSourceGroups, setCollapsedSourceGroups] = useState<Record<string, boolean>>({});
   const [readingEntry, setReadingEntry] = useState<Entry>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -66,8 +66,23 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    setEditingSource((current) => current ? sources.find((source) => source.id === current.id) : current);
+    setSourceDialog((current) => {
+      if (!current) return current;
+      const source = sources.find((item) => item.id === current.source.id);
+      return source ? { ...current, source } : undefined;
+    });
   }, [sources]);
+
+  const openSourceSettings = useCallback((source: Source) => {
+    setSourceDialog({ token: crypto.randomUUID(), mode: "settings", source });
+  }, []);
+  const closeSourceDialog = useCallback((token: string) => {
+    setSourceDialog((current) => current?.token === token ? undefined : current);
+  }, []);
+  const finishSourceManagement = useCallback(async (token: string) => {
+    closeSourceDialog(token);
+    await reload();
+  }, [closeSourceDialog, reload]);
 
   useEffect(() => {
     if (!readingEntry) setReaderOnly(false);
@@ -226,7 +241,7 @@ export function App() {
         onSelectLibrary={selectLibrary}
         onSelectSource={selectSource}
         onToggleGroup={(groupId) => setCollapsedSourceGroups((current) => ({ ...current, [groupId]: !current[groupId] }))}
-        onEditSource={setEditingSource}
+        onEditSource={openSourceSettings}
         onOpenSettings={() => setAppView("settings")}
       />
       <Timeline
@@ -252,7 +267,7 @@ export function App() {
           catch (error) { setNotice(errorMessage(error)); }
           finally { setBusy(false); }
         }}
-        onEditSource={setEditingSource}
+        onEditSource={openSourceSettings}
         onClearNotice={() => { setNotice(undefined); setDeletedEntry(undefined); clearReloadError(); }}
         onEntrySearchChange={setEntrySearch}
         onUpdateEntry={updateEntry}
@@ -280,14 +295,21 @@ export function App() {
         onXiaohongshuSaved={() => finishSourceAddition(addSourceSession, "小红书公开博主来源已添加，正在读取公开笔记。")}
         onAcademicSaved={() => finishSourceAddition(addSourceSession, "学术作者来源已添加，正在同步公开论文记录。")}
       />}
-      {activeRuleSource && <CalibrationDialog source={activeRuleSource} onClose={() => setActiveRuleSource(undefined)} onSaved={async () => { setActiveRuleSource(undefined); await reload(); }} />}
-      {editingSource && <SourceSettingsDialog
-        source={editingSource}
-        onClose={() => setEditingSource(undefined)}
-        onSaved={async () => { setEditingSource(undefined); await reload(); }}
-        onRefresh={() => refresh(editingSource)}
-        onCalibrate={() => { setEditingSource(undefined); setActiveRuleSource(editingSource); }}
-        onDelete={async () => { if (await deleteSource(editingSource)) setEditingSource(undefined); }}
+      {sourceDialog?.mode === "calibration" && <CalibrationDialog
+        key={sourceDialog.token}
+        source={sourceDialog.source}
+        onClose={() => closeSourceDialog(sourceDialog.token)}
+        onSaved={() => finishSourceManagement(sourceDialog.token)}
+      />}
+      {sourceDialog?.mode === "settings" && <SourceSettingsDialog
+        key={sourceDialog.token}
+        source={sourceDialog.source}
+        onClose={() => closeSourceDialog(sourceDialog.token)}
+        onSaved={() => finishSourceManagement(sourceDialog.token)}
+        onRefresh={() => refresh(sourceDialog.source)}
+        onCalibrate={() => setSourceDialog((current) => current?.token === sourceDialog.token
+          ? { ...current, token: crypto.randomUUID(), mode: "calibration" } : current)}
+        onDelete={async () => { if (await deleteSource(sourceDialog.source)) closeSourceDialog(sourceDialog.token); }}
         onReconnectZhihu={async () => { await window.reader.connectZhihuFollow(); setNotice("已打开知乎登录窗口；登录完成后会自动同步。"); }}
       />}
     </main>
