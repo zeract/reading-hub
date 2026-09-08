@@ -426,8 +426,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .source-collection-scope legend { padding: 0 5px; color: var(--ink); font-size: 12px; font-weight: 750; }
 .source-collection-scope > .source-settings-note { margin: 0; }
 .source-collection-scope__heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ink-soft); font-size: 11px; }
-.source-collection-scope__heading button { flex: 0 0 auto; padding: 4px 6px; border: 1px solid var(--line-strong); border-radius: var(--control-radius); background: transparent; color: var(--accent-ink); font-size: 10px; font-weight: 700; }
-.source-collection-scope__heading button:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-wash); }
 .facet-options { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; max-height: 164px; padding-right: 2px; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
 .facet-option { display: flex; min-width: 0; align-items: center; gap: 6px; padding: 6px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper-bright); color: var(--ink-soft); font-size: 10px; }
 .facet-option:has(input:checked) { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); background: var(--accent-wash); color: var(--accent-ink); }

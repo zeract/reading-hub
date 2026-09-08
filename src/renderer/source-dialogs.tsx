@@ -1,3 +1,4 @@
+import { facetIdentity, sameSubscriptionScope } from "../shared/subscription-scope";
 import { isRetiredXPublicProfile, sourceCapabilities, sourceHealthLabel } from "../shared/source-capabilities";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ModalSurface } from "./modal-surface";
@@ -8,7 +9,7 @@ import type {
   OpmlImportResult,
   Source,
   SourceCollectionSettings,
-  SourceFacet,
+  Facet,
   SourceKind,
   SubscriptionDraft,
   SubscriptionScope
@@ -300,7 +301,7 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
       // onto the newly selected connector: doing so could make a generic or
       // manual source appear empty until it happens to emit identical tags.
       const scopeChanged = kind === source.kind
-        && Boolean(collection && initialCollectionScope && !sameCollectionScope(collection.scope, initialCollectionScope));
+        && Boolean(collection && initialCollectionScope && !sameSubscriptionScope(collection.scope, initialCollectionScope));
       if (scopeChanged && collection) {
         const persisted = await window.reader.updateSourceCollectionScope(source.id, collection.scope);
         refreshPending.current = true;
@@ -352,6 +353,7 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
         {collection && <CollectionScopeEditor
           source={source}
           settings={collection}
+          savedScope={initialCollectionScope}
           disabled={busy}
           onInspect={() => void inspectCollectionFacets()}
           onChange={updateCollectionScope}
@@ -371,25 +373,46 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
   </Dialog>;
 }
 
-function CollectionScopeEditor({ source, settings, disabled, onInspect, onChange }: {
+type CollectionFacetOption = Facet & { entryCount?: number; retained: boolean };
+
+/** Saved and edited filters remain actionable after their last local article or
+ * publisher catalog entry disappears. Catalog metadata takes precedence. */
+function collectionFacetOptions(settings: SourceCollectionSettings, retainedFacets: readonly Facet[]): CollectionFacetOption[] {
+  const options = new Map<string, CollectionFacetOption>();
+  for (const facet of settings.facets) options.set(facetIdentity(facet), { ...facet, retained: false });
+  for (const facet of [...retainedFacets, ...settings.scope.facetSelections]) {
+    const id = facetIdentity(facet);
+    if (!options.has(id)) options.set(id, { ...facet, retained: true });
+  }
+  return [...options.values()];
+}
+
+function CollectionScopeEditor({ source, settings, savedScope, disabled, onInspect, onChange }: {
   source: Source;
   settings: SourceCollectionSettings;
+  savedScope?: SubscriptionScope;
   disabled: boolean;
   onInspect: () => void;
   onChange: (update: (scope: SubscriptionScope) => SubscriptionScope) => void;
 }) {
-  const canInspectArchive = settings.historyAvailable === true;
-  const visible = settings.facetDiscoveryAvailable === true || settings.facets.length > 0;
-  if (!visible) return null;
-  const { scope, facets } = settings;
-  const selectedIds = new Set(scope.facetSelections.map(facetId));
+  // Choices touched during this edit stay reversible even if a later
+  // discovery omits them. Only scope selections are sent when saving.
+  const [touchedFacets, setTouchedFacets] = useState<Facet[]>([]);
+  const canInspectFacets = settings.facetDiscoveryAvailable === true;
+  const canImportHistory = settings.historyAvailable === true;
+  const facets = collectionFacetOptions(settings, [...(savedScope?.facetSelections || []), ...touchedFacets]);
+  if (!canInspectFacets && !canImportHistory && !facets.length) return null;
+  const { scope } = settings;
+  const selectedIds = new Set(scope.facetSelections.map(facetIdentity));
   const canImportSelectedHistory = scope.facetSelections.length > 0;
 
-  function toggleFacet(facet: SourceFacet) {
+  function toggleFacet(facet: Facet) {
+    setTouchedFacets((current) => current.some((item) => facetIdentity(item) === facetIdentity(facet))
+      ? current : [...current, { scheme: facet.scheme, key: facet.key, label: facet.label }]);
     onChange((current) => {
-      const id = facetId(facet);
-      const facetSelections = current.facetSelections.some((item) => facetId(item) === id)
-        ? current.facetSelections.filter((item) => facetId(item) !== id)
+      const id = facetIdentity(facet);
+      const facetSelections = current.facetSelections.some((item) => facetIdentity(item) === id)
+        ? current.facetSelections.filter((item) => facetIdentity(item) !== id)
         : [...current.facetSelections, { scheme: facet.scheme, key: facet.key, label: facet.label }];
       return {
         ...current,
@@ -423,16 +446,17 @@ function CollectionScopeEditor({ source, settings, disabled, onInspect, onChange
     <p className="source-settings-note">文章分类只采用 Feed 或公开归档中已声明的标签；不会根据标题猜测，也不会与“来源文件夹”混用。</p>
     <div className="source-collection-scope__heading">
       <strong>文章分类</strong>
-      {canInspectArchive && <button type="button" onClick={onInspect} disabled={disabled}>读取可用分类</button>}
+      {canInspectFacets && <button type="button" className="action-button" onClick={onInspect} disabled={disabled}>读取可用分类</button>}
     </div>
     {facets.length > 0 ? <div className="facet-options" role="group" aria-label="文章分类">
-      {facets.map((facet) => <label className="facet-option" key={facetId(facet)}>
-        <input type="checkbox" checked={selectedIds.has(facetId(facet))} onChange={() => toggleFacet(facet)} disabled={disabled} />
-        <span>{facet.label}</span>{facet.entryCount > 0 && <em>{facet.entryCount} 篇</em>}
+      {facets.map((facet) => <label className="facet-option" key={facetIdentity(facet)}>
+        <input type="checkbox" checked={selectedIds.has(facetIdentity(facet))} onChange={() => toggleFacet(facet)} disabled={disabled} />
+        <span title={facet.label}>{facet.label}</span>{facet.entryCount !== undefined && facet.entryCount > 0 && <em>{facet.entryCount} 篇</em>}
       </label>)}
-    </div> : <p className="source-settings-note">尚未发现可验证的文章分类。{canInspectArchive ? "可读取公开归档中的分类标签。" : "此来源将收集全部当前更新。"}</p>}
+    </div> : <p className="source-settings-note">尚未发现可验证的文章分类。{canInspectFacets ? "可读取公开归档中的分类标签。" : "此来源将收集全部当前更新。"}</p>}
     <p className="source-settings-note">{scope.facetSelections.length ? `已选 ${scope.facetSelections.length} 个分类；之后只保留匹配的更新。` : "未选择分类：将保留当前 Feed 的全部更新。"}</p>
-    {canInspectArchive && <div className="history-options" role="group" aria-label="历史文章范围">
+    {facets.some((facet) => facet.retained && selectedIds.has(facetIdentity(facet))) && <p className="source-settings-note">部分已选分类当前未出现在可用列表中，仍会参与筛选；取消勾选可移除。</p>}
+    {canImportHistory && <div className="history-options" role="group" aria-label="历史文章范围">
       <strong>历史文章</strong>
       <label><input type="radio" name={`history-${source.id}`} checked={scope.history.mode === "none"} onChange={() => setHistory("none")} disabled={disabled} />只收集当前 Feed（默认）</label>
       <label><input type="radio" name={`history-${source.id}`} checked={scope.history.mode === "selected"} onChange={() => setHistory("selected")} disabled={disabled || !canImportSelectedHistory} />按所选分类补充公开历史</label>
@@ -471,18 +495,4 @@ function sourceConnectorLabel(source: Source): string {
 
 function isSourceKind(value: string): value is SourceKind {
   return Object.hasOwn(SOURCE_KIND_LABELS, value);
-}
-
-function facetId(facet: Pick<SourceFacet, "scheme" | "key">): string {
-  return `${facet.scheme}\u0000${facet.key}`;
-}
-
-/** Scope comparison ignores display-label changes and selection order. */
-function sameCollectionScope(left: SubscriptionScope, right: SubscriptionScope): boolean {
-  const identityList = (scope: SubscriptionScope) => scope.facetSelections
-    .map(facetId)
-    .sort();
-  return left.history.mode === right.history.mode
-    && left.history.limit === right.history.limit
-    && JSON.stringify(identityList(left)) === JSON.stringify(identityList(right));
 }

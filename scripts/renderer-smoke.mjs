@@ -52,6 +52,7 @@ let managementWrites = 0;
 let managementFailure;
 let managementCollection;
 let managementScopeWrites = 0;
+let managementFacetReads = 0;
 let delayedNavigationCommand;
 let navigationCommandRequested;
 let completeNavigationCommand;
@@ -187,6 +188,7 @@ const channels = [
     return database.setSubscribed(id, subscribed);
   }],
   ["source:collection-settings", (_event, id) => managementCollection ?? database.getSourceCollectionSettings(id)],
+  ["source:inspect-collection-facets", () => { managementFacetReads++; return []; }],
   ["source:update-collection-scope", (_event, _id, scope) => {
     managementScopeWrites++;
     managementCollection = { ...managementCollection, scope };
@@ -773,6 +775,33 @@ try {
   completeManagement();
   await waitFor(window, "!document.querySelector('.source-settings-form')");
   assert(managementScopeWrites === 1, "Retrying the failed refresh must not repeat the saved scope write.");
+  const retainedFacetLabel = `Saved category ${"LongLabel".repeat(20)}`;
+  managementCollection = { scope: { facetSelections: [{ scheme: "fixture", key: "retained", label: retainedFacetLabel }], history: { mode: "none" } }, facets: [], facetDiscoveryAvailable: true, historyAvailable: false };
+  await openManagement();
+  await waitFor(window, "document.querySelector('.facet-option input')?.checked && Boolean(document.querySelector('.source-collection-scope__heading button'))");
+  assert(await evaluate("!document.querySelector('.history-options') && document.querySelector('.source-collection-scope').textContent.includes('仍会参与筛选')"), "Missing saved categories must remain actionable independently of history capability.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    await evaluate("document.querySelector('.source-collection-scope').scrollIntoView({ block: 'center' }); new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    await waitFor(window, "(() => { const option = document.querySelector('.facet-option').getBoundingClientRect(); const body = document.querySelector('.source-settings-body').getBoundingClientRect(); return option.top >= body.top && option.bottom <= body.bottom; })()");
+    assert(await evaluate("(() => { const button = document.querySelector('.source-collection-scope__heading button'); const style = getComputedStyle(button); const save = getComputedStyle(document.querySelector('.dialog-actions .primary')); const label = document.querySelector('.facet-option span'); const field = button.closest('fieldset'); return style.fontSize === save.fontSize && style.minHeight === save.minHeight && style.borderRadius === save.borderRadius && field.scrollWidth <= field.clientWidth + 1 && label.title === label.textContent && label.scrollWidth > label.clientWidth && button.getBoundingClientRect().right <= field.getBoundingClientRect().right; })()"), "Retained category labels and shared discovery buttons must fit the collection editor.");
+    await writeFile(path.join(tmpdir(), `reading-hub-retained-category-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  await evaluate("document.querySelector('.source-collection-scope__heading button').focus()");
+  await pressKey("Enter");
+  await waitFor(window, "!document.querySelector('.source-collection-scope__heading button').disabled");
+  assert(managementFacetReads === 1 && await evaluate("document.querySelector('.facet-option input').checked"), "An empty discovery result must preserve the saved filter without writing it.");
+  await evaluate("document.querySelector('.facet-option input').click()");
+  assert(await evaluate("Boolean(document.querySelector('.facet-option input')) && !document.querySelector('.facet-option input').checked"), "An unchecked retained category must remain available until save.");
+  await evaluate("document.querySelector('.facet-option input').click()");
+  await evaluate("document.querySelector('.facet-option input').click()");
+  const retainedRemovalRequested = new Promise((resolve) => { managementRequested = resolve; });
+  const writesBeforeRetainedRemoval = managementScopeWrites;
+  await evaluate("document.querySelector('.source-settings-form').requestSubmit()");
+  await retainedRemovalRequested;
+  completeManagement();
+  await waitFor(window, "!document.querySelector('.source-settings-form')");
+  assert(managementScopeWrites === writesBeforeRetainedRemoval + 1 && managementCollection.scope.facetSelections.length === 0 && managementCollection.scope.history.mode === "none", "Saving must remove the retained filter through the existing scope write contract.");
   for (const operation of ["refresh", "subscription"]) {
     await evaluate("[...document.querySelectorAll('.source-filter')].find((item) => item.textContent.includes('Management fixture')).click()");
     await waitFor(window, "document.querySelector('.timeline h1')?.textContent === 'Management fixture'");
