@@ -1027,6 +1027,17 @@ describe("article reader extraction", () => {
     expect(content).toContain('role="button"');
   });
 
+  it.each([
+    ["small.png 320w, large.png 1280w", "https://example.com/articles/large.png"],
+    ["/low.png 1.2x, /high.png 1.8x", "https://example.com/high.png"],
+    ["/safe.png 640w, http://127.0.0.1/private.png 1280w", "https://example.com/safe.png"],
+    ["/bad.png 9999oops, /safe.png 640w", "https://example.com/safe.png"]
+  ])("selects the largest valid public image from srcset %s", (srcset, expected) => {
+    const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p>
+      <img src="/fallback.png" srcset="${srcset}" alt="响应式图片"></article>`, entry.url, entry);
+    expect(load(result?.article.contentHtml || "")("img").attr("src")).toBe(expected);
+  });
+
   it("keeps an in-body Open Graph image only once instead of rendering a duplicate cover", () => {
     const result = extractReaderArticle(
       `<html><head><meta property="og:image" content="/images/hero.png"></head><body><article class="post-content">

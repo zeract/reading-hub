@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { WeightedLruCache } from "./weighted-lru-cache";
 import { compactText, parsePublishedAt } from "../shared/text";
 import { inlineDollarMathAt } from "../shared/tex";
+import { parseSrcset } from "../shared/srcset";
 import { assertPublicUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 import type { Entry, ReaderArticle, ReaderFormulaDiagnostics, ReaderLanguageVariant, ReaderRenderProfile, Source } from "../shared/types";
 import { parseFeedForReading } from "./feed";
@@ -2531,7 +2532,9 @@ function imageSource(element: any, pageUrl: string): string | undefined {
     // has no viewport-specific source selection to preserve, so retain its
     // largest safe candidate instead of a lazy loader's lower-resolution
     // data-src placeholder.
-    ...srcsets.map(bestSrcsetUrl),
+    ...srcsets.flatMap((srcset) => parseSrcset(srcset)
+      .sort((left, right) => (right.width ?? right.density ?? 1) - (left.width ?? left.density ?? 1))
+      .map((candidate) => candidate.url)),
     element.attr("data-src"),
     element.attr("data-lazy-src"),
     element.attr("data-reader-noscript-src"),
@@ -2542,21 +2545,6 @@ function imageSource(element: any, pageUrl: string): string | undefined {
     if (src) return src;
   }
   return undefined;
-}
-
-function bestSrcsetUrl(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  // CDN transformation paths (for example Substack's `image/fetch/$…,w_…`)
-  // use commas in the URL itself. A naive `split(",")` turns such a URL into
-  // a truncated image endpoint. A srcset candidate boundary is the comma
-  // before the next absolute or root-relative URL, not every URL character
-  // comma.
-  const candidates = value.split(/,\s*(?=(?:(?:https?:)?\/\/|\/))/i).map((item) => {
-    const [url, descriptor] = item.trim().split(/\s+/, 2);
-    const width = Number.parseInt(descriptor || "0", 10);
-    return { url, width: Number.isFinite(width) ? width : 0 };
-  }).filter((item) => Boolean(item.url));
-  return candidates.sort((a, b) => b.width - a.width)[0]?.url;
 }
 
 function removeAllAttributes(element: any): void {
