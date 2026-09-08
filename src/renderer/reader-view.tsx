@@ -16,7 +16,9 @@ type AssistantPanelState = "closed" | "minimized" | "open";
 type ReaderImagePreview = { src: string; alt: string };
 type AssistantSelectionRequest = { id: string; question: string; selection: AiSelectionContext };
 type ReaderTextSelection = { text: string; overlay: SelectionOverlay; asking: boolean; request?: AssistantSelectionRequest };
-type AiMessage = { id: string; role: "user" | "assistant"; text: string; error?: boolean; streaming?: boolean };
+type AiMessage = { id: string; text: string; error?: boolean; streaming?: boolean } & (
+  { role: "user" } | { role: "assistant"; provider: Readonly<Pick<AiProviderSettings, "id" | "label">> }
+);
 type ActiveAiStream = { requestId: string; assistantMessageId: string };
 
 function toSelectionRect(rect: DOMRect): SelectionRect {
@@ -533,6 +535,7 @@ function ReaderAssistant({ article, sourceTitle, providerId, onProviderChange, m
       onOpenSettings();
       return;
     }
+    const provider = { id: selected.id, label: selected.label };
     setQuestion(""); setBusy(true); setError(undefined);
     const requestId = newAiRequestId();
     const assistantMessageId = newAiRequestId();
@@ -540,12 +543,12 @@ function ReaderAssistant({ article, sourceTitle, providerId, onProviderChange, m
     const displayText = selection
       ? `${selectedTextLabel(selection.intent)}\n\n“${selection.text}”\n\n${text}`
       : text;
-    setMessages((current) => [...current, { id: newAiRequestId(), role: "user", text: displayText }, { id: assistantMessageId, role: "assistant", text: "", streaming: true }]);
+    setMessages((current) => [...current, { id: newAiRequestId(), role: "user", text: displayText }, { id: assistantMessageId, role: "assistant", provider, text: "", streaming: true }]);
     try {
       await window.reader.startAiStream({
         requestId,
         request: {
-          provider: providerId,
+          provider: provider.id,
           question: text,
           selection,
           ...articlePayloadForAiRequest(article, sourceTitle, selection)
@@ -569,10 +572,10 @@ function ReaderAssistant({ article, sourceTitle, providerId, onProviderChange, m
 
   return <aside className={`reader-ai-panel${minimized ? " is-minimized" : ""}`} aria-label="AI 学习助手" aria-hidden={minimized}>
     <header><div><strong>AI 学习助手</strong><p>提问时才会发送当前文章的文本摘录。</p></div><div className="assistant-header-actions"><button type="button" className="panel-icon-button" onClick={onMinimize} aria-label="最小化 AI 学习助手" title="最小化">−</button><button type="button" className="panel-icon-button" onClick={onClose} aria-label="关闭 AI 学习助手" title="关闭">×</button></div></header>
-    <div className="ai-provider-row"><label htmlFor="ai-provider">服务</label><select id="ai-provider" value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={busy}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select><button type="button" onClick={onOpenSettings} disabled={busy}>设置</button></div>
+    <div className="ai-provider-row"><label htmlFor="ai-provider">服务</label><select id="ai-provider" value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={busy}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select><button type="button" className="action-button" onClick={onOpenSettings} disabled={busy}>设置</button></div>
     {selected?.availabilityMessage && <p className="ai-provider-note">{selected.availabilityMessage}</p>}
     {error && <p className="error ai-error">{error}</p>}
-    <div className="ai-messages" aria-live="polite" aria-busy={busy} ref={messagesElement}>{!messages.length && <p className="ai-empty">可以让 AI 解释概念、公式推导、例子或文章中的论证。回答不会保存到数据库。</p>}{messages.map((message) => <div key={message.id} className={`ai-message ${message.role}${message.error ? " error" : ""}${message.streaming ? " is-streaming" : ""}`}><strong>{message.role === "user" ? "你" : selected?.label || "AI"}</strong>{message.streaming && !message.text ? <p className="ai-streaming-status">正在生成…</p> : <AiMarkdownContent text={message.text} />}</div>)}</div>
+    <div className="ai-messages" aria-live="polite" aria-busy={busy} ref={messagesElement}>{!messages.length && <p className="ai-empty">可以让 AI 解释概念、公式推导、例子或文章中的论证。回答不会保存到数据库。</p>}{messages.map((message) => <div key={message.id} className={`ai-message ${message.role}${message.error ? " error" : ""}${message.streaming ? " is-streaming" : ""}`}><strong>{message.role === "user" ? "你" : message.provider.label}</strong>{message.streaming && !message.text ? <p className="ai-streaming-status">正在生成…</p> : <AiMarkdownContent text={message.text} />}</div>)}</div>
     <form className="ai-question" onSubmit={(event) => void ask(event)}><label htmlFor="ai-question">向文章提问（Enter 发送，Shift+Enter 换行）</label><textarea id="ai-question" value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={submitOnEnter} placeholder="例如：请用直觉解释这个公式的含义" disabled={busy} /><button className="primary" disabled={busy || !question.trim()}>{busy ? "回答中…" : "发送问题"}</button></form>
   </aside>;
 }

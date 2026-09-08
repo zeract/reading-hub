@@ -48,7 +48,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .reader-failure button,
 .reader-embedded button,
 .primary-action,
-.ai-settings button,
 .ai-question button,
 .selection-assistant-settings,
 .dialog-actions button,
@@ -62,7 +61,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   background: var(--button-surface, var(--paper-bright)); color: var(--button-ink, var(--ink-soft));
   font: 600 var(--control-font-size)/1.4 var(--font-ui); text-decoration: none;
 }
-:is(.action-button, .entry-load-more button, .reader-failure button, .reader-embedded button, .primary-action, .ai-settings button, .ai-question button, .selection-assistant-settings, .dialog-actions button, .connector-search .primary, .calibration-candidate .primary, .source-settings-operations button, .settings-actions button):hover:not(:disabled) {
+:is(.action-button, .entry-load-more button, .reader-failure button, .reader-embedded button, .primary-action, .ai-question button, .selection-assistant-settings, .dialog-actions button, .connector-search .primary, .calibration-candidate .primary, .source-settings-operations button, .settings-actions button):hover:not(:disabled) {
   border-color: var(--button-border, var(--accent));
   background: var(--button-hover, var(--hover));
 }
@@ -72,12 +71,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .connector-search .primary,
 .calibration-candidate .primary,
 .settings-actions .primary,
-.ai-settings button:not(.danger),
 .ai-question button {
   --button-border: var(--accent-deep); --button-surface: var(--accent-deep); --button-ink: #fff;
   --button-hover: color-mix(in srgb, var(--accent-deep) 88%, #000);
 }
-.ai-settings .danger,
 .source-settings-operations .danger,
 .settings-actions .danger {
   --button-border: var(--danger); --button-ink: var(--danger); --button-hover: var(--danger-wash);
@@ -377,15 +374,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .reader-ai-panel > header .panel-icon-button:hover { background: var(--hover); }
 .reader-ai-panel > header .panel-icon-button:last-child:hover { border-color: var(--danger); background: var(--danger-wash); color: var(--danger); }
 .ai-provider-row { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 7px; padding: 10px 15px; border-bottom: 1px solid var(--line); }
-.ai-provider-row label, .ai-settings label, .ai-question label { color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .03em; }
-.ai-provider-row select, .ai-settings input, .ai-settings select, .ai-question textarea { min-width: 0; border: 1px solid var(--line-strong); border-radius: var(--control-radius); background: transparent; color: var(--ink); }
+.ai-provider-row label, .ai-question label { color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .03em; }
+.ai-provider-row select, .ai-question textarea { min-width: 0; border: 1px solid var(--line-strong); border-radius: var(--control-radius); background: transparent; color: var(--ink); }
 .ai-provider-row select { width: 100%; padding: 5px 7px; font-size: 11px; }
-.ai-provider-row button { border: 0; background: transparent; color: var(--accent-deep); font-size: 10px; font-weight: 750; }
-.ai-provider-note, .ai-settings, .ai-question { margin: 0; padding: 10px 15px; border-bottom: 1px solid var(--line); background: var(--paper); color: var(--muted); font-size: 10px; line-height: 1.5; }
-.ai-settings { display: grid; gap: 6px; }
-.ai-settings input, .ai-settings select { width: 100%; padding: 7px 8px; font-size: 11px; }
-.ai-settings-note { margin: 1px 0 3px; color: var(--muted); font-size: 10px; line-height: 1.45; }
-.ai-settings > div { display: flex; gap: 8px; margin-top: 4px; }
+.ai-provider-note, .ai-question { margin: 0; padding: 10px 15px; border-bottom: 1px solid var(--line); background: var(--paper); color: var(--muted); font-size: 10px; line-height: 1.5; }
 
 .ai-error { margin: 8px 15px 0; }
 .ai-messages { min-height: 0; flex: 1 1 auto; padding: 13px 15px; overflow: auto; }

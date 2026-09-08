@@ -397,9 +397,20 @@ try {
   await evaluate("document.querySelector('[aria-label=\"恢复 AI 学习助手\"]').click()");
   assert(await evaluate("document.querySelector('.ai-message.assistant .katex') === globalThis.fixtureAnswerFormula"), "Completed answer formula nodes must survive draft and panel updates.");
   assert(aiRequests === 1, "Editing a draft or minimizing the panel must not start a new AI request.");
+  await evaluate("{ const selector = document.querySelector('#ai-provider'); selector.value = 'deepseek'; selector.dispatchEvent(new Event('change', { bubbles: true })); }");
+  await waitFor(window, "document.querySelector('#ai-provider').value === 'deepseek'");
+  assert(await evaluate("document.querySelector('.ai-message.assistant > strong').textContent === 'Fixture AI' && document.querySelector('.ai-message.assistant .katex') === globalThis.fixtureAnswerFormula"), "Changing provider must preserve the completed answer's author and formula DOM.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const button = document.querySelector('.ai-provider-row button'); const style = getComputedStyle(button); const send = getComputedStyle(document.querySelector('.ai-question button')); const rect = button.getBoundingClientRect(); const panel = button.closest('.reader-ai-panel').getBoundingClientRect(); return style.fontSize === send.fontSize && style.fontWeight === send.fontWeight && style.minHeight === send.minHeight && style.borderRadius === send.borderRadius && rect.right <= panel.right && rect.height >= 32; })()"), "AI settings must use the shared button style and remain inside the panel.");
+    await writeFile(path.join(tmpdir(), `reading-hub-ai-attribution-${width}.png`), (await window.capturePage()).toPNG());
+  }
   aiMode = "error";
   await evaluate("document.querySelector('.ai-question').requestSubmit()");
   await waitFor(window, "document.querySelector('.ai-message.assistant.error')?.textContent.includes('Fixture partial answer') && document.querySelector('.ai-message.assistant.error')?.textContent.includes('Fixture interruption') && !document.querySelector('#ai-question').disabled");
+  await evaluate("{ const selector = document.querySelector('#ai-provider'); selector.value = 'openai'; selector.dispatchEvent(new Event('change', { bubbles: true })); }");
+  await waitFor(window, "document.querySelector('#ai-provider').value === 'openai'");
+  assert(await evaluate("JSON.stringify([...document.querySelectorAll('.ai-message.assistant > strong')].map((label) => label.textContent)) === JSON.stringify(['Fixture AI', 'Fixture secondary AI'])"), "Completed and interrupted answers must keep their respective provider labels after another switch.");
   aiMode = "pending";
   await evaluate("{ const question = document.querySelector('#ai-question'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(question, 'Pending fixture'); question.dispatchEvent(new Event('input', { bubbles: true })); }");
   await evaluate("{ const form = document.querySelector('.ai-question'); form.requestSubmit(); form.requestSubmit(); }");
