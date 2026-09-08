@@ -24,6 +24,7 @@ const cancelledImages = new Set();
 let pauseRead = false;
 let pendingRead;
 let readRequested;
+let contentReadRequests = 0;
 const cancelledReads = new Set();
 let aiRequests = 0;
 let aiMode = "complete";
@@ -192,6 +193,7 @@ const channels = [
   }],
   ["entry:cancel-read", (_event, requestId) => { cancelledReads.add(requestId); }],
   ["entry:read-content", (_event, id, requestId) => {
+    contentReadRequests++;
     assert(typeof requestId === "string" && requestId.startsWith("read-"), "Read IPC must carry an opaque request id.");
     if (pauseRead) return new Promise((resolve) => { pendingRead = { requestId, resolve }; readRequested?.(); });
     if (id === "failure") throw new Error("Deterministic offline fixture");
@@ -675,6 +677,29 @@ try {
   await waitFor(window, "Boolean(document.querySelector('.reader-article')) && !document.querySelector('.reader-view .favorite-button').disabled");
   await evaluate("document.querySelector('.entry-card.selected [aria-label=\"收藏\"]').click()");
   await waitFor(window, "document.querySelector('.reader-view .favorite-button')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.reader-view .favorite-button').disabled");
+  // Background metadata changes must reach the reader without reloading content.
+  const readsBeforeBackgroundChange = contentReadRequests;
+  await evaluate("globalThis.workflowArticleBeforeRefresh = document.querySelector('.article-body')");
+  database.markFavorite("success", false);
+  database.markRead("success", false);
+  database.publishChanges();
+  await waitFor(window, "document.querySelector('.entry-card.selected [aria-label=\"收藏\"]')?.textContent === '☆' && !document.querySelector('.entry-card.selected')?.classList.contains('read')");
+  assert(await evaluate("document.querySelector('.reader-view .favorite-button')?.getAttribute('aria-pressed') === 'false'"), "A background list refresh must update the selected reader's favorite state.");
+  assert(contentReadRequests === readsBeforeBackgroundChange, "Refreshing entry metadata must not reload the article body.");
+  assert(await evaluate("document.querySelector('.article-body') === globalThis.workflowArticleBeforeRefresh"), "Refreshing entry metadata must preserve the mounted article DOM.");
+  await evaluate("delete globalThis.workflowArticleBeforeRefresh");
+  assert(!database.getEntry("success").read, "Refreshing metadata must not automatically mark the open article read again.");
+  await evaluate("document.querySelector('.reader-view .favorite-button').click()");
+  await waitFor(window, "document.querySelector('.reader-view .favorite-button')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.reader-view .favorite-button').disabled");
+  assert(database.getEntry("success").favorite, "The reader toggle must use the refreshed favorite value.");
+  for (const [query, count] of [["Historical", 1], ["NoMatchingReaderSelection", 0]]) {
+    await evaluate(`(() => { const input = document.querySelector('.entry-search input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(query)}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await waitFor(window, `document.querySelectorAll('.entry-card').length === ${count}`);
+    assert(await evaluate("Boolean(document.querySelector('.reader-article')) && document.querySelector('.reader-view .favorite-button')?.getAttribute('aria-pressed') === 'true'"), "Filtering the selected article out of the list must retain the current reader.");
+  }
+  await evaluate("document.querySelector('.entry-search-clear').click()");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 3");
+  assert(contentReadRequests === readsBeforeBackgroundChange, "Filtering and restoring the list must not fetch the selected article again.");
   // A committed flag must remain usable even if the following list read fails.
   libraryPageFailure = true;
   await evaluate("document.querySelector('.reader-view .favorite-button').click()");

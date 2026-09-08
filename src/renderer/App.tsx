@@ -79,6 +79,12 @@ export function App() {
     });
   }, [sources]);
 
+  useEffect(() => {
+    // Follow refreshed metadata for the selected identity. Falling out of a
+    // filter (for example after marking read) must not close the reader.
+    setReadingEntry((current) => current ? entries.find((entry) => entry.id === current.id) ?? current : current);
+  }, [entries]);
+
   const openSourceSettings = useCallback((source: Source) => {
     setSourceDialog({ token: crypto.randomUUID(), mode: "settings", source });
   }, []);
