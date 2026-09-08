@@ -327,6 +327,32 @@ try {
   assert(database.getEntry("success").read, "Successful content must become read.");
   await waitFor(window, "document.querySelector('.article-body img')?.naturalWidth === 1");
   assert(imageLoads === 1, `A native body image error must invoke the proxy exactly once (observed ${imageLoads}).`);
+  await evaluate("window.preferenceBody = document.querySelector('.article-body'); window.originalPreferenceSetItem = Storage.prototype.setItem; Storage.prototype.setItem = function(key, value) { if (key === 'reading-hub.reader-preferences.v1') throw new DOMException('Synthetic storage failure', 'QuotaExceededError'); return window.originalPreferenceSetItem.call(this, key, value); }; document.querySelector('[aria-label=\"放大字号\"]').click()");
+  await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  assert(await evaluate("Boolean(document.querySelector('.reader-article')) && document.querySelector('.article-body') === window.preferenceBody"), "Failed preference persistence must not unmount or rewrite the loaded article.");
+  await waitFor(window, "Boolean(document.querySelector('.reader-preference-status')) && document.querySelector('.reader-view').style.getPropertyValue('--reader-font-scale') === '1.05'");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const status = document.querySelector('.reader-preference-status'); const retry = status.querySelector('button'); const bounds = document.querySelector('.reader-view').getBoundingClientRect(); const rect = retry.getBoundingClientRect(); const tokens = getComputedStyle(document.documentElement); return status.scrollWidth <= status.clientWidth + 1 && rect.right <= bounds.right && rect.bottom <= document.querySelector('.reader-workspace').getBoundingClientRect().top && getComputedStyle(retry).fontSize === tokens.getPropertyValue('--control-font-size').trim(); })()"), "Preference retry must use shared controls and remain above the reader scroll area.");
+    await writeFile(path.join(tmpdir(), `reading-hub-preferences-reader-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  await evaluate("document.querySelector('[aria-label=\"打开设置\"]').click()");
+  await waitFor(window, "document.querySelector('.settings-font-controls output')?.textContent === '105%' && Boolean(document.querySelector('.reader-preference-status'))");
+  await clickText(".settings-segmented button", "紧凑");
+  assert(await evaluate("[...document.querySelectorAll('.settings-segmented button')].find(button => button.textContent === '紧凑').getAttribute('aria-pressed') === 'true'"), "Settings density controls must expose the current shared preference.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const status = document.querySelector('.reader-preference-status'); const rect = status.querySelector('button').getBoundingClientRect(); const bounds = status.closest('.settings-card').getBoundingClientRect(); return status.scrollWidth <= status.clientWidth + 1 && rect.left >= bounds.left && rect.right <= bounds.right && rect.bottom <= bounds.bottom; })()"), "Settings must retain the same save-retry control within its card.");
+    await writeFile(path.join(tmpdir(), `reading-hub-preferences-settings-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  await evaluate("Storage.prototype.setItem = window.originalPreferenceSetItem; document.querySelector('.reader-preference-status button').click()");
+  await waitFor(window, "!document.querySelector('.reader-preference-status')");
+  assert(await evaluate("(() => { const saved = JSON.parse(localStorage.getItem('reading-hub.reader-preferences.v1')); return saved.preset === 'compact' && saved.fontScale === 1.05; })()"), "Retry must save the latest shared preference, including changes made in settings.");
+  await evaluate("document.querySelector('[aria-label=\"返回阅读器\"]').click()");
+  await waitFor(window, "document.querySelector('.reader-view')?.dataset.readerPreset === 'compact' && document.querySelector('.article-body img')?.naturalWidth === 1");
+  await clickText(".reader-controls button", "阅读");
+  await evaluate("document.querySelector('[aria-label=\"缩小字号\"]').click()");
+  await waitFor(window, "document.querySelector('.reader-view').style.getPropertyValue('--reader-font-scale') === '1'");
   await writeFile(path.join(tmpdir(), "reading-hub-reader.png"), (await window.capturePage()).toPNG());
   await evaluate("document.querySelector('.article-body img').focus()");
   await pressKey("Enter");

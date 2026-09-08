@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { ReaderPreferencesProvider } from "../src/renderer/reader-preferences-context";
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,7 +13,7 @@ let update: ReturnType<typeof vi.fn>;
 let read: ReturnType<typeof vi.fn>;
 let cancelRead: ReturnType<typeof vi.fn>;
 async function render(entry = card, strict = false) {
-  const view = <ReaderView favoriteUpdating={false} entry={entry} onUpdateEntry={update} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} />;
+  const view = <ReaderPreferencesProvider><ReaderView favoriteUpdating={false} entry={entry} onUpdateEntry={update} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} /></ReaderPreferencesProvider>;
   await act(async () => root.render(strict ? <StrictMode>{view}</StrictMode> : view));
 }
 beforeEach(() => {

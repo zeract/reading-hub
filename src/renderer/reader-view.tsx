@@ -7,7 +7,7 @@ import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { buildAiArticleContext, collectAiArticleText } from "./ai-request";
 import { newAiRequestId, useAiStreamSubscription, useAiTextStream } from "./ai-stream";
 import { errorMessage } from "./errors";
-import { adjustReaderFontScale, loadReaderPreferences, saveReaderPreferences, type ReaderPreferences, type ReaderPreset } from "./reader-preferences";
+import { ReaderPreferenceStatus, useReaderPreferences } from "./reader-preferences-context";
 import { useReaderRequest } from "./use-reader-request";
 import { useReaderImages } from "./use-reader-images";
 import { normaliseSelectedArticleText, selectedTextLabel, selectionActionQuestion, selectionContext, selectionOverlay, type SelectionOverlay, type SelectionRect } from "./selection-actions";
@@ -77,7 +77,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const [embedded, setEmbedded] = useState(false);
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
-  const [preferences, setPreferences] = useState<ReaderPreferences>(loadReaderPreferences);
+  const { preferences, setPreset, adjustFont } = useReaderPreferences();
   const [assistantState, setAssistantState] = useState<AssistantPanelState>("closed");
   const [imagePreview, setImagePreview] = useState<ReaderImagePreview>();
   const [textSelection, setTextSelection] = useState<ReaderTextSelection>();
@@ -100,10 +100,6 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
     loadedEntryId.current = undefined;
     autoReadEntryId.current = undefined;
   }
-
-  useEffect(() => {
-    saveReaderPreferences(preferences);
-  }, [preferences]);
 
   const loadArticle = useCallback(async () => {
     const request = beginArticleRequest();
@@ -279,11 +275,6 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   }
 
   const readerStyle = { "--reader-font-scale": String(preferences.fontScale) } as CSSProperties & Record<"--reader-font-scale", string>;
-  const setPreset = (preset: ReaderPreset) => setPreferences((current) => ({ ...current, preset }));
-  const adjustFont = (amount: number) => setPreferences((current) => ({
-    ...current,
-    fontScale: adjustReaderFontScale(current.fontScale, amount)
-  }));
   const toggleAssistant = () => {
     if (!article) return;
     setAssistantState((state) => state === "open" ? "minimized" : "open");
@@ -294,6 +285,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const hasLanguageVariants = languageVariants.length > 1;
 
   return <section className={`reader-view reader--${article?.renderProfile || "standard"}`} data-reader-preset={preferences.preset} style={readerStyle} aria-label="应用内阅读器">
+    <div className="reader-heading">
     <header className="reader-toolbar">
       <div className="reader-toolbar-spacer" aria-hidden="true" />
       <div className="reader-toolbar-center">
@@ -331,6 +323,8 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
         <button type="button" className="toolbar-icon-button external-button" aria-label="在浏览器中打开原文" title="在浏览器中打开原文" onClick={() => void window.reader.openExternal(article?.url || entry.url)}>↗</button>
       </div>
     </header>
+    <ReaderPreferenceStatus />
+    </div>
     <div ref={readerWorkspaceElement} className={`reader-workspace ${assistantVisible && article ? "reader-workspace--assistant" : ""}`}>
       <div className="reader-scroll" onScroll={textSelection ? clearTextSelection : undefined}>
         {loading && <div className="reader-loading" role="status"><span className="loading-mark" /><p>正在准备适合阅读的正文…</p></div>}

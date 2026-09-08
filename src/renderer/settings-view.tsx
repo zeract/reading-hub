@@ -1,7 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort } from "../shared/types";
 import { CODEX_EFFORT_OPTIONS } from "./ai-options";
-import { adjustReaderFontScale, loadReaderPreferences, saveReaderPreferences, type ReaderPreferences } from "./reader-preferences";
+import { ReaderPreferenceStatus, useReaderPreferences } from "./reader-preferences-context";
 import { AppIcon } from "./ui-icons";
 import { useAsyncAction } from "./use-async-action";
 
@@ -10,17 +10,13 @@ type SettingsSection = "reading" | "ai";
 /** Global preferences live in a dedicated view so the article surface stays for reading. */
 export function SettingsView({ onClose, windowFullscreen }: { onClose: () => void; windowFullscreen: boolean }) {
   const [section, setSection] = useState<SettingsSection>("reading");
-  const [preferences, setPreferences] = useState<ReaderPreferences>(loadReaderPreferences);
+  const { preferences, setPreset, adjustFont } = useReaderPreferences();
   const [providers, setProviders] = useState<AiProviderSettings[]>([]);
   const [providerId, setProviderId] = useState<AiProviderId>("codex-cli");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState<AiReasoningEffort>("medium");
   const [apiKey, setApiKey] = useState("");
   const { busy, error, run, clearError, fail, isRunning } = useAsyncAction();
-
-  useEffect(() => {
-    saveReaderPreferences(preferences);
-  }, [preferences]);
 
   const reloadProviders = useCallback(async (isCurrent: () => boolean, preferredId: AiProviderId) => {
     const next = await window.reader.listAiProviders();
@@ -84,11 +80,6 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
     await updateAiSettings(() => window.reader.clearAiProvider(providerId));
   }
 
-  const adjustFont = (amount: number) => setPreferences((current) => ({
-    ...current,
-    fontScale: adjustReaderFontScale(current.fontScale, amount)
-  }));
-
   return <main className={`settings-shell${windowFullscreen ? " settings-shell--fullscreen" : ""}`} aria-label="Reading Hub 设置">
     <header className="app-titlebar settings-titlebar">
       <div className="app-titlebar-actions"><button type="button" className="app-titlebar-button" onClick={onClose} aria-label="返回阅读器" title="返回阅读器"><AppIcon name="back" /></button></div>
@@ -107,8 +98,9 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
         <header><p className="eyebrow">阅读</p><h1>阅读体验</h1><p>控制正文的密度与字号，不改变原文内容。</p></header>
         <section className="settings-card">
           <h2>正文排版</h2>
-          <div className="settings-row"><div><strong>阅读密度</strong><span>阅读模式保留更舒适的行距；紧凑模式用于快速浏览。</span></div><div className="settings-segmented" role="group" aria-label="阅读密度"><button type="button" className={preferences.preset === "compact" ? "selected" : ""} onClick={() => setPreferences((current) => ({ ...current, preset: "compact" }))}>紧凑</button><button type="button" className={preferences.preset === "reading" ? "selected" : ""} onClick={() => setPreferences((current) => ({ ...current, preset: "reading" }))}>阅读</button></div></div>
-          <div className="settings-row"><div><strong>正文字号</strong><span>当前 {Math.round(preferences.fontScale * 100)}%</span></div><div className="settings-font-controls"><button type="button" onClick={() => adjustFont(-0.05)} disabled={preferences.fontScale <= 0.85}>A−</button><output>{Math.round(preferences.fontScale * 100)}%</output><button type="button" onClick={() => adjustFont(0.05)} disabled={preferences.fontScale >= 1.25}>A+</button></div></div>
+          <div className="settings-row"><div><strong>阅读密度</strong><span>阅读模式保留更舒适的行距；紧凑模式用于快速浏览。</span></div><div className="settings-segmented" role="group" aria-label="阅读密度"><button type="button" className={preferences.preset === "compact" ? "selected" : ""} aria-pressed={preferences.preset === "compact"} onClick={() => setPreset("compact")}>紧凑</button><button type="button" className={preferences.preset === "reading" ? "selected" : ""} aria-pressed={preferences.preset === "reading"} onClick={() => setPreset("reading")}>阅读</button></div></div>
+          <div className="settings-row"><div><strong>正文字号</strong><span>当前 {Math.round(preferences.fontScale * 100)}%</span></div><div className="settings-font-controls"><button type="button" aria-label="缩小字号" onClick={() => adjustFont(-0.05)} disabled={preferences.fontScale <= 0.85}>A−</button><output>{Math.round(preferences.fontScale * 100)}%</output><button type="button" aria-label="放大字号" onClick={() => adjustFont(0.05)} disabled={preferences.fontScale >= 1.25}>A+</button></div></div>
+          <ReaderPreferenceStatus />
         </section>
         <section className="settings-card settings-card--quiet"><h2>沉浸阅读</h2><p>打开任意文章后，使用阅读栏右上角的 ⛶ 可隐藏来源与文章列表，只保留正文阅读栏。</p></section>
       </> : <>

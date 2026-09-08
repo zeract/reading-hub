@@ -14,6 +14,7 @@ import { useAsyncActivity } from "./use-async-activity";
 import { useLibraryNotice } from "./use-library-notice";
 import { useEntryMutations, type EntryMutationField } from "./use-entry-mutations";
 import { useWindowFullscreen } from "./use-window-fullscreen";
+import { ReaderPreferencesProvider } from "./reader-preferences-context";
 
 type AppView = "library" | "settings";
 type SourceDialogSession = { token: string; mode: "settings" | "calibration"; source: Source };
@@ -24,6 +25,10 @@ type SourceDialogSession = { token: string; mode: "settings" | "calibration"; so
  * one another for state.
  */
 export function App() {
+  return <ReaderPreferencesProvider><AppShell /></ReaderPreferencesProvider>;
+}
+
+function AppShell() {
   const {
     sources,
     entries,

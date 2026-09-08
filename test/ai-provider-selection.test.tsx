@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { ReaderPreferencesProvider } from "../src/renderer/reader-preferences-context";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +27,7 @@ beforeEach(async () => {
     onAiStream: vi.fn(() => () => undefined), startAiStream: start, cancelAiStream: vi.fn(async () => undefined)
   } });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
-  await act(async () => root.render(<ReaderView favoriteUpdating={false} entry={entry} onUpdateEntry={async () => true} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} />));
+  await act(async () => root.render(<ReaderPreferencesProvider><ReaderView favoriteUpdating={false} entry={entry} onUpdateEntry={async () => true} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} /></ReaderPreferencesProvider>));
   await click("打开 AI 学习");
   list.mockImplementation(() => new Promise<AiProviderSettings[]>((resolve, reject) => pending.push({ resolve, reject })));
 });

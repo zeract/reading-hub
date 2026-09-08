@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { ReaderPreferencesProvider } from "../src/renderer/reader-preferences-context";
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,7 +28,7 @@ beforeEach(async () => {
   vi.spyOn(window, "confirm").mockReturnValue(true);
   Object.defineProperty(window, "reader", { configurable: true, value: { listAiProviders: list, configureAiProvider: configure, clearAiProvider: clear } });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
-  await act(async () => root.render(<SettingsView onClose={() => undefined} windowFullscreen={false} />));
+  await act(async () => root.render(<ReaderPreferencesProvider><SettingsView onClose={() => undefined} windowFullscreen={false} /></ReaderPreferencesProvider>));
   await act(async () => [...container.querySelectorAll<HTMLButtonElement>("nav button")].find((button) => button.textContent === "AI 功能")!.click());
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -114,7 +115,7 @@ describe("AI settings request lifetime", () => {
   it("ignores the first mount response after StrictMode restarts discovery", async () => {
     const older = deferred<AiProviderSettings[]>(); const current = deferred<AiProviderSettings[]>();
     list.mockReturnValueOnce(older.promise).mockReturnValueOnce(current.promise);
-    await act(async () => root.render(<StrictMode><SettingsView onClose={() => undefined} windowFullscreen={false} /></StrictMode>));
+    await act(async () => root.render(<StrictMode><ReaderPreferencesProvider><SettingsView onClose={() => undefined} windowFullscreen={false} /></ReaderPreferencesProvider></StrictMode>));
     await act(async () => current.resolve(providers));
     await act(async () => older.resolve(providers.map((provider) => ({ ...provider, label: "Obsolete provider" }))));
     await act(async () => [...container.querySelectorAll<HTMLButtonElement>("nav button")].find((button) => button.textContent === "AI 功能")!.click());
@@ -125,7 +126,7 @@ describe("AI settings request lifetime", () => {
   it("does not refresh or surface an old clear failure in a replacement view", async () => {
     const operation = deferred<void>(); clear.mockReturnValue(operation.promise);
     await act(async () => container.querySelector<HTMLButtonElement>(".settings-actions .danger")!.click());
-    await act(async () => root.render(<SettingsView key="replacement" onClose={() => undefined} windowFullscreen={false} />));
+    await act(async () => root.render(<ReaderPreferencesProvider><SettingsView key="replacement" onClose={() => undefined} windowFullscreen={false} /></ReaderPreferencesProvider>));
     await act(async () => operation.reject(new Error("Obsolete clear failure")));
     expect(list).toHaveBeenCalledTimes(2);
     expect(container.textContent).not.toContain("Obsolete clear failure");

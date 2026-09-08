@@ -41,6 +41,7 @@ flowchart TD
 | 视图内互斥操作 | [use-async-action.ts](../src/renderer/use-async-action.ts) | 同步阻止重复提交；仅当前请求可以更新当前视图错误和状态。 |
 | 通知与撤销 | [use-library-notice.ts](../src/renderer/use-library-notice.ts) | 撤销对象与消息共享独立身份；失败保留重试，旧完成不能覆盖新通知。 |
 | 原生窗口全屏状态 | [use-window-fullscreen.ts](../src/renderer/use-window-fullscreen.ts) | 实时事件优先于迟到的启动快照；订阅与读取归属同一次 effect，卸载和重放使旧结果失效。 |
+| 阅读密度、字号和保存结果 | [reader-preferences-context.tsx](../src/renderer/reader-preferences-context.tsx) | 应用级 Provider 保留当前会话状态；阅读器与设置页共享控制器，用户更改与重试才写存储，失败不撤回已生效偏好。 |
 | 正文与 AI 展示 | [reader-view.tsx](../src/renderer/reader-view.tsx) | 正文请求按文章身份失效；元数据刷新不重载正文；成功显示才自动标记已读。 |
 
 写入成功和后续读取成功是两个结果：刷新失败不能否认已经完成的写入。卡片保留已确认字段，错误通过读模型提示；全局计数和完整筛选结果在读取成功后校准；计数有独立有效性状态，首次未载入或读取失败时不把旧数字显示为当前结果，关闭提示或开始重试不会清除此状态。阅读器的离开列表快照不代表额外的后台订阅，不根据“未返回”猜测删除或字段变化。

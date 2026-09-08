@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { ReaderPreferencesProvider } from "../src/renderer/reader-preferences-context";
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +9,7 @@ const card: Entry = { id: "one", sourceId: "source", url: "https://example.com/o
 let root: Root, container: HTMLDivElement;
 let load: ReturnType<typeof vi.fn>, cancel: ReturnType<typeof vi.fn>;
 async function render(id = "one") {
-  await act(async () => root.render(<StrictMode><ReaderView favoriteUpdating={false} entry={{ ...card, id }} onUpdateEntry={async () => true} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} /></StrictMode>));
+  await act(async () => root.render(<StrictMode><ReaderPreferencesProvider><ReaderView favoriteUpdating={false} entry={{ ...card, id }} onUpdateEntry={async () => true} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} /></ReaderPreferencesProvider></StrictMode>));
 }
 async function failImage(selector = ".reader-cover"): Promise<HTMLImageElement> {
   const image = container.querySelector<HTMLImageElement>(selector)!;
