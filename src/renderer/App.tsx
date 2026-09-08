@@ -39,6 +39,7 @@ export function App() {
     sourceById,
     activeSource,
     sourceGroups,
+    applyEntryState,
     reload,
     loadMoreEntries,
     selectSource: selectLibrarySource,
@@ -151,8 +152,9 @@ export function App() {
   }), [reload, setNotice, track]);
 
   const commitEntryState = useCallback((entryId: string, field: EntryMutationField, value: boolean) => {
+    applyEntryState(entryId, field, value);
     setReadingEntry((current) => current?.id === entryId ? { ...current, [field]: value } : current);
-  }, []);
+  }, [applyEntryState]);
   const { updateEntry, isEntryUpdating } = useEntryMutations({ onCommitted: commitEntryState, reload, onError: setNotice });
 
   const openReader = useCallback((entry: Entry) => {

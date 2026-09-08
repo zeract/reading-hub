@@ -675,6 +675,19 @@ try {
   await waitFor(window, "Boolean(document.querySelector('.reader-article')) && !document.querySelector('.reader-view .favorite-button').disabled");
   await evaluate("document.querySelector('.entry-card.selected [aria-label=\"收藏\"]').click()");
   await waitFor(window, "document.querySelector('.reader-view .favorite-button')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.reader-view .favorite-button').disabled");
+  // A committed flag must remain usable even if the following list read fails.
+  libraryPageFailure = true;
+  await evaluate("document.querySelector('.reader-view .favorite-button').click()");
+  await waitFor(window, "document.querySelector('.notice')?.textContent.includes('Synthetic library failure') && !document.querySelector('.reader-view .favorite-button').disabled");
+  assert(!database.getEntry("success").favorite, "The favorite write must have committed before the read failure.");
+  await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Historical fixture\"]').click()");
+  await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Readable fixture\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.reader-article')) && document.querySelector('.entry-card.selected h2')?.textContent === 'Readable fixture'");
+  assert(await evaluate("document.querySelector('.reader-view .favorite-button')?.getAttribute('aria-pressed') === 'false' && document.querySelector('.entry-card.selected [aria-label=\"收藏\"]')?.textContent === '☆'"), "Reopening a card after a list read failure must preserve the committed favorite in both views.");
+  libraryPageFailure = false;
+  await evaluate("document.querySelector('.reader-view .favorite-button').click()");
+  await waitFor(window, "document.querySelector('.reader-view .favorite-button')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('.reader-view .favorite-button').disabled");
+  assert(database.getEntry("success").favorite, "The next toggle must use the committed value, not the stale list snapshot.");
   delayedNavigationCommand = "dismiss";
   const dismissalStarted = new Promise((resolve) => { navigationCommandRequested = resolve; });
   await evaluate("document.querySelector('.entry-card.selected .delete-entry').click()");

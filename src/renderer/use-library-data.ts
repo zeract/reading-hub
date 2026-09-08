@@ -35,6 +35,18 @@ export function useLibraryData() {
   const reloading = useRef(false);
   const lastRevision = useRef<number | undefined>(undefined);
 
+  // Called only after a successful write, before reload invalidates in-flight
+  // reads. Keep visible cards current even if that follow-up read fails.
+  const applyEntryState = useCallback((entryId: string, field: "read" | "favorite", value: boolean) => {
+    setEntries((current) => {
+      const index = current.findIndex((entry) => entry.id === entryId);
+      if (index < 0 || current[index][field] === value) return current;
+      const next = [...current];
+      next[index] = { ...current[index], [field]: value };
+      return next;
+    });
+  }, []);
+
   const reload = useCallback(async () => {
     const sequence = ++reloadSequence.current;
     const generation = ++pageGeneration.current;
@@ -199,6 +211,7 @@ export function useLibraryData() {
     sourceById,
     activeSource,
     sourceGroups,
+    applyEntryState,
     reload,
     loadMoreEntries,
     selectSource,

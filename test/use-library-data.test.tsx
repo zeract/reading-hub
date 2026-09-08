@@ -48,6 +48,57 @@ afterEach(async () => {
 });
 
 describe("library read-model", () => {
+  it("retains a committed flag in visible cards when the following refresh fails", async () => {
+    const original = library.entries;
+    const apply = library.applyEntryState;
+    listPage.mockRejectedValueOnce(new Error("List unavailable"));
+    await act(async () => {
+      library.applyEntryState(original[0].id, "favorite", true);
+      await expect(library.reload()).rejects.toThrow("List unavailable");
+    });
+    expect(library.entries[0]).toEqual({ ...original[0], favorite: true });
+    expect(library.entries[1]).toBe(original[1]);
+    expect(original[0].favorite).toBe(false);
+    expect(library.entryLoadFailed).toBe(true);
+    expect(library.applyEntryState).toBe(apply);
+  });
+
+  it("merges independent committed fields and leaves absent or unchanged entries alone", async () => {
+    const before = library.entries;
+    await act(async () => {
+      library.applyEntryState("missing", "read", true);
+      library.applyEntryState(before[0].id, "favorite", false);
+    });
+    expect(library.entries).toBe(before);
+    await act(async () => {
+      library.applyEntryState(before[0].id, "read", true);
+      library.applyEntryState(before[0].id, "favorite", true);
+      library.applyEntryState(before[1].id, "favorite", true);
+    });
+    expect(library.entries[0]).toMatchObject({ read: true, favorite: true });
+    expect(library.entries[1]).toMatchObject({ read: false, favorite: true });
+    expect(library.entries[2]).toBe(before[2]);
+  });
+
+  it("rejects a pre-write list response and reconciles with the next successful read", async () => {
+    let finishOld!: (page: EntryPage) => void;
+    listPage.mockImplementationOnce(() => new Promise<EntryPage>((resolve) => { finishOld = resolve; }));
+    await act(async () => { void library.reload(); });
+    const oldEntries = library.entries;
+    listPage.mockRejectedValueOnce(new Error("Temporary read failure"));
+    await act(async () => {
+      library.applyEntryState(oldEntries[0].id, "read", true);
+      await library.reload().catch(() => undefined);
+    });
+    await act(async () => finishOld({ entries: oldEntries }));
+    expect(library.entries[0].read).toBe(true);
+    // A later authoritative read may contain changes made elsewhere; local
+    // patches must not become a permanent overlay that hides them.
+    await act(async () => library.reload());
+    expect(library.entries[0].read).toBe(false);
+    expect(library.entryLoadFailed).toBe(false);
+  });
+
   it("keeps loading active until the current query finishes despite an older completion", async () => {
     let finishOld!: (page: EntryPage) => void;
     let finishCurrent!: (page: EntryPage) => void;
