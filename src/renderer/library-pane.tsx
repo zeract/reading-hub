@@ -11,6 +11,19 @@ function LibraryCount({ value, stale, title }: { value: number | ""; stale: bool
   return <em title={stale ? "计数暂未更新，请重新载入。" : title} aria-label={stale ? "计数暂未更新" : undefined}>{stale ? "—" : value}</em>;
 }
 
+function SourceHealth({ source, onEdit }: { source: Source; onEdit?: (source: Source) => void }) {
+  return <section className="source-health" aria-label="来源状态">
+    <div className="source-health-overview">
+      <span role="status">{sourceHealthLabel(source)}</span>
+      {onEdit && <button type="button" className="action-button" onClick={() => onEdit(source)}>来源设置</button>}
+    </div>
+    {source.lastError && <details>
+      <summary>查看最近错误</summary>
+      <p className="source-health-error" tabIndex={0}>{source.lastError}</p>
+    </details>}
+  </section>;
+}
+
 export function SourceSidebar({ sources, groups, libraryView, activeSourceId, libraryCounts, countsStale, collapsedGroups, onSelectLibrary, onSelectSource, onToggleGroup, onEditSource, onOpenSettings }: {
   sources: Source[];
   groups: SourceGroup[];
@@ -41,7 +54,7 @@ export function SourceSidebar({ sources, groups, libraryView, activeSourceId, li
       <div className="source-list">
         {groups.map((group) => <section className="source-group" key={group.id}>
           <button type="button" className="source-group-heading" onClick={() => onToggleGroup(group.id)} aria-expanded={!collapsedGroups[group.id]}>
-            <span className="source-group-label"><AppIcon name={collapsedGroups[group.id] ? "chevron-right" : "chevron-down"} /><AppIcon name="folder" /><span>{group.title}</span></span><em>{group.sources.length}</em>
+            <span className="source-group-label"><AppIcon name={collapsedGroups[group.id] ? "chevron-right" : "chevron-down"} /><AppIcon name="folder" /><span title={group.title}>{group.title}</span></span><em>{group.sources.length}</em>
           </button>
           {!collapsedGroups[group.id] && group.sources.map((source) => (
             <div className="source-row" key={source.id} onContextMenu={(event) => { event.preventDefault(); onEditSource(source); }}>
@@ -103,8 +116,8 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
   const count = { value: hasMoreEntries ? `${visibleCount}+` : visibleCount, label: entrySearch.trim() ? "篇匹配" : "篇内容" };
 
   return <section className="timeline" aria-label="文章列表">
-    <header><div><p className="eyebrow">{activeSource ? "来源内容" : "阅读收件箱"}</p><h1>{title}</h1></div><span className="count">{count.value} {count.label}</span></header>
-    {activeSource && <button type="button" className="source-health" onClick={() => onEditSource?.(activeSource)}>{sourceHealthLabel(activeSource)} · 查看来源设置{activeSource.lastError ? `：${activeSource.lastError}` : ""}</button>}
+    <header><div><p className="eyebrow">{activeSource ? "来源内容" : "阅读收件箱"}</p><h1 title={title}>{title}</h1></div><span className="count">{count.value} {count.label}</span></header>
+    {activeSource && <SourceHealth key={activeSource.id} source={activeSource} onEdit={onEditSource} />}
     {<form className="entry-search" role="search" onSubmit={(event) => event.preventDefault()}>
       <AppIcon name="search" />
       <input

@@ -3,7 +3,7 @@ import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Timeline, SourceSidebar } from "../src/renderer/library-pane";
-import type { Entry } from "../src/shared/types";
+import type { Entry, Source } from "../src/shared/types";
 
 let root: Root;
 let container: HTMLDivElement;
@@ -22,6 +22,42 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 async function render(update: Partial<typeof props> = {}) { await act(async () => root.render(<Timeline {...props} {...update} />)); }
+
+const source: Source = { id: "source", title: "Source fixture", url: "https://example.com/feed", kind: "rss", status: "error", pollingEnabled: true, consecutiveEmpty: 0, failureCount: 1, createdAt: 1, updatedAt: 1 };
+
+it("separates source status, settings and escaped error details", async () => {
+  const edit = vi.fn();
+  const activeSource = { ...source, lastError: '<img src="invalid" onerror="alert(1)">\nDiagnostic' };
+  await render({ activeSource, onEditSource: edit });
+  const status = container.querySelector(".source-health")!;
+  expect(status.getAttribute("aria-label")).toBe("来源状态");
+  expect(status.querySelector('[role="status"]')?.textContent).toBe("同步失败");
+  expect(status.querySelector<HTMLDetailsElement>("details")!.open).toBe(false);
+  expect(status.querySelector(".source-health-error")?.textContent).toBe(activeSource.lastError);
+  expect(status.querySelector("img")).toBeNull();
+  const button = status.querySelector<HTMLButtonElement>("button")!;
+  expect(button.textContent).toBe("来源设置");
+  await act(async () => button.click()); expect(edit).toHaveBeenCalledExactlyOnceWith(activeSource);
+});
+
+it("shows read-only source health without offering an unconfigured settings action", async () => {
+  await render({ activeSource: source });
+  expect(container.querySelector(".source-health button")).toBeNull();
+  expect(container.querySelector(".source-health details")).toBeNull();
+  await render(); expect(container.querySelector(".source-health")).toBeNull();
+});
+
+it("keeps disclosure for the same source but resets it when navigating to another", async () => {
+  await render({ activeSource: { ...source, lastError: "First error" } });
+  const details = container.querySelector<HTMLDetailsElement>(".source-health details")!;
+  details.open = true;
+  await render({ activeSource: { ...source, lastError: "Updated error" } });
+  expect(details.open).toBe(true);
+  expect(details.textContent).toContain("Updated error");
+  await render({ activeSource: { ...source, id: "other", lastError: "Other error" } });
+  expect(container.querySelector<HTMLDetailsElement>(".source-health details")!.open).toBe(false);
+  expect(container.textContent).not.toContain("Updated error");
+});
 
 it("labels the requested read transition and exposes the confirmed favorite state", async () => {
   await render();
