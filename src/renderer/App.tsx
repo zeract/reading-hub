@@ -149,13 +149,15 @@ function AppShell() {
     const publish = beginNotice();
     try {
       await window.reader.refreshSource(source.id);
-      await reload();
-      publish(`已检查「${source.title}」。`);
     } catch (error) {
       await reload().catch(() => undefined);
       publish(errorMessage(error));
       throw error;
     }
+    // The source operation has completed. A failed list read keeps its own
+    // retry UI; it must not trigger another read or reject a saved scope's refresh.
+    await reload().catch(() => undefined);
+    publish(`已检查「${source.title}」。`);
   }), [beginNotice, reload, track]);
 
   const commitEntryState = useCallback((entryId: string, field: EntryMutationField, value: boolean) => {

@@ -19,6 +19,9 @@ beforeEach(async () => {
     getLibraryCounts: vi.fn(async () => ({ unread: 0, favorite: 0, today: 0 })), onLibraryChanged: () => () => undefined,
     isWindowFullscreen: vi.fn(async () => false), onWindowFullscreenChange: () => () => undefined,
     loadSourceIcon: vi.fn(async () => undefined),
+    refreshSource: vi.fn(async () => ({ inserted: 0, source: { ...source } })),
+    updateSourceSettings: vi.fn(async () => ({ ...source })),
+    updateSourceCollectionScope: vi.fn(async (_id, scope) => ({ scope, facets: [] })),
     getSourceCollectionSettings: vi.fn(async () => ({ scope: { facetSelections: [], history: { mode: "none" as const } }, facets: [] })),
     setSourceSubscribed: vi.fn(async (_id: string, subscribed: boolean) => { source.subscribed = subscribed; }),
     importOpml: vi.fn(async () => ({ imported: 2, existing: 1, skipped: 1, cancelled: false }))
@@ -86,4 +89,50 @@ it.each(["cancelled", "failed"])("does not reload after an import is %s", async 
   expect(container.querySelector(".connector-form [role=status]")).toBeNull();
   if (outcome === "failed") expect(container.querySelector(".connector-form [role=alert]")?.textContent).toContain("Synthetic import failure");
   else expect(container.querySelector(".connector-form [role=alert]")).toBeNull();
+});
+
+it("does not report a completed source refresh as failed or silently repeat a failed list read", async () => {
+  await openSettings();
+  const reads = pages.mock.calls.length;
+  pages.mockRejectedValue(new Error("Synthetic list failure"));
+  await clickText("立即刷新");
+  expect(container.querySelector(".source-settings-form [role=alert]")).toBeNull();
+  expect(pages).toHaveBeenCalledTimes(reads + 1);
+  expect(container.querySelector(".notice")?.textContent).toContain("Synthetic list failure");
+  await click('.dialog [aria-label="关闭"]');
+  pages.mockResolvedValue({ entries: [] });
+  await click('[aria-label="重新载入收件箱"]');
+  expect(window.reader.refreshSource).toHaveBeenCalledExactlyOnceWith(source.id);
+});
+
+it("keeps the actual refresh error when reading its updated source state also fails", async () => {
+  await openSettings();
+  vi.mocked(window.reader.refreshSource).mockRejectedValueOnce(new Error("Synthetic refresh failure"));
+  pages.mockRejectedValue(new Error("Synthetic list failure"));
+  const reads = pages.mock.calls.length;
+  await clickText("立即刷新");
+  expect(container.querySelector(".source-settings-form [role=alert]")?.textContent).toBe("Synthetic refresh failure");
+  expect(pages).toHaveBeenCalledTimes(reads + 1);
+  pages.mockResolvedValue({ entries: [] });
+  await clickText("立即刷新");
+  expect(container.querySelector(".source-settings-form [role=alert]")).toBeNull();
+  expect(window.reader.refreshSource).toHaveBeenCalledTimes(2);
+});
+
+it("finishes a saved scope after its successful refresh even if list recovery fails", async () => {
+  vi.mocked(window.reader.getSourceCollectionSettings).mockResolvedValueOnce({
+    scope: { facetSelections: [], history: { mode: "none" } },
+    facets: [{ scheme: "fixture", key: "science", label: "Science", sourceId: source.id, entryCount: 1 }]
+  });
+  await openSettings();
+  await click('.facet-option input');
+  pages.mockRejectedValue(new Error("Synthetic list failure"));
+  await act(async () => container.querySelector(".source-settings-form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(window.reader.updateSourceCollectionScope).toHaveBeenCalledTimes(1);
+  expect(container.querySelector(".source-settings-form")).toBeNull();
+  expect(container.querySelector(".notice")?.textContent).toContain("Synthetic list failure");
+  pages.mockResolvedValue({ entries: [] });
+  await click('[aria-label="重新载入收件箱"]');
+  expect(window.reader.updateSourceCollectionScope).toHaveBeenCalledTimes(1);
+  expect(window.reader.refreshSource).toHaveBeenCalledTimes(1);
 });

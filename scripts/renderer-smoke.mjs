@@ -900,8 +900,11 @@ try {
     }
   }
   managementFailure = undefined;
+  libraryPageFailure = true;
   await clickText(".source-settings-operations button", "立即刷新");
   await waitFor(window, "!document.querySelector('.source-settings-form > .error') && !document.querySelector('.source-settings-form .primary').disabled");
+  assert(await evaluate("document.querySelector('.notice')?.textContent.includes('Synthetic library failure')"), "A successful source refresh must leave list failure with the read model, not the dialog action.");
+  libraryPageFailure = false;
   await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
   await evaluate("window.fixtureUnhandled = 0; window.fixtureRejectionListener = () => { window.fixtureUnhandled++; }; window.addEventListener('unhandledrejection', window.fixtureRejectionListener); [...document.querySelectorAll('.source-filter')].find((item) => item.textContent.includes('Management fixture')).click()");
   await waitFor(window, "Boolean(document.querySelector('[aria-label=\"刷新 Management fixture\"]'))");
@@ -928,12 +931,19 @@ try {
   })()`), "Partial-save status and retry action must fit at 125% font size.");
   await writeFile(path.join(tmpdir(), "reading-hub-management-partial-save.png"), (await window.capturePage()).toPNG());
   managementFailure = undefined;
+  libraryPageFailure = true;
+  const beforeScopeRecoveryRefreshes = managementRefreshes;
   const scopeRetryRequested = new Promise((resolve) => { managementRequested = resolve; });
   await evaluate("document.querySelector('.source-settings-form').requestSubmit()");
   await scopeRetryRequested;
   completeManagement();
   await waitFor(window, "!document.querySelector('.source-settings-form')");
   assert(managementScopeWrites === 1, "Retrying the failed refresh must not repeat the saved scope write.");
+  assert(await evaluate("document.querySelector('.notice')?.textContent.includes('Synthetic library failure')"), "A completed scope refresh must close the dialog while preserving list recovery.");
+  libraryPageFailure = false;
+  await evaluate("[...document.querySelectorAll('.source-filter')].find((item) => item.textContent.includes('Management fixture')).click()");
+  await waitFor(window, "!document.querySelector('.notice')?.textContent.includes('Synthetic library failure')");
+  assert(managementRefreshes === beforeScopeRecoveryRefreshes + 1, "Reloading the source view must not repeat its successful scope refresh.");
   const retainedFacetLabel = `Saved category ${"LongLabel".repeat(20)}`;
   managementCollection = { scope: { facetSelections: [{ scheme: "fixture", key: "retained", label: retainedFacetLabel }], history: { mode: "none" } }, facets: [], facetDiscoveryAvailable: true, historyAvailable: false };
   await openManagement();
