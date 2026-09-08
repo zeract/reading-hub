@@ -7,6 +7,8 @@ import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { buildAiArticleContext, collectAiArticleText } from "./ai-request";
 import { newAiRequestId, useAiStreamSubscription, useAiTextStream } from "./ai-stream";
 import { errorMessage } from "./errors";
+import { useAiProviders } from "./use-ai-providers";
+import { AiProviderFeedback } from "./ai-provider-feedback";
 import { ReaderPreferenceStatus, useReaderPreferences } from "./reader-preferences-context";
 import { useReaderRequest } from "./use-reader-request";
 import { useReaderImages } from "./use-reader-images";
@@ -392,8 +394,7 @@ function SelectionAssistantCard({ request, overlay, article, sourceTitle, prefer
   onClose: () => void;
   onOpenSettings: () => void;
 }) {
-  const [providers, setProviders] = useState<AiProviderSettings[]>([]);
-  const [providerError, setProviderError] = useState<string>();
+  const { providers, status: providerState, error: providerError, reload: reloadProviders } = useAiProviders();
   const startedSelectionRequest = useRef<string | undefined>(undefined);
   const { text: answer, busy, error: streamError, reset, start } = useAiTextStream();
   const provider = useMemo(() => providers.find((item) => item.id === preferredProviderId && item.configured)
@@ -406,23 +407,14 @@ function SelectionAssistantCard({ request, overlay, article, sourceTitle, prefer
   };
 
   useEffect(() => {
-    let current = true;
-    void window.reader.listAiProviders()
-      .then((next) => { if (current) setProviders(next); })
-      .catch((reason) => { if (current) setProviderError(errorMessage(reason)); });
-    return () => { current = false; };
-  }, []);
-  useEffect(() => {
-    if (startedSelectionRequest.current === request.id || !providers.length) return;
+    if (startedSelectionRequest.current === request.id || providerState !== "ready") return;
     if (!provider) {
       startedSelectionRequest.current = request.id;
       reset();
-      setProviderError("尚未配置可用的 AI 服务。请先在 AI 学习中完成设置。");
       return;
     }
     startedSelectionRequest.current = request.id;
     const requestId = newAiRequestId();
-    setProviderError(undefined);
     void start({
       requestId,
       request: {
@@ -432,22 +424,24 @@ function SelectionAssistantCard({ request, overlay, article, sourceTitle, prefer
         ...articlePayloadForAiRequest(article, sourceTitle, request.selection)
       }
     });
-  }, [article.contentHtml, article.title, article.url, provider, providers.length, request, reset, sourceTitle, start]);
+  }, [article.contentHtml, article.title, article.url, provider, providerState, request, reset, sourceTitle, start]);
 
   const excerpt = request.selection.text.length > 260 ? `${request.selection.text.slice(0, 260)}…` : request.selection.text;
-  const error = providerError || streamError;
+  const unconfigured = providerState === "ready" && !provider;
+  const error = unconfigured ? "尚未配置可用的 AI 服务，请先打开 AI 设置。" : streamError;
   return <aside className="selection-assistant-card" data-placement={overlay.placement} data-intent={request.selection.intent} style={cardStyle} aria-label={`${selectedTextLabel(request.selection.intent)}结果`}>
     <header>
       <div><p>{selectedTextLabel(request.selection.intent)}</p><strong>{provider?.label || "AI 学习"}</strong></div>
       <button type="button" onClick={onClose} aria-label="关闭所选文字回答">×</button>
     </header>
     <blockquote>“{excerpt}”</blockquote>
-    <div className="selection-assistant-answer" aria-live="polite" aria-busy={busy}>
+    <div className="selection-assistant-answer" aria-live="polite" aria-busy={busy || providerState === "loading"}>
+      <AiProviderFeedback status={providerState} error={providerError} onRetry={() => void reloadProviders()} />
       {busy && !answer && <p className="ai-streaming-status">{request.selection.intent === "translate" ? "正在翻译所选文字…" : "正在结合文章上下文生成…"}</p>}
       {answer && <AiMarkdownContent text={answer} />}
       {error && <p className="selection-assistant-error">{error}</p>}
     </div>
-    {error && !provider && <button type="button" className="selection-assistant-settings" onClick={onOpenSettings}>打开 AI 设置</button>}
+    {unconfigured && <button type="button" className="selection-assistant-settings" onClick={onOpenSettings}>打开 AI 设置</button>}
   </aside>;
 }
 
@@ -470,7 +464,7 @@ function ReaderAssistant({ article, sourceTitle, providerId, onProviderChange, m
   onClose: () => void;
   onOpenSettings: () => void;
 }) {
-  const [providers, setProviders] = useState<AiProviderSettings[]>([]);
+  const { providers, status: providerState, error: providerError, reload: reloadProviders } = useAiProviders();
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<AiMessage[]>([]);
   const [busy, setBusy] = useState(false);
@@ -480,17 +474,9 @@ function ReaderAssistant({ article, sourceTitle, providerId, onProviderChange, m
 
   const selected = providers.find((provider) => provider.id === providerId);
   useEffect(() => {
-    let current = true;
-    // The reader owns the choice. An older discovery must not replace it or
-    // update a new panel after this one closes.
-    void window.reader.listAiProviders().then((next) => {
-      if (!current) return;
-      setProviders(next);
-      const active = next.find((provider) => provider.id === providerId) || next[0];
-      if (active && active.id !== providerId) onProviderChange(active.id);
-    }).catch((reason) => { if (current) setError(errorMessage(reason)); });
-    return () => { current = false; };
-  }, [providerId, onProviderChange]);
+    const active = providers.find((provider) => provider.id === providerId) || providers[0];
+    if (active && active.id !== providerId) onProviderChange(active.id);
+  }, [providers, providerId, onProviderChange]);
   const { fail: failStream } = useAiStreamSubscription((event) => {
     const active = activeStream.current;
     if (!active || active.requestId !== event.requestId) return;
@@ -529,7 +515,7 @@ function ReaderAssistant({ article, sourceTitle, providerId, onProviderChange, m
 
   async function startQuestion(textValue: string, selection?: AiSelectionContext) {
     const text = textValue.trim();
-    if (!text || activeStream.current) return;
+    if (!text || activeStream.current || providerState !== "ready" || !selected) return;
     if (!selected?.configured) {
       setError(selected?.requiresApiKey ? "请先在设置中配置 API Key。" : "未检测到本机 Codex CLI。请安装并登录后重试。");
       onOpenSettings();
@@ -572,10 +558,11 @@ function ReaderAssistant({ article, sourceTitle, providerId, onProviderChange, m
 
   return <aside className={`reader-ai-panel${minimized ? " is-minimized" : ""}`} aria-label="AI 学习助手" aria-hidden={minimized}>
     <header><div><strong>AI 学习助手</strong><p>提问时才会发送当前文章的文本摘录。</p></div><div className="assistant-header-actions"><button type="button" className="panel-icon-button" onClick={onMinimize} aria-label="最小化 AI 学习助手" title="最小化">−</button><button type="button" className="panel-icon-button" onClick={onClose} aria-label="关闭 AI 学习助手" title="关闭">×</button></div></header>
-    <div className="ai-provider-row"><label htmlFor="ai-provider">服务</label><select id="ai-provider" value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={busy}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select><button type="button" className="action-button" onClick={onOpenSettings} disabled={busy}>设置</button></div>
+    <div className="ai-provider-row"><label htmlFor="ai-provider">服务</label><select id="ai-provider" value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={busy || providerState !== "ready"}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select><button type="button" className="action-button" onClick={onOpenSettings} disabled={busy}>设置</button></div>
+    <AiProviderFeedback status={providerState} error={providerError} onRetry={() => void reloadProviders()} />
     {selected?.availabilityMessage && <p className="ai-provider-note">{selected.availabilityMessage}</p>}
     {error && <p className="error ai-error">{error}</p>}
     <div className="ai-messages" aria-live="polite" aria-busy={busy} ref={messagesElement}>{!messages.length && <p className="ai-empty">可以让 AI 解释概念、公式推导、例子或文章中的论证。回答不会保存到数据库。</p>}{messages.map((message) => <div key={message.id} className={`ai-message ${message.role}${message.error ? " error" : ""}${message.streaming ? " is-streaming" : ""}`}><strong>{message.role === "user" ? "你" : message.provider.label}</strong>{message.streaming && !message.text ? <p className="ai-streaming-status">正在生成…</p> : <AiMarkdownContent text={message.text} />}</div>)}</div>
-    <form className="ai-question" onSubmit={(event) => void ask(event)}><label htmlFor="ai-question">向文章提问（Enter 发送，Shift+Enter 换行）</label><textarea id="ai-question" value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={submitOnEnter} placeholder="例如：请用直觉解释这个公式的含义" disabled={busy} /><button className="primary" disabled={busy || !question.trim()}>{busy ? "回答中…" : "发送问题"}</button></form>
+    <form className="ai-question" onSubmit={(event) => void ask(event)}><label htmlFor="ai-question">向文章提问（Enter 发送，Shift+Enter 换行）</label><textarea id="ai-question" value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={submitOnEnter} placeholder="例如：请用直觉解释这个公式的含义" disabled={busy} /><button className="primary" disabled={busy || providerState !== "ready" || !selected || !question.trim()}>{busy ? "回答中…" : "发送问题"}</button></form>
   </aside>;
 }

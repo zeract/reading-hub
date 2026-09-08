@@ -43,61 +43,60 @@ async function select(value: string) {
 const selected = () => container.querySelector<HTMLSelectElement>("#ai-provider")!.value;
 
 describe("AI provider discovery lifetime", () => {
-  it("invalidates the previous discovery at selection time before React effect cleanup", async () => {
-    await select("openai");
-    await act(async () => {
-      const selector = container.querySelector<HTMLSelectElement>("#ai-provider")!;
-      selector.value = "deepseek";
-      selector.dispatchEvent(new Event("change", { bubbles: true }));
-      pending[0].resolve(providers);
-      await Promise.resolve();
-    });
-    expect(selected()).toBe("deepseek");
-  });
-
-  it("keeps the latest choice and sends the next question to it after older discovery completes", async () => {
+  it("changes the next question's provider without rediscovering or replacing metadata", async () => {
+    const reads = list.mock.calls.length;
     await select("openai"); await select("deepseek");
-    expect(pending).toHaveLength(2);
-    await act(async () => pending[1].resolve(providers));
-    await act(async () => pending[0].resolve(providers.map((provider) => ({ ...provider, label: "Stale label" }))));
+    expect(list).toHaveBeenCalledTimes(reads);
     expect(selected()).toBe("deepseek");
-    expect(container.textContent).not.toContain("Stale label");
-    await act(async () => {
-      const input = container.querySelector<HTMLTextAreaElement>("#ai-question")!;
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "Explain this article");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await act(async () => container.querySelector("form.ai-question")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
-    expect(start).toHaveBeenCalledOnce();
+    await askQuestion("Explain this article");
     expect(start.mock.calls[0][0].request.provider).toBe("deepseek");
   });
 
-  it("does not surface a stale failure after the latest provider discovery succeeds", async () => {
-    await select("openai"); await select("deepseek");
-    await act(async () => pending[1].resolve(providers));
-    await act(async () => pending[0].reject(new Error("Synthetic obsolete discovery failure")));
-    expect(selected()).toBe("deepseek");
-    expect(container.textContent).not.toContain("Synthetic obsolete discovery failure");
+  it("preserves a draft through discovery failure and retries without sending a question", async () => {
+    await click("关闭 AI 学习助手");
+    list.mockRejectedValueOnce(new Error("Synthetic discovery failure"));
+    await click("打开 AI 学习");
+    await askQuestion("Pending draft");
+    expect(start).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLButtonElement>(".ai-question button")!.disabled).toBe(true);
+    expect(container.querySelector<HTMLSelectElement>("#ai-provider")!.disabled).toBe(true);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Synthetic discovery failure");
+    list.mockResolvedValue(providers);
+    await act(async () => container.querySelector<HTMLButtonElement>(".ai-provider-feedback button")!.click());
+    expect(container.querySelector<HTMLTextAreaElement>("#ai-question")!.value).toBe("Pending draft");
+    expect(container.querySelector(".ai-provider-feedback")).toBeNull();
+    expect(start).not.toHaveBeenCalled();
+    await askQuestion("Pending draft"); expect(start).toHaveBeenCalledTimes(1);
   });
 
-  it("does not let a closed panel change the preferred provider for its replacement", async () => {
-    await select("openai"); await select("deepseek");
+  it("does not let a closed discovery change the reader's preferred provider", async () => {
+    await select("openai"); await click("关闭 AI 学习助手");
+    await click("打开 AI 学习");
+    expect(pending).toHaveLength(1);
     await click("关闭 AI 学习助手");
-    await act(async () => pending[1].resolve(providers));
-    await act(async () => pending[0].resolve(providers));
+    await act(async () => pending[0].resolve([providers[0]]));
     list.mockResolvedValue(providers);
     await click("打开 AI 学习");
-    expect(selected()).toBe("deepseek");
+    expect(selected()).toBe("openai");
   });
 
-  it("reports a current failure and recovers when another selection succeeds", async () => {
-    await select("openai");
-    await act(async () => pending[0].reject(new Error("Synthetic current discovery failure")));
-    expect(container.textContent).toContain("Synthetic current discovery failure");
-    await select("deepseek");
-    await act(async () => pending[1].resolve(providers));
-    expect(selected()).toBe("deepseek");
-    expect(container.textContent).not.toContain("Synthetic current discovery failure");
+  it("shows loading until discovery completes without presenting a configuration error", async () => {
+    await click("关闭 AI 学习助手"); await click("打开 AI 学习");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("正在读取");
+    await askQuestion("Draft while loading"); expect(start).not.toHaveBeenCalled();
+    expect(container.querySelector(".ai-error")).toBeNull();
+    await act(async () => pending[0].resolve(providers));
+    expect(container.querySelector<HTMLButtonElement>(".ai-question button")!.disabled).toBe(false);
+  });
+
+  it("makes an empty list recoverable instead of treating it as an unconfigured CLI", async () => {
+    await click("关闭 AI 学习助手"); list.mockResolvedValueOnce([]);
+    await click("打开 AI 学习");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("没有可用的 AI 服务");
+    expect(container.textContent).not.toContain("未检测到本机 Codex CLI");
+    list.mockResolvedValue(providers);
+    await act(async () => container.querySelector<HTMLButtonElement>(".ai-provider-feedback button")!.click());
+    expect(selected()).toBe("codex-cli");
   });
 });
 
@@ -108,7 +107,7 @@ async function askQuestion(text: string) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await act(async () => container.querySelector("form.ai-question")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
-  return start.mock.calls.at(-1)![0].requestId as string;
+  return start.mock.calls.at(-1)?.[0].requestId as string;
 }
 const answerLabels = () => [...container.querySelectorAll(".ai-message.assistant > strong")].map((element) => element.textContent);
 
@@ -141,10 +140,13 @@ it("retains the original service label for interrupted and rejected requests", a
   expect(container.querySelectorAll(".ai-message.assistant.error")).toHaveLength(2);
 });
 
-it("does not relabel historical answers when provider metadata is refreshed", async () => {
+it("copies message attribution without retaining a mutable provider object", async () => {
+  const metadata = providers.map((provider) => ({ ...provider }));
+  list.mockResolvedValue(metadata);
+  await click("关闭 AI 学习助手"); await click("打开 AI 学习");
   const first = await askQuestion("Historical question");
   await act(async () => receive({ requestId: first, type: "complete", answer: { provider: "codex-cli", model: "fixture", text: "Historical answer" } }));
-  list.mockResolvedValue(providers.map((provider) => ({ ...provider, label: `Updated ${provider.id}` })));
+  metadata[0].label = "Updated codex-cli";
   await select("openai"); await select("codex-cli");
   expect(answerLabels()).toEqual(["codex-cli"]);
   const second = await askQuestion("Current question");

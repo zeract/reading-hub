@@ -133,6 +133,7 @@ const channels = [
   }],
   ["ai:ask-stream", (event, payload) => {
     aiRequests++;
+    if (payload.request.selection?.intent === "translate") assert(!payload.request.article, "Selected-text translation must not send article context.");
     activeAiRequest = payload.requestId;
     event.sender.send("ai:stream", { requestId: payload.requestId, type: "delta", text: "Fixture" });
     if (aiMode === "pending") return;
@@ -374,8 +375,25 @@ try {
   await waitFor(window, "Boolean(document.querySelector('.reader-image-lightbox'))");
   await evaluate("document.querySelector('.reader-image-lightbox').click()");
   await waitFor(window, "!document.querySelector('.reader-image-lightbox')");
+  providerListFailure = true;
   await evaluate("document.querySelector('[aria-label=\"打开 AI 学习\"]').click()");
-  await waitFor(window, "document.querySelector('.reader-ai-panel option')?.textContent.includes('Fixture AI')");
+  await waitFor(window, "Boolean(document.querySelector('.reader-ai-panel .ai-provider-feedback button'))");
+  await evaluate("{ const input = document.querySelector('#ai-question'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, 'Pending discovery draft'); input.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('.ai-question').requestSubmit(); }");
+  assert(aiRequests === 0 && await evaluate("document.querySelector('#ai-provider').disabled && document.querySelector('.ai-question button').disabled"), "Failed discovery must preserve the draft without starting AI or treating the provider as unconfigured.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const error = document.querySelector('.reader-ai-panel .ai-provider-error'); const button = document.querySelector('.reader-ai-panel .ai-provider-feedback button'); button.scrollIntoView({ block: 'nearest' }); const rect = button.getBoundingClientRect(); const panel = button.closest('.reader-ai-panel').getBoundingClientRect(); return error.scrollWidth <= error.clientWidth + 1 && rect.right <= panel.right && rect.bottom <= panel.bottom && !button.disabled; })()"), "Reader discovery failures must wrap and keep retry reachable.");
+    await writeFile(path.join(tmpdir(), `reading-hub-panel-discovery-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  providerListFailure = false;
+  await evaluate("document.querySelector('.reader-ai-panel .ai-provider-feedback button').focus()");
+  await pressKey("Enter");
+  await waitFor(window, "!document.querySelector('.reader-ai-panel .ai-provider-feedback') && document.querySelector('.reader-ai-panel option')?.textContent.includes('Fixture AI')");
+  assert(aiRequests === 0 && await evaluate("document.querySelector('#ai-question').value === 'Pending discovery draft'"), "Read-only recovery must preserve the draft without submitting it.");
+  const listsBeforePanelSelection = providerLists;
+  await evaluate("{ const selector = document.querySelector('#ai-provider'); for (const id of ['deepseek', 'openai']) { selector.value = id; selector.dispatchEvent(new Event('change', { bubbles: true })); } }");
+  await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  assert(providerLists === listsBeforePanelSelection, "Changing a reader provider must not repeat discovery.");
   assert(markdownModuleRequests === 0, "The library, reader and empty assistant must not load AI Markdown code.");
   await evaluate("{ const question = document.querySelector('#ai-question'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(question, 'Explain fixture'); question.dispatchEvent(new Event('input', { bubbles: true })); }");
   await evaluate("document.querySelector('.ai-question').requestSubmit()");
@@ -420,6 +438,23 @@ try {
   assert(aiRequests === 3 && cancelledAiRequests.has(activeAiRequest), "Closing the assistant must cancel its unfinished request over IPC.");
   window.webContents.send("ai:stream", { requestId: activeAiRequest, type: "delta", text: "Late fixture" });
   aiMode = "complete";
+  providerListFailure = true;
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    await evaluate("(() => { const paragraph = document.querySelector('.article-body p'); paragraph.scrollIntoView({ block: 'center' }); const range = document.createRange(); range.selectNodeContents(paragraph); const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range); paragraph.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); })()");
+    await waitFor(window, "Boolean(document.querySelector('.reader-selection-toolbar'))");
+    await clickText(".reader-selection-toolbar button", "翻译");
+    await waitFor(window, "Boolean(document.querySelector('.selection-assistant-card .ai-provider-feedback button'))");
+    assert(aiRequests === 3 && await evaluate("!document.querySelector('.selection-assistant-settings')"), "Selection discovery failure must offer a read retry without prompting credential changes or starting AI.");
+    assert(await evaluate("(() => { const button = document.querySelector('.selection-assistant-card .ai-provider-feedback button'); button.scrollIntoView({ block: 'nearest' }); const rect = button.getBoundingClientRect(); const card = button.closest('.selection-assistant-card').getBoundingClientRect(); const error = document.querySelector('.selection-assistant-card .ai-provider-error'); return rect.bottom <= card.bottom && rect.right <= card.right && error.scrollWidth <= error.clientWidth + 1; })()"), "Selection retry must remain reachable inside the anchored card.");
+    await writeFile(path.join(tmpdir(), `reading-hub-selection-discovery-${width}.png`), (await window.capturePage()).toPNG());
+    if (width !== 1720) await evaluate("document.querySelector('[aria-label=\"关闭所选文字回答\"]').click()");
+  }
+  providerListFailure = false;
+  await evaluate("document.querySelector('.selection-assistant-card .ai-provider-feedback button').click()");
+  await waitFor(window, "document.querySelectorAll('.selection-assistant-answer .katex').length === 2");
+  assert(aiRequests === 4, "Selection discovery recovery must start the original requested translation exactly once.");
+  await evaluate("document.querySelector('[aria-label=\"关闭所选文字回答\"]').click()");
   pauseRead = true;
   const readStarted = new Promise((resolve) => { readRequested = resolve; });
   await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Unavailable fixture\"]').click()");
@@ -592,17 +627,17 @@ try {
   providerListFailure = true;
   await evaluate("document.querySelector('[aria-label=\"打开设置\"]').click()");
   await clickText(".settings-sidebar nav button", "AI 功能");
-  await waitFor(window, "Boolean(document.querySelector('.settings-provider-error'))");
+  await waitFor(window, "Boolean(document.querySelector('.ai-provider-error'))");
   assert(await evaluate("document.querySelector('.settings-actions .primary').disabled && document.querySelector('.settings-ai-form select').disabled && !document.querySelector('.settings-ai-form input')"), "Failed initial provider discovery must disable writes and omit unavailable configuration fields.");
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
     await setViewport(width, height, scale);
-    assert(await evaluate("(() => { const error = document.querySelector('.settings-provider-error'); const button = document.querySelector('.settings-provider-feedback button'); button.scrollIntoView({ block: 'nearest' }); const rect = button.getBoundingClientRect(); const style = getComputedStyle(button); const tokens = getComputedStyle(document.documentElement); return document.documentElement.scrollWidth <= innerWidth + 1 && error.scrollWidth <= error.clientWidth + 1 && error.clientHeight <= parseFloat(getComputedStyle(error).fontSize) * 9 + 1 && rect.bottom <= innerHeight + 1 && style.minHeight === tokens.getPropertyValue('--control-height').trim() && style.borderRadius === tokens.getPropertyValue('--control-radius').trim(); })()"), "Provider read errors must wrap and scroll while keeping the shared retry button reachable.");
+    assert(await evaluate("(() => { const error = document.querySelector('.ai-provider-error'); const button = document.querySelector('.ai-provider-feedback button'); button.scrollIntoView({ block: 'nearest' }); const rect = button.getBoundingClientRect(); const style = getComputedStyle(button); const tokens = getComputedStyle(document.documentElement); return document.documentElement.scrollWidth <= innerWidth + 1 && error.scrollWidth <= error.clientWidth + 1 && error.clientHeight <= parseFloat(getComputedStyle(error).fontSize) * 9 + 1 && rect.bottom <= innerHeight + 1 && style.minHeight === tokens.getPropertyValue('--control-height').trim() && style.borderRadius === tokens.getPropertyValue('--control-radius').trim(); })()"), "Provider read errors must wrap and scroll while keeping the shared retry button reachable.");
     await writeFile(path.join(tmpdir(), `reading-hub-provider-discovery-${width}.png`), (await window.capturePage()).toPNG());
   }
   providerListFailure = false;
-  await evaluate("document.querySelector('.settings-provider-feedback button').focus()");
+  await evaluate("document.querySelector('.ai-provider-feedback button').focus()");
   await pressKey("Enter");
-  await waitFor(window, "!document.querySelector('.settings-provider-feedback') && document.querySelectorAll('.settings-ai-form select option').length === 2");
+  await waitFor(window, "!document.querySelector('.ai-provider-feedback') && document.querySelectorAll('.settings-ai-form select option').length === 2");
   assert(settingsSaves === 0, "Retrying initial provider discovery must not write configuration.");
   const listsBeforeSelection = providerLists;
   await evaluate(`(() => { const provider = document.querySelector('.settings-ai-form select'); provider.value = 'deepseek'; provider.dispatchEvent(new Event('change', { bubbles: true })); })()`);
@@ -614,11 +649,11 @@ try {
   assert(settingsSaves === 1, "Repeated native form submission must issue only one settings command.");
   providerListFailure = true;
   pendingSettingsSave();
-  await waitFor(window, "document.querySelector('.settings-provider-feedback')?.textContent.includes('设置操作已完成')");
+  await waitFor(window, "document.querySelector('.ai-provider-feedback')?.textContent.includes('设置操作已完成')");
   assert(await evaluate("document.querySelector('.settings-actions .primary').disabled && document.querySelector('.settings-actions .danger').disabled"), "A committed settings update must not be repeated to recover a failed read.");
   assert(fixtureProviders.find((provider) => provider.id === "deepseek").model === "edited-fixture", "The settings write must remain committed during failed discovery.");
   providerListFailure = false;
-  await evaluate("document.querySelector('.settings-provider-feedback button').click()");
+  await evaluate("document.querySelector('.ai-provider-feedback button').click()");
   await waitFor(window, "!document.querySelector('.settings-actions .primary').disabled && document.querySelector('.settings-ai-form input').value === 'edited-fixture'");
   assert(settingsSaves === 1, "Discovery retry must recover the saved provider without another write.");
   assert(await evaluate("document.querySelector('.settings-ai-form select').value === 'deepseek'"), "Save refresh must preserve the selected provider.");
