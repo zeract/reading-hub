@@ -1,6 +1,6 @@
 import { facetIdentity, sameSubscriptionScope } from "../shared/subscription-scope";
 import { isRetiredXPublicProfile, sourceCapabilities, sourceHealthLabel } from "../shared/source-capabilities";
-import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type FormEvent, type KeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { ModalSurface } from "./modal-surface";
 import { useAsyncAction } from "./use-async-action";
 import type { PendingPreview } from "../shared/ipc";
@@ -16,6 +16,13 @@ import type {
 } from "../shared/types";
 
 type AddSourceMethod = "public" | "zhihu" | "x" | "xiaohongshu" | "academic";
+const SOURCE_METHODS: ReadonlyArray<{ id: AddSourceMethod; label: string; description: string }> = [
+  { id: "public", label: "网页 / Feed", description: "RSS、公开文章列表页或分享链接" },
+  { id: "zhihu", label: "知乎动态", description: "授权账号的关注页公开动态" },
+  { id: "x", label: "X 动态", description: "官方 API 授权后的关注动态" },
+  { id: "xiaohongshu", label: "小红书", description: "公开博主主页中的结构化笔记卡片" },
+  { id: "academic", label: "学术作者", description: "公开学术索引中的新论文" }
+];
 
 export function PreviewDialog({ pending, onCancel, onConfirm }: { pending: PendingPreview; onCancel: () => void; onConfirm: () => Promise<void> }) {
   const { probe } = pending;
@@ -48,25 +55,40 @@ export function AddSourceDialog({ onClose, onPreview, onImportOpml, onZhihuStart
   onAcademicSaved: () => Promise<void>;
 }) {
   const [method, setMethod] = useState<AddSourceMethod>("public");
-  const methods: Array<{ id: AddSourceMethod; label: string; description: string }> = [
-    { id: "public", label: "网页 / Feed", description: "RSS、公开文章列表页或分享链接" },
-    { id: "zhihu", label: "知乎动态", description: "授权账号的关注页公开动态" },
-    { id: "x", label: "X 动态", description: "官方 API 授权后的关注动态" },
-    { id: "xiaohongshu", label: "小红书", description: "公开博主主页中的结构化笔记卡片" },
-    { id: "academic", label: "学术作者", description: "公开学术索引中的新论文" }
-  ];
-  const selected = methods.find((item) => item.id === method)!;
+  const [focusedMethod, setFocusedMethod] = useState<AddSourceMethod>("public");
+  const [methodsExpanded, setMethodsExpanded] = useState(false);
+  const tabList = useRef<HTMLDivElement>(null);
+  const methodId = useId();
+
+  function focusMethod(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const next = event.key === "ArrowLeft" ? (index + SOURCE_METHODS.length - 1) % SOURCE_METHODS.length
+      : event.key === "ArrowRight" ? (index + 1) % SOURCE_METHODS.length
+      : event.key === "Home" ? 0 : event.key === "End" ? SOURCE_METHODS.length - 1 : undefined;
+    if (next === undefined) return;
+    event.preventDefault();
+    tabList.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+  }
+
   return <Dialog title="添加来源" onClose={onClose}>
-    <details open={method !== "public"}><summary>连接账号或追踪作者</summary><div className="source-method-tabs" role="tablist" aria-label="来源类型">
-      {methods.map((item) => <button key={item.id} type="button" role="tab" aria-selected={method === item.id} className={method === item.id ? "selected" : ""} onClick={() => setMethod(item.id)}>{item.label}</button>)}
+    <details open={methodsExpanded} onToggle={(event) => setMethodsExpanded(event.currentTarget.open)}><summary>连接账号或追踪作者</summary><div ref={tabList} className="source-method-tabs" role="tablist" aria-label="来源类型"
+      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocusedMethod(method); }}>
+      {SOURCE_METHODS.map((item, index) => <button key={item.id} type="button" role="tab" id={`${methodId}-tab-${item.id}`} aria-controls={`${methodId}-panel-${item.id}`}
+        aria-selected={method === item.id} tabIndex={focusedMethod === item.id ? 0 : -1} className={method === item.id ? "selected" : ""}
+        onFocus={() => setFocusedMethod(item.id)} onKeyDown={(event) => focusMethod(event, index)}
+        onClick={() => { setMethod(item.id); setFocusedMethod(item.id); setMethodsExpanded(true); }}>{item.label}</button>)}
     </div>
     </details>
-    <p className="source-method-description">{selected.description}</p>
-    {method === "public" && <PublicSourcePane onPreview={onPreview} onImportOpml={onImportOpml} />}
-    {method === "zhihu" && <ZhihuSourcePane onStarted={onZhihuStarted} />}
-    {method === "x" && <XSourcePane onStarted={onXStarted} />}
-    {method === "xiaohongshu" && <XiaohongshuSourcePane onSaved={onXiaohongshuSaved} />}
-    {method === "academic" && <AcademicSourcePane onSaved={onAcademicSaved} />}
+    {SOURCE_METHODS.map((item) => <div key={item.id} className="source-method-panel" role="tabpanel" id={`${methodId}-panel-${item.id}`} aria-labelledby={`${methodId}-tab-${item.id}`} hidden={method !== item.id} tabIndex={0}>
+      {method === item.id && <>
+        <p className="source-method-description">{item.description}</p>
+        {item.id === "public" && <PublicSourcePane onPreview={onPreview} onImportOpml={onImportOpml} />}
+        {item.id === "zhihu" && <ZhihuSourcePane onStarted={onZhihuStarted} />}
+        {item.id === "x" && <XSourcePane onStarted={onXStarted} />}
+        {item.id === "xiaohongshu" && <XiaohongshuSourcePane onSaved={onXiaohongshuSaved} />}
+        {item.id === "academic" && <AcademicSourcePane onSaved={onAcademicSaved} />}
+      </>}
+    </div>)}
   </Dialog>;
 }
 

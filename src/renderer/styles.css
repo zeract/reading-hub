@@ -40,7 +40,7 @@ body { min-width: 840px; margin: 0; background: var(--paper); }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; transition: background-color .14s ease, border-color .14s ease, color .14s ease; }
 button:disabled { cursor: not-allowed; opacity: .5; }
-button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible, .notice-message:focus-visible, .entry-pagination-error:focus-visible, .source-health-error:focus-visible, .ai-provider-error:focus-visible, .source-collection-error:focus-visible, .calibration-error:focus-visible, .source-action-error:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible, .notice-message:focus-visible, .entry-pagination-error:focus-visible, .source-health-error:focus-visible, .ai-provider-error:focus-visible, .source-collection-error:focus-visible, .calibration-error:focus-visible, .source-action-error:focus-visible, .source-method-panel:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* Shared action controls; local rules own placement, not competing skins. */
 .action-button,

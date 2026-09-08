@@ -549,6 +549,31 @@ try {
   assert(await evaluate("document.querySelector('.dialog').contains(document.activeElement)"), "Forward tab navigation must stay within the source dialog.");
   await evaluate("document.querySelector('.modal-backdrop').click()");
   assert(await evaluate("Boolean(document.querySelector('.dialog'))"), "Source drafts must not close from backdrop clicks.");
+  await evaluate("(() => { const input = document.querySelector('#source-url'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'https://example.com/keyboard-draft'); input.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('.dialog summary').focus(); })()");
+  await pressKey("Enter");
+  await waitFor(window, "document.querySelector('.dialog details').open");
+  await pressKey("Tab");
+  assert(await evaluate("document.activeElement === document.querySelector('[role=tab][aria-selected=true]')"), "Tab must enter the selected source method.");
+  await pressKey("Left");
+  assert(await evaluate("document.activeElement.textContent === '学术作者' && document.querySelector('#source-url').value === 'https://example.com/keyboard-draft' && !document.querySelector('#academic-query')"), "Arrow navigation must preserve the selected form and its draft until activation.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const tabs = [...document.querySelectorAll('[role=tab]')]; const focused = document.activeElement; const rect = focused.getBoundingClientRect(); const dialog = focused.closest('.dialog').getBoundingClientRect(); return tabs.filter((tab) => tab.tabIndex === 0).length === 1 && focused.getAttribute('aria-selected') === 'false' && getComputedStyle(focused).outlineStyle !== 'none' && rect.top >= dialog.top && rect.bottom <= dialog.bottom && tabs.every((tab) => { const panel = document.getElementById(tab.getAttribute('aria-controls')); return panel?.getAttribute('aria-labelledby') === tab.id && panel.hidden === (tab.getAttribute('aria-selected') !== 'true'); }) && document.querySelectorAll('[role=tabpanel]:not([hidden])').length === 1; })()"), "Source tabs must distinguish focus from selection and keep their panel relationships valid at every viewport.");
+    await writeFile(path.join(tmpdir(), `reading-hub-source-tabs-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  await pressKey("Tab");
+  assert(await evaluate("document.activeElement === document.querySelector('[role=tabpanel]:not([hidden])')"), "Tab must leave the method list for the active panel, without activating the focused method.");
+  await pressKey("Tab", ["shift"]);
+  assert(await evaluate("document.activeElement === document.querySelector('[role=tab][aria-selected=true]')"), "Returning to the method list must restore the selected method's tab stop.");
+  await pressKey("End"); await pressKey("Enter");
+  await waitFor(window, "Boolean(document.querySelector('#academic-query'))");
+  await pressKey("Home"); await pressKey("Space");
+  await waitFor(window, "Boolean(document.querySelector('#source-url'))");
+  assert(await evaluate("document.querySelector('.dialog details').open && document.activeElement === document.querySelector('[role=tab][aria-selected=true]')"), "Returning to the public method with Space must keep the selector and its focus visible.");
+  await evaluate("document.querySelector('.dialog summary').focus()");
+  await pressKey("Enter");
+  await waitFor(window, "!document.querySelector('.dialog details').open");
+  assert(await evaluate("Boolean(document.querySelector('#source-url'))"), "Collapsing the method selector must leave the active form available.");
   await pressKey("Escape");
   await waitFor(window, "!document.querySelector('.dialog')");
   assert(await evaluate("document.activeElement === document.querySelector('[aria-label=\"添加来源\"]')"), "Closing a modal must restore its opener's focus.");
