@@ -1,3 +1,5 @@
+import { TimelineEmptyState } from "./timeline-empty-state";
+import { useRef } from "react";
 import type { Entry, LibraryCounts, Source } from "../shared/types";
 import type { LibraryView } from "./library-view";
 import type { SourceGroup } from "./source-groups";
@@ -56,7 +58,11 @@ export function SourceSidebar({ sources, groups, libraryView, activeSourceId, li
   </aside>;
 }
 
-export function Timeline({ activeSource, libraryView, entrySearch, entries, hasMoreEntries, loadingMoreEntries, sourceById, readingEntryId, notice, busy, onUndo, onEditSource, onClearNotice, onEntrySearchChange, onUpdateEntry, onOpenEntry, onDismissEntry, onRestoreEntry, onLoadMore }: {
+export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, activeSource, libraryView, entrySearch, entries, hasMoreEntries, loadingMoreEntries, sourceById, readingEntryId, notice, busy, onUndo, onEditSource, onClearNotice, onEntrySearchChange, onUpdateEntry, onOpenEntry, onDismissEntry, onRestoreEntry, onLoadMore }: {
+  loadingEntries: boolean;
+  loadFailed: boolean;
+  onReload: () => void;
+  onAddSource: () => void;
   activeSource?: Source;
   libraryView: LibraryView;
   entrySearch: string;
@@ -77,6 +83,8 @@ export function Timeline({ activeSource, libraryView, entrySearch, entries, hasM
   onRestoreEntry?: (entry: Entry) => Promise<void>;
   onLoadMore: () => void;
 }) {
+  const searchInput = useRef<HTMLInputElement>(null);
+  function clearSearch() { onEntrySearchChange(""); searchInput.current?.focus(); }
   const visibleEntries = entries.filter((entry) => {
     if (libraryView === "unread") return !entry.read;
     if (libraryView === "favorite") return entry.favorite;
@@ -91,6 +99,7 @@ export function Timeline({ activeSource, libraryView, entrySearch, entries, hasM
     {<form className="entry-search" role="search" onSubmit={(event) => event.preventDefault()}>
       <AppIcon name="search" />
       <input
+        ref={searchInput}
         type="search"
         value={entrySearch}
         maxLength={160}
@@ -100,15 +109,15 @@ export function Timeline({ activeSource, libraryView, entrySearch, entries, hasM
         placeholder={`搜索 ${activeSource?.title || "当前列表"} 中的帖子`}
         onChange={(event) => onEntrySearchChange(event.currentTarget.value)}
         onKeyDown={(event) => {
-          if (event.key === "Escape") onEntrySearchChange("");
+          if (event.key === "Escape") clearSearch();
         }}
       />
-      {entrySearch && <button type="button" className="entry-search-clear" onClick={() => onEntrySearchChange("")} aria-label="清除关键词">×</button>}
+      {entrySearch && <button type="button" className="entry-search-clear" onClick={clearSearch} aria-label="清除关键词">×</button>}
     </form>}
     {notice && <div className="notice">{notice}{onUndo && <button type="button" disabled={busy} onClick={onUndo}>撤销删除</button>}<button onClick={onClearNotice}>×</button></div>}
     <div className="entry-list">
       {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntryId === entry.id} onRead={onUpdateEntry} onOpen={onOpenEntry} onDismiss={libraryView === "trash" ? onRestoreEntry || onDismissEntry : onDismissEntry} deleted={libraryView === "trash"} busy={busy} />)}
-      {!visibleEntries.length && <div className="empty-state"><p className="eyebrow">READING DESK / 00</p><h2>{activeSource ? entrySearch.trim() ? `没有匹配“${entrySearch.trim()}”的帖子` : "该来源还没有内容" : libraryView === "today" ? "今天还没有更新" : libraryView === "unread" ? "没有未读文章" : libraryView === "favorite" ? "还没有收藏文章" : libraryView === "trash" ? "没有已删除内容" : "还没有内容"}</h2><p>{libraryView === "trash" ? "删除的卡片会保留在本机，可在这里恢复。" : activeSource ? entrySearch.trim() ? "会在标题、作者和摘要中查找关键词；不会读取或保存文章全文。" : "请查看来源设置中的状态、收集范围与最近错误；筛选条件也可能让列表暂时为空。" : "添加 RSS、公开文章列表页，或粘贴小红书分享链接开始。"}</p></div>}
+      {!visibleEntries.length && <TimelineEmptyState loading={loadingEntries} failed={loadFailed} source={activeSource} hasSources={sourceById.size > 0} view={libraryView} search={entrySearch} onClearSearch={clearSearch} onRetry={onReload} onAddSource={onAddSource} onEditSource={onEditSource} />}
       {hasMoreEntries && <div className="entry-load-more"><p>已加载 {entries.length} 篇内容</p><button type="button" onClick={onLoadMore} disabled={busy || loadingMoreEntries}>{loadingMoreEntries ? "正在加载…" : "加载更多"}</button></div>}
     </div>
   </section>;

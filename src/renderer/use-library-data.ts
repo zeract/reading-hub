@@ -20,6 +20,7 @@ export function useLibraryData() {
   const [nextEntryCursor, setNextEntryCursor] = useState<EntryPageCursor>();
   const [loadingMoreEntries, setLoadingMoreEntries] = useState(false);
   const [reloadError, setReloadError] = useState<string>();
+  const [entryLoadState, setEntryLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [selection, setSelection] = useState<LibrarySelection>({ view: "collected", search: "" });
   const { sourceId: activeSourceId, view: libraryView, search: entrySearch } = selection;
   // Navigation owns one complete query scope. Keep its accepted value
@@ -43,6 +44,7 @@ export function useLibraryData() {
     const query = entryQueryForLibrary(current.view, current.sourceId, new Date(), current.search);
     const pageCount = JSON.stringify(query) === JSON.stringify(loadedQuery.current) ? loadedPageCount.current : 1;
     reloading.current = true;
+    setEntryLoadState("loading");
     loadingMore.current = false;
     setLoadingMoreEntries(false);
     try {
@@ -62,9 +64,11 @@ export function useLibraryData() {
       setNextEntryCursor(nextPage.nextCursor);
       setLibraryCounts(nextLibraryCounts);
       setReloadError(undefined);
+      setEntryLoadState("ready");
     } catch (error) {
       if (!isCurrent()) return;
       setReloadError(errorMessage(error));
+      setEntryLoadState("error");
       throw error;
     } finally {
       if (isCurrent()) reloading.current = false;
@@ -115,6 +119,7 @@ export function useLibraryData() {
     setLoadingMoreEntries(false);
     setNextEntryCursor(undefined);
     setEntries([]);
+    setEntryLoadState("loading");
     setReloadError(undefined);
   }, []);
 
@@ -183,6 +188,8 @@ export function useLibraryData() {
     entries,
     hasMoreEntries: Boolean(nextEntryCursor),
     loadingMoreEntries,
+    loadingEntries: entryLoadState === "loading",
+    entryLoadFailed: entryLoadState === "error",
     reloadError,
     clearReloadError: () => setReloadError(undefined),
     libraryCounts,

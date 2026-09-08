@@ -53,6 +53,5 @@ describe("application shell source controls", () => {
   it("offers metadata search in global and source timelines", () => {
     expect(libraryPane).toContain('className="entry-search"');
     expect(libraryPane).toContain('搜索 ${activeSource?.title || "当前列表"} 中的帖子');
-    expect(libraryPane).toContain("不会读取或保存文章全文");
   });
 });

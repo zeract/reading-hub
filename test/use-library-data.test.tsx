@@ -48,6 +48,19 @@ afterEach(async () => {
 });
 
 describe("library read-model", () => {
+  it("keeps loading active until the current query finishes despite an older completion", async () => {
+    let finishOld!: (page: EntryPage) => void;
+    let finishCurrent!: (page: EntryPage) => void;
+    listPage.mockImplementationOnce(() => new Promise<EntryPage>((resolve) => { finishOld = resolve; }));
+    await act(async () => { void library.reload(); });
+    expect(library.loadingEntries).toBe(true);
+    listPage.mockImplementationOnce(() => new Promise<EntryPage>((resolve) => { finishCurrent = resolve; }));
+    await act(async () => library.selectSource("next"));
+    await act(async () => finishOld({ entries: [] }));
+    expect(library.loadingEntries).toBe(true);
+    await act(async () => finishCurrent({ entries: [] }));
+    expect(library.loadingEntries).toBe(false);
+  });
   it("uses the current selection when a retained reload runs after navigation", async () => {
     await act(async () => library.selectSource("previous"));
     const afterMutation = library.reload;
@@ -156,7 +169,12 @@ describe("library read-model", () => {
     await act(async () => { await expect(library.reload()).rejects.toThrow("IPC temporarily unavailable"); });
     expect(library.entries).toHaveLength(100);
     expect(library.reloadError).toBe("IPC temporarily unavailable");
+    expect(library.loadingEntries).toBe(false);
+    expect(library.entryLoadFailed).toBe(true);
+    await act(async () => library.clearReloadError());
+    expect(library.reloadError).toBeUndefined(); expect(library.entryLoadFailed).toBe(true);
     await act(async () => library.reload());
     expect(library.reloadError).toBeUndefined();
+    expect(library.entryLoadFailed).toBe(false);
   });
 });

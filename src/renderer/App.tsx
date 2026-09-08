@@ -26,6 +26,8 @@ export function App() {
     entries,
     hasMoreEntries,
     loadingMoreEntries,
+    loadingEntries,
+    entryLoadFailed,
     reloadError,
     clearReloadError,
     libraryCounts,
@@ -98,6 +100,8 @@ export function App() {
   const closeAddSource = useCallback((session: string) => {
     setAddSourceSession((current) => current === session ? undefined : current);
   }, []);
+
+  const openAddSource = useCallback(() => setAddSourceSession(crypto.randomUUID()), []);
 
   const finishSourceAddition = useCallback(async (session: string, message: string) => {
     closeAddSource(session);
@@ -230,7 +234,7 @@ export function App() {
         <div className="app-titlebar-actions">
           <button type="button" className="app-titlebar-button" onClick={() => readerOnly ? setReaderOnly(false) : setSidebarCollapsed((collapsed) => !collapsed)} aria-label={readerOnly ? "退出沉浸阅读" : sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"} title={readerOnly ? "退出沉浸阅读" : sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"}><AppIcon name={readerOnly ? "expand" : "sidebar"} /></button>
           {!readerOnly && <button type="button" className="app-titlebar-button" onClick={refreshCurrentView} disabled={busy || Boolean(activeSource && !sourceCapabilities(activeSource).canRefresh)} aria-label={activeSource ? `刷新 ${activeSource.title}` : "重新载入收件箱"} title={isRetiredXPublicProfile(activeSource) ? "此旧 X 公开来源已停止刷新" : activeSource ? "刷新当前来源" : "重新载入收件箱"}><AppIcon name="refresh" /></button>}
-          {!readerOnly && <button type="button" className="app-titlebar-button app-titlebar-add" onClick={() => setAddSourceSession(crypto.randomUUID())} aria-label="添加来源" title="添加来源"><AppIcon name="add" /></button>}
+          {!readerOnly && <button type="button" className="app-titlebar-button app-titlebar-add" onClick={openAddSource} aria-label="添加来源" title="添加来源"><AppIcon name="add" /></button>}
         </div>
       </header>
       <SourceSidebar
@@ -247,6 +251,10 @@ export function App() {
         onOpenSettings={() => setAppView("settings")}
       />
       <Timeline
+        loadingEntries={loadingEntries}
+        loadFailed={entryLoadFailed}
+        onReload={() => void reload().catch(() => undefined)}
+        onAddSource={openAddSource}
         activeSource={activeSource}
         libraryView={libraryView}
         entrySearch={entrySearch}

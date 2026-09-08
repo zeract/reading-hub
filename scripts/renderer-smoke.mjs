@@ -56,6 +56,11 @@ let navigationCommandRequested;
 let completeNavigationCommand;
 let importRequested;
 let completeImport;
+let emptyLibrary = false;
+let libraryPageFailure = false;
+let pauseLibraryPage = false;
+let completeLibraryPage;
+let libraryPageRequested;
 function deferNavigationCommand(operation) {
   return new Promise((resolve, reject) => {
     completeNavigationCommand = () => {
@@ -127,7 +132,7 @@ const channels = [
   }],
   ["ai:cancel-stream", (_event, requestId) => { cancelledAiRequests.add(requestId); }],
   ["library:revision", () => database.getLibraryRevision()],
-  ["source:list", () => database.listSources()],
+  ["source:list", () => emptyLibrary ? [] : database.listSources()],
   ["source:load-icon", () => undefined],
   ["entry:load-image", (_event, _id, _url, requestId) => {
     assert(typeof requestId === "string" && requestId.startsWith("image-"), "Image IPC must carry an opaque request id.");
@@ -136,8 +141,12 @@ const channels = [
     return new Promise((resolve) => { pendingImage = { requestId, resolve }; imageRequested?.(); });
   }],
   ["entry:cancel-image", (_event, requestId) => { cancelledImages.add(requestId); }],
-  ["entry:list-page", (_event, query) => database.listEntryPage(query)],
-  ["entry:counts", () => database.getLibraryCounts()],
+  ["entry:list-page", (_event, query) => {
+    if (libraryPageFailure) throw new Error("Synthetic library failure");
+    if (pauseLibraryPage) return new Promise((resolve) => { completeLibraryPage = () => resolve({ entries: [] }); libraryPageRequested?.(); });
+    return emptyLibrary ? { entries: [] } : database.listEntryPage(query);
+  }],
+  ["entry:counts", () => emptyLibrary ? { unread: 0, favorite: 0, today: 0 } : database.getLibraryCounts()],
   ["entry:read", (_event, id, read) => database.markRead(id, read)],
   ["entry:favorite", (_event, id, favorite) => database.markFavorite(id, favorite)],
   ["entry:dismiss", (_event, id) => delayedNavigationCommand === "dismiss"
@@ -236,6 +245,13 @@ const unsubscribe = database.onLibraryChanged((revision) => {
   if (!window.isDestroyed()) window.webContents.send("library:changed", revision);
 });
 async function evaluate(code) { return window.webContents.executeJavaScript(code); }
+async function setViewport(width, height, scale) {
+  window.setSize(width, height);
+  window.webContents.setZoomFactor(scale);
+  const [contentWidth, contentHeight] = window.getContentSize();
+  await waitFor(window, `Math.abs(innerWidth - ${contentWidth / scale}) <= 1 && Math.abs(innerHeight - ${contentHeight / scale}) <= 1`);
+  await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+}
 async function pressKey(keyCode, modifiers = []) {
   window.webContents.focus();
   window.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
@@ -367,8 +383,7 @@ try {
   await clickText(".library-filter", "全部内容");
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 3");
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25]]) {
-    window.setSize(width, height); window.webContents.setZoomFactor(scale);
-    await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    await setViewport(width, height, scale);
     const geometry = await evaluate(`({ overflow: document.documentElement.scrollWidth > innerWidth + 1, navBottom: document.querySelector('.library-nav').getBoundingClientRect().bottom, footerTop: document.querySelector('.sidebar-footer').getBoundingClientRect().top, sourcesHeight: document.querySelector('.source-list').clientHeight })`);
     assert(!geometry.overflow && geometry.navBottom < geometry.footerTop && geometry.sourcesHeight > 20, `Library navigation does not fit ${width}px at ${scale}.`);
     await writeFile(path.join(tmpdir(), `reading-hub-workflow-${width}.png`), (await window.capturePage()).toPNG());
@@ -410,8 +425,7 @@ try {
   await waitFor(window, "document.querySelector('.dialog [role=\"alert\"]')?.textContent.includes('Synthetic confirmation failure') && !document.querySelector('.dialog-actions .primary').disabled");
   assert(await evaluate("document.querySelector('.dialog [role=\"alert\"]').textContent === 'Synthetic confirmation failure'"), "UI errors must omit the Electron transport wrapper.");
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
-    window.setSize(width, height); window.webContents.setZoomFactor(scale);
-    await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    await setViewport(width, height, scale);
     assert(await evaluate(`(() => { const dialog = document.querySelector('.dialog'); const error = dialog.querySelector('[role="alert"]').getBoundingClientRect(); const actions = dialog.querySelector('.dialog-actions').getBoundingClientRect(); return dialog.scrollWidth <= dialog.clientWidth + 1 && error.left >= 0 && error.right <= innerWidth + 1 && error.bottom <= actions.top && actions.bottom <= innerHeight; })()`), `Confirmation error and actions must fit ${width}px at ${scale}.`);
     await writeFile(path.join(tmpdir(), `reading-hub-confirmation-${width}.png`), (await window.capturePage()).toPNG());
   }
@@ -448,8 +462,7 @@ try {
   await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   assert(await evaluate("document.querySelectorAll('.academic-results button').length === 20 && !document.querySelector('.academic-results').textContent.includes('Obsolete author')"), "Late academic results must not replace the current matches.");
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
-    window.setSize(width, height); window.webContents.setZoomFactor(scale);
-    await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    await setViewport(width, height, scale);
     const fits = await evaluate(`(() => {
       const dialog = document.querySelector('.dialog');
       const bounds = dialog.getBoundingClientRect();
@@ -485,8 +498,7 @@ try {
   await waitFor(window, "!document.querySelector('.settings-actions .primary').disabled && document.querySelector('.settings-ai-form input').value === 'edited-fixture'");
   assert(await evaluate("document.querySelector('.settings-ai-form select').value === 'deepseek'"), "Save refresh must preserve the selected provider.");
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
-    window.setSize(width, height); window.webContents.setZoomFactor(scale);
-    await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    await setViewport(width, height, scale);
     assert(await evaluate("document.documentElement.scrollWidth <= innerWidth + 1 && document.querySelector('.settings-content').scrollWidth <= document.querySelector('.settings-content').clientWidth + 1"), `Settings overflow at ${width}px and ${scale}.`);
     await writeFile(path.join(tmpdir(), `reading-hub-settings-${width}.png`), (await window.capturePage()).toPNG());
   }
@@ -513,8 +525,7 @@ try {
       await waitFor(window, "Boolean(document.querySelector('.calibration-candidate button'))");
     }
     for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
-      window.setSize(width, height); window.webContents.setZoomFactor(scale);
-      await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      await setViewport(width, height, scale);
       assert(await evaluate("document.documentElement.scrollWidth <= innerWidth + 1 && document.querySelector('.dialog').scrollWidth <= document.querySelector('.dialog').clientWidth + 1"), `${mode} dialog overflow at ${width}px and ${scale}.`);
       if (mode === "settings") {
         assert(await evaluate(`(() => {
@@ -558,8 +569,7 @@ try {
     await waitFor(window, `document.querySelector('.source-settings-form > .error')?.textContent === 'Synthetic ${operation} failure'`);
     assert(await evaluate("!document.querySelector('.source-settings-form .primary').disabled"), "A failed management operation must leave the current form available for retry.");
     if (operation === "refresh") for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
-      window.setSize(width, height); window.webContents.setZoomFactor(scale);
-      await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      await setViewport(width, height, scale);
       assert(await evaluate(`(() => {
         const error = document.querySelector('.source-settings-form > [role=alert]').getBoundingClientRect();
         const footer = document.querySelector('.source-settings-form .dialog-actions').getBoundingClientRect();
@@ -589,8 +599,7 @@ try {
   completeManagement();
   await waitFor(window, "document.querySelector('.source-settings-form > [role=status]')?.textContent.includes('收集范围已保存，刷新尚未完成')");
   assert(managementScopeWrites === 1, "The selected scope must be saved once before refresh fails.");
-  window.setSize(1440, 900); window.webContents.setZoomFactor(1.25);
-  await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  await setViewport(1440, 900, 1.25);
   assert(await evaluate(`(() => {
     const status = document.querySelector('.source-settings-form > [role=status]').getBoundingClientRect();
     const footer = document.querySelector('.source-settings-form .dialog-actions').getBoundingClientRect();
@@ -660,6 +669,52 @@ try {
   delayedNavigationCommand = undefined;
   completeNavigationCommand();
   await waitFor(window, "!document.querySelector('[aria-label=\"刷新 Activity fixture\"]').disabled");
+  await waitFor(window, "document.querySelector('.empty-state h2')?.textContent === '该来源还没有内容'");
+  await clickText(".empty-state button", "查看来源设置");
+  await waitFor(window, "Boolean(document.querySelector('.source-settings-form'))");
+  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
+  await clickText(".library-filter", "全部内容");
+  await evaluate("(() => { const input = document.querySelector('.entry-search input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'NoMatch_abcdefghijklmnopqrstuvwxyz_0123456789_长关键词'.repeat(3)); input.dispatchEvent(new Event('input', { bubbles: true })); })()");
+  await waitFor(window, "document.querySelector('.empty-state h2')?.textContent === '没有找到匹配内容'");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate(`(() => {
+      const list = document.querySelector('.entry-list');
+      const button = document.querySelector('.empty-state button').getBoundingClientRect();
+      return list.scrollWidth <= list.clientWidth + 1 && button.bottom <= innerHeight && button.right <= list.getBoundingClientRect().right + 1;
+    })()`), `Long-query empty state and recovery action must fit at ${width}px and ${scale}.`);
+    assert(await evaluate(`(() => {
+      const button = getComputedStyle(document.querySelector('.empty-state button'));
+      const tokens = getComputedStyle(document.documentElement);
+      return button.borderRadius === tokens.getPropertyValue('--control-radius').trim()
+        && button.minHeight === tokens.getPropertyValue('--control-height').trim()
+        && button.fontSize === tokens.getPropertyValue('--control-font-size').trim()
+        && button.fontWeight === '600';
+    })()`), "Empty-state actions must use shared control typography and dimensions.");
+    await writeFile(path.join(tmpdir(), `reading-hub-empty-search-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  await clickText(".empty-state button", "清除搜索");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 3");
+  assert(await evaluate("document.activeElement.matches('.entry-search input') && document.activeElement.value === ''"), "Clearing an empty search must restore the current list and search focus.");
+  emptyLibrary = true;
+  await evaluate("document.querySelector('[aria-label=\"重新载入收件箱\"]').click()");
+  await waitFor(window, "document.querySelector('.empty-state h2')?.textContent === '添加第一个来源'");
+  await clickText(".empty-state button", "添加来源");
+  await waitFor(window, "Boolean(document.querySelector('#source-url'))");
+  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
+  libraryPageFailure = true;
+  await evaluate("document.querySelector('[aria-label=\"重新载入收件箱\"]').click()");
+  await waitFor(window, "document.querySelector('.empty-state h2')?.textContent === '暂时无法载入内容'");
+  await clickText(".notice button", "×");
+  assert(await evaluate("document.querySelector('.empty-state h2')?.textContent === '暂时无法载入内容'"), "Dismissing an error notice must not turn a failed load into an empty-library claim.");
+  libraryPageFailure = false; pauseLibraryPage = true;
+  const retryPageStarted = new Promise((resolve) => { libraryPageRequested = resolve; });
+  await clickText(".empty-state button", "重新载入");
+  await retryPageStarted;
+  await waitFor(window, "document.querySelector('.empty-state h2')?.textContent === '正在载入内容…'");
+  pauseLibraryPage = false;
+  completeLibraryPage();
+  await waitFor(window, "document.querySelector('.empty-state h2')?.textContent === '添加第一个来源'");
   console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore/settings-draft/settings-save-lock/settings-close/modal-keyboard/modal-focus/image-preview-dismissal/source-preview-lifetime, library layouts and four academic/settings layouts verified.");
 } catch (error) {
   failure = error;
