@@ -87,7 +87,7 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
   isEntryUpdating: EntryMutationPending;
   onOpenEntry: (entry: Entry) => void;
   onDismissEntry: (entry: Entry) => Promise<void>;
-  onRestoreEntry?: (entry: Entry) => Promise<void>;
+  onRestoreEntry: (entry: Entry) => Promise<void>;
   onLoadMore: () => void;
 }) {
   const searchInput = useRef<HTMLInputElement>(null);
@@ -128,14 +128,14 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
       {onUndo && <div className="notice-actions"><button type="button" className="action-button" disabled={busy} onClick={onUndo}>撤销删除</button></div>}
     </div>}
     <div className="entry-list">
-      {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntryId === entry.id} onRead={onUpdateEntry} isEntryUpdating={isEntryUpdating} onOpen={onOpenEntry} onDismiss={libraryView === "trash" ? onRestoreEntry || onDismissEntry : onDismissEntry} deleted={libraryView === "trash"} busy={busy} />)}
+      {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntryId === entry.id} onRead={onUpdateEntry} isEntryUpdating={isEntryUpdating} onOpen={onOpenEntry} onDismiss={onDismissEntry} onRestore={onRestoreEntry} deleted={libraryView === "trash"} busy={busy} />)}
       {!visibleCount && <TimelineEmptyState loading={loadingEntries} failed={loadFailed} hasMore={hasMoreEntries} source={activeSource} hasSources={sourceById.size > 0} view={libraryView} search={entrySearch} onClearSearch={clearSearch} onRetry={onReload} onAddSource={onAddSource} onEditSource={onEditSource} />}
       {hasMoreEntries && <div className="entry-load-more"><p>已显示 {visibleCount} 篇内容</p><button type="button" onClick={onLoadMore} disabled={busy || loadingMoreEntries || loadingEntries}>{loadingMoreEntries ? "正在加载…" : "加载更多"}</button></div>}
     </div>
   </section>;
 }
 
-function EntryCard({ entry, source, selected, onRead, isEntryUpdating, onOpen, onDismiss, busy, deleted }: { isEntryUpdating: EntryMutationPending; deleted?: boolean; entry: Entry; source?: Source; selected: boolean; onRead: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>; onOpen: (entry: Entry) => void; onDismiss: (entry: Entry) => Promise<void>; busy: boolean }) {
+function EntryCard({ entry, source, selected, onRead, isEntryUpdating, onOpen, onDismiss, onRestore, busy, deleted }: { isEntryUpdating: EntryMutationPending; deleted: boolean; entry: Entry; source?: Source; selected: boolean; onRead: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>; onOpen: (entry: Entry) => void; onDismiss: (entry: Entry) => Promise<void>; onRestore: (entry: Entry) => Promise<void>; busy: boolean }) {
   const date = entry.publishedAt
     ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(entry.publishedAt)
     : entry.observedAt ? `收集于 ${new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(entry.observedAt)}` : "刚刚收集";
@@ -155,7 +155,7 @@ function EntryCard({ entry, source, selected, onRead, isEntryUpdating, onOpen, o
         <button type="button" className="action-button" disabled={isEntryUpdating(entry.id, "read")} onClick={() => void onRead(entry, "read", !entry.read)}>{entry.read ? "标为未读" : "标为已读"}</button>
         <button type="button" className="action-button" disabled={isEntryUpdating(entry.id, "favorite")} aria-label="收藏" aria-pressed={entry.favorite} title={entry.favorite ? "取消收藏" : "收藏"} onClick={() => void onRead(entry, "favorite", !entry.favorite)}>{entry.favorite ? "★" : "☆"}</button>
       </>}
-      <button type="button" className={`action-button ${deleted ? "restore-entry" : "delete-entry"}`} onClick={() => void onDismiss(entry)} disabled={busy}>{deleted ? "恢复内容" : "删除"}</button>
+      <button type="button" className={`action-button ${deleted ? "restore-entry" : "delete-entry"}`} onClick={() => void (deleted ? onRestore(entry) : onDismiss(entry))} disabled={busy}>{deleted ? "恢复内容" : "删除"}</button>
     </div>
   </article>;
 }

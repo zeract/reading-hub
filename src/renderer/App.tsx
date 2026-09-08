@@ -193,12 +193,15 @@ export function App() {
   const dismissEntry = useCallback((entry: Entry) => track(async () => {
     try {
       await window.reader.dismissEntry(entry.id);
-      setReadingEntry((current) => current?.id === entry.id ? undefined : current);
-      setNotice(`已删除「${entry.title}」。`, entry);
-      await reload();
     } catch (error) {
       setNotice(errorMessage(error));
+      return;
     }
+    setReadingEntry((current) => current?.id === entry.id ? undefined : current);
+    setNotice(`已删除「${entry.title}」。`, entry);
+    // Preserve the committed deletion and its undo even if list recovery fails.
+    // Reload errors belong to the read model, as they do for restoration.
+    await reload().catch(() => undefined);
   }), [reload, setNotice, track]);
 
   const restoreEntry = useCallback((entry: Entry, noticeId?: string) => track(async () => {

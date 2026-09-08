@@ -63,6 +63,7 @@ let pauseLibraryPage = false;
 let completeLibraryPage;
 let libraryPageRequested;
 let restoreFailure = false;
+let dismissFailure = false;
 let pauseFavorite = false;
 let favoriteRequested;
 let completeFavorite;
@@ -162,8 +163,11 @@ const channels = [
     });
     return database.markFavorite(id, favorite);
   }],
-  ["entry:dismiss", (_event, id) => delayedNavigationCommand === "dismiss"
-    ? deferNavigationCommand(() => database.dismissEntry(id)) : database.dismissEntry(id)],
+  ["entry:dismiss", (_event, id) => {
+    if (dismissFailure) throw new Error("Synthetic deletion failure");
+    return delayedNavigationCommand === "dismiss"
+      ? deferNavigationCommand(() => database.dismissEntry(id)) : database.dismissEntry(id);
+  }],
   ["entry:restore", (_event, id) => {
     if (restoreFailure) throw new Error(typeof restoreFailure === "string" ? restoreFailure : "Synthetic restore failure");
     if (delayedNavigationCommand === "restore") return deferNavigationCommand(() => database.restoreEntry(id));
@@ -741,14 +745,26 @@ try {
   await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Readable fixture\"]').click()");
   await waitFor(window, "Boolean(document.querySelector('.reader-article'))");
   delayedNavigationCommand = "dismiss";
+  dismissFailure = true;
+  await evaluate("document.querySelector('.entry-card.selected .delete-entry').click()");
+  await waitFor(window, "document.querySelector('.notice')?.textContent.includes('Synthetic deletion failure') && !document.querySelector('[aria-label=\"重新载入收件箱\"]').disabled");
+  assert(database.listEntries().some((entry) => entry.id === "success"), "A rejected deletion must retain the original card.");
+  assert(await evaluate("Boolean(document.querySelector('.reader-article')) && document.querySelector('.entry-card.selected h2')?.textContent === 'Readable fixture' && !document.querySelector('.notice-actions')"), "A rejected deletion must keep the reader open and must not offer an undo for an uncommitted write.");
+  dismissFailure = false;
   const dismissalStarted = new Promise((resolve) => { navigationCommandRequested = resolve; });
   await evaluate("document.querySelector('.entry-card.selected .delete-entry').click()");
   await dismissalStarted;
   await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Historical fixture\"]').click()");
   await waitFor(window, "Boolean(document.querySelector('.reader-article')) && document.querySelector('.entry-card.selected h2')?.textContent === 'Historical fixture'");
   delayedNavigationCommand = undefined;
+  libraryPageFailure = true;
   completeNavigationCommand();
+  await waitFor(window, "document.querySelector('.notice')?.textContent.includes('Synthetic library failure') && !document.querySelector('[aria-label=\"重新载入收件箱\"]').disabled");
+  assert(!database.listEntries().some((entry) => entry.id === "success"), "Deletion must remain committed when its list reload fails.");
+  libraryPageFailure = false;
+  database.publishChanges();
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 2 && !document.querySelector('[aria-label=\"重新载入收件箱\"]').disabled");
+  assert(await evaluate("[...document.querySelectorAll('.notice button')].some((button) => button.textContent === '撤销删除')"), "Successful deletion must retain its undo after the failed read model recovers.");
   assert(await evaluate("Boolean(document.querySelector('.reader-article')) && document.querySelector('.entry-card.selected h2')?.textContent === 'Historical fixture'"), "Finishing deletion of the previous article must not close the current reader.");
   restoreFailure = `Synthetic restore failure ${"UnbrokenDiagnostic".repeat(32)}`;
   await clickText(".notice button", "撤销删除");

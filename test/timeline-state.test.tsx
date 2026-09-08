@@ -18,7 +18,7 @@ beforeEach(() => {
   props = { loadingEntries: false, loadFailed: false, onReload: vi.fn(), onAddSource: vi.fn(), libraryView: "all", entrySearch: "", entries,
     hasMoreEntries: true, loadingMoreEntries: false, sourceById: new Map(), busy: false,
     onClearNotice: vi.fn(), onEntrySearchChange: vi.fn(), onUpdateEntry: vi.fn(async () => true), isEntryUpdating: () => false,
-    onOpenEntry: vi.fn(), onDismissEntry: vi.fn(async () => undefined), onLoadMore: vi.fn() };
+    onOpenEntry: vi.fn(), onDismissEntry: vi.fn(async () => undefined), onRestoreEntry: vi.fn(async () => undefined), onLoadMore: vi.fn() };
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 async function render(update: Partial<typeof props> = {}) { await act(async () => root.render(<Timeline {...props} {...update} />)); }
@@ -61,6 +61,22 @@ it("offers restoration as a non-destructive action in trash and prevents busy su
   await act(async () => button.click());
   expect(restore).toHaveBeenCalledWith(entries[0]);
   expect(props.onDismissEntry).not.toHaveBeenCalled();
+});
+
+it("routes the same card to the current view's explicit delete or restore command", async () => {
+  await render();
+  const button = container.querySelector<HTMLButtonElement>(".delete-entry")!;
+  await act(async () => button.click());
+  expect(props.onDismissEntry).toHaveBeenCalledExactlyOnceWith(entries[0]);
+  expect(props.onRestoreEntry).not.toHaveBeenCalled();
+  await render({ libraryView: "trash" });
+  await act(async () => button.click());
+  expect(props.onRestoreEntry).toHaveBeenCalledExactlyOnceWith(entries[0]);
+  expect(props.onDismissEntry).toHaveBeenCalledTimes(1);
+  await render();
+  await act(async () => button.click());
+  expect(props.onDismissEntry).toHaveBeenCalledTimes(2);
+  expect(props.onRestoreEntry).toHaveBeenCalledTimes(1);
 });
 
 it.each(["unread", "favorite"] as const)("counts only visible cards after a committed %s change", async (libraryView) => {
