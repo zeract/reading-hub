@@ -58,6 +58,7 @@ npm run rebuild:electron
 
 ```bash
 npm test             # 离线夹具、数据库迁移、连接器与阅读提取
+npm run audit:ipc    # 真实窗口/preload：订阅释放、请求取消隔离和退出收尾
 npm run audit:style  # CSS 结构与阅读器约束
 npm run audit:visual # Electron 实际布局：公式编号、图片和溢出
 npm run audit:reader # 只读审计已保存来源的最新与一篇历史文章

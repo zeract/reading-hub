@@ -81,6 +81,6 @@ AI 设置、阅读面板和划词卡片复用 AiProviderFeedback 的加载、错
 
 ## 验证入口与证据范围
 
-[AGENTS.md](../AGENTS.md) 是完成门禁。单元与集成测试验证契约和故障路径；`audit:renderer` 运行真实 React、preload 和内存数据库；`audit:visual` 检查四档原生布局、125% 字号及正文边界；`audit:reader` 通过只读数据库快照检查每个来源的最新与一个历史样本。
+[AGENTS.md](../AGENTS.md) 是完成门禁。单元与集成测试验证契约和故障路径；`audit:ipc` 使用真实窗口、沙盒 preload 和生产 IPC 验证订阅释放、窗口取消隔离与退出收尾，服务请求使用延迟合成结果；`audit:renderer` 运行真实 React、preload 和内存数据库；`audit:visual` 检查四档原生布局、125% 字号及正文边界；`audit:reader` 通过只读数据库快照检查每个来源的最新与一个历史样本。
 
 确定性测试不证明远端平台实时可用，抽样审计不等于全部历史文章通过。网络、robots、登录和原图可达性必须以当次报告为准。审计报告和截图放在临时目录，不提交正文、用户数据库、凭据或构建产物。
