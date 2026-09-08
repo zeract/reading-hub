@@ -1,6 +1,6 @@
 import { BrowserWindow, session } from "electron";
 import { assertPublicUrl } from "../shared/url";
-import { awaitWithAbort, combineAbortSignals, delayWithAbort, throwIfAborted } from "./cancellation";
+import { awaitWithAbort, delayWithAbort, throwIfAborted, withRequestTimeout } from "./cancellation";
 import { configureChromiumSession } from "./network";
 import { RobotsPolicy } from "./robots";
 import { createBackgroundWindow } from "./background-window";
@@ -10,6 +10,8 @@ export { RenderedPageTooLargeError } from "./rendered-document";
 export type { PageRenderOptions, RenderedPage } from "./rendered-document";
 
 const RENDER_TIMEOUT_MS = 20_000;
+const RENDER_TASK_TIMEOUT_MS = 30_000;
+const RENDER_TIMEOUT_MESSAGE = "页面渲染超时，请检查网络后重试。";
 const MAX_RENDER_REDIRECTS = 5;
 
 export interface PageRenderer {
@@ -23,59 +25,66 @@ export class IsolatedPageRenderer implements PageRenderer {
   async render(rawUrl: string, options?: PageRenderOptions): Promise<RenderedPage> {
     throwIfAborted(options?.signal);
     const url = assertPublicUrl(rawUrl).toString();
-    // Rendering is another fetch path, so it must never bypass the policy the
-    // bounded static request already uses. This also protects sources whose
-    // persisted rule requires Chromium on every later refresh.
-    await this.robots.assertAllowed(url, { signal: options?.signal });
-    const partition = `reader-preview-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const isolatedSession = session.fromPartition(partition);
-    // A partitioned session is intentionally isolated from cookies and other
-    // browsing state, but it must use the same approved proxy route as the
-    // default session. Otherwise terminal-launched development builds bypass
-    // HTTP(S)_PROXY only when they fall back to Chromium rendering.
-    await awaitWithAbort(configureChromiumSession(isolatedSession), options?.signal);
-    isolatedSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-    isolatedSession.setPermissionCheckHandler(() => false);
-    const window = createBackgroundWindow({
-      webPreferences: {
-        partition,
-        sandbox: true,
-        nodeIntegration: false,
-        contextIsolation: true,
-        webviewTag: false,
-        spellcheck: false
-      }
-    });
-    // An audit deadline must close the isolated page rather than merely stop
-    // waiting for its Promise. This aborts Chromium navigation immediately,
-    // releases the offscreen renderer, and prevents a later fallback stage
-    // from keeping the audit process alive.
+    const request = withRequestTimeout(options?.signal, RENDER_TASK_TIMEOUT_MS, RENDER_TIMEOUT_MESSAGE);
+    let isolatedSession: ReturnType<typeof session.fromPartition> | undefined;
+    let window: BrowserWindow | undefined;
+    let failed = true;
     const stopAndDestroy = () => {
       try {
-        if (!window.isDestroyed()) window.webContents.stop();
+        if (window && !window.isDestroyed()) window.webContents.stop();
       } catch {
-        // The renderer may already have gone away while navigation failed.
+        // Navigation may have already lost its renderer.
       }
-      if (!window.isDestroyed()) window.destroy();
+      if (window && !window.isDestroyed()) window.destroy();
     };
-    options?.signal?.addEventListener("abort", stopAndDestroy, { once: true });
     try {
-      throwIfAborted(options?.signal);
+      // The whole task, including policy and proxy setup, shares one budget.
+      // Rendering must obey the same access policy as the static fetch path.
+      await awaitWithAbort(this.robots.assertAllowed(url, { signal: request.signal }), request.signal);
+      throwIfAborted(request.signal);
+      const partition = `reader-preview-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      isolatedSession = session.fromPartition(partition);
+      // A fresh cookie-free partition still needs the approved proxy route.
+      await awaitWithAbort(configureChromiumSession(isolatedSession), request.signal);
+      throwIfAborted(request.signal);
+      isolatedSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+      isolatedSession.setPermissionCheckHandler(() => false);
+      window = createBackgroundWindow({
+        webPreferences: {
+          partition,
+          sandbox: true,
+          nodeIntegration: false,
+          contextIsolation: true,
+          webviewTag: false,
+          spellcheck: false
+        }
+      });
+      request.signal.addEventListener("abort", stopAndDestroy, { once: true });
+      throwIfAborted(request.signal);
       window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       window.webContents.on("will-attach-webview", (event) => event.preventDefault());
-      await loadWithVerifiedRedirects(window, this.robots, url, options?.signal);
-      await delayWithAbort(800, options?.signal);
-      return await readRenderedPage(window.webContents, options);
+      await loadWithVerifiedRedirects(window, this.robots, url, request.signal);
+      await delayWithAbort(800, request.signal);
+      const page = await readRenderedPage(window.webContents, { ...options, signal: request.signal });
+      throwIfAborted(request.signal);
+      failed = false;
+      return page;
     } finally {
-      options?.signal?.removeEventListener("abort", stopAndDestroy);
-      if (!window.isDestroyed()) window.destroy();
-      // Chromium teardown is complete once the window has been destroyed. On
-      // explicit cancellation do not make an audit wait on cache cleanup; the
-      // process-local partition is discarded when the audit exits anyway.
-      if (options?.signal?.aborted) {
-        void isolatedSession.clearStorageData().catch(() => undefined);
-      } else {
-        await isolatedSession.clearStorageData();
+      try {
+        request.signal.removeEventListener("abort", stopAndDestroy);
+        stopAndDestroy();
+        if (isolatedSession) {
+          // Always initiate cleanup, including when setup failed before a
+          // window existed. A failed task must retain its original error and
+          // release its caller even if Chromium cleanup stalls or rejects.
+          const cleanup = isolatedSession.clearStorageData();
+          if (failed) void cleanup.catch(() => undefined);
+          else await awaitWithAbort(cleanup, request.signal);
+        }
+      } catch (error) {
+        if (!failed) throw error;
+      } finally {
+        request.dispose();
       }
     }
   }
@@ -103,24 +112,20 @@ async function loadWithVerifiedRedirects(window: BrowserWindow, robots: RobotsPo
     throwIfAborted(signal);
     redirectedTo = undefined;
     try {
-      await withTimeout(window.loadURL(targetUrl), RENDER_TIMEOUT_MS, "页面渲染超时，请检查网络后重试。", signal);
+      await withTimeout(window.loadURL(targetUrl), RENDER_TIMEOUT_MS, RENDER_TIMEOUT_MESSAGE, signal);
     } catch (error) {
       if (!redirectedTo) throw error;
     }
+    throwIfAborted(signal);
     if (!redirectedTo) return;
     targetUrl = assertPublicUrl(redirectedTo).toString();
     redirectCount += 1;
     if (redirectCount > MAX_RENDER_REDIRECTS) throw new Error("页面重定向次数过多，已停止渲染。");
-    await robots.assertAllowed(targetUrl, { signal });
+    await awaitWithAbort(robots.assertAllowed(targetUrl, { signal }), signal);
   }
 }
 
 function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message: string, signal?: AbortSignal): Promise<T> {
-  const deadline = new AbortController();
-  const combined = combineAbortSignals(signal, deadline.signal);
-  const timer = setTimeout(() => deadline.abort(new Error(message)), timeoutMs);
-  return awaitWithAbort(operation, combined.signal).finally(() => {
-    clearTimeout(timer);
-    combined.dispose();
-  });
+  const request = withRequestTimeout(signal, timeoutMs, message);
+  return awaitWithAbort(operation, request.signal).finally(() => request.dispose());
 }

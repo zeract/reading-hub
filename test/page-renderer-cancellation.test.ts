@@ -146,7 +146,8 @@ describe("isolated page renderer cancellation", () => {
     controller.abort(new Error("审计停止"));
 
     await expect(rendering).rejects.toThrow("审计停止");
-    expect(robots.assertAllowed).toHaveBeenCalledWith("https://example.com/article", { signal: controller.signal });
+    expect(robots.assertAllowed).toHaveBeenCalledWith("https://example.com/article", { signal: expect.any(AbortSignal) });
+    expect(robots.assertAllowed.mock.calls[0][1].signal.aborted).toBe(true);
     expect(window.webContents.stop).toHaveBeenCalledTimes(1);
     expect(window.isDestroyed()).toBe(true);
   });
@@ -161,7 +162,7 @@ describe("isolated page renderer cancellation", () => {
     const renderer = new IsolatedPageRenderer(robots as never);
 
     await expect(renderer.render("https://example.com/large", { maxBytes: 5 })).rejects.toBeInstanceOf(RenderedPageTooLargeError);
-    expect(robots.assertAllowed).toHaveBeenCalledWith("https://example.com/large", { signal: undefined });
+    expect(robots.assertAllowed).toHaveBeenCalledWith("https://example.com/large", { signal: expect.any(AbortSignal) });
   });
 
   it("blocks an isolated renderer redirect to a private address before it can load", async () => {
@@ -178,7 +179,7 @@ describe("isolated page renderer cancellation", () => {
     await expect(renderer.render("https://example.com/redirect")).rejects.toThrow("不能添加本机或私有网络地址");
     expect(prevented).toBe(true);
     expect(robots.assertAllowed).toHaveBeenCalledTimes(1);
-    expect(robots.assertAllowed).toHaveBeenCalledWith("https://example.com/redirect", { signal: undefined });
+    expect(robots.assertAllowed).toHaveBeenCalledWith("https://example.com/redirect", { signal: expect.any(AbortSignal) });
   });
 
   it("checks robots again before following a public renderer redirect", async () => {
@@ -197,7 +198,7 @@ describe("isolated page renderer cancellation", () => {
     const renderer = new IsolatedPageRenderer(robots as never);
 
     await expect(renderer.render("https://example.com/redirect")).resolves.toEqual({ url: "https://redirected.example/article", html: "<html><body>safe</body></html>" });
-    expect(robots.assertAllowed).toHaveBeenNthCalledWith(1, "https://example.com/redirect", { signal: undefined });
-    expect(robots.assertAllowed).toHaveBeenNthCalledWith(2, "https://redirected.example/article", { signal: undefined });
+    expect(robots.assertAllowed).toHaveBeenNthCalledWith(1, "https://example.com/redirect", { signal: expect.any(AbortSignal) });
+    expect(robots.assertAllowed).toHaveBeenNthCalledWith(2, "https://redirected.example/article", { signal: expect.any(AbortSignal) });
   });
 });
