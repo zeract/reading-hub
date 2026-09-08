@@ -41,12 +41,20 @@ let confirmationMode = "failure";
 let confirmationRequests = 0;
 let confirmationRequested;
 let completeConfirmation;
+let academicSubscriptionRequested;
+let completeAcademicSubscription;
+let academicSearchRequested;
+let completeObsoleteSearch;
 const fixtureProviders = [
   { id: "openai", label: "Fixture AI", model: "fixture", configured: true, requiresApiKey: true },
   { id: "deepseek", label: "Fixture secondary AI", model: "fixture-secondary", configured: true, requiresApiKey: true }
 ];
 const aiAnswer = "## Fixture answer\n\nInline $x^2$.\n\n$$\ny=x+1\n$$";
 const channels = [
+  ["academic:subscribe", () => new Promise((resolve) => {
+    completeAcademicSubscription = () => resolve(source);
+    academicSubscriptionRequested?.();
+  })],
   ["source:confirm", () => {
     confirmationRequests++;
     if (confirmationMode === "failure") throw new Error("Synthetic confirmation failure");
@@ -102,11 +110,17 @@ const channels = [
   ["entry:restore", (_event, id) => database.restoreEntry(id)],
   ["source:set-subscribed", (_event, id, subscribed) => database.setSubscribed(id, subscribed)],
   ["source:collection-settings", (_event, id) => database.getSourceCollectionSettings(id)],
-  ["academic:search", () => Array.from({ length: 20 }, (_, index) => ({
+  ["academic:search", (_event, query) => {
+    if (query === "Obsolete Author") return new Promise((resolve) => {
+      completeObsoleteSearch = () => resolve([{ targetId: "openalex:OBSOLETE", title: "Obsolete author" }]);
+      academicSearchRequested?.();
+    });
+    return Array.from({ length: 20 }, (_, index) => ({
     targetId: `openalex:A${index + 1}`,
     title: `Alexander Long-Name 同名作者 · OpenAlex A${index + 1} · ${index + 1} 篇`,
     config: { authorName: "Alexander Long-Name 同名作者", openAlexId: `A${index + 1}` }
-  }))],
+    }));
+  }],
   ["entry:cancel-read", (_event, requestId) => { cancelledReads.add(requestId); }],
   ["entry:read-content", (_event, id, requestId) => {
     assert(typeof requestId === "string" && requestId.startsWith("read-"), "Read IPC must carry an opaque request id.");
@@ -378,9 +392,17 @@ try {
   await waitFor(window, "!document.querySelector('.dialog')");
   await evaluate("document.querySelector('[aria-label=\"添加来源\"]').click()");
   await clickText('[role="tab"]', "学术作者");
+  const obsoleteSearchStarted = new Promise((resolve) => { academicSearchRequested = resolve; });
+  await evaluate(`(() => { const input = document.querySelector('#academic-query'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Obsolete Author'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await evaluate("document.querySelector('.connector-form').requestSubmit()");
+  await obsoleteSearchStarted;
   await evaluate(`const query = document.querySelector('#academic-query'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(query, 'Alexander'); query.dispatchEvent(new Event('input', { bubbles: true }));`);
+  assert(await evaluate("!document.querySelector('.connector-search button').disabled"), "Editing the author query must allow a replacement search immediately.");
   await evaluate("document.querySelector('.connector-form').requestSubmit()");
   await waitFor(window, "document.querySelectorAll('.academic-results button').length === 20");
+  completeObsoleteSearch();
+  await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  assert(await evaluate("document.querySelectorAll('.academic-results button').length === 20 && !document.querySelector('.academic-results').textContent.includes('Obsolete author')"), "Late academic results must not replace the current matches.");
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
     window.setSize(width, height); window.webContents.setZoomFactor(scale);
     await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
@@ -395,6 +417,14 @@ try {
     assert(fits, `Academic identities or result scrolling do not fit ${width}px at ${scale}.`);
     await writeFile(path.join(tmpdir(), `reading-hub-academic-${width}.png`), (await window.capturePage()).toPNG());
   }
+  const academicSubscriptionStarted = new Promise((resolve) => { academicSubscriptionRequested = resolve; });
+  await evaluate("document.querySelector('.academic-results button').click()");
+  await academicSubscriptionStarted;
+  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
+  await evaluate("document.querySelector('[aria-label=\"添加来源\"]').click()");
+  completeAcademicSubscription();
+  await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  assert(await evaluate("Boolean(document.querySelector('#source-url'))"), "An older academic subscription must not close a replacement add-source dialog.");
   await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
   await evaluate("document.querySelector('[aria-label=\"打开设置\"]').click()");
   await clickText(".settings-sidebar nav button", "AI 功能");

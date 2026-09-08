@@ -44,7 +44,7 @@ export function App() {
   const [notice, setNotice] = useState<string>();
   const [deletedEntry, setDeletedEntry] = useState<Entry>();
   const [busy, setBusy] = useState(false);
-  const [showAddSource, setShowAddSource] = useState(false);
+  const [addSourceSession, setAddSourceSession] = useState<string>();
   const [activeRuleSource, setActiveRuleSource] = useState<Source>();
   const [editingSource, setEditingSource] = useState<Source>();
   const [collapsedSourceGroups, setCollapsedSourceGroups] = useState<Record<string, boolean>>({});
@@ -75,9 +75,19 @@ export function App() {
 
   const acceptPreview = useCallback((result: PendingPreview) => {
     setPending(result);
-    setShowAddSource(false);
+    setAddSourceSession(undefined);
     setNotice(undefined);
   }, []);
+
+  const closeAddSource = useCallback((session: string) => {
+    setAddSourceSession((current) => current === session ? undefined : current);
+  }, []);
+
+  const finishSourceAddition = useCallback(async (session: string, message: string) => {
+    closeAddSource(session);
+    setNotice(message);
+    await reload();
+  }, [closeAddSource, reload]);
 
   const importOpml = useCallback(async (): Promise<OpmlImportResult> => {
     setBusy(true);
@@ -203,7 +213,7 @@ export function App() {
         <div className="app-titlebar-actions">
           <button type="button" className="app-titlebar-button" onClick={() => readerOnly ? setReaderOnly(false) : setSidebarCollapsed((collapsed) => !collapsed)} aria-label={readerOnly ? "退出沉浸阅读" : sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"} title={readerOnly ? "退出沉浸阅读" : sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"}><AppIcon name={readerOnly ? "expand" : "sidebar"} /></button>
           {!readerOnly && <button type="button" className="app-titlebar-button" onClick={refreshCurrentView} disabled={busy || Boolean(activeSource && !sourceCapabilities(activeSource).canRefresh)} aria-label={activeSource ? `刷新 ${activeSource.title}` : "重新载入收件箱"} title={isRetiredXPublicProfile(activeSource) ? "此旧 X 公开来源已停止刷新" : activeSource ? "刷新当前来源" : "重新载入收件箱"}><AppIcon name="refresh" /></button>}
-          {!readerOnly && <button type="button" className="app-titlebar-button app-titlebar-add" onClick={() => setShowAddSource(true)} aria-label="添加来源" title="添加来源"><AppIcon name="add" /></button>}
+          {!readerOnly && <button type="button" className="app-titlebar-button app-titlebar-add" onClick={() => setAddSourceSession(crypto.randomUUID())} aria-label="添加来源" title="添加来源"><AppIcon name="add" /></button>}
         </div>
       </header>
       <SourceSidebar
@@ -260,14 +270,15 @@ export function App() {
       /> : <ReaderPlaceholder />}
 
       {pending && <PreviewDialog key={pending.token} pending={pending} onCancel={() => setPending(undefined)} onConfirm={confirm} />}
-      {showAddSource && <AddSourceDialog
-        onClose={() => setShowAddSource(false)}
+      {addSourceSession && <AddSourceDialog
+        key={addSourceSession}
+        onClose={() => closeAddSource(addSourceSession)}
         onPreview={acceptPreview}
         onImportOpml={importOpml}
-        onZhihuStarted={async () => { setShowAddSource(false); setNotice("已打开知乎登录窗口；登录完成后会自动同步关注动态。"); await reload(); }}
-        onXStarted={async () => { setShowAddSource(false); setNotice("X 已授权，正在同步关注账号的原创帖子。"); await reload(); }}
-        onXiaohongshuSaved={async () => { setShowAddSource(false); setNotice("小红书公开博主来源已添加，正在读取公开笔记。"); await reload(); }}
-        onAcademicSaved={async () => { setShowAddSource(false); setNotice("学术作者来源已添加，正在同步公开论文记录。"); await reload(); }}
+        onZhihuStarted={() => finishSourceAddition(addSourceSession, "已打开知乎登录窗口；登录完成后会自动同步关注动态。")}
+        onXStarted={() => finishSourceAddition(addSourceSession, "X 已授权，正在同步关注账号的原创帖子。")}
+        onXiaohongshuSaved={() => finishSourceAddition(addSourceSession, "小红书公开博主来源已添加，正在读取公开笔记。")}
+        onAcademicSaved={() => finishSourceAddition(addSourceSession, "学术作者来源已添加，正在同步公开论文记录。")}
       />}
       {activeRuleSource && <CalibrationDialog source={activeRuleSource} onClose={() => setActiveRuleSource(undefined)} onSaved={async () => { setActiveRuleSource(undefined); await reload(); }} />}
       {editingSource && <SourceSettingsDialog
