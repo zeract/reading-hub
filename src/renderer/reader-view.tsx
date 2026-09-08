@@ -1,6 +1,7 @@
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AiArticleContext, AiProviderId, AiProviderSettings, AiSelectionContext, AiSelectionIntent, Entry, ReaderArticle, Source } from "../shared/types";
 import { AppIcon } from "./ui-icons";
+import { ModalSurface } from "./modal-surface";
 import { DeferredAiMarkdownContent as AiMarkdownContent } from "./deferred-ai-markdown";
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { buildAiArticleContext, collectAiArticleText } from "./ai-request";
@@ -137,16 +138,15 @@ export function ReaderView({ entry, source, onUpdateEntry, readerOnly, onToggleR
     setLanguageSwitchError(undefined);
   }, [entry.id]);
   useEffect(() => {
-    if (!imagePreview && !textSelection) return;
+    if (!textSelection) return;
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setImagePreview(undefined);
+      if (event.key === "Escape" && !event.defaultPrevented && !document.querySelector("dialog[open]")) {
         setTextSelection(undefined);
       }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [imagePreview, textSelection]);
+  }, [textSelection]);
 
   const displayed = article || entry;
   const date = displayed.publishedAt ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "long" }).format(displayed.publishedAt) : undefined;
@@ -465,12 +465,12 @@ function SelectionAssistantCard({ request, overlay, article, sourceTitle, prefer
 }
 
 function ImagePreview({ image, onClose }: { image: ReaderImagePreview; onClose: () => void }) {
-  return <div className="reader-image-lightbox" role="presentation" onClick={onClose}>
-    <section className="reader-image-lightbox__frame" role="dialog" aria-modal="true" aria-label={image.alt} onClick={(event) => event.stopPropagation()}>
-      <button type="button" className="reader-image-lightbox__close" onClick={onClose} autoFocus aria-label="关闭图片预览">×</button>
+  return <ModalSurface className="reader-image-lightbox" title={image.alt} onClose={onClose} dismissOnBackdrop>
+    <section className="reader-image-lightbox__frame">
+      <button type="button" className="reader-image-lightbox__close" onClick={onClose} aria-label="关闭图片预览">×</button>
       <img src={image.src} alt={image.alt} />
     </section>
-  </div>;
+  </ModalSurface>;
 }
 
 function ReaderAssistant({ article, sourceTitle, providerId, onProviderChange, minimized, onMinimize, onClose, onOpenSettings }: {

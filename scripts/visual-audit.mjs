@@ -58,7 +58,7 @@ function page(mathJaxSvg) {
         <img id="fixture-image" src="${largeImage}" alt="large fixture" />
         <table><thead><tr><th>来源</th><th>状态</th></tr></thead><tbody><tr><td>OpenAlex</td><td>正常</td></tr></tbody></table>
       </div></article></div><div class="reader-selection-underlines" aria-hidden="true"><span id="selection-underline" style="left: 58vw; top: 302px; width: 124px"></span></div><section class="reader-selection-toolbar" id="selection-toolbar" style="left: 58vw; top: 308px"><button>翻译</button><button>解释</button><button>提问</button><button>×</button></section><aside class="selection-assistant-card" id="selection-card" data-placement="below" style="left: 56vw; top: 356px; width: min(330px,calc(100vw - 32px)); max-height: 250px"><header><div><p>解释所选文字</p><strong>本机 Codex</strong></div><button>×</button></header><blockquote>“这段选中的文章文字会保留在就地回答旁边。”</blockquote><div class="selection-assistant-answer"><p>这是一个和正文紧邻的流式回答卡片，长内容将在卡片内滚动。</p><pre class="ai-code-block" id="selection-card-code"><code>selection_answer_must_not_expand_the_reading_workspace_0123456789</code></pre></div></aside><aside class="reader-ai-panel" id="assistant-panel"><header><div><strong>AI 学习助手</strong><p>提问时才会发送文章摘录。</p></div><div class="assistant-header-actions"><button class="panel-icon-button">−</button><button class="panel-icon-button">×</button></div></header><div class="ai-messages"><div class="ai-message" id="assistant-markdown"><strong>AI</strong><div class="ai-message-content ai-markdown"><h2 class="ai-markdown-heading">推导摘要</h2><p class="ai-markdown-paragraph">这是一段 <strong>Markdown</strong> 回答。</p><ul class="ai-markdown-list"><li>列表项</li><li><code class="ai-inline-code">inline_code</code></li></ul><pre class="ai-code-block" id="assistant-code"><code>very_long_identifier_that_must_scroll_instead_of_overflowing_the_assistant_sidebar_0123456789</code></pre><div class="ai-table-wrap"><table><thead><tr><th>方法</th><th>复杂度</th></tr></thead><tbody><tr><td>线性</td><td>O(n)</td></tr></tbody></table></div></div></div></div><form class="ai-question"><label>向文章提问</label><textarea>这个公式表达什么？</textarea><button class="primary">发送问题</button></form></aside></div>
-    </section></main><div class="modal-backdrop" style="visibility:hidden" aria-hidden="true"><section class="dialog dialog--preview" id="preview-dialog"><header><h2>确认来源</h2><button>×</button></header><div class="preview-dialog__body" id="preview-dialog-body"><p class="dialog-intro"><strong class="preview-source-title">一个特别长的来源名称，用于验证预览弹窗不会因为名称而出现横向滚动</strong></p><div class="preview-list preview-list--source" role="list">${previewItems}</div></div><div class="dialog-actions dialog-actions--fixed" id="preview-dialog-actions"><button>取消</button><button class="primary">保存来源</button></div></section></div>${collectionScopeFixture}<div class="reader-image-lightbox" id="image-lightbox" hidden><section class="reader-image-lightbox__frame"><button class="reader-image-lightbox__close">×</button><img id="lightbox-image" src="${largeImage}" alt="large fixture preview" /></section></div><div style="position:fixed;visibility:hidden;pointer-events:none" aria-hidden="true"><div class="settings-actions" id="settings-control-fixture"><button>取消</button><button class="primary">保存设置</button><button class="danger">移除</button></div></div></body></html>`;
+    </section></main><dialog class="modal-surface modal-backdrop" style="visibility:hidden" aria-hidden="true"><section class="dialog dialog--preview" id="preview-dialog"><header><h2>确认来源</h2><button>×</button></header><div class="preview-dialog__body" id="preview-dialog-body"><p class="dialog-intro"><strong class="preview-source-title">一个特别长的来源名称，用于验证预览弹窗不会因为名称而出现横向滚动</strong></p><div class="preview-list preview-list--source" role="list">${previewItems}</div></div><div class="dialog-actions dialog-actions--fixed" id="preview-dialog-actions"><button>取消</button><button class="primary">保存来源</button></div></section></dialog>${collectionScopeFixture}<dialog class="modal-surface reader-image-lightbox" id="image-lightbox"><section class="reader-image-lightbox__frame"><button class="reader-image-lightbox__close">×</button><img id="lightbox-image" src="${largeImage}" alt="large fixture preview" /></section></dialog><div style="position:fixed;visibility:hidden;pointer-events:none" aria-hidden="true"><div class="settings-actions" id="settings-control-fixture"><button>取消</button><button class="primary">保存设置</button><button class="danger">移除</button></div></div></body></html>`;
 }
 
 function overlaps(a, b) {
@@ -176,11 +176,11 @@ async function auditViewport(window, viewport, mathJaxSvg) {
       lightbox: (() => {
         const root = document.querySelector('#image-lightbox');
         const image = document.querySelector('#lightbox-image');
-        if (!(root instanceof HTMLElement) || !(image instanceof HTMLImageElement)) return undefined;
-        root.hidden = false;
+        if (!(root instanceof HTMLDialogElement) || !(image instanceof HTMLImageElement)) return undefined;
+        root.showModal();
         const rootRect = root.getBoundingClientRect();
         const imageRect = image.getBoundingClientRect();
-        root.hidden = true;
+        root.close();
         return {
           root: { left: rootRect.left, right: rootRect.right, top: rootRect.top, bottom: rootRect.bottom },
           image: { width: imageRect.width, height: imageRect.height }
@@ -216,6 +216,8 @@ async function auditViewport(window, viewport, mathJaxSvg) {
       })(),
       previewDialog: (() => {
         const dialog = document.querySelector('#preview-dialog');
+        const modal = dialog?.closest('dialog');
+        modal?.showModal();
         const body = document.querySelector('#preview-dialog-body');
         const actions = document.querySelector('#preview-dialog-actions');
         const title = document.querySelector('.preview-source-title');
@@ -223,12 +225,14 @@ async function auditViewport(window, viewport, mathJaxSvg) {
         const bodyRect = body?.getBoundingClientRect();
         const actionsRect = actions?.getBoundingClientRect();
         const titleRect = title?.getBoundingClientRect();
-        return dialog instanceof HTMLElement && body instanceof HTMLElement && actionsRect && dialogRect && bodyRect && titleRect ? {
+        const result = dialog instanceof HTMLElement && body instanceof HTMLElement && actionsRect && dialogRect && bodyRect && titleRect ? {
           dialog: { left: dialogRect.left, right: dialogRect.right, top: dialogRect.top, bottom: dialogRect.bottom },
           body: { left: bodyRect.left, right: bodyRect.right, top: bodyRect.top, bottom: bodyRect.bottom, scrollWidth: body.scrollWidth, clientWidth: body.clientWidth, scrollHeight: body.scrollHeight, clientHeight: body.clientHeight },
           actions: { left: actionsRect.left, right: actionsRect.right, top: actionsRect.top, bottom: actionsRect.bottom },
           title: { left: titleRect.left, right: titleRect.right }
         } : undefined;
+        modal?.close();
+        return result;
       })(),
       selectionToolbar: (() => {
         const root = document.querySelector('#selection-toolbar');

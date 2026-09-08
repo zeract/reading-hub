@@ -94,7 +94,7 @@ const channels = [
     assert(typeof requestId === "string" && requestId.startsWith("read-"), "Read IPC must carry an opaque request id.");
     if (pauseRead) return new Promise((resolve) => { pendingRead = { requestId, resolve }; readRequested?.(); });
     if (id === "failure") throw new Error("Deterministic offline fixture");
-    return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", contentHtml: '<p>This is a deterministic reader fixture.</p><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image">' } };
+    return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", contentHtml: '<p>This is a deterministic reader fixture.</p><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image" data-reader-zoomable="true" tabindex="0">' } };
   }],
   ["window:is-fullscreen", () => false]
 ];
@@ -160,6 +160,12 @@ const unsubscribe = database.onLibraryChanged((revision) => {
   if (!window.isDestroyed()) window.webContents.send("library:changed", revision);
 });
 async function evaluate(code) { return window.webContents.executeJavaScript(code); }
+async function pressKey(keyCode, modifiers = []) {
+  window.webContents.focus();
+  window.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
+  window.webContents.sendInputEvent({ type: "keyUp", keyCode, modifiers });
+  await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+}
 async function clickText(selector, text) {
   await evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find((element) => element.textContent.trim() === ${JSON.stringify(text)}).click()`);
 }
@@ -185,6 +191,23 @@ try {
   await waitFor(window, "document.querySelector('.article-body img')?.naturalWidth === 1");
   assert(imageLoads === 1, `A native body image error must invoke the proxy exactly once (observed ${imageLoads}).`);
   await writeFile(path.join(tmpdir(), "reading-hub-reader.png"), (await window.capturePage()).toPNG());
+  await evaluate("document.querySelector('.article-body img').focus()");
+  await pressKey("Enter");
+  await waitFor(window, "Boolean(document.querySelector('.reader-image-lightbox'))");
+  assert(await evaluate("document.activeElement.matches('.reader-image-lightbox__close')"), "Image preview must receive keyboard focus.");
+  await pressKey("Tab");
+  assert(await evaluate("document.querySelector('.reader-image-lightbox').contains(document.activeElement)"), "Tab must not leave the image modal.");
+  await pressKey("Tab", ["shift"]);
+  assert(await evaluate("document.querySelector('.reader-image-lightbox').contains(document.activeElement)"), "Shift+Tab must not leave the image modal.");
+  await evaluate("document.querySelector('.reader-image-lightbox img').click()");
+  assert(await evaluate("Boolean(document.querySelector('.reader-image-lightbox'))"), "Clicking the preview image must not dismiss it.");
+  await pressKey("Escape");
+  await waitFor(window, "!document.querySelector('.reader-image-lightbox')");
+  assert(await evaluate("document.activeElement === document.querySelector('.article-body img')"), "Closing the image preview must restore image focus.");
+  await pressKey("Enter");
+  await waitFor(window, "Boolean(document.querySelector('.reader-image-lightbox'))");
+  await evaluate("document.querySelector('.reader-image-lightbox').click()");
+  await waitFor(window, "!document.querySelector('.reader-image-lightbox')");
   await evaluate("document.querySelector('[aria-label=\"打开 AI 学习\"]').click()");
   await waitFor(window, "document.querySelector('.reader-ai-panel option')?.textContent.includes('Fixture AI')");
   assert(markdownModuleRequests === 0, "The library, reader and empty assistant must not load AI Markdown code.");
@@ -274,6 +297,21 @@ try {
     assert(!geometry.overflow && geometry.navBottom < geometry.footerTop && geometry.sourcesHeight > 20, `Library navigation does not fit ${width}px at ${scale}.`);
     await writeFile(path.join(tmpdir(), `reading-hub-workflow-${width}.png`), (await window.capturePage()).toPNG());
   }
+  await evaluate("document.querySelector('[aria-label=\"添加来源\"]').focus(); document.querySelector('[aria-label=\"添加来源\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.dialog'))");
+  assert(await evaluate("document.querySelector('.dialog').contains(document.activeElement)"), "Opening a source dialog must move keyboard focus inside it.");
+  await evaluate("document.querySelector('[aria-label=\"打开设置\"]').focus()");
+  assert(await evaluate("document.querySelector('.dialog').contains(document.activeElement)"), "A modal must prevent background controls from receiving focus.");
+  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').focus()");
+  await pressKey("Tab", ["shift"]);
+  assert(await evaluate("document.querySelector('.dialog').contains(document.activeElement)"), "Reverse tab navigation must stay within the source dialog.");
+  await pressKey("Tab");
+  assert(await evaluate("document.querySelector('.dialog').contains(document.activeElement)"), "Forward tab navigation must stay within the source dialog.");
+  await evaluate("document.querySelector('.modal-backdrop').click()");
+  assert(await evaluate("Boolean(document.querySelector('.dialog'))"), "Source drafts must not close from backdrop clicks.");
+  await pressKey("Escape");
+  await waitFor(window, "!document.querySelector('.dialog')");
+  assert(await evaluate("document.activeElement === document.querySelector('[aria-label=\"添加来源\"]')"), "Closing a modal must restore its opener's focus.");
   await evaluate("document.querySelector('[aria-label=\"添加来源\"]').click()");
   await clickText('[role="tab"]', "学术作者");
   await evaluate(`const query = document.querySelector('#academic-query'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(query, 'Alexander'); query.dispatchEvent(new Event('input', { bubbles: true }));`);
@@ -323,7 +361,7 @@ try {
   pendingSettingsSave();
   await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   assert(providerLists === listsBeforeCloseCompletion, "A closed settings view must not start another provider query.");
-  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore/settings-draft/settings-save-lock/settings-close, library layouts and four academic/settings layouts verified.");
+  console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore/settings-draft/settings-save-lock/settings-close/modal-keyboard/modal-focus/image-preview-dismissal, library layouts and four academic/settings layouts verified.");
 } catch (error) {
   failure = error;
   console.error(error);

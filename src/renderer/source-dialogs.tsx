@@ -1,5 +1,6 @@
 import { isRetiredXPublicProfile, sourceCapabilities, sourceHealthLabel } from "../shared/source-capabilities";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { ModalSurface } from "./modal-surface";
 import type {
   CalibrationResult,
   OpmlImportResult,
@@ -439,7 +440,7 @@ function CollectionScopeEditor({ source, settings, disabled, onInspect, onChange
 }
 
 export function Dialog({ title, children, onClose, className }: { title: string; children: ReactNode; onClose: () => void; className?: string }) {
-  return <div className="modal-backdrop" role="presentation"><section className={`dialog${className ? ` ${className}` : ""}`} role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button onClick={onClose} aria-label="关闭">×</button></header>{children}</section></div>;
+  return <ModalSurface className="modal-backdrop" title={title} onClose={onClose}><section className={`dialog${className ? ` ${className}` : ""}`}><header><h2>{title}</h2><button type="button" onClick={onClose} aria-label="关闭">×</button></header>{children}</section></ModalSurface>;
 }
 
 const SOURCE_KIND_LABELS = {

@@ -4,6 +4,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AddSourceDialog } from "../src/renderer/source-dialogs";
 import type { SubscriptionDraft } from "../src/shared/types";
+import { stubDialogPlatform } from "./dialog-platform";
+
+stubDialogPlatform();
 
 let root: Root;
 let container: HTMLDivElement;
