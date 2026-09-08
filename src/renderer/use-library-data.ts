@@ -20,9 +20,12 @@ export function useLibraryData() {
   const [nextEntryCursor, setNextEntryCursor] = useState<EntryPageCursor>();
   const [loadingMoreEntries, setLoadingMoreEntries] = useState(false);
   const [reloadError, setReloadError] = useState<string>();
-  const [activeSourceId, setActiveSourceId] = useState<string>();
-  const [libraryView, setLibraryView] = useState<LibraryView>("collected");
-  const [entrySearch, setEntrySearchState] = useState("");
+  const [selection, setSelection] = useState<LibrarySelection>({ view: "collected", search: "" });
+  const { sourceId: activeSourceId, view: libraryView, search: entrySearch } = selection;
+  // Navigation owns one complete query scope. Keep its accepted value
+  // available before React renders so retained callbacks cannot reload an
+  // obsolete source, filter, or search after an asynchronous mutation.
+  const currentSelection = useRef(selection);
   const reloadSequence = useRef(0);
   const pageGeneration = useRef(0);
   const loadedPageCount = useRef(1);
@@ -36,7 +39,8 @@ export function useLibraryData() {
     const generation = ++pageGeneration.current;
     const isCurrent = () => sequence === reloadSequence.current && generation === pageGeneration.current;
     // Recompute today's range on refresh, including when the app stays open overnight.
-    const query = entryQueryForLibrary(libraryView, activeSourceId, new Date(), entrySearch);
+    const current = currentSelection.current;
+    const query = entryQueryForLibrary(current.view, current.sourceId, new Date(), current.search);
     const pageCount = JSON.stringify(query) === JSON.stringify(loadedQuery.current) ? loadedPageCount.current : 1;
     reloading.current = true;
     loadingMore.current = false;
@@ -65,7 +69,7 @@ export function useLibraryData() {
     } finally {
       if (isCurrent()) reloading.current = false;
     }
-  }, [activeSourceId, entrySearch, libraryView]);
+  }, []);
 
   useEffect(() => {
     // reload owns the visible error state; unattended ticks must not reject globally.
@@ -100,7 +104,7 @@ export function useLibraryData() {
       reloadSequence.current += 1;
       pageGeneration.current += 1;
     };
-  }, [reload]);
+  }, [reload, selection]);
 
   const resetEntryPages = useCallback(() => {
     pageGeneration.current += 1;
@@ -115,18 +119,17 @@ export function useLibraryData() {
   }, []);
 
   const navigateLibrary = useCallback((requested: LibrarySelection) => {
-    const current: LibrarySelection = { view: libraryView, sourceId: activeSourceId, search: entrySearch };
+    const current = currentSelection.current;
     if (isSameLibrarySelection(current, requested)) {
       // A repeated click leaves React state unchanged, so the query effect
       // will not run. Keep the current list visible while its refresh starts.
       void reload().catch(() => undefined);
       return;
     }
+    currentSelection.current = requested;
     resetEntryPages();
-    setEntrySearchState(requested.search);
-    setActiveSourceId(requested.sourceId);
-    setLibraryView(requested.view);
-  }, [activeSourceId, entrySearch, libraryView, reload, resetEntryPages]);
+    setSelection(requested);
+  }, [reload, resetEntryPages]);
 
   const selectSource = useCallback((sourceId?: string) => {
     navigateLibrary({ view: "all", sourceId, search: "" });
@@ -137,9 +140,10 @@ export function useLibraryData() {
   }, [navigateLibrary]);
 
   const setEntrySearch = useCallback((search: string) => {
-    if (search === entrySearch) return;
-    navigateLibrary({ view: libraryView, sourceId: activeSourceId, search });
-  }, [activeSourceId, entrySearch, libraryView, navigateLibrary]);
+    const current = currentSelection.current;
+    if (search === current.search) return;
+    navigateLibrary({ ...current, search });
+  }, [navigateLibrary]);
 
   const loadMoreEntries = useCallback(async () => {
     const cursor = nextEntryCursor;
@@ -164,9 +168,11 @@ export function useLibraryData() {
     }
   }, [nextEntryCursor]);
 
-  const clearActiveSource = useCallback(() => {
-    navigateLibrary({ view: libraryView, sourceId: undefined, search: "" });
-  }, [libraryView, navigateLibrary]);
+  const clearActiveSource = useCallback((sourceId: string) => {
+    const current = currentSelection.current;
+    if (current.sourceId !== sourceId) return;
+    navigateLibrary({ view: current.view, sourceId: undefined, search: "" });
+  }, [navigateLibrary]);
 
   const sourceById = useMemo(() => new Map(sources.map((source) => [source.id, source])), [sources]);
   const activeSource = activeSourceId ? sourceById.get(activeSourceId) : undefined;

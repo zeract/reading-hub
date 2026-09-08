@@ -48,6 +48,42 @@ afterEach(async () => {
 });
 
 describe("library read-model", () => {
+  it("uses the current selection when a retained reload runs after navigation", async () => {
+    await act(async () => library.selectSource("previous"));
+    const afterMutation = library.reload;
+    await act(async () => library.selectSource("current"));
+    await act(async () => library.setEntrySearch("current query"));
+    await act(async () => afterMutation());
+    expect(library.activeSourceId).toBe("current");
+    expect(listPage.mock.lastCall?.[0]).toMatchObject({ sourceId: "current", search: "current query" });
+  });
+
+  it("uses a navigation accepted earlier in the same batch for refresh", async () => {
+    listPage.mockClear();
+    await act(async () => { library.selectSource("next"); await library.reload(); });
+    expect(listPage.mock.calls.every(([query]) => query.sourceId === "next")).toBe(true);
+    expect(listPage.mock.lastCall?.[0]).toMatchObject({ sourceId: "next" });
+  });
+
+  it("applies a retained search callback to the current library view", async () => {
+    const search = library.setEntrySearch;
+    await act(async () => library.selectLibrary("favorite"));
+    await act(async () => search("latest"));
+    expect(library.libraryView).toBe("favorite");
+    expect(listPage.mock.lastCall?.[0]).toMatchObject({ favorite: true, search: "latest" });
+  });
+
+  it("does not clear a different source when an older unsubscribe completes", async () => {
+    await act(async () => library.selectSource("previous"));
+    const clear = library.clearActiveSource;
+    await act(async () => library.selectSource("current"));
+    await act(async () => library.setEntrySearch("draft"));
+    await act(async () => clear("previous"));
+    expect(library.activeSourceId).toBe("current"); expect(library.entrySearch).toBe("draft");
+    await act(async () => clear("current"));
+    expect(library.activeSourceId).toBeUndefined(); expect(library.entrySearch).toBe("");
+  });
+
   it("defaults to collection order and performs no idle full reload", async () => {
     expect(library.libraryView).toBe("collected");
     expect(listPage.mock.lastCall?.[0]).toMatchObject({ collection: "current", sort: "collected" });

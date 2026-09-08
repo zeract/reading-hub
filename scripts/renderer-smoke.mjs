@@ -51,6 +51,18 @@ let managementWrites = 0;
 let managementFailure;
 let managementCollection;
 let managementScopeWrites = 0;
+let delayedNavigationCommand;
+let navigationCommandRequested;
+let completeNavigationCommand;
+function deferNavigationCommand(operation) {
+  return new Promise((resolve, reject) => {
+    completeNavigationCommand = () => {
+      try { const result = operation(); database.publishChanges(); resolve(result); }
+      catch (error) { reject(error); }
+    };
+    navigationCommandRequested?.();
+  });
+}
 const fixtureProviders = [
   { id: "openai", label: "Fixture AI", model: "fixture", configured: true, requiresApiKey: true },
   { id: "deepseek", label: "Fixture secondary AI", model: "fixture-secondary", configured: true, requiresApiKey: true }
@@ -63,7 +75,10 @@ const channels = [
     managementRequested?.();
   })]),
   ["source:calibration", () => ({ title: "Calibration fixture", url: "https://example.com", candidates: [{ label: "Fixture cards", confidence: 0.9, rule: { version: 1, itemRootSelector: "article" }, preview: [] }] })],
-  ["source:refresh", () => { if (managementFailure === "refresh") throw new Error("Synthetic refresh failure"); }],
+  ["source:refresh", () => {
+    if (managementFailure === "refresh") throw new Error("Synthetic refresh failure");
+    if (delayedNavigationCommand === "refresh") return deferNavigationCommand(() => undefined);
+  }],
   ["academic:subscribe", () => new Promise((resolve) => {
     completeAcademicSubscription = () => resolve(source);
     academicSubscriptionRequested?.();
@@ -119,10 +134,12 @@ const channels = [
   ["entry:counts", () => database.getLibraryCounts()],
   ["entry:read", (_event, id, read) => database.markRead(id, read)],
   ["entry:favorite", (_event, id, favorite) => database.markFavorite(id, favorite)],
-  ["entry:dismiss", (_event, id) => database.dismissEntry(id)],
+  ["entry:dismiss", (_event, id) => delayedNavigationCommand === "dismiss"
+    ? deferNavigationCommand(() => database.dismissEntry(id)) : database.dismissEntry(id)],
   ["entry:restore", (_event, id) => database.restoreEntry(id)],
   ["source:set-subscribed", (_event, id, subscribed) => {
     if (managementFailure === "subscription") throw new Error("Synthetic subscription failure");
+    if (delayedNavigationCommand === "subscription") return deferNavigationCommand(() => database.setSubscribed(id, subscribed));
     return database.setSubscribed(id, subscribed);
   }],
   ["source:collection-settings", (_event, id) => managementCollection ?? database.getSourceCollectionSettings(id)],
@@ -581,6 +598,39 @@ try {
   completeManagement();
   await waitFor(window, "!document.querySelector('.source-settings-form')");
   assert(managementScopeWrites === 1, "Retrying the failed refresh must not repeat the saved scope write.");
+  for (const operation of ["refresh", "subscription"]) {
+    await evaluate("[...document.querySelectorAll('.source-filter')].find((item) => item.textContent.includes('Management fixture')).click()");
+    await waitFor(window, "document.querySelector('.timeline h1')?.textContent === 'Management fixture'");
+    delayedNavigationCommand = operation;
+    const started = new Promise((resolve) => { navigationCommandRequested = resolve; });
+    if (operation === "refresh") await evaluate("document.querySelector('[aria-label=\"刷新 Management fixture\"]').click()");
+    else {
+      await openManagement();
+      await clickText(".source-settings-operations button", "取消订阅");
+    }
+    await started;
+    if (operation === "subscription") await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
+    await evaluate("[...document.querySelectorAll('.library-filter')].find((item) => item.querySelector('span')?.textContent === '收藏').click()");
+    await waitFor(window, "document.querySelectorAll('.entry-card').length === 1");
+    delayedNavigationCommand = undefined;
+    completeNavigationCommand();
+    await waitFor(window, "!document.querySelector('[aria-label=\"重新载入收件箱\"]').disabled");
+    assert(await evaluate("document.querySelector('.timeline h1')?.textContent === '收藏文章' && document.querySelectorAll('.entry-card').length === 1 && document.querySelector('.entry-card h2')?.textContent === 'Readable fixture'"), `A late ${operation} must refresh the current favorites view without restoring its old source selection.`);
+  }
+  await clickText(".library-filter", "全部内容");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 3");
+  await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Readable fixture\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.reader-article'))");
+  delayedNavigationCommand = "dismiss";
+  const dismissalStarted = new Promise((resolve) => { navigationCommandRequested = resolve; });
+  await evaluate("document.querySelector('.entry-card.selected .delete-entry').click()");
+  await dismissalStarted;
+  await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Historical fixture\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.reader-article')) && document.querySelector('.entry-card.selected h2')?.textContent === 'Historical fixture'");
+  delayedNavigationCommand = undefined;
+  completeNavigationCommand();
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 2 && !document.querySelector('[aria-label=\"重新载入收件箱\"]').disabled");
+  assert(await evaluate("Boolean(document.querySelector('.reader-article')) && document.querySelector('.entry-card.selected h2')?.textContent === 'Historical fixture'"), "Finishing deletion of the previous article must not close the current reader.");
   console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore/settings-draft/settings-save-lock/settings-close/modal-keyboard/modal-focus/image-preview-dismissal/source-preview-lifetime, library layouts and four academic/settings layouts verified.");
 } catch (error) {
   failure = error;

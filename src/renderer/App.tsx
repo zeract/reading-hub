@@ -180,7 +180,7 @@ export function App() {
     setBusy(true);
     try {
       await window.reader.setSourceSubscribed(source.id, source.subscribed === false);
-      if (activeSourceId === source.id) clearActiveSource();
+      clearActiveSource(source.id);
       setNotice(source.subscribed === false ? `已重新订阅「${source.title}」。` : `已取消订阅「${source.title}」，已有内容与收藏已保留。`);
       await reload();
     } catch (error) {
@@ -189,14 +189,14 @@ export function App() {
     } finally {
       setBusy(false);
     }
-  }, [activeSourceId, clearActiveSource, reload]);
+  }, [clearActiveSource, reload]);
 
   const dismissEntry = useCallback(async (entry: Entry) => {
     setBusy(true);
     try {
       await window.reader.dismissEntry(entry.id);
       setDeletedEntry(entry);
-      if (readingEntry?.id === entry.id) setReadingEntry(undefined);
+      setReadingEntry((current) => current?.id === entry.id ? undefined : current);
       setNotice(`已删除「${entry.title}」。`);
       await reload();
     } catch (error) {
@@ -204,7 +204,7 @@ export function App() {
     } finally {
       setBusy(false);
     }
-  }, [readingEntry?.id, reload]);
+  }, [reload]);
 
   const refreshCurrentView = useCallback(() => {
     if (activeSource) {
