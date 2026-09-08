@@ -53,6 +53,7 @@ let managementFailure;
 let managementCollection;
 let managementScopeWrites = 0;
 let managementFacetReads = 0;
+let collectionReadFailure = false;
 let delayedNavigationCommand;
 let navigationCommandRequested;
 let completeNavigationCommand;
@@ -187,7 +188,7 @@ const channels = [
     if (delayedNavigationCommand === "subscription") return deferNavigationCommand(() => database.setSubscribed(id, subscribed));
     return database.setSubscribed(id, subscribed);
   }],
-  ["source:collection-settings", (_event, id) => managementCollection ?? database.getSourceCollectionSettings(id)],
+  ["source:collection-settings", (_event, id) => { if (collectionReadFailure) throw new Error(`Synthetic collection read failure ${"UnbrokenDiagnostic".repeat(35)}`); return managementCollection ?? database.getSourceCollectionSettings(id); }],
   ["source:inspect-collection-facets", () => { managementFacetReads++; return []; }],
   ["source:update-collection-scope", (_event, _id, scope) => {
     managementScopeWrites++;
@@ -680,6 +681,24 @@ try {
     await evaluate("[...document.querySelectorAll('.source-filter')].find((item) => item.textContent.includes('Management fixture')).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))");
     await waitFor(window, "Boolean(document.querySelector('.source-settings-form'))");
   };
+  collectionReadFailure = true;
+  await openManagement();
+  await waitFor(window, "Boolean(document.querySelector('.source-collection-load [role=alert]'))");
+  await evaluate("{ const input = document.querySelector('.source-settings-body > label input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Collection recovery draft'); input.dispatchEvent(new Event('input', { bubbles: true })); }");
+  const writesBeforeCollectionRecovery = managementWrites;
+  const scopeWritesBeforeCollectionRecovery = managementScopeWrites;
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    await evaluate("document.querySelector('.source-collection-load').scrollIntoView({ block: 'center' }); new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    assert(await evaluate("(() => { const feedback = document.querySelector('.source-collection-load'); const button = feedback.querySelector('button'); const error = feedback.querySelector('[role=alert]'); const rect = button.getBoundingClientRect(); const body = button.closest('.source-settings-body').getBoundingClientRect(); const style = getComputedStyle(button); const save = getComputedStyle(document.querySelector('.dialog-actions .primary')); return error.scrollWidth <= error.clientWidth + 1 && error.clientHeight <= parseFloat(getComputedStyle(error).fontSize) * 9 + 1 && rect.top >= body.top && rect.bottom <= body.bottom && style.minHeight === save.minHeight && style.borderRadius === save.borderRadius && !button.disabled; })()"), "Collection read errors must scroll and keep the shared retry action reachable.");
+    await writeFile(path.join(tmpdir(), `reading-hub-collection-read-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  collectionReadFailure = false;
+  await evaluate("document.querySelector('.source-collection-load button').focus()");
+  await pressKey("Enter");
+  await waitFor(window, "!document.querySelector('.source-collection-load')");
+  assert(managementWrites === writesBeforeCollectionRecovery && managementScopeWrites === scopeWritesBeforeCollectionRecovery && await evaluate("document.querySelector('.source-settings-body > label input').value === 'Collection recovery draft'"), "Collection recovery must preserve the metadata draft without any write.");
+  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
   for (const mode of ["settings", "calibration"]) {
     await openManagement();
     if (mode === "calibration") {

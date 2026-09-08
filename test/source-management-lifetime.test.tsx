@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CalibrationDialog, SourceSettingsDialog } from "../src/renderer/source-dialogs";
-import type { CalibrationResult, Source } from "../src/shared/types";
+import type { CalibrationResult, Source, SourceCollectionSettings } from "../src/shared/types";
 import { stubDialogPlatform } from "./dialog-platform";
 
 stubDialogPlatform();
@@ -156,5 +156,71 @@ describe("source management request lifetime", () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="关闭"]')!.click());
     await act(async () => pending.resolve());
     expect(saved).toHaveBeenCalledOnce(); expect(container.querySelector("dialog")).toBeNull();
+  });
+});
+
+describe("collection settings discovery", () => {
+  const collection: SourceCollectionSettings = { scope: { facetSelections: [{ scheme: "fixture", key: "saved", label: "Saved category" }], history: { mode: "none" } }, facets: [] };
+  it("keeps operation errors independent of a late initial discovery failure", async () => {
+    const read = deferred<SourceCollectionSettings>(); api.getSourceCollectionSettings.mockReturnValueOnce(read.promise);
+    refresh.mockRejectedValueOnce(new Error("Synthetic refresh failure"));
+    await mount("settings");
+    expect(container.querySelector('.source-collection-load [role="status"]')?.textContent).toContain("正在读取");
+    await act(async () => button("立即刷新").click());
+    await act(async () => read.reject(new Error("Synthetic collection failure")));
+    expect(container.querySelector('.source-settings-form > [role="alert"]')?.textContent).toBe("Synthetic refresh failure");
+    expect(container.querySelector('.source-collection-load [role="alert"]')?.textContent).toContain("Synthetic collection failure");
+    refresh.mockResolvedValueOnce(undefined);
+    await act(async () => button("立即刷新").click());
+    expect(container.querySelector('.source-collection-load [role="alert"]')?.textContent).toContain("Synthetic collection failure");
+  });
+  it("retries discovery once per pending request without overwriting metadata drafts or writing scope", async () => {
+    api.getSourceCollectionSettings.mockRejectedValueOnce(new Error("Synthetic collection failure"));
+    await mount("settings");
+    await act(async () => {
+      const input = container.querySelector<HTMLInputElement>('.source-settings-body > label input')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Edited title");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const read = deferred<SourceCollectionSettings>(); api.getSourceCollectionSettings.mockReturnValueOnce(read.promise);
+    await act(async () => { const retry = button("重新读取范围"); retry.click(); retry.click(); });
+    expect(api.getSourceCollectionSettings).toHaveBeenCalledTimes(2);
+    await act(async () => read.resolve(collection));
+    expect(container.querySelector('.source-collection-load')).toBeNull();
+    expect(container.querySelector<HTMLInputElement>('.source-settings-body > label input')!.value).toBe("Edited title");
+    expect(container.querySelector<HTMLInputElement>('.facet-option input')!.checked).toBe(true);
+    expect(api.updateSourceSettings).not.toHaveBeenCalled(); expect(api.updateSourceCollectionScope).not.toHaveBeenCalled();
+  });
+  it("allows metadata to be saved after discovery fails without clearing the unread scope", async () => {
+    api.getSourceCollectionSettings.mockRejectedValueOnce(new Error("Synthetic collection failure"));
+    await mount("settings"); await act(async () => submit());
+    expect(api.updateSourceSettings).toHaveBeenCalledTimes(1);
+    expect(api.updateSourceCollectionScope).not.toHaveBeenCalled(); expect(saved).toHaveBeenCalledTimes(1);
+  });
+  it("handles synchronous discovery exceptions and offers recovery", async () => {
+    api.getSourceCollectionSettings.mockImplementationOnce(() => { throw new Error("Synthetic IPC failure"); });
+    await mount("settings");
+    expect(container.querySelector('.source-collection-load [role="alert"]')?.textContent).toContain("Synthetic IPC failure");
+    await act(async () => button("重新读取范围").click());
+    expect(container.querySelector('.source-collection-load')).toBeNull();
+  });
+  it("ignores a pending retry after the settings session is replaced", async () => {
+    api.getSourceCollectionSettings.mockRejectedValueOnce(new Error("Synthetic collection failure"));
+    await mount("settings");
+    const read = deferred<SourceCollectionSettings>(); api.getSourceCollectionSettings.mockReturnValueOnce(read.promise);
+    await act(async () => button("重新读取范围").click());
+    await mount("settings", "replacement");
+    await act(async () => read.resolve(collection));
+    expect(container.textContent).not.toContain("Saved category");
+    expect(container.querySelector('.source-collection-load')).toBeNull();
+  });
+  it("ignores the first discovery after StrictMode restarts the effect", async () => {
+    const old = deferred<SourceCollectionSettings>();
+    api.getSourceCollectionSettings.mockReturnValueOnce(old.promise).mockResolvedValueOnce(collection);
+    await act(async () => root.render(<StrictMode><SourceSettingsDialog source={source} onClose={() => undefined} onSaved={saved} onRefresh={refresh} onCalibrate={() => undefined} onDelete={async () => undefined} onReconnectZhihu={async () => undefined} /></StrictMode>));
+    await act(async () => old.reject(new Error("Obsolete discovery failure")));
+    expect(container.querySelector('.source-collection-load')).toBeNull();
+    expect(container.querySelector<HTMLInputElement>('.facet-option input')!.checked).toBe(true);
+    expect(container.textContent).not.toContain("Obsolete discovery failure");
   });
 });

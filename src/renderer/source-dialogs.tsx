@@ -265,26 +265,26 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
   const [collection, setCollection] = useState<SourceCollectionSettings>();
   const [initialCollectionScope, setInitialCollectionScope] = useState<SubscriptionScope>();
   const refreshPending = useRef(false);
-  const { busy, error, run, fail } = useAsyncAction();
+  const { busy, error, run } = useAsyncAction();
+  const { busy: collectionLoading, error: collectionError, run: readCollection, invalidate: invalidateCollection } = useAsyncAction();
   const legacyRssHubFeed = source.config?.sourceProvider === "rsshub";
   const retiredXPublicProfile = isRetiredXPublicProfile(source);
   const capabilities = sourceCapabilities(source);
   const typeLocked = !capabilities.canChangeKind;
   const manual = kind === "manual";
 
+  const loadCollection = useCallback(() => readCollection(async (isCurrent) => {
+    setCollection(undefined);
+    setInitialCollectionScope(undefined);
+    const settings = await window.reader.getSourceCollectionSettings(source.id);
+    if (!isCurrent()) return;
+    setCollection(settings);
+    setInitialCollectionScope(settings.scope);
+  }), [readCollection, source.id]);
   useEffect(() => {
-    let active = true;
-    void window.reader.getSourceCollectionSettings(source.id)
-      .then((settings) => {
-        if (!active) return;
-        setCollection(settings);
-        setInitialCollectionScope(settings.scope);
-      })
-      .catch((reason) => {
-        if (active) fail(reason);
-      });
-    return () => { active = false; };
-  }, [source.id, fail]);
+    void loadCollection();
+    return invalidateCollection;
+  }, [loadCollection, invalidateCollection]);
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -350,6 +350,14 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
         <label>刷新时间<select value={refresh} onChange={(event) => setRefresh(event.target.value as typeof refresh)} disabled={manual || retiredXPublicProfile || !pollingEnabled || busy}>{REFRESH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
         {manual && <p className="source-settings-note">分享链接是一次性阅读卡片，不会自动轮询。</p>}
         <label>来源地址<input value={source.url} readOnly aria-readonly="true" /></label>
+        {!collection && <fieldset className="source-collection-scope source-collection-load" aria-busy={collectionLoading}>
+          <legend>文章收集范围</legend>
+          {collectionError ? <>
+            <p className="source-collection-error" role="alert" tabIndex={0}>无法读取收集范围。{collectionError}</p>
+            <p className="source-settings-note">可重试读取；名称和文件夹仍可保存。</p>
+            <button type="button" className="action-button" disabled={busy || collectionLoading} onClick={() => void loadCollection()}>重新读取范围</button>
+          </> : <p className="source-settings-note" role="status">正在读取收集范围…</p>}
+        </fieldset>}
         {collection && <CollectionScopeEditor
           source={source}
           settings={collection}
