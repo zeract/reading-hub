@@ -2,9 +2,11 @@ import { WeightedLruCache } from "./weighted-lru-cache";
 import { throwIfAborted } from "./cancellation";
 import { isRetiredXPublicProfile, sourceCapabilities } from "../shared/source-capabilities";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type {
   Account,
   CalibrationResult,
+  FacetCatalog,
   ProbeResult,
   ProfileSubscriptionInput,
   Source,
@@ -306,11 +308,25 @@ export class SourceService {
     throwIfAborted(signal);
     const source = this.db.getSource(sourceId);
     if (!source) throw new Error("来源不存在。");
-    const local = this.db.listSourceFacets(sourceId);
     const adapter = this.collectionAdapter(source);
-    if (!adapter?.inspectFacets) return local;
-    const catalog = await adapter.inspectFacets(source, { signal });
-    throwIfAborted(signal);
+    if (!adapter?.inspectFacets) return this.db.listSourceFacets(sourceId);
+    const requested = facetDiscoveryConfiguration(source);
+    let catalog: FacetCatalog | undefined;
+    try {
+      catalog = await adapter.inspectFacets(source, { signal });
+    } finally {
+      // Both success and failure belong to the configuration that was read.
+      // Cancellation remains authoritative, including during shutdown.
+      throwIfAborted(signal);
+      const current = this.db.getSource(sourceId);
+      if (!current) throw new Error("来源不存在。");
+      if (!isDeepStrictEqual(requested, facetDiscoveryConfiguration(current))) {
+        throw new Error("来源配置已更新，请重新打开来源配置后再读取分类。");
+      }
+    }
+    // Background collection may have added or replaced facets while the
+    // publisher catalog was loading. Merge against the current local data.
+    const local = this.db.listSourceFacets(sourceId);
     if (!catalog) return local;
     const merged = new Map<string, SourceFacet>();
     for (const facet of local) merged.set(facetIdentity(facet), facet);
@@ -378,6 +394,19 @@ function normalizedOptionalTitle(value: string | undefined): string | undefined 
   const title = value?.replace(/\s+/g, " ").trim();
   if (title && title.length > 120) throw new Error("来源名称最多 120 个字符。");
   return title || undefined;
+}
+
+/** Inputs that determine the remote catalog; presentation and collection
+ * policy do not change which taxonomy an adapter is discovering. */
+function facetDiscoveryConfiguration(source: Source) {
+  return {
+    url: source.url,
+    kind: source.kind,
+    connectorId: source.connectorId ?? source.kind,
+    accountId: source.accountId,
+    config: source.config ?? {},
+    extractionRule: source.extractionRule ?? null
+  };
 }
 
 /** Subscription identity describes the requested resource, not a collected
