@@ -56,7 +56,7 @@ function AppShell() {
     clearActiveSource
   } = useLibraryData();
   const [pending, setPending] = useState<PendingPreview>();
-  const { notice, show: setNotice, updateIfCurrent: updateNotice, begin: beginNotice } = useLibraryNotice();
+  const { notice, show: setNotice, updateIfCurrent: updateNotice, begin: beginNotice, capture: captureNotice } = useLibraryNotice();
   const undoEntry = notice?.undoEntry;
   const { busy, track } = useAsyncActivity();
   const [addSourceSession, setAddSourceSession] = useState<string>();
@@ -159,7 +159,7 @@ function AppShell() {
     applyEntryState(entryId, field, value);
     setReadingEntry((current) => current?.id === entryId ? { ...current, [field]: value } : current);
   }, [applyEntryState]);
-  const { updateEntry, isEntryUpdating } = useEntryMutations({ onCommitted: commitEntryState, reload, onError: setNotice });
+  const { updateEntry, isEntryUpdating } = useEntryMutations({ onCommitted: commitEntryState, reload, createErrorReporter: captureNotice });
 
   const openReader = useCallback((entry: Entry) => {
     setReadingEntry(entry);

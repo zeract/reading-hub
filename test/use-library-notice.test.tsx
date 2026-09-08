@@ -62,6 +62,7 @@ it("removes an old undo when a normal message replaces it and keeps callbacks st
   expect(notices.notice?.undoEntry).toBeUndefined();
   expect(notices.show).toBe(initial.show); expect(notices.updateIfCurrent).toBe(initial.updateIfCurrent);
   expect(notices.begin).toBe(initial.begin);
+  expect(notices.capture).toBe(initial.capture);
 });
 
 it("reserves one completion while keeping the current notice visible", async () => {
@@ -118,4 +119,30 @@ it("invalidates a publisher only when an owned notice update actually applies", 
   await act(async () => second("Late"));
   expect(notices.notice?.message).toBe("Updated");
   expect(notices.notice?.id).not.toBe(id);
+});
+
+it("captures a possible quiet error without invalidating a pending refresh completion", async () => {
+  const refreshed = notices.begin();
+  const failed = notices.capture();
+  await act(async () => refreshed("Refreshed"));
+  expect(notices.notice?.message).toBe("Refreshed");
+  await act(async () => failed("Late quiet failure"));
+  expect(notices.notice?.message).toBe("Refreshed");
+});
+
+it("lets a newer explicit action invalidate an earlier captured error", async () => {
+  const failed = notices.capture();
+  const refreshed = notices.begin();
+  await act(async () => failed("Old error"));
+  expect(notices.notice).toBeUndefined();
+  await act(async () => refreshed("Current action"));
+  expect(notices.notice?.message).toBe("Current action");
+});
+
+it("publishes an otherwise current captured error exactly once", async () => {
+  const failed = notices.capture();
+  await act(async () => failed("Failure"));
+  expect(notices.notice?.message).toBe("Failure");
+  await act(async () => failed("Repeated failure"));
+  expect(notices.notice?.message).toBe("Failure");
 });

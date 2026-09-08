@@ -80,6 +80,7 @@ let dismissFailure = false;
 let pauseFavorite = false;
 let favoriteRequested;
 let completeFavorite;
+let failFavorite;
 let favoriteWrites = 0;
 function deferNavigationCommand(operation) {
   return new Promise((resolve, reject) => {
@@ -179,8 +180,9 @@ const channels = [
   ["entry:read", (_event, id, read) => database.markRead(id, read)],
   ["entry:favorite", (_event, id, favorite) => {
     favoriteWrites++;
-    if (pauseFavorite && id === "success") return new Promise((resolve) => {
+    if (pauseFavorite && id === "success") return new Promise((resolve, reject) => {
       completeFavorite = () => { database.markFavorite(id, favorite); database.publishChanges(); resolve(); };
+      failFavorite = () => reject(new Error("Synthetic old favorite failure"));
       favoriteRequested?.();
     });
     return database.markFavorite(id, favorite);
@@ -352,13 +354,21 @@ try {
   await evaluate("document.querySelector('[aria-label=\"重新载入收件箱\"]').click()");
   await oldRefreshStarted;
   pauseLibraryPage = false;
+  pauseFavorite = true;
+  const oldFavoriteStarted = new Promise((resolve) => { favoriteRequested = resolve; });
+  await evaluate("[...document.querySelectorAll('.entry-card')].find(card => card.querySelector('h2').textContent === 'Readable fixture').querySelector('[aria-label=\"收藏\"]').click()");
+  await oldFavoriteStarted;
+  pauseFavorite = false;
   await evaluate("[...document.querySelectorAll('.entry-card')].find(card => card.querySelector('h2').textContent === 'Unavailable fixture').querySelector('.delete-entry').click()");
   await waitFor(window, "Boolean(document.querySelector('.notice-actions')) && document.querySelectorAll('.entry-card').length === 1");
   completeLibraryPage();
+  failFavorite();
+  await waitFor(window, "!document.querySelector('.entry-card [aria-label=\"收藏\"]').disabled");
+  assert(database.getEntry("success").favorite, "A rejected favorite change must retain the previously confirmed state.");
   await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
     await setViewport(width, height, scale);
-    assert(await evaluate("(() => { const undo = document.querySelector('.notice-actions button'); const notice = document.querySelector('.notice'); if (!undo || !notice?.textContent.includes('Unavailable fixture')) return false; const rect = undo.getBoundingClientRect(); const bounds = notice.getBoundingClientRect(); return rect.width > 0 && rect.left >= bounds.left && rect.right <= bounds.right && rect.bottom <= bounds.bottom; })()"), "An obsolete refresh must preserve the later deletion's visible undo at every viewport.");
+    assert(await evaluate("(() => { const undo = document.querySelector('.notice-actions button'); const notice = document.querySelector('.notice'); if (!undo || !notice?.textContent.includes('Unavailable fixture')) return false; const rect = undo.getBoundingClientRect(); const bounds = notice.getBoundingClientRect(); return rect.width > 0 && rect.left >= bounds.left && rect.right <= bounds.right && rect.bottom <= bounds.bottom; })()"), "An obsolete refresh or favorite failure must preserve the later deletion's visible undo at every viewport.");
     await writeFile(path.join(tmpdir(), `reading-hub-refresh-notice-${width}.png`), (await window.capturePage()).toPNG());
   }
   await clickText(".notice-actions button", "撤销删除");

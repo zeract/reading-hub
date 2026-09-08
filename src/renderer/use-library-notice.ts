@@ -24,13 +24,18 @@ export function useLibraryNotice() {
     revision.current += 1;
     setNotice((current) => current?.id === id ? { id, ...content } : current);
   }, []);
-  // Reserve one completion without hiding the current notice. A newer action,
-  // notice update or dismissal invalidates it, including within the same render.
-  const begin = useCallback(() => {
-    const owner = ++revision.current;
+  // Quiet operations may need an error later without claiming notification
+  // priority merely by starting (for example the automatic read marker).
+  const capture = useCallback(() => {
+    const owner = revision.current;
     return (message: string, undoEntry?: Entry) => {
       if (revision.current === owner) show(message, undoEntry);
     };
   }, [show]);
-  return { notice, show, updateIfCurrent, begin };
+  // Explicit refreshes reserve the next completion, retaining the visible notice.
+  const begin = useCallback(() => {
+    revision.current += 1;
+    return capture();
+  }, [capture]);
+  return { notice, show, updateIfCurrent, begin, capture };
 }

@@ -10,10 +10,10 @@ type PendingMutation = { value: boolean; result: Promise<boolean> };
  * Equal pending intents share a result; opposite intents run in arrival order.
  * Other articles and fields remain independent. Accepted writes survive unmount.
  */
-export function useEntryMutations({ onCommitted, reload, onError }: {
+export function useEntryMutations({ onCommitted, reload, createErrorReporter }: {
   onCommitted: (entryId: string, field: EntryMutationField, value: boolean) => void;
   reload: () => Promise<void>;
-  onError: (message: string) => void;
+  createErrorReporter: () => (message: string) => void;
 }) {
   const pending = useRef(new Map<string, PendingMutation>());
   const [pendingKeys, setPendingKeys] = useState<ReadonlySet<string>>(new Set());
@@ -29,6 +29,9 @@ export function useEntryMutations({ onCommitted, reload, onError }: {
     const key = `${field}:${entry.id}`;
     const previous = pending.current.get(key);
     if (previous?.value === value) return previous.result;
+    // Error ownership starts at admission, even when this intent must wait for
+    // an earlier opposite write. Coalesced duplicates share the same reporter.
+    const reportError = createErrorReporter();
 
     // Install the command before starting IPC, so calls in the same event or
     // StrictMode effect replay observe the same pending intent.
@@ -37,7 +40,7 @@ export function useEntryMutations({ onCommitted, reload, onError }: {
         if (field === "read") await window.reader.markRead(entry.id, value);
         else await window.reader.markFavorite(entry.id, value);
       } catch (error) {
-        if (mounted.current) onError(errorMessage(error));
+        if (mounted.current) reportError(errorMessage(error));
         return false;
       }
       if (mounted.current) {
@@ -55,7 +58,7 @@ export function useEntryMutations({ onCommitted, reload, onError }: {
     pending.current.set(key, { value, result });
     setPendingKeys(new Set(pending.current.keys()));
     return result;
-  }, [onCommitted, onError, reload]);
+  }, [onCommitted, createErrorReporter, reload]);
 
   const isEntryUpdating: EntryMutationPending = useCallback((entryId, field) => pendingKeys.has(`${field}:${entryId}`), [pendingKeys]);
   return { updateEntry, isEntryUpdating };

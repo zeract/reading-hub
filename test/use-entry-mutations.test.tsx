@@ -20,8 +20,9 @@ let saveFavorite: ReturnType<typeof vi.fn>;
 let reload: ReturnType<typeof vi.fn>;
 let committed: ReturnType<typeof vi.fn>;
 let error: ReturnType<typeof vi.fn>;
+let createErrorReporter: ReturnType<typeof vi.fn>;
 function Harness({ autoRead = false }: { autoRead?: boolean }) {
-  actions = useEntryMutations({ reload, onCommitted: committed, onError: error });
+  actions = useEntryMutations({ reload, onCommitted: committed, createErrorReporter });
   const { updateEntry } = actions;
   useEffect(() => { if (autoRead) void updateEntry(entry, "read", true); }, [autoRead, updateEntry]);
   return null;
@@ -30,6 +31,7 @@ beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   saveRead = vi.fn(async () => undefined); saveFavorite = vi.fn(async () => undefined);
   reload = vi.fn(async () => undefined); committed = vi.fn(); error = vi.fn();
+  createErrorReporter = vi.fn(() => error);
   Object.defineProperty(window, "reader", { configurable: true, value: { markRead: saveRead, markFavorite: saveFavorite } });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   await act(async () => root.render(<Harness />));
@@ -46,6 +48,7 @@ it("shares same-event and cross-view duplicates until the refreshed list is read
     duplicate = actions.updateEntry({ ...entry }, "favorite", true);
   });
   expect(duplicate).toBe(first); expect(saveFavorite).toHaveBeenCalledTimes(1);
+  expect(createErrorReporter).toHaveBeenCalledTimes(1);
   expect(actions.isEntryUpdating(entry.id, "favorite")).toBe(true);
   await act(async () => write.resolve());
   expect(committed).toHaveBeenCalledExactlyOnceWith(entry.id, "favorite", true);
@@ -150,4 +153,24 @@ it("finishes accepted writes after unmount without updating a replacement owner"
   expect(actions.isEntryUpdating(entry.id, "read")).toBe(false);
   expect(await oldUpdate(entry, "read", true)).toBe(false);
   expect(saveRead).toHaveBeenCalledTimes(2);
+});
+
+it("captures a queued intent's reporter at admission rather than when its write starts", async () => {
+  const firstWrite = deferred(); const secondWrite = deferred();
+  const firstError = vi.fn(); const queuedError = vi.fn(); const laterError = vi.fn();
+  createErrorReporter.mockReturnValueOnce(firstError).mockReturnValueOnce(queuedError);
+  saveRead.mockReturnValueOnce(firstWrite.promise).mockReturnValueOnce(secondWrite.promise);
+  let first!: Promise<boolean>; let second!: Promise<boolean>;
+  await act(async () => {
+    first = actions.updateEntry(entry, "read", true);
+    second = actions.updateEntry(entry, "read", false);
+  });
+  expect(createErrorReporter).toHaveBeenCalledTimes(2);
+  expect(saveRead).toHaveBeenCalledTimes(1);
+  createErrorReporter.mockReturnValue(laterError);
+  await act(async () => { firstWrite.resolve(); await first; });
+  await act(async () => { secondWrite.reject(new Error("Queued failure")); expect(await second).toBe(false); });
+  expect(queuedError).toHaveBeenCalledExactlyOnceWith("Queued failure");
+  expect(firstError).not.toHaveBeenCalled(); expect(laterError).not.toHaveBeenCalled();
+  expect(createErrorReporter).toHaveBeenCalledTimes(2);
 });
