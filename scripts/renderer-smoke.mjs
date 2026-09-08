@@ -199,6 +199,8 @@ const channels = [
     return managementCollection;
   }],
   ["academic:search", (_event, query) => {
+    if (query === "Unavailable Author") throw new Error(`Synthetic academic discovery failure ${"UnbrokenDiagnostic".repeat(35)}`);
+    if (query === "Missing Author") return [];
     if (query === "Obsolete Author") return new Promise((resolve) => {
       completeObsoleteSearch = () => resolve([{ targetId: "openalex:OBSOLETE", title: "Obsolete author" }]);
       academicSearchRequested?.();
@@ -597,10 +599,23 @@ try {
   await waitFor(window, "!document.querySelector('.dialog')");
   await evaluate("document.querySelector('[aria-label=\"添加来源\"]').click()");
   await clickText('[role="tab"]', "学术作者");
+  assert(await evaluate("!document.querySelector('.source-action-feedback')"), "Unsearched authors must not be described as missing.");
+  for (const query of ["Unavailable Author", "Missing Author"]) {
+    await evaluate(`(() => { const input = document.querySelector('#academic-query'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(query)}); input.dispatchEvent(new Event('input', { bubbles: true })); input.focus(); })()`);
+    await pressKey("Enter");
+    await waitFor(window, query === "Unavailable Author" ? "Boolean(document.querySelector('.source-action-error'))" : "document.querySelector('.source-action-status')?.textContent.includes('未找到匹配的作者')");
+    for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+      await setViewport(width, height, scale);
+      await evaluate("document.querySelector('.source-action-feedback').scrollIntoView({ block: 'center' }); new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      assert(await evaluate("(() => { const dialog = document.querySelector('.dialog'); const feedback = document.querySelector('.source-action-feedback'); const message = feedback.querySelector('p'); const rect = feedback.getBoundingClientRect(); const bounds = dialog.getBoundingClientRect(); return !document.querySelector('.academic-results') && !document.querySelector('.connector-search button').disabled && rect.top >= bounds.top && rect.bottom <= bounds.bottom && dialog.scrollWidth <= dialog.clientWidth + 1 && message.scrollWidth <= message.clientWidth + 1 && (!message.matches('[role=alert]') || message.clientHeight <= parseFloat(getComputedStyle(message).fontSize) * 9 + 1); })()"), "Author search error and empty results must remain distinct, bounded and readable.");
+      await writeFile(path.join(tmpdir(), `reading-hub-source-feedback-${query === "Missing Author" ? "empty" : "error"}-${width}.png`), (await window.capturePage()).toPNG());
+    }
+  }
   const obsoleteSearchStarted = new Promise((resolve) => { academicSearchRequested = resolve; });
   await evaluate(`(() => { const input = document.querySelector('#academic-query'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Obsolete Author'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   await evaluate("document.querySelector('.connector-form').requestSubmit()");
   await obsoleteSearchStarted;
+  assert(await evaluate("document.querySelector('.source-action-status')?.textContent === '正在搜索作者…'"), "An in-flight author search must announce loading.");
   await evaluate(`const query = document.querySelector('#academic-query'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(query, 'Alexander'); query.dispatchEvent(new Event('input', { bubbles: true }));`);
   assert(await evaluate("!document.querySelector('.connector-search button').disabled"), "Editing the author query must allow a replacement search immediately.");
   await evaluate("document.querySelector('.connector-form').requestSubmit()");
@@ -624,6 +639,7 @@ try {
   const academicSubscriptionStarted = new Promise((resolve) => { academicSubscriptionRequested = resolve; });
   await evaluate("document.querySelector('.academic-results button').click()");
   await academicSubscriptionStarted;
+  assert(await evaluate("document.querySelector('.source-action-status')?.textContent.includes('正在添加作者') && document.querySelector('.connector-search button').textContent === '搜索'"), "Subscription progress must not be described as another author search.");
   await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
   await evaluate("document.querySelector('[aria-label=\"添加来源\"]').click()");
   completeAcademicSubscription();
@@ -1038,6 +1054,7 @@ try {
   const importStarted = new Promise((resolve) => { importRequested = resolve; });
   await clickText(".dialog-actions button", "导入 OPML…");
   await importStarted;
+  assert(await evaluate("document.querySelector('.source-action-status')?.textContent.includes('OPML') && document.querySelector('.connector-form .primary').textContent === '探测来源'"), "OPML import must not be labelled as source probing.");
   completeImport();
   await waitFor(window, "!document.querySelector('.connector-form .primary').disabled");
   await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");

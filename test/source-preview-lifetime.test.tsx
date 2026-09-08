@@ -42,6 +42,7 @@ it("publishes only a successfully resolved current probe", async () => {
   const request = deferred<PendingPreview>(); preview.mockReturnValue(request.promise);
   await edit("https://example.com/current"); await act(async () => submit());
   expect(publish).not.toHaveBeenCalled(); expect(submitButton().disabled).toBe(true);
+  expect(container.querySelector('[role="status"]')?.textContent).toBe("正在探测来源…");
   await act(async () => request.resolve(result("current")));
   expect(publish).toHaveBeenCalledExactlyOnceWith(result("current"));
 });
@@ -112,8 +113,22 @@ it("does not overlap probing with OPML import, even if the URL is edited", async
   await act(async () => container.querySelector<HTMLButtonElement>('.dialog-actions button[type="button"]')!.click());
   await edit("https://example.com/current"); await act(async () => submit());
   expect(preview).not.toHaveBeenCalled(); expect(submitButton().disabled).toBe(true);
+  expect(submitButton().textContent).toBe("探测来源");
+  expect(container.querySelector('[role="status"]')?.textContent).toContain("OPML");
   await act(async () => request.resolve({ cancelled: true }));
   expect(submitButton().disabled).toBe(false);
+  expect(container.querySelector('[role="status"]')).toBeNull();
+});
+
+it("announces completed OPML counts and gives import errors the shared alert", async () => {
+  importOpml.mockResolvedValueOnce({ cancelled: false, imported: 2, existing: 1, skipped: 3 });
+  const importButton = () => container.querySelector<HTMLButtonElement>('.dialog-actions button[type="button"]')!;
+  await act(async () => importButton().click());
+  expect(container.querySelector('[role="status"]')?.textContent).toBe("已导入 2 个 Feed；1 个已存在；跳过 3 个。");
+  importOpml.mockRejectedValueOnce(new Error("Synthetic import failure"));
+  await act(async () => importButton().click());
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe("Synthetic import failure");
+  expect(container.querySelector('[role="status"]')).toBeNull();
 });
 
 it("does not start a request for an empty URL", async () => {

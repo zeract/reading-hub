@@ -44,6 +44,7 @@ describe.each(cases)("$label connection lifetime", (item) => {
     request.mockReturnValue(new Promise<void>((done) => { resolve = done; }));
     await select(item); await act(async () => { submit(); submit(); });
     expect(request).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("正在");
     await act(async () => resolve());
     expect(saved).toHaveBeenCalledOnce();
   });
@@ -52,6 +53,8 @@ describe.each(cases)("$label connection lifetime", (item) => {
     request.mockRejectedValueOnce(new Error("Synthetic connection failure"));
     await select(item); await act(async () => submit());
     expect(container.querySelector(".error")?.textContent).toBe("Synthetic connection failure");
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Synthetic connection failure");
+    expect(container.querySelector('[role="alert"]')?.getAttribute("tabindex")).toBe("0");
     expect(container.querySelector<HTMLButtonElement>('.dialog-actions .primary')!.disabled).toBe(false);
     for (const [id, value] of Object.entries(item.fields)) expect(container.querySelector<HTMLInputElement>(`#${id}`)!.value).toBe(value);
     await act(async () => submit());

@@ -39,6 +39,44 @@ async function submit() {
 }
 
 describe("academic search results", () => {
+  it("distinguishes untouched input, pending search, empty matches and an edited query", async () => {
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    let resolve!: (value: SubscriptionDraft[]) => void;
+    search.mockReturnValueOnce(new Promise<SubscriptionDraft[]>((done) => { resolve = done; }));
+    await typeQuery("Missing"); await submit();
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("正在搜索作者…");
+    await act(async () => resolve([]));
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("未找到匹配的作者");
+    expect(container.querySelector('.academic-results')).toBeNull();
+    await typeQuery("First");
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    await submit();
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("找到 1 位候选作者");
+  });
+
+  it("shows a search failure as an alert instead of claiming there were no matches", async () => {
+    search.mockRejectedValueOnce(new Error("Synthetic search unavailable"));
+    await typeQuery("First"); await submit();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Synthetic search unavailable");
+    expect(container.querySelector('[role="alert"]')?.getAttribute("tabindex")).toBe("0");
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    search.mockResolvedValueOnce([]); await submit();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("未找到匹配的作者");
+  });
+
+  it("does not let an obsolete empty response replace the current loading status", async () => {
+    let resolveOld!: (value: SubscriptionDraft[]) => void;
+    let resolveCurrent!: (value: SubscriptionDraft[]) => void;
+    search.mockReturnValueOnce(new Promise<SubscriptionDraft[]>((done) => { resolveOld = done; }))
+      .mockReturnValueOnce(new Promise<SubscriptionDraft[]>((done) => { resolveCurrent = done; }));
+    await typeQuery("Old"); await submit(); await typeQuery("Current"); await submit();
+    await act(async () => resolveOld([]));
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("正在搜索作者…");
+    await act(async () => resolveCurrent([author]));
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("找到 1 位候选作者");
+  });
+
   it("removes selectable results as soon as the search name changes", async () => {
     await typeQuery("First"); await submit();
     expect(container.querySelector(".academic-results")?.textContent).toContain("First Author");
@@ -112,6 +150,8 @@ describe("academic search results", () => {
     await typeQuery("Second"); await submit();
     expect(subscribe).toHaveBeenCalledExactlyOnceWith(author);
     expect(search).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("正在添加作者");
+    expect(container.querySelector('.connector-search button')?.textContent).toBe("搜索");
     await act(async () => resolve());
     expect(saved).toHaveBeenCalledOnce();
   });

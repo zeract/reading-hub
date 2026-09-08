@@ -70,6 +70,15 @@ export function AddSourceDialog({ onClose, onPreview, onImportOpml, onZhihuStart
   </Dialog>;
 }
 
+/** Shared feedback for source discovery and accepted connection operations. */
+function SourceActionFeedback({ status, error }: { status?: string; error?: string }) {
+  if (!status && !error) return null;
+  return <div className="source-action-feedback">
+    {status && <p className="source-action-status" role="status">{status}</p>}
+    {error && <p className="error source-action-error" role="alert" tabIndex={0}>{error}</p>}
+  </div>;
+}
+
 function PublicSourcePane({ onPreview, onImportOpml }: { onPreview: (preview: PendingPreview) => void; onImportOpml: () => Promise<OpmlImportResult> }) {
   const [url, setUrl] = useState("");
   const [imported, setImported] = useState<string>();
@@ -103,9 +112,8 @@ function PublicSourcePane({ onPreview, onImportOpml }: { onPreview: (preview: Pe
     <label htmlFor="source-url">网址</label>
     <input id="source-url" value={url} onChange={(event) => editUrl(event.target.value)} placeholder="https://… 或 http://…" type="url" required />
     <p className="dialog-intro">优先识别 RSS、Atom、JSON Feed；没有 Feed 时会从公开页面提取文章卡片。也可导入 OPML。明确添加的本机地址仅接受 RSS/Atom/JSON Feed，不能用于网页提取。X 主页请在“X 动态”中使用官方 API。</p>
-    {error && <p className="error">{error}</p>}
-    {imported && <p className="source-settings-note">{imported}</p>}
-    <div className="dialog-actions"><button type="button" onClick={() => void importFile()} disabled={busy}>导入 OPML…</button><button className="primary" disabled={busy}>{busy ? "正在探测…" : "探测来源"}</button></div>
+    <SourceActionFeedback error={error} status={busy ? operation.current === "import" ? "正在选择或导入 OPML…" : "正在探测来源…" : error ? undefined : imported} />
+    <div className="dialog-actions"><button type="button" onClick={() => void importFile()} disabled={busy}>{busy && operation.current === "import" ? "正在导入 OPML…" : "导入 OPML…"}</button><button className="primary" disabled={busy}>{busy && operation.current === "preview" ? "正在探测…" : "探测来源"}</button></div>
   </form>;
 }
 
@@ -121,7 +129,7 @@ function ZhihuSourcePane({ onStarted }: { onStarted: () => Promise<void> }) {
     <p className="dialog-intro">将打开 Reading Hub 自己的知乎登录窗口。登录后会读取“关注”动态中的公开卡片，包括关注用户的创作及其公开互动；不会读取或复制 Chrome 的 Cookie。</p>
     <p className="dialog-intro">登录会话仅保存于本机。删除该来源会同时退出并清除该会话。</p>
     <p className="dialog-intro">已有的“知乎（本人官方数据）”来源不会自动改写；不再需要时可在左侧单独删除。</p>
-    {error && <p className="error">{error}</p>}
+    <SourceActionFeedback error={error} status={busy ? "正在连接知乎，请在登录窗口完成操作。" : undefined} />
     <div className="dialog-actions"><button type="button" className="primary" onClick={() => void submit()} disabled={busy}>打开知乎登录</button></div>
   </section>;
 }
@@ -140,7 +148,7 @@ function XSourcePane({ onStarted }: { onStarted: () => Promise<void> }) {
     <p className="dialog-intro">X 当前未提供可由 Reading Hub 在免 API 模式下自动读取的公开博主时间线，因此“公开博主”订阅已下线。应用不会使用 Cookie、登录态或私有 Web API 绕过此限制。</p>
     <p className="dialog-intro">此功能使用官方 X API，不读取浏览器 Cookie。请在 X Developer Console 为你的应用配置回调地址 <code>http://127.0.0.1:43119/x/callback</code>，并填写该应用的 Client ID。</p>
     <p className="dialog-intro">授权后默认每 30–60 分钟收集关注账号的原创帖和文章型外链，过滤回复与转推。访问令牌仅保存在本机 Keychain；X 当前的 API 额度和计费资格由你的开发者项目决定。</p>
-    <form className="connector-form" onSubmit={(event) => void submit(event)}><label htmlFor="x-client-id">X Client ID</label><input id="x-client-id" value={clientId} onChange={(event) => setClientId(event.target.value)} placeholder="Developer App Client ID" autoComplete="off" required />{error && <p className="error">{error}</p>}<div className="dialog-actions"><button className="primary" disabled={busy}>{busy ? "等待授权…" : "在浏览器中授权 X"}</button></div></form>
+    <form className="connector-form" onSubmit={(event) => void submit(event)}><label htmlFor="x-client-id">X Client ID</label><input id="x-client-id" value={clientId} onChange={(event) => setClientId(event.target.value)} placeholder="Developer App Client ID" autoComplete="off" required /><SourceActionFeedback error={error} status={busy ? "正在授权 X，请在浏览器中完成操作。" : undefined} /><div className="dialog-actions"><button className="primary" disabled={busy}>{busy ? "等待授权…" : "在浏览器中授权 X"}</button></div></form>
   </section>;
 }
 
@@ -164,7 +172,7 @@ function XiaohongshuSourcePane({ onSaved }: { onSaved: () => Promise<void> }) {
       <input id="xiaohongshu-profile-url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.xiaohongshu.com/user/profile/用户ID" type="url" required />
       <label htmlFor="xiaohongshu-profile-title">显示名称（可选）</label>
       <input id="xiaohongshu-profile-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="小红书 · 某位博主" maxLength={120} />
-      {error && <p className="error">{error}</p>}
+      <SourceActionFeedback error={error} status={busy ? "正在读取公开主页并添加来源…" : undefined} />
       <div className="dialog-actions"><button className="primary" disabled={busy}>{busy ? "正在读取公开主页…" : "添加小红书博主"}</button></div>
     </form>
   </section>;
@@ -172,12 +180,12 @@ function XiaohongshuSourcePane({ onSaved }: { onSaved: () => Promise<void> }) {
 
 function AcademicSourcePane({ onSaved }: { onSaved: () => Promise<void> }) {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SubscriptionDraft[]>([]);
+  const [results, setResults] = useState<SubscriptionDraft[]>();
   const { busy, error, run, invalidate, clearError } = useAsyncAction();
   const operation = useRef<"search" | "subscribe" | undefined>(undefined);
 
   function editQuery(value: string) {
-    setQuery(value); setResults([]);
+    setQuery(value); setResults(undefined);
     if (operation.current === "search") invalidate();
     else clearError();
   }
@@ -187,7 +195,7 @@ function AcademicSourcePane({ onSaved }: { onSaved: () => Promise<void> }) {
     if (!query.trim()) return;
     await run(async (isCurrent) => {
       operation.current = "search";
-      setResults([]);
+      setResults(undefined);
       const found = await window.reader.searchAcademicAuthors(query.trim());
       if (isCurrent()) setResults(found);
     });
@@ -201,9 +209,11 @@ function AcademicSourcePane({ onSaved }: { onSaved: () => Promise<void> }) {
   }
   return <section className="source-method-pane">
     <p className="dialog-intro">从 OpenAlex、Semantic Scholar 与可公开读取的 ORCID works 中聚合论文；卡片会保留实际来源。它不是 Google Scholar 页面同步，也不读取 Scholar 登录态或邮件。</p>
-    <form className="connector-form" onSubmit={(event) => void search(event)}><label htmlFor="academic-query">作者姓名</label><div className="connector-search"><input id="academic-query" value={query} onChange={(event) => editQuery(event.target.value)} placeholder="例如 Geoffrey Hinton" /><button className="primary" disabled={busy}>搜索</button></div></form>
-    {results.length > 0 && <div className="academic-results">{results.map((draft, index) => <button type="button" key={`${draft.targetId}-${index}`} onClick={() => void choose(draft)} disabled={busy}><strong>{draft.title}</strong><span>{draft.config?.orcid ? `ORCID ${String(draft.config.orcid)}` : "确认此作者"}</span></button>)}</div>}
-    {error && <p className="error">{error}</p>}
+    <form className="connector-form" onSubmit={(event) => void search(event)}><label htmlFor="academic-query">作者姓名</label><div className="connector-search"><input id="academic-query" value={query} onChange={(event) => editQuery(event.target.value)} placeholder="例如 Geoffrey Hinton" /><button className="primary" disabled={busy}>{busy && operation.current === "search" ? "正在搜索…" : "搜索"}</button></div></form>
+    <SourceActionFeedback error={error} status={busy
+      ? operation.current === "subscribe" ? "正在添加作者，关闭窗口不会中止操作。" : "正在搜索作者…"
+      : error || !results ? undefined : results.length ? `找到 ${results.length} 位候选作者，请核对姓名和来源后确认。` : "未找到匹配的作者，请尝试完整姓名或其他拼写。"} />
+    {results && results.length > 0 && <div className="academic-results">{results.map((draft, index) => <button type="button" key={`${draft.targetId}-${index}`} onClick={() => void choose(draft)} disabled={busy}><strong>{draft.title}</strong><span>{draft.config?.orcid ? `ORCID ${String(draft.config.orcid)}` : "确认此作者"}</span></button>)}</div>}
   </section>;
 }
 
