@@ -1,7 +1,7 @@
 import { isRetiredXPublicProfile, sourceCapabilities, sourceHealthLabel } from "../shared/source-capabilities";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ModalSurface } from "./modal-surface";
-import { LatestRequestGuard } from "./request-guard";
+import { useAsyncAction } from "./use-async-action";
 import type { PendingPreview } from "../shared/ipc";
 import type {
   CalibrationResult,
@@ -19,23 +19,7 @@ type AddSourceMethod = "public" | "zhihu" | "x" | "xiaohongshu" | "academic";
 
 export function PreviewDialog({ pending, onCancel, onConfirm }: { pending: PendingPreview; onCancel: () => void; onConfirm: () => Promise<void> }) {
   const { probe } = pending;
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const saving = useRef(false);
-  const requests = useRef(new LatestRequestGuard());
-  useEffect(() => () => requests.current.invalidate(), []);
-
-  async function save() {
-    if (saving.current) return;
-    saving.current = true;
-    const revision = requests.current.begin();
-    setBusy(true); setError(undefined);
-    try { await onConfirm(); }
-    catch (reason) { if (requests.current.isCurrent(revision)) setError(errorMessage(reason)); }
-    finally {
-      if (requests.current.isCurrent(revision)) { saving.current = false; setBusy(false); }
-    }
-  }
+  const { busy, error, run } = useAsyncAction();
 
   return <Dialog title="确认来源" onClose={onCancel} className="dialog--preview">
     <div className="preview-dialog__body">
@@ -50,7 +34,7 @@ export function PreviewDialog({ pending, onCancel, onConfirm }: { pending: Pendi
       {busy && <p className="source-settings-note" role="status">来源正在保存，关闭窗口不会中止操作。</p>}
       {error && <p className="error" role="alert">{error}</p>}
     </div>
-    <div className="dialog-actions dialog-actions--fixed"><button type="button" onClick={onCancel}>{busy ? "关闭" : "取消"}</button><button type="button" className="primary" onClick={() => void save()} disabled={busy}>{busy ? "保存中…" : "保存来源"}</button></div>
+    <div className="dialog-actions dialog-actions--fixed"><button type="button" onClick={onCancel}>{busy ? "关闭" : "取消"}</button><button type="button" className="primary" onClick={() => void run(onConfirm)} disabled={busy}>{busy ? "保存中…" : "保存来源"}</button></div>
   </Dialog>;
 }
 
@@ -88,45 +72,28 @@ export function AddSourceDialog({ onClose, onPreview, onImportOpml, onZhihuStart
 
 function PublicSourcePane({ onPreview, onImportOpml }: { onPreview: (preview: PendingPreview) => void; onImportOpml: () => Promise<OpmlImportResult> }) {
   const [url, setUrl] = useState("");
-  const [error, setError] = useState<string>();
   const [imported, setImported] = useState<string>();
-  const [busy, setBusy] = useState(false);
-  const requests = useRef(new LatestRequestGuard());
+  const { busy, error, run, invalidate, clearError } = useAsyncAction();
   const operation = useRef<"preview" | "import" | undefined>(undefined);
-  useEffect(() => () => requests.current.invalidate(), []);
-
-  async function run(kind: "preview" | "import", task: (isCurrent: () => boolean) => Promise<void>) {
-    if (operation.current) return;
-    operation.current = kind;
-    const revision = requests.current.begin();
-    const isCurrent = () => requests.current.isCurrent(revision);
-    setBusy(true); setError(undefined);
-    try { await task(isCurrent); }
-    catch (reason) { if (isCurrent()) setError(errorMessage(reason)); }
-    finally {
-      if (isCurrent()) { operation.current = undefined; setBusy(false); }
-    }
-  }
 
   function editUrl(value: string) {
-    setUrl(value); setError(undefined);
-    if (operation.current === "preview") {
-      requests.current.invalidate();
-      operation.current = undefined;
-      setBusy(false);
-    }
+    setUrl(value);
+    if (operation.current === "preview") invalidate();
+    else clearError();
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!url.trim()) return;
-    await run("preview", async (isCurrent) => {
+    await run(async (isCurrent) => {
+      operation.current = "preview";
       const result = await window.reader.previewSource(url.trim());
       if (isCurrent()) onPreview(result);
     });
   }
   async function importFile() {
-    await run("import", async (isCurrent) => {
+    await run(async (isCurrent) => {
+      operation.current = "import";
       setImported(undefined);
       const result = await onImportOpml();
       if (isCurrent() && !result.cancelled) setImported(`已导入 ${result.imported} 个 Feed${result.existing ? `；${result.existing} 个已存在` : ""}${result.skipped ? `；跳过 ${result.skipped} 个` : ""}。`);

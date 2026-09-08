@@ -1,10 +1,9 @@
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiProviderSettings, type AiReasoningEffort } from "../shared/types";
 import { CODEX_EFFORT_OPTIONS } from "./ai-options";
-import { errorMessage } from "./errors";
 import { adjustReaderFontScale, loadReaderPreferences, saveReaderPreferences, type ReaderPreferences } from "./reader-preferences";
 import { AppIcon } from "./ui-icons";
-import { LatestRequestGuard } from "./request-guard";
+import { useAsyncAction } from "./use-async-action";
 
 type SettingsSection = "reading" | "ai";
 
@@ -17,18 +16,15 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState<AiReasoningEffort>("medium");
   const [apiKey, setApiKey] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const requests = useRef(new LatestRequestGuard());
-  const updating = useRef(false);
+  const { busy, error, run, clearError, fail, isRunning } = useAsyncAction();
 
   useEffect(() => {
     saveReaderPreferences(preferences);
   }, [preferences]);
 
-  const reloadProviders = useCallback(async (revision: number, preferredId: AiProviderId) => {
+  const reloadProviders = useCallback(async (isCurrent: () => boolean, preferredId: AiProviderId) => {
     const next = await window.reader.listAiProviders();
-    if (!requests.current.isCurrent(revision)) return;
+    if (!isCurrent()) return;
     setProviders(next);
     const active = next.find((provider) => provider.id === preferredId) || next[0];
     if (!active) return;
@@ -38,46 +34,35 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
   }, []);
 
   useEffect(() => {
-    const revision = requests.current.begin();
-    void reloadProviders(revision, "codex-cli").catch((reason) => {
-      if (requests.current.isCurrent(revision)) setError(errorMessage(reason));
+    let current = true;
+    void reloadProviders(() => current, "codex-cli").catch((reason) => {
+      if (current) fail(reason);
     });
-    return () => requests.current.invalidate();
-  }, [reloadProviders]);
+    return () => { current = false; };
+  }, [reloadProviders, fail]);
 
   const selected = providers.find((provider) => provider.id === providerId);
   const usingLocalCodex = selected?.id === "codex-cli";
   const requiresApiKey = selected?.requiresApiKey === true;
 
   function switchProvider(nextId: AiProviderId) {
-    if (updating.current) return;
+    if (isRunning()) return;
     const next = providers.find((provider) => provider.id === nextId);
     setProviderId(nextId);
     setModel(next?.model || "");
     setEffort(next?.effort || "medium");
     setApiKey("");
-    setError(undefined);
+    clearError();
   }
 
   async function updateAiSettings(update: () => Promise<unknown>) {
-    if (!selected || updating.current) return;
-    // The ref locks the command before React renders disabled controls.
-    updating.current = true;
-    const revision = requests.current.begin();
-    setBusy(true); setError(undefined);
-    try {
+    if (!selected) return;
+    await run(async (isCurrent) => {
       await update();
-      if (!requests.current.isCurrent(revision)) return;
+      if (!isCurrent()) return;
       setApiKey("");
-      await reloadProviders(revision, providerId);
-    } catch (reason) {
-      if (requests.current.isCurrent(revision)) setError(errorMessage(reason));
-    } finally {
-      if (requests.current.isCurrent(revision)) {
-        updating.current = false;
-        setBusy(false);
-      }
-    }
+      await reloadProviders(isCurrent, providerId);
+    });
   }
 
   async function saveAiSettings(event: FormEvent) {
@@ -91,7 +76,7 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
   }
 
   async function clearAiSettings() {
-    if (!selected || updating.current) return;
+    if (!selected || isRunning()) return;
     const message = usingLocalCodex
       ? "恢复本机 Codex 的默认模型与推理强度？"
       : `清除 ${selected.label} 的 API Key？`;
