@@ -67,16 +67,15 @@ describe("HTTP response validator persistence", () => {
     } finally { await f.close(); }
   });
 
-  it("keeps Feed validators when a 304 is accompanied by newly imported archive content", async () => {
+  it("preserves Feed validators without backfilling legacy history scopes on a 304", async () => {
     const f = fixture("rss");
     try {
       network.fetch.mockResolvedValueOnce(f.full()); await f.sync.syncSource(f.source.id);
       f.db.updateSubscriptionScope(f.source.id, { facetSelections: [], history: { mode: "all" } });
       network.fetch.mockResolvedValueOnce(new Response(null, { status: 304 }));
-      network.fetch.mockResolvedValueOnce(new Response('<ul><li><time datetime="2025-01-01">2025-01-01</time><a href="/historical">Historical</a></li></ul>', { headers: { "content-type": "text/html" } }));
-      expect((await f.sync.syncSource(f.source.id)).inserted).toBe(1);
+      expect((await f.sync.syncSource(f.source.id)).inserted).toBe(0);
       expect(f.db.getSource(f.source.id)).toMatchObject({ etag: oldHeaders.etag, lastModified: oldHeaders["last-modified"] });
-      expect(f.db.listEntries()).toHaveLength(2);
+      expect(f.db.listEntries()).toHaveLength(1);
     } finally { await f.close(); }
   });
 

@@ -39,7 +39,7 @@ describe("persistent schema migrations", () => {
       database = undefined;
 
       const firstOpen = inspectMigrationState(filePath);
-      expect(firstOpen.versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      expect(firstOpen.versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
       expect(firstOpen.originCount).toBe(2);
       expect(firstOpen.hasSourceMaintenance).toBe(true);
       expect(firstOpen.hasFacetTables).toBe(true);
@@ -60,7 +60,7 @@ describe("persistent schema migrations", () => {
     }
   });
 
-  it("keeps source-scoped facets and an explicit collection scope after reopening", () => {
+  it("retires legacy backfill while preserving category selections and cards after reopening", () => {
     const directory = mkdtempSync(join(tmpdir(), "reading-hub-facet-persistence-"));
     const filePath = join(directory, "facets.sqlite");
     let database: ReadingDatabase | undefined;
@@ -82,13 +82,14 @@ describe("persistent schema migrations", () => {
         facets: [facet]
       }]);
       database.updateSubscriptionScope(source.id, { facetSelections: [facet], history: { mode: "selected", limit: 50 } });
+      (database as unknown as { db: Sqlite.Database }).db.prepare("DELETE FROM schema_migrations WHERE version = 11").run();
       database.close();
       database = undefined;
 
       reopened = new ReadingDatabase(filePath);
       expect(reopened.getSubscriptionForSource(source.id)?.scope).toEqual({
         facetSelections: [facet],
-        history: { mode: "selected", limit: 50 }
+        history: { mode: "none" }
       });
       expect(reopened.listSourceFacets(source.id)).toEqual([{ ...facet, sourceId: source.id, entryCount: 1 }]);
       expect(reopened.listEntries({ sourceId: source.id, facetSelections: [facet] })).toHaveLength(1);

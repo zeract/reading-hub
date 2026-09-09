@@ -48,6 +48,10 @@ describe("IPC input validation", () => {
     expect(() => parseEntryPageQuery({ collection: "invalid" })).toThrow("收集范围无效");
     expect(() => parseEntryPageQuery({ sort: "invalid" })).toThrow("排序方式无效");
     expect(() => parseEntryPageQuery({ dismissed: "true" })).toThrow();
+    for (const parse of [parseEntryListQuery, parseEntryPageQuery]) {
+      expect(parse({ publishedOrCollected: true, startAt: 1, endAt: 2 })).toMatchObject({ publishedOrCollected: true, startAt: 1, endAt: 2 });
+      expect(() => parse({ publishedOrCollected: "true" })).toThrow();
+    }
     expect(() => parseEntryListQuery({ sourceId: "source-1", search: "x".repeat(161) })).toThrow("关键词搜索无效");
     expect(() => parseEntryPageQuery({ cursor: { createdAt: 8, id: "entry-1" } })).toThrow("文章分页游标无效");
     expect(() => parseProfileSubscriptionInput({ title: "missing URL" })).toThrow("主页地址无效");

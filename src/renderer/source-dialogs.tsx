@@ -407,7 +407,6 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
           </> : <p className="source-settings-note" role="status">正在读取收集范围…</p>}
         </fieldset>}
         {collection && <CollectionScopeEditor
-          source={source}
           settings={collection}
           savedScope={initialCollectionScope}
           disabled={busy}
@@ -443,8 +442,7 @@ function collectionFacetOptions(settings: SourceCollectionSettings, retainedFace
   return [...options.values()];
 }
 
-function CollectionScopeEditor({ source, settings, savedScope, disabled, onInspect, onChange }: {
-  source: Source;
+function CollectionScopeEditor({ settings, savedScope, disabled, onInspect, onChange }: {
   settings: SourceCollectionSettings;
   savedScope?: SubscriptionScope;
   disabled: boolean;
@@ -455,12 +453,10 @@ function CollectionScopeEditor({ source, settings, savedScope, disabled, onInspe
   // discovery omits them. Only scope selections are sent when saving.
   const [touchedFacets, setTouchedFacets] = useState<Facet[]>([]);
   const canInspectFacets = settings.facetDiscoveryAvailable === true;
-  const canImportHistory = settings.historyAvailable === true;
   const facets = collectionFacetOptions(settings, [...(savedScope?.facetSelections || []), ...touchedFacets]);
-  if (!canInspectFacets && !canImportHistory && !facets.length) return null;
+  if (!canInspectFacets && !facets.length) return null;
   const { scope } = settings;
   const selectedIds = new Set(scope.facetSelections.map(facetIdentity));
-  const canImportSelectedHistory = scope.facetSelections.length > 0;
 
   function toggleFacet(facet: Facet) {
     setTouchedFacets((current) => current.some((item) => facetIdentity(item) === facetIdentity(facet))
@@ -473,28 +469,9 @@ function CollectionScopeEditor({ source, settings, savedScope, disabled, onInspe
       return {
         ...current,
         facetSelections,
-        history: current.history.mode === "all"
-          ? { mode: "none" }
-          : current.history.mode === "selected" && !facetSelections.length
-            ? { mode: "none" }
-            : current.history
+        history: { mode: "none" }
       };
     });
-  }
-
-  function setHistory(mode: SubscriptionScope["history"]["mode"]) {
-    onChange((current) => ({
-      ...current,
-      facetSelections: mode === "all" ? [] : current.facetSelections,
-      history: mode === "none" ? { mode } : {
-        mode,
-        ...(current.history.limit === undefined ? { limit: 100 } : { limit: current.history.limit })
-      }
-    }));
-  }
-
-  function setHistoryLimit(limit: number) {
-    onChange((current) => ({ ...current, history: { ...current.history, limit } }));
   }
 
   return <fieldset className="source-collection-scope">
@@ -512,15 +489,7 @@ function CollectionScopeEditor({ source, settings, savedScope, disabled, onInspe
     </div> : <p className="source-settings-note">尚未发现可验证的文章分类。{canInspectFacets ? "可读取公开归档中的分类标签。" : "此来源将收集全部当前更新。"}</p>}
     <p className="source-settings-note">{scope.facetSelections.length ? `已选 ${scope.facetSelections.length} 个分类；之后只保留匹配的更新。` : "未选择分类：将保留当前 Feed 的全部更新。"}</p>
     {facets.some((facet) => facet.retained && selectedIds.has(facetIdentity(facet))) && <p className="source-settings-note">部分已选分类当前未出现在可用列表中，仍会参与筛选；取消勾选可移除。</p>}
-    {canImportHistory && <div className="history-options" role="group" aria-label="历史文章范围">
-      <strong>历史文章</strong>
-      <label><input type="radio" name={`history-${source.id}`} checked={scope.history.mode === "none"} onChange={() => setHistory("none")} disabled={disabled} />只收集当前 Feed（默认）</label>
-      <label><input type="radio" name={`history-${source.id}`} checked={scope.history.mode === "selected"} onChange={() => setHistory("selected")} disabled={disabled || !canImportSelectedHistory} />按所选分类补充公开历史</label>
-      <label><input type="radio" name={`history-${source.id}`} checked={scope.history.mode === "all"} onChange={() => setHistory("all")} disabled={disabled} />补充全部公开历史（不筛选分类）</label>
-      {scope.history.mode !== "none" && <label className="history-limit">最多导入<select value={scope.history.limit ?? 100} onChange={(event) => setHistoryLimit(Number(event.target.value))} disabled={disabled}>
-        {[50, 100, 300, 1_000, 5_000].map((limit) => <option key={limit} value={limit}>{limit} 篇</option>)}
-      </select></label>}
-    </div>}
+
   </fieldset>;
 }
 

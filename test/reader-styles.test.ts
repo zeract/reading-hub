@@ -57,7 +57,7 @@ describe("reader display-equation layout", () => {
   });
 
   it("keeps the article title proportional to the adjustable body size", () => {
-    expect(styles).toMatch(/\.reader-article h1\s*\{[^}]*font-size:\s*2em;[^}]*line-height:\s*1\.16/s);
+    expect(styles).toMatch(/\.reader-article h1\s*\{[^}]*font-size:\s*1\.68em;[^}]*line-height:\s*1\.5/s);
     expect(styles).not.toContain(".reader-article h1 { margin: 0; color: var(--ink); font-family: \"Iowan Old Style\",\"Songti SC\",\"STSong\",Georgia,serif; font-size: clamp(32px,3.8vw,51px);");
   });
 
@@ -106,6 +106,6 @@ describe("reader display-equation layout", () => {
 
   it("clips timeline titles and summaries to the card width and two lines", () => {
     expect(styles).toMatch(/\.entry-card h2\s*\{[^}]*max-width:\s*100%;[^}]*overflow:\s*hidden;[^}]*overflow-wrap:\s*anywhere;[^}]*-webkit-line-clamp:\s*2/s);
-    expect(styles).toMatch(/\.summary\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;[^}]*max-height:\s*calc\(1\.48em\s*\*\s*2\);[^}]*overflow:\s*hidden;[^}]*overflow-wrap:\s*anywhere;[^}]*-webkit-line-clamp:\s*2/s);
+    expect(styles).toMatch(/\.summary\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;[^}]*max-height:\s*calc\(1\.6em\s*\*\s*2\);[^}]*overflow:\s*hidden;[^}]*overflow-wrap:\s*anywhere;[^}]*-webkit-line-clamp:\s*2/s);
   });
 });

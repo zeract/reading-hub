@@ -1,9 +1,8 @@
 import { throwIfAborted } from "./cancellation";
 import { load } from "cheerio";
-import type { ConnectorAdapter, DiscoveryContext, Entry, ExtractionRule, Facet, RawEntry, Source, Subscription, SyncCheckpoint, SyncContext, SyncResult } from "../shared/types";
-import { createSubscriptionScopeMatcher, normaliseFacets } from "../shared/subscription-scope";
+import type { ConnectorAdapter, DiscoveryContext, Entry, ExtractionRule, RawEntry, Source, Subscription, SyncCheckpoint, SyncContext, SyncResult } from "../shared/types";
 import { assertPublicUrl, canonicalizeContentUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
-import { inspectPublicArchiveFacets, MAX_ARCHIVE_DOCUMENT_BYTES, parsePublishedArchive, type ArchiveFacetCatalog } from "./archive-backfill";
+import { inspectPublicArchiveFacets, type ArchiveFacetCatalog } from "./archive-backfill";
 import { contentNormalizer } from "./content-normalizer";
 import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage, extractPagePublishedAt, extractPublicationDateFromUrl, withPublicationDateRevision } from "./extractor";
 import { discoverFeedUrls, FEED_DISCOVERY_REVISION, looksLikeFeed, parseFeed, RSS_METADATA_REVISION } from "./feed";
@@ -46,11 +45,7 @@ export class RssConnector extends BaseConnector implements ConnectorAdapter {
     return catalog ? inspectPublicArchiveFacets(this.http, catalog.url, context?.signal) : undefined;
   }
 
-  supportsHistoricalCollection(source: Source): boolean {
-    return archiveCatalogConfig(source) !== undefined;
-  }
-
-  async fetchWithMetadata(source: Source, checkpoint?: SyncCheckpoint, subscription?: Subscription, signal?: AbortSignal): Promise<FetchOutcome> {
+  async fetchWithMetadata(source: Source, _checkpoint?: SyncCheckpoint, _subscription?: Subscription, signal?: AbortSignal): Promise<FetchOutcome> {
     // A 304 response contains no feed body to replay. After a metadata-parser
     // upgrade, deliberately make one normal public request so existing cards
     // can be enriched; the revision prevents this from recurring on refresh.
@@ -62,87 +57,20 @@ export class RssConnector extends BaseConnector implements ConnectorAdapter {
       { allowTrustedLoopbackFeed, signal }
     );
     const feed = response.status === 304 ? undefined : await parseFeed(response.text, response.url);
-    const archive = await this.fetchSelectedArchiveHistory(source, subscription, checkpoint, signal);
     return {
-      // The current Feed is authoritative for its overlapping entries. A
-      // one-time archive can supply older records and publication dates, but
-      // must never overwrite richer Feed titles/summaries in the same save.
-      entries: mergeFeedFirst(feed?.entries ?? [], archive.entries),
-      notModified: response.status === 304 && archive.entries.length === 0,
+      entries: feed?.entries ?? [],
+      notModified: response.status === 304,
       emptyIsHealthy: true,
       ...responseValidators(response),
       metadataRevision: RSS_METADATA_REVISION,
-      iconUrl: feed?.iconUrl,
-      checkpoint: archive.checkpoint
+      iconUrl: feed?.iconUrl
     };
   }
 
-  /**
-   * Current Feed entries remain the recurring source of truth. A publisher
-   * archive is intentionally opt-in: it is read only after the subscription
-   * explicitly requests selected/all history, then a scope-aware checkpoint
-   * prevents repeat downloads until that scope changes.
-   */
-  private async fetchSelectedArchiveHistory(
-    source: Source,
-    subscription: Subscription | undefined,
-    checkpoint: SyncCheckpoint | undefined,
-    signal?: AbortSignal
-  ): Promise<{ entries: RawEntry[]; checkpoint?: FetchOutcome["checkpoint"] }> {
-    const catalog = archiveCatalogConfig(source);
-    const selection = archiveHistorySelection(subscription);
-    if (!catalog || !selection) return { entries: [] };
-    const fingerprint = archiveHistoryFingerprint(catalog.url, selection);
-    const previous = archiveHistoryCheckpoint(checkpoint?.data, fingerprint);
-    const now = Date.now();
-    if (previous?.completedAt || (previous?.nextAttemptAt !== undefined && previous.nextAttemptAt > now)) return { entries: [] };
-    try {
-      const response = await this.http.getText(catalog.url, undefined, { maxBytes: MAX_ARCHIVE_DOCUMENT_BYTES, signal });
-      const archiveEntries = parsePublishedArchive(response.text, response.url);
-      if (!archiveEntries.length) throw new Error("作者公开归档未包含可验证的日期条目。");
-      const entries = selectArchiveEntries(archiveEntries, selection);
-      return {
-        entries,
-        checkpoint: {
-          data: {
-            ...(checkpoint?.data ?? {}),
-            archiveHistory: { fingerprint, completedAt: now, importedEntries: entries.length }
-          }
-        }
-      };
-    } catch {
-      throwIfAborted(signal);
-      // Do not turn a healthy Feed into a failed source merely because its
-      // optional archive is temporarily unavailable. Persist a conservative
-      // retry checkpoint so future Feed polls can resume it without a burst.
-      const attempts = (previous?.attempts ?? 0) + 1;
-      return {
-        entries: [],
-        checkpoint: {
-          data: {
-            ...(checkpoint?.data ?? {}),
-            archiveHistory: {
-              fingerprint,
-              attempts,
-              nextAttemptAt: now + archiveRetryDelay(attempts)
-            }
-          }
-        }
-      };
-    }
-  }
 }
 
 type ArchiveCatalogConfig = { url: string };
-type ArchiveHistorySelection = { mode: "selected" | "all"; facets: Facet[]; limit?: number };
-type ArchiveHistoryCheckpoint = { fingerprint: string; completedAt?: number; importedEntries?: number; attempts?: number; nextAttemptAt?: number };
-
-/**
- * `archiveCatalog` is discovery metadata only. The legacy `archiveBackfill`
- * descriptor remains readable so existing sources can opt into a deliberate
- * history scope after upgrading, but it can no longer trigger an import by
- * itself.
- */
+/** Public archive metadata remains available for explicit category discovery. */
 function archiveCatalogConfig(source: Source): ArchiveCatalogConfig | undefined {
   return archiveUrlFromConfig(source.config?.archiveCatalog) ?? archiveUrlFromConfig(source.config?.archiveBackfill);
 }
@@ -158,111 +86,6 @@ function archiveUrlFromConfig(value: unknown): ArchiveCatalogConfig | undefined 
     return { url: assertPublicUrl(record.url).toString() };
   } catch {
     return undefined;
-  }
-}
-
-function archiveHistorySelection(subscription: Subscription | undefined): ArchiveHistorySelection | undefined {
-  const history = subscription?.scope?.history;
-  if (!history || (history.mode !== "selected" && history.mode !== "all")) return undefined;
-  const facets = normaliseFacets(Array.isArray(subscription.scope?.facetSelections) ? subscription.scope.facetSelections : []);
-  // A selected-history subscription with no selected values is intentionally
-  // a no-op rather than an accidental all-history import.
-  if (history.mode === "selected" && !facets.length) return undefined;
-  return {
-    mode: history.mode,
-    facets,
-    limit: archiveHistoryLimit(history.limit)
-  };
-}
-
-function archiveHistoryLimit(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  const limit = Math.floor(value);
-  return limit > 0 ? Math.min(limit, MAX_ARCHIVE_HISTORY_LIMIT) : undefined;
-}
-
-const MAX_ARCHIVE_HISTORY_LIMIT = 5_000;
-
-function archiveHistoryFingerprint(url: string, selection: ArchiveHistorySelection): string {
-  const facets = selection.facets
-    .map((facet) => `${facet.scheme}\u0000${facet.key}`)
-    .sort()
-    .join("\u0001");
-  return JSON.stringify({ url, mode: selection.mode, facets, limit: selection.limit ?? null });
-}
-
-function archiveHistoryCheckpoint(data: Record<string, unknown> | undefined, fingerprint: string): ArchiveHistoryCheckpoint | undefined {
-  const value = data?.archiveHistory;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  if (record.fingerprint !== fingerprint) return undefined;
-  return {
-    fingerprint,
-    completedAt: finiteCheckpointNumber(record.completedAt),
-    importedEntries: finiteCheckpointNumber(record.importedEntries),
-    attempts: finiteCheckpointNumber(record.attempts),
-    nextAttemptAt: finiteCheckpointNumber(record.nextAttemptAt)
-  };
-}
-
-/** Applies an explicit archive policy after parsing its metadata. */
-function selectArchiveEntries(entries: RawEntry[], selection: ArchiveHistorySelection): RawEntry[] {
-  const selected = selection.mode === "all" ? entries : entries.filter(createSubscriptionScopeMatcher({
-    facetSelections: selection.facets, history: { mode: "none" }
-  }));
-  const ordered = [...selected].sort((left, right) => (right.publishedAt ?? 0) - (left.publishedAt ?? 0) || left.url.localeCompare(right.url));
-  return selection.limit === undefined ? ordered : ordered.slice(0, selection.limit);
-}
-
-function finiteCheckpointNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function archiveRetryDelay(attempts: number): number {
-  return Math.min(24 * 60 * 60_000, 30 * 60_000 * 2 ** Math.max(0, attempts - 1));
-}
-
-function mergeFeedFirst(feedEntries: RawEntry[], archiveEntries: RawEntry[]): RawEntry[] {
-  const archiveByIdentity = new Map<string, RawEntry>();
-  for (const archive of archiveEntries) {
-    const identity = entryIdentity(archive);
-    const existing = archiveByIdentity.get(identity);
-    if (!existing || (archive.publishedAt ?? 0) > (existing.publishedAt ?? 0)) archiveByIdentity.set(identity, archive);
-  }
-  const mergedFeed = feedEntries.map((feed) => {
-    const archive = archiveByIdentity.get(entryIdentity(feed));
-    return archive ? mergeFeedArchiveMetadata(feed, archive) : feed;
-  });
-  const known = new Set(mergedFeed.map(entryIdentity));
-  const olderOnly = archiveEntries.filter((entry) => {
-    const identity = entryIdentity(entry);
-    if (known.has(identity)) return false;
-    known.add(identity);
-    return true;
-  });
-  return [...mergedFeed, ...olderOnly.map((entry) => ({ ...entry, ingestionKind: "history" as const }))];
-}
-
-/**
- * The Feed owns user-visible current metadata, while its matching archive can
- * fill a missing timestamp and carry the publisher's taxonomy declaration.
- * This is particularly important when a Feed has no `<category>` fields but
- * its explicitly linked archive does.
- */
-function mergeFeedArchiveMetadata(feed: RawEntry, archive: RawEntry): RawEntry {
-  const facets = normaliseFacets([...(feed.facets ?? []), ...(archive.facets ?? [])]);
-  return {
-    ...feed,
-    ...(feed.publishedAt === undefined && archive.publishedAt !== undefined ? { publishedAt: archive.publishedAt } : {}),
-    ...(facets.length ? { facets } : {})
-  };
-}
-
-function entryIdentity(entry: Pick<RawEntry, "url" | "canonicalIdentity">): string {
-  try {
-    return canonicalizeContentUrl(entry.canonicalIdentity ?? entry.url);
-  } catch {
-    return entry.canonicalIdentity ?? entry.url;
   }
 }
 

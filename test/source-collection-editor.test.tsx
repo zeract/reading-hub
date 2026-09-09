@@ -51,19 +51,18 @@ it("uses discovered labels and counts without duplicating a saved category ident
   expect(container.textContent).not.toContain("仍会参与筛选");
   await save(); expect(update).not.toHaveBeenCalled();
 });
-it("keeps history-only capabilities usable without inventing a category discovery action", async () => {
+it("does not expose history controls even for legacy capability metadata", async () => {
   settings = { scope: { facetSelections: [], history: { mode: "none" } }, facets: [], historyAvailable: true, facetDiscoveryAvailable: false };
   await mount();
-  expect(container.querySelectorAll('.history-options input[type="radio"]')).toHaveLength(3);
+  expect(container.querySelector(".history-options")).toBeNull();
   expect(inspectButton()).toBeNull();
-  await act(async () => container.querySelectorAll<HTMLInputElement>('.history-options input[type="radio"]')[2].click());
-  await save(); expect(update).toHaveBeenCalledExactlyOnceWith(source.id, { facetSelections: [], history: { mode: "all", limit: 100 } });
+  await save(); expect(update).not.toHaveBeenCalled();
 });
 it("clears selected-history mode when the final retained category is removed", async () => {
   settings.scope.history = { mode: "selected", limit: 100 }; settings.historyAvailable = true;
   await mount();
   await act(async () => options()[0].querySelector("input")!.click());
-  expect(container.querySelector<HTMLInputElement>('.history-options input[type="radio"]')!.checked).toBe(true);
+  expect(container.querySelector(".history-options")).toBeNull();
   await save(); expect(update).toHaveBeenCalledExactlyOnceWith(source.id, { facetSelections: [], history: { mode: "none" } });
 });
 it("preserves selected categories after failed discovery and keeps the action retryable", async () => {

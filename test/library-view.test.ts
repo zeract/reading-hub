@@ -7,7 +7,7 @@ describe("library view queries", () => {
 
     expect(entryQueryForLibrary("today", "source-1", now)).toEqual({
       sourceId: "source-1",
-      publishedOnly: true,
+      publishedOrCollected: true,
       startAt: new Date(2026, 7, 18).getTime(),
       endAt: new Date(2026, 7, 19).getTime()
     });

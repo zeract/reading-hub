@@ -211,7 +211,8 @@ describe("SourceService initial acquisition", () => {
     const connectors = { has: vi.fn(() => true), get: vi.fn(() => rss) };
     const service = new SourceService(db, { probe: vi.fn() } as any, sync as any, {} as any, connectors as any);
 
-    expect(service.getCollectionSettings(source.id)).toMatchObject({ facetDiscoveryAvailable: true, historyAvailable: true });
+    expect(service.getCollectionSettings(source.id)).toMatchObject({ facetDiscoveryAvailable: true, historyAvailable: false });
+    expect(() => service.updateCollectionScope(source.id, { facetSelections: [], history: { mode: "all" } })).toThrow("历史回填已移除");
     await expect(service.inspectCollectionFacets(source.id)).resolves.toEqual([
       { sourceId: source.id, entryCount: 0, scheme: "feed:https://example.com:category", key: "kubernetes", label: "Kubernetes" }
     ]);

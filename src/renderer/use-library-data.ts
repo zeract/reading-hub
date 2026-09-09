@@ -23,7 +23,7 @@ export function useLibraryData() {
   const [reloadError, setReloadError] = useState<string>();
   const [paginationError, setPaginationError] = useState<string>();
   const [entryLoadState, setEntryLoadState] = useState<"loading" | "ready" | "error">("loading");
-  const [selection, setSelection] = useState<LibrarySelection>({ view: "collected", search: "" });
+  const [selection, setSelection] = useState<LibrarySelection>({ view: "today", search: "" });
   const { sourceId: activeSourceId, view: libraryView, search: entrySearch } = selection;
   // Navigation owns one complete query scope. Keep its accepted value
   // available before React renders so retained callbacks cannot reload an

@@ -12,7 +12,7 @@ const database = new ReadingDatabase(":memory:");
 const source = database.createSource({ url: "https://example.com/feed", title: "Workflow fixture", kind: "rss", pollingEnabled: true });
 for (const [id, title, ingestionKind] of [["success", "Readable fixture", "current"], ["failure", "Unavailable fixture", "current"], ["history", "Historical fixture", "history"]]) {
   database.saveEntries([{ id, sourceId: source.id, url: `https://example.com/${id}`, canonicalUrl: `https://example.com/${id}`, title,
-    ingestionKind, contentHash: id, createdAt: Date.now(), read: false, favorite: false }]);
+    ingestionKind, contentHash: id, createdAt: ingestionKind === "history" ? new Date(new Date().setDate(new Date().getDate() - 1)).getTime() : Date.now(), read: false, favorite: false }]);
 }
 database.markFavorite("success", true);
 const fixtureImage = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
@@ -378,7 +378,7 @@ try {
   await clickText(".notice-actions button", "撤销删除");
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 2 && !document.querySelector('.notice-actions')");
   await evaluate("document.querySelector('[aria-label=\"关闭通知\"]').click()");
-  assert(await evaluate("document.querySelector('.timeline h1').textContent === '新收集'"), "The initial view must show collection order.");
+  assert(await evaluate("document.querySelector('.timeline h1').textContent === '今日'"), "The initial view must show the local Today union.");
   await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Unavailable fixture\"]').click()");
   await waitFor(window, "Boolean(document.querySelector('.reader-failure'))");
   assert(!database.getEntry("failure").read, "Failed reader load must leave content unread.");
@@ -543,8 +543,8 @@ try {
   await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   assert(await evaluate("!document.querySelector('.reader-view').textContent.includes('Stale extraction fixture')"), "A cancelled extraction must not replace the current reader.");
   assert(!database.getEntry("failure").read, "Cancelled extraction must leave its entry unread.");
-  await clickText(".library-filter", "历史回填");
-  await waitFor(window, "document.querySelector('.entry-card h2')?.textContent === 'Historical fixture'");
+  await clickText(".library-filter", "全部内容");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 3");
   pauseImages = true;
   const requested = new Promise((resolve) => { imageRequested = resolve; });
   await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Historical fixture\"]').click()");
@@ -565,11 +565,9 @@ try {
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 1 && document.querySelector('.entry-card h2').textContent === 'Historical fixture'");
   await clickText(".entry-actions button", "删除");
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 0");
-  await clickText(".library-filter", "最近删除");
-  await waitFor(window, "document.querySelector('.entry-card h2')?.textContent === 'Historical fixture'");
-  await clickText(".entry-actions button", "恢复内容");
-  await waitFor(window, "document.querySelectorAll('.entry-card').length === 0");
-  assert(database.getEntry("history"), "Deleted content must be recoverable through the UI.");
+  await clickText(".notice-actions button", "撤销删除");
+  await waitFor(window, "document.querySelectorAll('.entry-card').length === 1");
+  assert(database.getEntry("history"), "Immediate undo must recover an accidental deletion without a trash view.");
   await evaluate("document.querySelector('.source-filter').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))");
   await waitFor(window, "Boolean(document.querySelector('.source-settings-form'))");
   const previousSubscriptionWrites = subscriptionWrites;
@@ -579,32 +577,13 @@ try {
   assert(database.getSource(source.id).subscribed === false, "A list failure must not invalidate a committed unsubscription.");
   libraryPageFailure = false;
   await evaluate("document.querySelector('[aria-label=\"重新载入收件箱\"]').click()");
-  await waitFor(window, "Boolean(document.querySelector('.archived-sources')) && !document.querySelector('.source-settings-form')");
+  await waitFor(window, "!document.querySelector('.source-filter') && !document.querySelector('.source-settings-form')");
   assert(subscriptionWrites === previousSubscriptionWrites + 1, "List recovery must not repeat a subscription write.");
   assert(database.getSource(source.id).subscribed === false && database.getEntry("success").favorite, "Unsubscribe must retain favorites.");
-  await evaluate("document.querySelector('.archived-sources summary').focus()");
-  await pressKey("Enter");
-  await waitFor(window, "document.querySelector('.archived-sources').open");
-  await evaluate("document.querySelector('.archived-sources .source-filter').click()");
-  await waitFor(window, "document.querySelector('.archived-sources .source-filter')?.getAttribute('aria-current') === 'page'");
-  assert(await evaluate("document.querySelectorAll('.sidebar [aria-current=\"page\"]').length === 1 && !document.querySelector('.library-filter[aria-current]')"), "An archived source must be the only current navigation destination.");
-  await evaluate("document.querySelector('.archived-sources .source-filter').focus()");
-  await pressKey("F10", ["shift"]);
-  await waitFor(window, "Boolean(document.querySelector('.source-settings-form'))");
-  assert(database.getSource(source.id).subscribed === false, "Opening archived source settings must not resubscribe it.");
-  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
-  await evaluate("document.querySelector('.source-settings-shortcut').click()");
-  await waitFor(window, "document.querySelector('.source-settings-form input')?.value === 'Workflow fixture'");
-  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
-  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
-    await setViewport(width, height, scale);
-    assert(await evaluate("(() => { const button = document.querySelector('.source-settings-shortcut'); const rect = button.getBoundingClientRect(); const row = button.closest('.source-row').getBoundingClientRect(); const style = getComputedStyle(button); const tokens = getComputedStyle(document.documentElement); return rect.width >= 32 && rect.height >= 32 && rect.right <= row.right && style.minHeight === tokens.getPropertyValue('--control-height').trim() && style.borderRadius === tokens.getPropertyValue('--control-radius').trim(); })()"), "Archived settings shortcuts must use shared dimensions and remain inside the source row.");
-    await writeFile(path.join(tmpdir(), `reading-hub-archived-navigation-${width}.png`), (await window.capturePage()).toPNG());
-  }
-  await evaluate("document.querySelector('.archived-sources summary').click()");
+  assert(await evaluate("!document.querySelector('.archived-sources') && Boolean(document.querySelector('.empty-side'))"), "Unsubscribed records must not create an archived navigation section.");
   await clickText(".library-filter", "全部内容");
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 3");
-  assert(await evaluate("document.querySelectorAll('.sidebar [aria-current=\"page\"]').length === 1 && document.querySelector('.library-filter[aria-current]')?.textContent === '全部内容'"), "Library navigation must replace the archived source's current state.");
+  assert(await evaluate("document.querySelectorAll('.sidebar [aria-current=\"page\"]').length === 1 && document.querySelector('.library-filter[aria-current]')?.textContent === '全部内容'"), "Library navigation must expose only one current destination.");
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25]]) {
     await setViewport(width, height, scale);
     const geometry = await evaluate(`({ overflow: document.documentElement.scrollWidth > innerWidth + 1, navBottom: document.querySelector('.library-nav').getBoundingClientRect().bottom, footerTop: document.querySelector('.sidebar-footer').getBoundingClientRect().top, sourcesHeight: document.querySelector('.source-list').clientHeight })`);

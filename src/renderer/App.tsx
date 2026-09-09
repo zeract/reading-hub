@@ -282,7 +282,6 @@ function AppShell() {
         notice={reloadError ?? notice?.message}
         busy={busy}
         onUndo={notice && undoEntry && !reloadError ? () => void restoreEntry(undoEntry, notice.id) : undefined}
-        onRestoreEntry={restoreEntry}
         onEditSource={openSourceSettings}
         onClearNotice={() => { setNotice(undefined); clearReloadError(); }}
         onEntrySearchChange={setEntrySearch}

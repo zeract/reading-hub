@@ -77,7 +77,7 @@ describe("source configuration and active synchronization", () => {
       write = vi.spyOn(db as any, method).mockImplementationOnce(() => { throw new Error("synthetic write failure"); });
       const update = () => {
         if (change === "settings") return service.updateSettings(source.id, { title: "Changed", kind: "rss", pollingEnabled: false });
-        if (change === "scope") return service.updateCollectionScope(source.id, { facetSelections: [], history: { mode: "all" } });
+        if (change === "scope") return service.updateCollectionScope(source.id, { facetSelections: [{ scheme: "tag", key: "updated", label: "Updated" }], history: { mode: "none" } });
         if (change === "rule") return service.updateRule(source.id, { version: 1, titleSelector: "a" });
         return service.setSubscribed(source.id, false);
       };
@@ -96,7 +96,7 @@ describe("source configuration and active synchronization", () => {
       await vi.waitFor(() => expect(calls).toHaveLength(1));
       const settings = { title: source.title, kind: source.kind, pollingEnabled: true };
       if (change === "scope") {
-        service.updateCollectionScope(source.id, { facetSelections: [], history: { mode: "all" } });
+        service.updateCollectionScope(source.id, { facetSelections: [{ scheme: "tag", key: "updated", label: "Updated" }], history: { mode: "none" } });
         service.updateCollectionScope(source.id, { facetSelections: [], history: { mode: "none" } });
       } else {
         service.updateSettings(source.id, { ...settings, kind: change === "kind" ? "generic" : source.kind, pollingEnabled: change !== "pause" });
@@ -119,7 +119,7 @@ describe("source configuration and active synchronization", () => {
     const secondRun = sync.syncSource(second.id).catch((error) => error);
     try {
       await vi.waitFor(() => expect(calls).toHaveLength(1));
-      service.updateCollectionScope(second.id, { facetSelections: [], history: { mode: "all" } });
+      service.updateCollectionScope(second.id, { facetSelections: [{ scheme: "tag", key: "updated", label: "Updated" }], history: { mode: "none" } });
       expect((await secondRun).message).toContain("已取消");
       expect(calls).toHaveLength(1);
       expect(db.getSource(second.id)?.failureCount).toBe(0);

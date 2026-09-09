@@ -18,7 +18,7 @@ beforeEach(() => {
   props = { loadingEntries: false, loadFailed: false, onReload: vi.fn(), onAddSource: vi.fn(), libraryView: "all", entrySearch: "", entries,
     hasMoreEntries: true, loadingMoreEntries: false, sourceById: new Map(), busy: false,
     onClearNotice: vi.fn(), onEntrySearchChange: vi.fn(), onUpdateEntry: vi.fn(async () => true), isEntryUpdating: () => false,
-    onOpenEntry: vi.fn(), onDismissEntry: vi.fn(async () => undefined), onRestoreEntry: vi.fn(async () => undefined), onLoadMore: vi.fn() };
+    onOpenEntry: vi.fn(), onDismissEntry: vi.fn(async () => undefined), onLoadMore: vi.fn() };
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 async function render(update: Partial<typeof props> = {}) { await act(async () => root.render(<Timeline {...props} {...update} />)); }
@@ -50,34 +50,14 @@ it("disables only the pending card field while keeping reading available", async
   expect(props.onOpenEntry).toHaveBeenCalledWith(entries[0]);
 });
 
-it("offers restoration as a non-destructive action in trash and prevents busy submission", async () => {
-  const restore = vi.fn(async () => undefined);
-  await render({ libraryView: "trash", onRestoreEntry: restore, busy: true });
-  expect(container.querySelector(".delete-entry")).toBeNull();
-  expect(container.querySelector('[aria-label="收藏"]')).toBeNull();
-  const button = container.querySelector<HTMLButtonElement>(".restore-entry")!;
-  expect(button.textContent).toBe("恢复内容");
-  await act(async () => button.click()); expect(restore).not.toHaveBeenCalled();
-  await render({ libraryView: "trash", onRestoreEntry: restore });
-  await act(async () => button.click());
-  expect(restore).toHaveBeenCalledWith(entries[0]);
+it("blocks duplicate deletion while the card is busy and routes the committed action", async () => {
+  await render({ busy: true });
+  await act(async () => container.querySelector<HTMLButtonElement>(".delete-entry")!.click());
   expect(props.onDismissEntry).not.toHaveBeenCalled();
-});
-
-it("routes the same card to the current view's explicit delete or restore command", async () => {
   await render();
-  const button = container.querySelector<HTMLButtonElement>(".delete-entry")!;
-  await act(async () => button.click());
+  await act(async () => container.querySelector<HTMLButtonElement>(".delete-entry")!.click());
   expect(props.onDismissEntry).toHaveBeenCalledExactlyOnceWith(entries[0]);
-  expect(props.onRestoreEntry).not.toHaveBeenCalled();
-  await render({ libraryView: "trash" });
-  await act(async () => button.click());
-  expect(props.onRestoreEntry).toHaveBeenCalledExactlyOnceWith(entries[0]);
-  expect(props.onDismissEntry).toHaveBeenCalledTimes(1);
-  await render();
-  await act(async () => button.click());
-  expect(props.onDismissEntry).toHaveBeenCalledTimes(2);
-  expect(props.onRestoreEntry).toHaveBeenCalledTimes(1);
+  expect(container.querySelector(".restore-entry")).toBeNull();
 });
 
 it.each(["unread", "favorite"] as const)("counts only visible cards after a committed %s change", async (libraryView) => {
@@ -175,12 +155,12 @@ it("marks stale sidebar counts as unavailable and restores confirmed values", as
   const sidebar = { sources: [], groups: [], libraryView: "favorite" as const, libraryCounts: { unread: 4, favorite: 1, today: 0, newArrivals: 2 },
     collapsedGroups: {}, onSelectLibrary: vi.fn(), onSelectSource: vi.fn(), onToggleGroup: vi.fn(), onEditSource: vi.fn(), onOpenSettings: vi.fn() };
   await act(async () => root.render(<SourceSidebar {...sidebar} countsStale={false} />));
-  expect([...container.querySelectorAll(".library-filter em")].map((item) => item.textContent)).toEqual(["2", "4", "1"]);
+  expect([...container.querySelectorAll(".library-filter em")].map((item) => item.textContent)).toEqual(["4", "1"]);
   await act(async () => root.render(<SourceSidebar {...sidebar} countsStale />));
-  expect([...container.querySelectorAll(".library-filter em")].map((item) => item.textContent)).toEqual(["—", "—", "—"]);
-  expect(container.querySelectorAll('[aria-label="计数暂未更新"]')).toHaveLength(3);
+  expect([...container.querySelectorAll(".library-filter em")].map((item) => item.textContent)).toEqual(["—", "—"]);
+  expect(container.querySelectorAll('[aria-label="计数暂未更新"]')).toHaveLength(2);
   await act(async () => root.render(<SourceSidebar {...sidebar} libraryCounts={{ ...sidebar.libraryCounts, favorite: 0 }} countsStale={false} />));
-  expect([...container.querySelectorAll(".library-filter em")].map((item) => item.textContent)).toEqual(["2", "4", "0"]);
+  expect([...container.querySelectorAll(".library-filter em")].map((item) => item.textContent)).toEqual(["4", "0"]);
   expect(container.querySelector('[aria-label="计数暂未更新"]')).toBeNull();
 });
 
@@ -207,4 +187,11 @@ it("claims Escape when clearing search so a window-level dismiss handler cannot 
     expect(document.activeElement).toBe(input);
     expect(seen).toEqual([true]);
   } finally { window.removeEventListener("keydown", observe); }
+});
+
+it("labels undated content with its first local collection date, not a later observation", async () => {
+  const createdAt = new Date(2026, 8, 9, 12).getTime();
+  await render({ entries: [{ ...entries[0], createdAt, observedAt: new Date(2026, 8, 10, 12).getTime() }] });
+  const date = new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(createdAt);
+  expect(container.querySelector(".entry-source")?.textContent).toContain(`收集于 ${date}`);
 });

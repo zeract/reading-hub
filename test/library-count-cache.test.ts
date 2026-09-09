@@ -56,7 +56,7 @@ describe("committed library count reuse", () => {
       const scans = traceCounts(db);
       expect(db.getLibraryCounts(today)).toMatchObject({ unread: 0, favorite: 0, today: 0 });
       expect(db.getLibraryCounts(today).unread).toBe(0);
-      db.saveEntries([card(id, "current"), card(id, "history", { ingestionKind: "history", publishedAt: tomorrow })]);
+      db.saveEntries([card(id, "current"), card(id, "history", { ingestionKind: "history", createdAt: tomorrow, publishedAt: tomorrow })]);
       expect(db.getLibraryCounts(today)).toMatchObject({ collected: 1, history: 1, unread: 2, today: 1 });
       db.markRead("current", true);
       expect(db.getLibraryCounts(today).unread).toBe(1);
@@ -74,7 +74,7 @@ describe("committed library count reuse", () => {
     const db = new ReadingDatabase(":memory:");
     try {
       const id = source(db).id;
-      db.saveEntries([card(id, "today"), card(id, "tomorrow-a", { publishedAt: tomorrow }), card(id, "tomorrow-b", { publishedAt: tomorrow })]);
+      db.saveEntries([card(id, "today"), card(id, "tomorrow-a", { createdAt: tomorrow, publishedAt: tomorrow }), card(id, "tomorrow-b", { createdAt: tomorrow, publishedAt: tomorrow })]);
       const scans = traceCounts(db);
       expect(db.getLibraryCounts(today).today).toBe(1);
       expect(db.getLibraryCounts(today + 1).today).toBe(1);

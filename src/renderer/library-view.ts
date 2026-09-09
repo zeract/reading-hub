@@ -1,6 +1,6 @@
 import type { EntryListQuery } from "../shared/types";
 
-export type LibraryView = "trash" | "collected" | "history" | "all" | "today" | "unread" | "favorite";
+export type LibraryView = "all" | "today" | "unread" | "favorite";
 
 /**
  * Today and a selected source can be scoped to one source. Library-state views
@@ -9,13 +9,10 @@ export type LibraryView = "trash" | "collected" | "history" | "all" | "today" | 
  */
 export function entryQueryForLibrary(view: LibraryView, sourceId?: string, now = new Date(), sourceSearch?: string): EntryListQuery {
   const search = sourceSearch?.trim() ? { search: sourceSearch } : {};
-  if (view === "trash") return { ...search, dismissed: true, sort: "collected" };
-  if (view === "collected") return { sourceId, ...search, collection: "current", sort: "collected" };
-  if (view === "history") return { sourceId, ...search, collection: "history", sort: "collected" };
   if (view === "today") {
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-    return { sourceId, ...search, startAt: start.getTime(), endAt: end.getTime(), publishedOnly: true };
+    return { sourceId, ...search, startAt: start.getTime(), endAt: end.getTime(), publishedOrCollected: true };
   }
   // Reading-state filters belong in the database query rather than the first
   // client page. Otherwise an old unread/saved item could disappear simply

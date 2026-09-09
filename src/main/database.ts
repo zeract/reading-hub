@@ -832,17 +832,9 @@ export class ReadingDatabase {
       if (query.sourceId) parameters.push(query.sourceId);
       for (const selection of selections) parameters.push(selection.scheme, selection.key);
     }
-    // A missing publication time is deliberately represented by the first
-    // observed time (then creation time) throughout the timeline.
-    const timelineTimestamp = "COALESCE(entries.published_at, entries.observed_at, entries.created_at)";
-    if (startAt !== undefined) {
-      conditions.push(`${timelineTimestamp} >= ?`);
-      parameters.push(startAt);
-    }
-    if (endAt !== undefined) {
-      conditions.push(`${timelineTimestamp} < ?`);
-      parameters.push(endAt);
-    }
+    const dateFilter = entryDateFilter(startAt, endAt, query.publishedOrCollected);
+    if (dateFilter.sql) conditions.push(dateFilter.sql);
+    parameters.push(...dateFilter.parameters);
     if (query.read !== undefined) {
       conditions.push("entries.is_read = ?");
       parameters.push(query.read ? 1 : 0);
@@ -864,15 +856,15 @@ export class ReadingDatabase {
     const cached = this.countsSnapshot;
     if (revision !== undefined && cached?.revision === revision && cached.start === start && cached.end === end
       && cached.previousVisitAt === this.previousVisitAt) return { ...cached.counts };
-    const timelineTimestamp = "published_at";
+    const today = entryDateFilter(start, end, true);
     const row = this.db.prepare(`SELECT
       SUM(CASE WHEN ingestion_kind = 'current' THEN 1 ELSE 0 END) AS collected,
       SUM(CASE WHEN ingestion_kind = 'history' THEN 1 ELSE 0 END) AS history,
       SUM(CASE WHEN ingestion_kind = 'current' AND created_at > ? THEN 1 ELSE 0 END) AS new_arrivals,
       SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread,
       SUM(CASE WHEN is_favorite = 1 THEN 1 ELSE 0 END) AS favorite,
-      SUM(CASE WHEN ${timelineTimestamp} >= ? AND ${timelineTimestamp} < ? THEN 1 ELSE 0 END) AS today
-      FROM entries WHERE ${VISIBLE_ENTRY}`).get(this.previousVisitAt, start, end) as { collected: number; history: number; new_arrivals: number; unread: number | null; favorite: number | null; today: number | null };
+      SUM(CASE WHEN ${today.sql} THEN 1 ELSE 0 END) AS today
+      FROM entries WHERE ${VISIBLE_ENTRY}`).get(this.previousVisitAt, ...today.parameters) as { collected: number; history: number; new_arrivals: number; unread: number | null; favorite: number | null; today: number | null };
     const counts = { collected: row.collected ?? 0, history: row.history ?? 0, newArrivals: row.new_arrivals ?? 0, unread: row.unread ?? 0, favorite: row.favorite ?? 0, today: row.today ?? 0 };
     if (revision !== undefined) this.countsSnapshot = { revision, start, end, previousVisitAt: this.previousVisitAt, counts };
     return { ...counts };
@@ -1291,4 +1283,18 @@ function legacyResumeJitter(sourceId: string): number {
   let hash = 0;
   for (let index = 0; index < sourceId.length; index += 1) hash = (hash * 31 + sourceId.charCodeAt(index)) >>> 0;
   return hash % (15 * 60_000);
+}
+
+/** One date predicate for lists, pages and the Today count; first collection is
+ * immutable created_at, never the latest polling/observation timestamp. */
+function entryDateFilter(start: number | undefined, end: number | undefined, union = false): { sql: string; parameters: number[] } {
+  const columns = union ? ["entries.published_at", "entries.created_at"] : ["COALESCE(entries.published_at, entries.observed_at, entries.created_at)"];
+  const parameters: number[] = [];
+  const ranges = columns.map((column) => {
+    const parts: string[] = [];
+    if (start !== undefined) { parts.push(`${column} >= ?`); parameters.push(start); }
+    if (end !== undefined) { parts.push(`${column} < ?`); parameters.push(end); }
+    return parts.length ? `(${parts.join(" AND ")})` : "";
+  }).filter(Boolean);
+  return { sql: ranges.length ? `(${ranges.join(" OR ")})` : "", parameters };
 }

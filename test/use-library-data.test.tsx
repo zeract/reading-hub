@@ -206,9 +206,9 @@ describe("library read-model", () => {
     expect(library.activeSourceId).toBeUndefined(); expect(library.entrySearch).toBe("");
   });
 
-  it("defaults to collection order and performs no idle full reload", async () => {
-    expect(library.libraryView).toBe("collected");
-    expect(listPage.mock.lastCall?.[0]).toMatchObject({ collection: "current", sort: "collected" });
+  it("defaults to the local Today union and performs no idle full reload", async () => {
+    expect(library.libraryView).toBe("today");
+    expect(listPage.mock.lastCall?.[0]).toMatchObject({ publishedOrCollected: true });
     vi.useFakeTimers();
     await act(async () => library.selectSource("for-timer"));
     listPage.mockClear();

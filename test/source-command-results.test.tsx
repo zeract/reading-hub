@@ -39,7 +39,7 @@ async function openSettings() {
   await act(async () => container.querySelector(".source-filter")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true })));
 }
 
-it.each([true, false])("keeps a committed subscription change successful when list recovery fails (subscribed=%s)", async (subscribed) => {
+it.each([true])("keeps a committed subscription change successful when list recovery fails (subscribed=%s)", async (subscribed) => {
   source.subscribed = subscribed;
   await click('[aria-label="重新载入收件箱"]');
   await openSettings();
@@ -51,7 +51,8 @@ it.each([true, false])("keeps a committed subscription change successful when li
   pages.mockResolvedValue({ entries: [] });
   await click('[aria-label="重新载入收件箱"]');
   expect(window.reader.setSourceSubscribed).toHaveBeenCalledExactlyOnceWith(source.id, !subscribed);
-  expect(Boolean(container.querySelector(".archived-sources"))).toBe(subscribed);
+  expect(container.querySelector(".archived-sources")).toBeNull();
+  expect(container.querySelector(".source-filter")).toBeNull();
 });
 
 it("keeps a failed subscription change in its dialog for retry", async () => {

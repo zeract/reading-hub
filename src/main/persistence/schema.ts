@@ -9,7 +9,7 @@ import { ENTRY_ORDER_BY } from "./entry-order";
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 10;
+export const CURRENT_SCHEMA_VERSION = 11;
 
 type SqliteDatabase = Database.Database;
 
@@ -341,7 +341,16 @@ const MIGRATIONS: readonly SchemaMigration[] = [
       `);
       database.pragma("optimize");
     }
+  },
+  {
+    version: 11,
+    name: "retire-archive-backfill",
+    up: (database) => {
+      // Preserve previously collected cards and publisher category selections.
+      database.prepare("UPDATE subscription_scopes SET history_mode = 'none', history_limit = NULL, updated_at = ? WHERE history_mode != 'none' OR history_limit IS NOT NULL").run(Date.now());
+    }
   }
+
 ];
 
 function ensureColumn(database: SqliteDatabase, table: "sources" | "entries" | "entry_origins", column: string, type: string): void {

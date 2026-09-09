@@ -17,7 +17,7 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 async function render(update: Partial<typeof props> = {}) { await act(async () => root.render(<TimelineEmptyState {...props} {...update} />)); }
 
-it.each<LibraryView>(["all", "collected", "history", "today", "unread", "favorite", "trash"])("offers search recovery in the %s view", async (view) => {
+it.each<LibraryView>(["all", "today", "unread", "favorite"])("offers search recovery in the %s view", async (view) => {
   await render({ view, search: "  Missing phrase  " });
   expect(container.querySelector("h2")?.textContent).toBe("没有找到匹配内容");
   expect(container.textContent).toContain("Missing phrase");
@@ -27,8 +27,8 @@ it.each<LibraryView>(["all", "collected", "history", "today", "unread", "favorit
 });
 
 it.each<[LibraryView, string]>([
-  ["all", "还没有收集到内容"], ["collected", "暂时没有新收集的文章"], ["history", "还没有历史回填内容"],
-  ["today", "今天还没有发布的文章"], ["unread", "没有未读文章"], ["favorite", "还没有收藏文章"], ["trash", "没有已删除内容"]
+  ["all", "还没有收集到内容"],
+  ["today", "今天还没有内容"], ["unread", "没有未读文章"], ["favorite", "还没有收藏文章"]
 ])("explains an empty %s view without suggesting a new subscription", async (view, title) => {
   await render({ view });
   expect(container.querySelector("h2")?.textContent).toBe(title);

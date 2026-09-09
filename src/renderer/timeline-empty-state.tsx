@@ -4,12 +4,9 @@ import { AppIcon, type AppIconName } from "./ui-icons";
 
 const EMPTY_VIEWS: Record<LibraryView, { title: string; description: string; icon: AppIconName }> = {
   all: { title: "还没有收集到内容", description: "来源同步后的文章会出现在这里。可以查看来源设置中的更新状态。", icon: "reading" },
-  collected: { title: "暂时没有新收集的文章", description: "来源更新后，新收到的文章会出现在这里。", icon: "reading" },
-  history: { title: "还没有历史回填内容", description: "主动补充的历史文章会显示在这里，与新收集的内容分开。", icon: "folder" },
-  today: { title: "今天还没有发布的文章", description: "这里按文章的发布时间显示今日内容。", icon: "today" },
+  today: { title: "今天还没有内容", description: "今天发布或首次收集的文章会出现在这里。", icon: "today" },
   unread: { title: "没有未读文章", description: "尚未读过的文章会出现在这里。", icon: "unread" },
   favorite: { title: "还没有收藏文章", description: "点击文章旁的星标，即可在这里集中查看。", icon: "favorite" },
-  trash: { title: "没有已删除内容", description: "删除的卡片会保留在本机，可在这里恢复。", icon: "folder" }
 };
 
 export function TimelineEmptyState({ loading, failed, hasMore, source, hasSources, view, search, onClearSearch, onRetry, onAddSource, onEditSource }: {
@@ -40,7 +37,7 @@ export function TimelineEmptyState({ loading, failed, hasMore, source, hasSource
   } else if (source) {
     state = { title: "该来源还没有内容", description: "可以在来源设置中查看收集范围和最近的更新状态。", icon: "reading" };
     if (onEditSource) action = { label: "查看来源设置", run: () => onEditSource(source) };
-  } else if (!hasSources && (view === "all" || view === "collected")) {
+  } else if (!hasSources && (view === "all" || view === "today")) {
     state = { title: "添加第一个来源", description: "订阅 RSS、公开文章列表页，或保存文章分享链接。", icon: "reading" };
     action = { label: "添加来源", run: onAddSource, primary: true };
   }

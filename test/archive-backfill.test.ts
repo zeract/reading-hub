@@ -102,82 +102,16 @@ describe("public archive backfill", () => {
     expect(http.getText).toHaveBeenCalledTimes(1);
   });
 
-  it("imports only selected archive facets and checkpoints the selected scope", async () => {
-    const http = {
-      getText: vi.fn(async (url: string) => url.endsWith("rss.xml")
-        ? { url, status: 200, contentType: "application/rss+xml", text: FEED, etag: "feed" }
-        : { url, status: 200, contentType: "text/html", text: ARCHIVE_HTML })
-    };
+  it.each(["selected", "all"] as const)("never fetches retired %s history, including saved retry checkpoints", async (mode) => {
+    const http = { getText: vi.fn(async (url: string) => ({ url, status: 200, text: FEED })) };
     const connector = new RssConnector(http as any);
-    const scope: SubscriptionScope = {
-      facetSelections: [{ scheme: "feed:https://example.com:tag", key: "ml", label: "Machine Learning" }],
-      history: { mode: "selected", limit: 50 }
-    };
-    const result = await connector.sync({ source: source(), subscription: subscription(scope) });
-
-    expect(result.entries.map((entry) => entry.title)).toEqual(["Newest post", "Second post"]);
-    expect(result.checkpoint?.data).toMatchObject({ archiveHistory: { importedEntries: 1, completedAt: expect.any(Number) } });
-
-    const callsBeforeRetry = http.getText.mock.calls.length;
-    http.getText.mockImplementation(async (url: string) => ({ url, status: 304, contentType: "application/rss+xml", text: "" }));
-    const retry = await connector.sync({
-      source: source(),
-      subscription: subscription(scope),
-      checkpoint: { subscriptionId: "source", data: result.checkpoint?.data, updatedAt: 2 }
-    });
-    expect(retry).toMatchObject({ entries: [], notModified: true });
-    expect(http.getText).toHaveBeenCalledTimes(callsBeforeRetry + 1);
-  });
-
-  it.each([{ facetSelections: [] }, { facetSelections: [{ scheme: " ", key: "invalid", label: "Invalid" }] }])("does not read selected history without valid category identities: %j", async ({ facetSelections }) => {
-    const http = { getText: vi.fn(async (url: string) => ({ url, status: 200, contentType: "application/rss+xml", text: FEED })) };
-    const result = await new RssConnector(http as any).sync({
-      source: source(), subscription: subscription({ facetSelections, history: { mode: "selected" } })
-    });
-    expect(result.entries.map((entry) => entry.title)).toEqual(["Newest post"]);
-    expect(result.checkpoint).toBeUndefined();
-    expect(http.getText).toHaveBeenCalledTimes(1);
-  });
-
-  it("applies publisher category matching before limiting archive history", async () => {
-    const http = { getText: vi.fn(async (url: string) => ({ url, status: 200, text: url.endsWith("rss.xml") ? FEED : ARCHIVE_HTML })) };
-    const result = await new RssConnector(http as any).sync({ source: source(), subscription: subscription({
-      facetSelections: [{ scheme: "feed:https://example.com:category", key: "systems", label: "Renamed systems" }],
-      history: { mode: "selected", limit: 1 }
-    }) });
-    expect(result.entries.map((entry) => entry.title)).toEqual(["Newest post", "First post"]);
-    expect(result.checkpoint?.data).toMatchObject({ archiveHistory: { importedEntries: 1 } });
-  });
-
-  it("keeps the current Feed metadata when its archive repeats the same article", async () => {
-    const overlappingFeed = FEED.replace("Newest post", "Current Feed title").replace("/post/newest.html", "/post/one.html");
-    const http = {
-      getText: vi.fn(async (url: string) => url.endsWith("rss.xml")
-        ? { url, status: 200, contentType: "application/rss+xml", text: overlappingFeed }
-        : { url, status: 200, contentType: "text/html", text: ARCHIVE_HTML })
-    };
-    const result = await new RssConnector(http as any).sync({
-      source: source(), subscription: subscription({ facetSelections: [], history: { mode: "all" } })
-    });
-
-    expect(result.entries.map((entry) => entry.title)).toEqual(["Current Feed title", "Second post"]);
-    expect(result.entries[0]?.facets).toEqual([
-      { scheme: "feed:https://example.com:category", key: "systems", label: "Systems" }
-    ]);
-  });
-
-  it("keeps a healthy Feed active when its optional archive is unavailable", async () => {
-    const http = {
-      getText: vi.fn(async (url: string) => {
-        if (url.endsWith("rss.xml")) return { url, status: 200, contentType: "application/rss+xml", text: FEED };
-        throw new Error("archive temporarily unavailable");
-      })
-    };
-    const result = await new RssConnector(http as any).sync({
-      source: source(), subscription: subscription({ facetSelections: [], history: { mode: "all" } })
-    });
-
-    expect(result.entries).toHaveLength(1);
-    expect(result.checkpoint?.data).toMatchObject({ archiveHistory: { attempts: 1 } });
+    const context = { source: source(), subscription: subscription({ facetSelections: [{ scheme: "feed:https://example.com:tag", key: "ml", label: "ML" }], history: { mode, limit: 100 } }) };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await connector.sync(context);
+      expect(result.entries.map((entry) => entry.title)).toEqual(["Newest post"]);
+      expect(result.checkpoint).toBeUndefined();
+    }
+    expect(http.getText).toHaveBeenCalledTimes(2);
+    expect(http.getText.mock.calls.every(([url]) => url === source().url)).toBe(true);
   });
 });

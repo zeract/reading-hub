@@ -78,7 +78,7 @@ export class SourceService {
     if (probe.kind === "rss" && probe.historicalArchiveUrl) {
       // This is discovery metadata, not an import instruction. A new
       // subscription always starts feed-only; settings must explicitly choose
-      // a bounded selected/all history scope before the archive is read.
+      // category discovery before the archive metadata is read.
       config.archiveCatalog = {
         url: probe.historicalArchiveUrl
       };
@@ -293,6 +293,7 @@ export class SourceService {
 
   /** Persist only user-owned collection scope; connector config stays opaque. */
   updateCollectionScope(sourceId: string, scope: SubscriptionScope): SourceCollectionSettings {
+    if (scope.history.mode !== "none") throw new Error("历史回填已移除，请重新打开来源设置。");
     const previous = this.db.getSubscriptionForSource(sourceId);
     const updated = this.db.updateSubscriptionScope(sourceId, scope);
     if (!sameSubscriptionScope(previous?.scope, updated.scope)) this.sync.cancelSource(sourceId);
@@ -344,7 +345,7 @@ export class SourceService {
     return {
       ...settings,
       facetDiscoveryAvailable: Boolean(adapter?.inspectFacets),
-      historyAvailable: Boolean(adapter?.supportsHistoricalCollection?.(source))
+      historyAvailable: false
     };
   }
 

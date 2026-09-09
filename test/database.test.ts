@@ -18,6 +18,36 @@ function entry(sourceId: string, title = "测试文章", options: Partial<Entry>
 }
 
 describe("ReadingDatabase", () => {
+  it("unions publication and first collection within a local day without duplicates across pages", () => {
+    const db = new ReadingDatabase(":memory:");
+    try {
+      const source = db.createSource({ url: "https://example.com/feed", title: "Today", kind: "rss", pollingEnabled: true });
+      const startAt = new Date(2026, 8, 9).getTime();
+      const endAt = new Date(2026, 8, 10).getTime();
+      const stamps = [
+        [startAt, startAt - 1], // published today, collected earlier
+        [startAt - 1, startAt], // old publication, first collected today
+        [undefined, startAt], // Zhihu without a publication date
+        [startAt, startAt], // both matches count once
+        [endAt, startAt], // future publication, collected today
+        [startAt - 1, startAt - 1], // polling today must not refresh collection
+        [endAt, endAt] // exclusive end
+      ];
+      db.saveEntries(stamps.map(([publishedAt, createdAt], index) => entry(source.id, `Date ${index}`, {
+        id: `date-${index}`, canonicalUrl: `https://example.com/date-${index}`, publishedAt, createdAt: createdAt!, observedAt: startAt + 1
+      })));
+      const query = { publishedOrCollected: true, startAt, endAt };
+      const listed = db.listEntries(query).map((item) => item.id);
+      expect(new Set(listed)).toEqual(new Set(["date-0", "date-1", "date-2", "date-3", "date-4"]));
+      expect(db.getLibraryCounts(startAt + 1).today).toBe(listed.length);
+      const first = db.listEntryPage({ ...query, pageSize: 2 });
+      const second = db.listEntryPage({ ...query, pageSize: 2, cursor: first.nextCursor });
+      const third = db.listEntryPage({ ...query, pageSize: 2, cursor: second.nextCursor });
+      expect([...first.entries, ...second.entries, ...third.entries].map((item) => item.id)).toEqual(listed);
+      expect(third.nextCursor).toBeUndefined();
+    } finally { db.close(); }
+  });
+
   it("resets protocol checkpoints and replay markers only when the connector changes", () => {
     const db = new ReadingDatabase(":memory:");
     try {
