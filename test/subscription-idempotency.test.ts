@@ -28,25 +28,19 @@ it.each(["scheduled", "error", "paused", "disabled", "review", "manual"])("prese
   } finally { db.close(); }
 });
 
-it("changes subscription once and preserves the restored deadline on a repeated request", async () => {
-  vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000);
+it("deletes once and makes a repeated deletion a no-op", async () => {
   const db = new ReadingDatabase(":memory:");
   const sync = { cancelSource: vi.fn() };
   const service = new SourceService(db, undefined as never, sync as never, undefined as never);
   try {
     const source = db.createSource({ url: "https://example.com/feed", title: "Fixture", kind: "rss", pollingEnabled: true });
-    const stopped = await service.setSubscribed(source.id, false);
-    expect(stopped).toMatchObject({ subscribed: false, pollingEnabled: false, nextCheckAt: undefined });
+    await service.setSubscribed(source.id, false);
+    expect(db.getSource(source.id)).toBeUndefined();
+    const revision = db.getLibraryRevision();
+    await service.delete(source.id);
+    expect(db.getLibraryRevision()).toBe(revision);
     expect(sync.cancelSource).toHaveBeenCalledExactlyOnceWith(source.id);
-    vi.setSystemTime(Date.now() + 1_000);
-    expect(await service.setSubscribed(source.id, false)).toEqual(stopped);
-    expect(sync.cancelSource).toHaveBeenCalledTimes(1);
-    const restored = await service.setSubscribed(source.id, true);
-    expect(restored).toMatchObject({ subscribed: true, pollingEnabled: true, nextCheckAt: Date.now() });
-    expect(sync.cancelSource).toHaveBeenCalledTimes(2);
-    vi.setSystemTime(Date.now() + 1_000);
-    expect(await service.setSubscribed(source.id, true)).toEqual(restored);
-    expect(sync.cancelSource).toHaveBeenCalledTimes(2);
+    await expect(service.setSubscribed(source.id, true)).rejects.toThrow("来源不存在");
   } finally { db.close(); }
 });
 
@@ -61,9 +55,10 @@ it("retries failed session cleanup without rewriting the cancelled subscription"
     const stopped = db.getSource(source.id);
     const revision = db.getLibraryRevision();
     expect(stopped?.subscribed).toBe(false);
-    expect(await service.setSubscribed(source.id, false)).toEqual(stopped);
+    await service.delete(source.id);
+    expect(db.getSource(source.id)).toBeUndefined();
     expect(clearSession).toHaveBeenCalledTimes(2);
-    expect(sync.cancelSource).toHaveBeenCalledExactlyOnceWith(source.id);
-    expect(db.getLibraryRevision()).toBe(revision);
+    expect(sync.cancelSource).toHaveBeenCalledTimes(2);
+    expect(db.getLibraryRevision()).toBeGreaterThan(revision);
   } finally { db.close(); }
 });

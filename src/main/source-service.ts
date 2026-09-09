@@ -356,9 +356,12 @@ export class SourceService {
   }
 
   async setSubscribed(sourceId: string, subscribed: boolean): Promise<Source> {
-    const updated = this.changeSubscription(sourceId, subscribed);
-    if (!subscribed && updated.kind === "zhihu_follow") await this.zhihuFollow.clearSession();
-    return updated;
+    if (subscribed) return this.changeSubscription(sourceId, true);
+    const source = this.db.getSource(sourceId);
+    if (!source) throw new Error("来源不存在。");
+    await this.delete(sourceId);
+    // Compatibility response for older renderer builds; the row is gone.
+    return { ...source, subscribed: false, pollingEnabled: false, nextCheckAt: undefined };
   }
 
   private changeSubscription(sourceId: string, subscribed: boolean): Source {
@@ -370,9 +373,26 @@ export class SourceService {
     return updated;
   }
 
-  /** Compatibility for older renderer builds: removing a subscription retains cards. */
+  /** Delete exclusive content, including favorites; retain other sources' origins. */
   async delete(sourceId: string): Promise<void> {
-    await this.setSubscribed(sourceId, false);
+    const source = this.db.getSource(sourceId);
+    if (!source) return; // A committed deletion can safely be retried.
+    if (source.kind === "zhihu_follow") {
+      // Stop polling first. Failed credential cleanup leaves a retryable,
+      // inactive source; never lose the handle needed to retry session cleanup.
+      this.changeSubscription(sourceId, false);
+      await this.zhihuFollow.clearSession();
+    }
+    if (!this.db.getSource(sourceId)) return;
+    this.db.deleteSource(sourceId);
+    this.sync.cancelSource(sourceId);
+  }
+
+  /** Runs before any scheduler starts; retries remaining records on restart. */
+  async removeUnsubscribedSources(): Promise<void> {
+    for (const source of this.db.listSources()) {
+      if (source.subscribed === false) await this.delete(source.id);
+    }
   }
 
   /**

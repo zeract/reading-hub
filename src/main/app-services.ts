@@ -44,12 +44,16 @@ export interface ApplicationServices {
 export async function createApplicationServices(databasePath: string): Promise<ApplicationServices> {
   await configureChromiumNetwork();
   const database = new ReadingDatabase(databasePath);
+  let services: ApplicationServices | undefined;
   try {
-    return assembleApplicationServices(database);
+    services = assembleApplicationServices(database);
+    await services.sources.removeUnsubscribedSources();
+    return services;
   } catch (error) {
     // Until assembly returns, no caller owns a service capable of closing
     // this connection. Failed initialization must release it here.
-    database.close();
+    if (services) await services.close();
+    else database.close();
     throw error;
   }
 }

@@ -241,12 +241,12 @@ describe("Zhihu login attempt lifetime", () => {
       await vi.advanceTimersByTimeAsync(0);
       await services.sources.setSubscribed(source.id, false);
       await vi.advanceTimersByTimeAsync(800);
-      expect(services.database.getSource(source.id)?.subscribed).toBe(false);
+      expect(services.database.getSource(source.id)).toBeUndefined();
       expect(sync).not.toHaveBeenCalled();
       await services.close();
 
       const reopened = new ReadingDatabase(databasePath);
-      try { expect(reopened.getSource(source.id)?.subscribed).toBe(false); }
+      try { expect(reopened.getSource(source.id)).toBeUndefined(); }
       finally { reopened.close(); }
 
       const resumed = await createApplicationServices(databasePath);
@@ -254,7 +254,8 @@ describe("Zhihu login attempt lifetime", () => {
       try {
         await resumed.sources.beginZhihuFollowLogin();
         await vi.advanceTimersByTimeAsync(800);
-        expect(resumed.database.getSource(source.id)?.subscribed).toBe(true);
+        expect(resumed.database.getSource(source.id)).toBeUndefined();
+        expect(resumed.database.listSources()[0]?.subscribed).toBe(true);
         expect(resumed.database.listSources()).toHaveLength(1);
         expect(resumedSync).toHaveBeenCalledTimes(1);
       } finally { await resumed.close(); }

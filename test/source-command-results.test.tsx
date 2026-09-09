@@ -15,7 +15,7 @@ beforeEach(async () => {
   source = { id: "fixture", title: "Fixture source", url: "https://example.com/feed", kind: "rss", status: "active", subscribed: true, pollingEnabled: true, failureCount: 0, consecutiveEmpty: 0, createdAt: 1, updatedAt: 1 };
   pages = vi.fn(async () => ({ entries: [] }));
   Object.defineProperty(window, "reader", { configurable: true, value: {
-    getLibraryRevision: vi.fn(async () => 1), listSources: vi.fn(async () => [{ ...source }]), listEntryPage: pages,
+    getLibraryRevision: vi.fn(async () => 1), listSources: vi.fn(async () => source.subscribed ? [{ ...source }] : []), listEntryPage: pages,
     getLibraryCounts: vi.fn(async () => ({ unread: 0, favorite: 0, today: 0 })), onLibraryChanged: () => () => undefined,
     isWindowFullscreen: vi.fn(async () => false), onWindowFullscreenChange: () => () => undefined,
     loadSourceIcon: vi.fn(async () => undefined),
@@ -23,7 +23,7 @@ beforeEach(async () => {
     updateSourceSettings: vi.fn(async () => ({ ...source })),
     updateSourceCollectionScope: vi.fn(async (_id, scope) => ({ scope, facets: [] })),
     getSourceCollectionSettings: vi.fn(async () => ({ scope: { facetSelections: [], history: { mode: "none" as const } }, facets: [] })),
-    setSourceSubscribed: vi.fn(async (_id: string, subscribed: boolean) => { source.subscribed = subscribed; }),
+    deleteSource: vi.fn(async (_id: string) => { source.subscribed = false; }),
     importOpml: vi.fn(async () => ({ imported: 2, existing: 1, skipped: 1, cancelled: false }))
   } satisfies Partial<ReaderApi> });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -50,21 +50,21 @@ it.each([true])("keeps a committed subscription change successful when list reco
   expect(container.querySelector(".notice")?.textContent).toContain("Synthetic list failure");
   pages.mockResolvedValue({ entries: [] });
   await click('[aria-label="重新载入收件箱"]');
-  expect(window.reader.setSourceSubscribed).toHaveBeenCalledExactlyOnceWith(source.id, !subscribed);
+  expect(window.reader.deleteSource).toHaveBeenCalledExactlyOnceWith(source.id);
   expect(container.querySelector(".archived-sources")).toBeNull();
   expect(container.querySelector(".source-filter")).toBeNull();
 });
 
 it("keeps a failed subscription change in its dialog for retry", async () => {
   await openSettings();
-  vi.mocked(window.reader.setSourceSubscribed).mockRejectedValueOnce(new Error("Synthetic write failure"));
+  vi.mocked(window.reader.deleteSource).mockRejectedValueOnce(new Error("Synthetic write failure"));
   const reads = pages.mock.calls.length;
   await clickText("取消订阅");
   expect(container.querySelector(".source-settings-form [role=alert]")?.textContent).toBe("Synthetic write failure");
   expect(source.subscribed).toBe(true); expect(pages).toHaveBeenCalledTimes(reads);
   await clickText("取消订阅");
   expect(container.querySelector(".source-settings-form")).toBeNull();
-  expect(window.reader.setSourceSubscribed).toHaveBeenCalledTimes(2);
+  expect(window.reader.deleteSource).toHaveBeenCalledTimes(2);
 });
 
 it("returns import counts even when the subsequent library read fails", async () => {

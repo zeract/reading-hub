@@ -180,15 +180,16 @@ function AppShell() {
     selectLibraryView(view);
   }, [selectLibraryView]);
 
-  const toggleSourceSubscription = useCallback((source: Source): Promise<void> => track(async () => {
+  const deleteSource = useCallback((source: Source): Promise<void> => track(async () => {
     try {
-      await window.reader.setSourceSubscribed(source.id, source.subscribed === false);
+      await window.reader.deleteSource(source.id);
     } catch (error) {
       setNotice(errorMessage(error));
       throw error;
     }
     clearActiveSource(source.id);
-    setNotice(source.subscribed === false ? `已重新订阅「${source.title}」。` : `已取消订阅「${source.title}」，已有内容与收藏已保留。`);
+    setReadingEntry((current) => current?.sourceId === source.id ? undefined : current);
+    setNotice(`已取消订阅「${source.title}」，独有文章与收藏已删除。`);
     // Close the completed command's dialog even if its read model needs retry.
     await reload().catch(() => undefined);
   }), [clearActiveSource, reload, setNotice, track]);
@@ -326,7 +327,7 @@ function AppShell() {
         onRefresh={() => refresh(sourceDialog.source)}
         onCalibrate={() => setSourceDialog((current) => current?.token === sourceDialog.token
           ? { ...current, token: crypto.randomUUID(), mode: "calibration" } : current)}
-        onDelete={async () => { await toggleSourceSubscription(sourceDialog.source); closeSourceDialog(sourceDialog.token); }}
+        onDelete={async () => { await deleteSource(sourceDialog.source); closeSourceDialog(sourceDialog.token); }}
         onReconnectZhihu={async () => { await window.reader.connectZhihuFollow(); setNotice("已打开知乎登录窗口；登录完成后会自动同步。"); }}
       />}
     </main>

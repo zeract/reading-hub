@@ -23,6 +23,22 @@ function fixture(kind: "rss" | "generic" = "rss") {
 }
 
 describe("source configuration and active synchronization", () => {
+  it.each([false, true])("does not resurrect deleted content after a late sync response (failure: %s)", async (failed) => {
+    const { db, source, calls, sync, service, outcome } = fixture();
+    const pending = sync.syncSource(source.id).catch((error) => error);
+    try {
+      await vi.waitFor(() => expect(calls).toHaveLength(1));
+      await service.delete(source.id);
+      expect(calls[0].context.signal?.aborted).toBe(true);
+      if (failed) calls[0].reject(new Error("Synthetic late failure"));
+      else calls[0].resolve(outcome);
+      await pending;
+      expect(db.getSource(source.id)).toBeUndefined();
+      expect(db.listEntries()).toEqual([]);
+      expect(db.getCheckpoint(source.id)).toBeUndefined();
+    } finally { calls[0]?.resolve(outcome); await pending; await sync.close(); db.close(); }
+  });
+
   it("preserves an active refresh when the existing subscription is reaffirmed", async () => {
     const { db, source, calls, sync, service, outcome } = fixture();
     const pending = sync.syncSource(source.id).catch((error) => error);
@@ -73,7 +89,7 @@ describe("source configuration and active synchronization", () => {
     let write: ReturnType<typeof vi.spyOn> | undefined;
     try {
       await vi.waitFor(() => expect(calls).toHaveLength(1));
-      const method = { settings: "updateSourceSettings", scope: "updateSubscriptionScope", rule: "updateRule", subscription: "setSubscribed" }[change]!;
+      const method = { settings: "updateSourceSettings", scope: "updateSubscriptionScope", rule: "updateRule", subscription: "deleteSource" }[change]!;
       write = vi.spyOn(db as any, method).mockImplementationOnce(() => { throw new Error("synthetic write failure"); });
       const update = () => {
         if (change === "settings") return service.updateSettings(source.id, { title: "Changed", kind: "rss", pollingEnabled: false });

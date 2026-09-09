@@ -200,11 +200,11 @@ const channels = [
     if (delayedNavigationCommand === "restore") return deferNavigationCommand(() => database.restoreEntry(id));
     return database.restoreEntry(id);
   }],
-  ["source:set-subscribed", (_event, id, subscribed) => {
+  ["source:delete", (_event, id) => {
     subscriptionWrites++;
     if (managementFailure === "subscription") throw new Error("Synthetic subscription failure");
-    if (delayedNavigationCommand === "subscription") return deferNavigationCommand(() => database.setSubscribed(id, subscribed));
-    return database.setSubscribed(id, subscribed);
+    if (delayedNavigationCommand === "subscription") return deferNavigationCommand(() => database.deleteSource(id));
+    return database.deleteSource(id);
   }],
   ["source:collection-settings", (_event, id) => { if (collectionReadFailure) throw new Error(`Synthetic collection read failure ${"UnbrokenDiagnostic".repeat(35)}`); return managementCollection ?? database.getSourceCollectionSettings(id); }],
   ["source:inspect-collection-facets", () => { managementFacetReads++; return []; }],
@@ -570,17 +570,26 @@ try {
   assert(database.getEntry("history"), "Immediate undo must recover an accidental deletion without a trash view.");
   await evaluate("document.querySelector('.source-filter').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))");
   await waitFor(window, "Boolean(document.querySelector('.source-settings-form'))");
+  const retainedFixtureEntries = database.listEntries();
   const previousSubscriptionWrites = subscriptionWrites;
   libraryPageFailure = true;
   await clickText(".source-settings-operations button", "取消订阅");
   await waitFor(window, "!document.querySelector('.source-settings-form') && document.querySelector('.notice')?.textContent.includes('Synthetic library failure')");
-  assert(database.getSource(source.id).subscribed === false, "A list failure must not invalidate a committed unsubscription.");
+  assert(!database.getSource(source.id), "A list failure must not invalidate a committed unsubscription.");
   libraryPageFailure = false;
   await evaluate("document.querySelector('[aria-label=\"重新载入收件箱\"]').click()");
   await waitFor(window, "!document.querySelector('.source-filter') && !document.querySelector('.source-settings-form')");
   assert(subscriptionWrites === previousSubscriptionWrites + 1, "List recovery must not repeat a subscription write.");
-  assert(database.getSource(source.id).subscribed === false && database.getEntry("success").favorite, "Unsubscribe must retain favorites.");
+  assert(!database.getSource(source.id) && !database.getEntry("success") && database.listEntries().length === 0, "Unsubscribe must delete exclusive articles including favorites.");
   assert(await evaluate("!document.querySelector('.archived-sources') && Boolean(document.querySelector('.empty-side'))"), "Unsubscribed records must not create an archived navigation section.");
+  // Reset synthetic content for the independent navigation/settings scenarios.
+  const replacementSource = database.createSource({ url: source.url, title: source.title, kind: source.kind, pollingEnabled: true });
+  database.saveEntries(retainedFixtureEntries.map((entry) => ({ ...entry, sourceId: replacementSource.id, origins: undefined })));
+  for (const entry of retainedFixtureEntries) {
+    database.markFavorite(entry.id, entry.favorite);
+    database.markRead(entry.id, entry.read);
+  }
+  database.publishChanges();
   await clickText(".library-filter", "全部内容");
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 3");
   assert(await evaluate("document.querySelectorAll('.sidebar [aria-current=\"page\"]').length === 1 && document.querySelector('.library-filter[aria-current]')?.textContent === '全部内容'"), "Library navigation must expose only one current destination.");

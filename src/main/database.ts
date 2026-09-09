@@ -958,8 +958,11 @@ export class ReadingDatabase {
     const source = this.getSource(sourceId);
     if (!source) throw new Error("来源不存在。");
     this.db.transaction(() => {
+      const identities = this.db.prepare("SELECT COALESCE(canonical_identity, canonical_url) AS identity FROM entries WHERE source_id = ?").all(sourceId) as Array<{ identity: string }>;
       this.removeSourceOrigins(sourceId);
       this.db.prepare("DELETE FROM sources WHERE id = ?").run(sourceId);
+      const removeDismissal = this.db.prepare("DELETE FROM dismissed_contents WHERE canonical_identity = ? AND NOT EXISTS (SELECT 1 FROM entries WHERE COALESCE(canonical_identity, canonical_url) = ?)");
+      for (const { identity } of identities) removeDismissal.run(identity, identity);
       if (source.kind === "zhihu") this.db.prepare("DELETE FROM followees").run();
     })();
   }
