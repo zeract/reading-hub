@@ -40,7 +40,7 @@ body { min-width: 840px; margin: 0; background: var(--paper); }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; transition: background-color .14s ease, border-color .14s ease, color .14s ease; }
 button:disabled { cursor: not-allowed; opacity: .5; }
-button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible, .notice-message:focus-visible, .entry-pagination-error:focus-visible, .source-health-error:focus-visible, .ai-provider-error:focus-visible, .source-collection-error:focus-visible, .calibration-error:focus-visible, .source-action-error:focus-visible, .source-method-panel:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible, .notice-message:focus-visible, .entry-pagination-error:focus-visible, .ai-provider-error:focus-visible, .source-collection-error:focus-visible, .calibration-error:focus-visible, .source-action-error:focus-visible, .source-method-panel:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* Shared action controls; local rules own placement, not competing skins. */
 .action-button,
@@ -171,7 +171,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .entry-search-clear { display: grid; flex: 0 0 auto; width: 22px; height: 22px; place-items: center; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 17px; line-height: 1; }
 .entry-search-clear:hover { background: var(--hover); color: var(--ink); }
 .notice { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: start; gap: 8px; min-width: 0; margin: 0 5px 13px; padding: 9px 10px; border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: var(--control-radius); background: var(--paper); color: var(--ink-soft); font-size: 11px; line-height: 1.45; }
-.notice-message, .entry-pagination-error, .source-health-error, .ai-provider-error, .source-collection-error, .calibration-error, .source-action-error { min-width: 0; max-height: 9em; margin: 0; overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
+.notice-message, .entry-pagination-error, .ai-provider-error, .source-collection-error, .calibration-error, .source-action-error { min-width: 0; max-height: 9em; margin: 0; overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
 .notice-close { width: 28px; height: 28px; font-size: 17px; }
 .notice-actions { grid-column: 1 / -1; display: flex; }
 .entry-list { display: grid; }
@@ -456,11 +456,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 @media (max-width:900px) { body { min-width: 780px; }.shell { grid-template-columns: 198px minmax(228px,274px) minmax(0,1fr); }.shell--sidebar-collapsed { grid-template-columns: 0 minmax(228px,274px) minmax(0,1fr); }.library-filter em { display: none; }.sidebar { gap: 8px; }.timeline h1 { font-size: 25px; }.reader-toolbar { grid-template-columns: 1fr auto; padding: 0 14px; }.reader-toolbar-spacer { display: none; }.reader-toolbar-center { justify-items: start; }.reader-toolbar-center > p { display: none; }.reader-scroll { padding: 30px 24px 56px; }.reader-view { --reader-base-size: 17px; }.reader-view[data-reader-preset="compact"] { --reader-base-size: 15px; }.reader-cover, .article-body img { max-height: min(300px,42vh); } }
 
 /* Source lifecycle feedback shares the sidebar and timeline scroll containers. */
-.source-health { min-width: 0; margin: 0 7px 12px; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--control-radius); color: var(--ink-soft); background: var(--paper-bright); font: 400 12px/1.45 var(--font-ui); }
-.source-health-overview { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
-.source-health details { min-width: 0; margin-top: 8px; color: var(--muted); }
-.source-health summary { cursor: pointer; }
-.source-health-error { margin-top: 8px; color: var(--ink-soft); }
 .source-health-indicator { color: var(--muted); flex: 0 0 auto; }
 .archived-sources { padding: 8px; font-size: 12px; color: var(--muted); }
 .archived-sources .source-row { display: flex; align-items: center; gap: 4px; }

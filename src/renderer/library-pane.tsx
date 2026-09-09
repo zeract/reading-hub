@@ -12,19 +12,6 @@ function LibraryCount({ value, stale, title }: { value: number | ""; stale: bool
   return <em title={stale ? "计数暂未更新，请重新载入。" : title} aria-label={stale ? "计数暂未更新" : undefined}>{stale ? "—" : value}</em>;
 }
 
-function SourceHealth({ source, onEdit }: { source: Source; onEdit?: (source: Source) => void }) {
-  return <section className="source-health" aria-label="来源状态">
-    <div className="source-health-overview">
-      <span role="status">{sourceHealthLabel(source)}</span>
-      {onEdit && <button type="button" className="action-button" onClick={() => onEdit(source)}>来源设置</button>}
-    </div>
-    {source.lastError && <details>
-      <summary>查看最近错误</summary>
-      <p className="source-health-error" tabIndex={0}>{source.lastError}</p>
-    </details>}
-  </section>;
-}
-
 function LibraryFilter({ view, currentView, label, icon, onSelect, children }: {
   view: LibraryView; currentView?: LibraryView; label: string; icon: AppIconName; onSelect: (view: LibraryView) => void; children?: ReactNode;
 }) {
@@ -134,7 +121,6 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
 
   return <section className="timeline" aria-label="文章列表">
     <header><div><p className="eyebrow">{activeSource ? "来源内容" : "阅读收件箱"}</p><h1 title={title}>{title}</h1></div><span className="count">{count.value} {count.label}</span></header>
-    {activeSource && <SourceHealth key={activeSource.id} source={activeSource} onEdit={onEditSource} />}
     {<form className="entry-search" role="search" onSubmit={(event) => event.preventDefault()}>
       <AppIcon name="search" />
       <input

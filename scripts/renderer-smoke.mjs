@@ -1249,16 +1249,10 @@ try {
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
     await setViewport(width, height, scale);
     assert(await evaluate("(() => { const timeline = document.querySelector('.timeline'); const count = timeline.querySelector('.count').getBoundingClientRect(); const group = [...document.querySelectorAll('.source-group-heading')].find(button => button.textContent.startsWith('LongGroup')); return count.right <= timeline.getBoundingClientRect().right && group.scrollWidth <= group.clientWidth + 1; })()"), "Long source and group names must not hide counts or overflow their columns.");
-    assert(await evaluate("(() => { const health = document.querySelector('.source-health'); const action = health.querySelector('button'); const tokens = getComputedStyle(document.documentElement); const style = getComputedStyle(action); const rect = action.getBoundingClientRect(); const bounds = health.getBoundingClientRect(); return !health.querySelector('details').open && rect.right <= bounds.right && style.fontSize === tokens.getPropertyValue('--control-font-size').trim() && style.minHeight === tokens.getPropertyValue('--control-height').trim() && style.borderRadius === tokens.getPropertyValue('--control-radius').trim(); })()"), "Source settings must use the shared action control with compact status feedback.");
-    await writeFile(path.join(tmpdir(), `reading-hub-source-status-${width}.png`), (await window.capturePage()).toPNG());
-    await evaluate("document.querySelector('.source-health summary').focus()");
-    await pressKey("Enter");
-    await waitFor(window, "document.querySelector('.source-health details').open");
-    assert(await evaluate("(() => { const error = document.querySelector('.source-health-error'); error.focus(); error.scrollTop = 100; return document.activeElement === error && error.scrollTop > 0 && error.scrollWidth <= error.clientWidth + 1; })()"), "Source error details must support keyboard disclosure and bounded scrolling.");
-    await writeFile(path.join(tmpdir(), `reading-hub-source-error-${width}.png`), (await window.capturePage()).toPNG());
-    await evaluate("document.querySelector('.source-health summary').click()");
+    assert(await evaluate("!document.querySelector('.timeline [aria-label=\"来源状态\"]') && document.querySelector('.timeline > header').nextElementSibling.classList.contains('entry-search')"), "A source timeline must go directly from its heading to search without a redundant status/settings panel.");
+    await writeFile(path.join(tmpdir(), `reading-hub-source-layout-${width}.png`), (await window.capturePage()).toPNG());
   }
-  await clickText(".source-health button", "来源设置");
+  await evaluate("[...document.querySelectorAll('.source-filter')].find(button => button.textContent.startsWith('LongSource')).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))");
   await waitFor(window, "document.querySelector('.source-settings-form input')?.value.startsWith('LongSource')");
   await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
   console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore/settings-draft/settings-save-lock/settings-close/modal-keyboard/modal-focus/image-preview-dismissal/source-preview-lifetime, library layouts and four academic/settings layouts verified.");
