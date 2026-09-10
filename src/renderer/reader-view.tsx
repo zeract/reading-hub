@@ -82,7 +82,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const [embedded, setEmbedded] = useState(false);
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
-  const { preferences, setPreset, adjustFont } = useReaderPreferences();
+  const { preferences } = useReaderPreferences();
   const [assistantState, setAssistantState] = useState<AssistantPanelState>("closed");
   const [imagePreview, setImagePreview] = useState<ReaderImagePreview>();
   const [textSelection, setTextSelection] = useState<ReaderTextSelection>();
@@ -296,8 +296,8 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
       <div className="reader-toolbar-spacer" aria-hidden="true" />
       <div className="reader-toolbar-center">
         <p>{source?.title || "已保存内容"}</p>
-        <div className="reader-toolbar-settings">
-          {hasLanguageVariants && <div className="reader-language-switcher" role="group" aria-label="文章语言版本">
+        {hasLanguageVariants && <div className="reader-toolbar-settings">
+          <div className="reader-language-switcher" role="group" aria-label="文章语言版本">
             {languageVariants.map((variant) => {
               const matchingLanguageCount = languageVariants.filter((candidate) => candidate.language === variant.language).length;
               const active = variant.url === article?.url || (matchingLanguageCount === 1 && variant.language === article?.activeLanguage);
@@ -311,15 +311,8 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
                 onClick={() => void switchLanguage(variant.url)}
               >{languageSwitching === variant.url ? "…" : variant.label}</button>;
             })}
-          </div>}
-          <div className="reader-controls" aria-label="阅读排版设置">
-            <button type="button" className={preferences.preset === "compact" ? "selected" : ""} aria-pressed={preferences.preset === "compact"} onClick={() => setPreset("compact")}>紧凑</button>
-            <button type="button" className={preferences.preset === "reading" ? "selected" : ""} aria-pressed={preferences.preset === "reading"} onClick={() => setPreset("reading")}>阅读</button>
-            <span aria-hidden="true" />
-            <button type="button" aria-label="缩小字号" disabled={preferences.fontScale <= 0.85} onClick={() => adjustFont(-0.05)}>A−</button>
-            <button type="button" aria-label="放大字号" disabled={preferences.fontScale >= 1.25} onClick={() => adjustFont(0.05)}>A+</button>
           </div>
-        </div>
+        </div>}
         {languageSwitchError && <span className="reader-language-error" role="status" title={languageSwitchError}>{languageSwitchError}</span>}
       </div>
       <div className="reader-toolbar-actions">

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { ReaderPreferencesProvider } from "../src/renderer/reader-preferences-context";
+import { ReaderPreferencesProvider, useReaderPreferences } from "../src/renderer/reader-preferences-context";
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,8 +8,12 @@ import type { Entry, ReaderArticle } from "../src/shared/types";
 const card: Entry = { id: "one", sourceId: "source", url: "https://example.com/one", canonicalUrl: "https://example.com/one", title: "One", contentHash: "hash", read: true, favorite: false, createdAt: 1 };
 let root: Root, container: HTMLDivElement;
 let load: ReturnType<typeof vi.fn>, cancel: ReturnType<typeof vi.fn>;
+function PreferenceHarness() {
+  const { adjustFont } = useReaderPreferences();
+  return <button aria-label="测试字号更新" onClick={() => adjustFont(0.05)} />;
+}
 async function render(id = "one") {
-  await act(async () => root.render(<StrictMode><ReaderPreferencesProvider><ReaderView favoriteUpdating={false} entry={{ ...card, id }} onUpdateEntry={async () => true} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} /></ReaderPreferencesProvider></StrictMode>));
+  await act(async () => root.render(<StrictMode><ReaderPreferencesProvider><PreferenceHarness /><ReaderView favoriteUpdating={false} entry={{ ...card, id }} onUpdateEntry={async () => true} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={() => undefined} /></ReaderPreferencesProvider></StrictMode>));
 }
 async function failImage(selector = ".reader-cover"): Promise<HTMLImageElement> {
   const image = container.querySelector<HTMLImageElement>(selector)!;
@@ -61,7 +65,7 @@ describe("reader image lifetime", () => {
   it("keeps current image work on an unrelated font/layout update", async () => {
     load.mockImplementation(() => new Promise<string>(() => undefined));
     await render(); const image = await failImage(".article-body img");
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="放大字号"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="测试字号更新"]')!.click());
     expect(cancel).not.toHaveBeenCalled();
     expect(container.querySelector(".article-body img")).toBe(image);
   });

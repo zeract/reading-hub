@@ -15,8 +15,8 @@ const iconKindBySource: Record<Source["kind"], SourceIconKind> = {
 };
 
 /**
- * Platform sources keep a deliberate local mark. Ordinary sites use their
- * own favicon, fetched by the main process rather than a third-party icon
+ * Platform sources retain their category for local styling. Ordinary sites
+ * use their own favicon, fetched by the main process rather than a third-party icon
  * service so the reader does not disclose a user's subscriptions elsewhere.
  */
 export function sourceIconKind(source: Source): SourceIconKind {

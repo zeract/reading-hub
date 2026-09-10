@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import type { Source } from "../shared/types";
-import { sourceIconKind, type SourceIconKind } from "../shared/source-icon";
+import { sourceIconKind } from "../shared/source-icon";
 
-export type AppIconName = "sidebar" | "expand" | "refresh" | "add" | "search" | "today" | "unread" | "favorite" | "folder" | "chevron-down" | "chevron-right" | "settings" | "back" | "reading" | "ai" | SourceIconKind;
+export type AppIconName = "sidebar" | "expand" | "refresh" | "add" | "search" | "today" | "unread" | "favorite" | "folder" | "chevron-down" | "chevron-right" | "settings" | "back" | "reading" | "ai";
 
 /** Compact, local-only line icons with a native macOS reading-list emphasis. */
 export function AppIcon({ name }: { name: AppIconName }) {
@@ -23,19 +23,12 @@ export function AppIcon({ name }: { name: AppIconName }) {
     case "back": return <svg {...props}><path d="M19 12H5M11 6l-6 6 6 6" /></svg>;
     case "reading": return <svg {...props}><path d="M5 4.5h10a4 4 0 0 1 4 4V20H9a4 4 0 0 0-4 1Z" /><path d="M5 4.5V21M9 8h6M9 12h6" /></svg>;
     case "ai": return <svg {...props}><path d="m12 3 1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6Z" /><path d="m19 16 .7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7Z" /></svg>;
-    case "rss": return <svg {...props}><circle cx="6" cy="18" r="1" fill="currentColor" stroke="none" /><path d="M5 11a8 8 0 0 1 8 8M5 5a14 14 0 0 1 14 14" /></svg>;
-    case "web": return <svg {...props}><circle cx="12" cy="12" r="8" /><path d="M4 12h16M12 4c2.2 2.2 3.2 4.9 3.2 8S14.2 17.8 12 20c-2.2-2.2-3.2-4.9-3.2-8S9.8 6.2 12 4Z" /></svg>;
-    case "link": return <svg {...props}><path d="M10 14 14 10M8.2 17.8l-1.4 1.4a3 3 0 0 1-4.2-4.2L7 10.6a3 3 0 0 1 4.2 0M15.8 6.2l1.4-1.4a3 3 0 0 1 4.2 4.2L17 13.4a3 3 0 0 1-4.2 0" /></svg>;
-    case "zhihu": return <svg {...props}><path d="M5 5.5h14v10H9l-4 3Z" /><path d="M8 9h8M8 12h5" /></svg>;
-    case "zhihu-follow": return <svg {...props}><circle cx="9" cy="8" r="3" /><path d="M3.5 19c.6-3 2.4-4.6 5.5-4.6S13.9 16 14.5 19M17 9v6M14 12h6" /></svg>;
-    case "x": return <svg {...props}><path d="m5 4 14 16M19 4 5 20" /></svg>;
-    case "xiaohongshu": return <svg {...props}><rect x="4" y="5" width="16" height="14" rx="3" /><path d="M8 10h8M8 14h5" /><circle cx="17" cy="14" r="1" fill="currentColor" stroke="none" /></svg>;
-    case "academic": return <svg {...props}><path d="m4 8 8-4 8 4-8 4Z" /><path d="M7 11v4.5c2.8 2 7.2 2 10 0V11M20 9v5" /></svg>;
   }
 }
 
 export function SourceIcon({ source }: { source: Source }) {
   const kind = sourceIconKind(source);
+  const initial = new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(source.title.trim())[Symbol.iterator]().next().value?.segment || "?";
   const [favicon, setFavicon] = useState<string>();
 
   useEffect(() => {
@@ -50,8 +43,8 @@ export function SourceIcon({ source }: { source: Source }) {
   return <span className={`source-icon source-icon--${kind}${favicon ? " source-icon--favicon" : ""}`} aria-hidden="true">
     {favicon ? <img key={favicon} src={favicon} alt="" onError={() => {
       // A fetch can succeed while Chromium cannot decode its bytes. Keep the
-      // local mark, and never let an obsolete image clear a newer response.
+      // source initial, and never let an obsolete image clear a newer response.
       setFavicon((current) => current === favicon ? undefined : current);
-    }} /> : <AppIcon name={kind} />}
+    }} /> : <span className="source-icon-initial">{initial}</span>}
   </span>;
 }

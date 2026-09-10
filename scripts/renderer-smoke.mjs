@@ -351,9 +351,9 @@ try {
   const initialSourceIconReads = sourceIconReads;
   pauseSourceIcons = false;
   for (const resolve of pendingSourceIcons) resolve("data:image/png;base64,ZmFrZQ==");
-  await waitFor(window, "failedSourceIcons === 1 && Boolean(document.querySelector('.source-icon--rss svg')) && !document.querySelector('.source-icon--favicon')");
+  await waitFor(window, "failedSourceIcons === 1 && Boolean(document.querySelector('.source-icon-initial')?.textContent) && !document.querySelector('.source-icon--favicon')");
   await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
-  assert(sourceIconReads === initialSourceIconReads, "A real favicon decode failure must restore the local mark without retrying IPC.");
+  assert(sourceIconReads === initialSourceIconReads, "A real favicon decode failure must restore the source initial without retrying IPC.");
   pauseLibraryPage = true;
   const oldRefreshStarted = new Promise((resolve) => { libraryPageRequested = resolve; });
   await evaluate("document.querySelector('[aria-label=\"重新载入收件箱\"]').click()");
@@ -388,9 +388,13 @@ try {
   assert(database.getEntry("success").read, "Successful content must become read.");
   await waitFor(window, "document.querySelector('.article-body img')?.naturalWidth === 1");
   assert(imageLoads === 1, `A native body image error must invoke the proxy exactly once (observed ${imageLoads}).`);
-  await evaluate("window.preferenceBody = document.querySelector('.article-body'); window.originalPreferenceSetItem = Storage.prototype.setItem; Storage.prototype.setItem = function(key, value) { if (key === 'reading-hub.reader-preferences.v1') throw new DOMException('Synthetic storage failure', 'QuotaExceededError'); return window.originalPreferenceSetItem.call(this, key, value); }; document.querySelector('[aria-label=\"放大字号\"]').click()");
+  assert(await evaluate("!document.querySelector('.reader-controls') && !document.querySelector('.reader-toolbar [aria-label=\"放大字号\"]')"), "Typography controls must only appear in settings.");
+  await evaluate("document.querySelector('[aria-label=\"打开设置\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.settings-font-controls'))");
+  await evaluate("window.originalPreferenceSetItem = Storage.prototype.setItem; Storage.prototype.setItem = function(key, value) { if (key === 'reading-hub.reader-preferences.v1') throw new DOMException('Synthetic storage failure', 'QuotaExceededError'); return window.originalPreferenceSetItem.call(this, key, value); }; document.querySelector('[aria-label=\"放大字号\"]').click()");
   await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
-  assert(await evaluate("Boolean(document.querySelector('.reader-article')) && document.querySelector('.article-body') === window.preferenceBody"), "Failed preference persistence must not unmount or rewrite the loaded article.");
+  await evaluate("document.querySelector('[aria-label=\"返回阅读器\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.reader-article'))");
   await waitFor(window, "Boolean(document.querySelector('.reader-preference-status')) && document.querySelector('.reader-view').style.getPropertyValue('--reader-font-scale') === '1.05'");
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
     await setViewport(width, height, scale);
@@ -404,6 +408,7 @@ try {
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
     await setViewport(width, height, scale);
     assert(await evaluate("(() => { const status = document.querySelector('.reader-preference-status'); const rect = status.querySelector('button').getBoundingClientRect(); const bounds = status.closest('.settings-card').getBoundingClientRect(); return status.scrollWidth <= status.clientWidth + 1 && rect.left >= bounds.left && rect.right <= bounds.right && rect.bottom <= bounds.bottom; })()"), "Settings must retain the same save-retry control within its card.");
+    assert(await evaluate("(() => { const title = document.querySelector('.settings-titlebar p').getBoundingClientRect(); const button = document.querySelector('.settings-titlebar button').getBoundingClientRect(); return Math.abs((title.top + title.bottom - button.top - button.bottom) / 2) < 1; })()"), "Settings title and back button must share a vertical center at every viewport.");
     await writeFile(path.join(tmpdir(), `reading-hub-preferences-settings-${width}.png`), (await window.capturePage()).toPNG());
   }
   await evaluate("Storage.prototype.setItem = window.originalPreferenceSetItem; document.querySelector('.reader-preference-status button').click()");
@@ -411,9 +416,12 @@ try {
   assert(await evaluate("(() => { const saved = JSON.parse(localStorage.getItem('reading-hub.reader-preferences.v1')); return saved.preset === 'compact' && saved.fontScale === 1.05; })()"), "Retry must save the latest shared preference, including changes made in settings.");
   await evaluate("document.querySelector('[aria-label=\"返回阅读器\"]').click()");
   await waitFor(window, "document.querySelector('.reader-view')?.dataset.readerPreset === 'compact' && document.querySelector('.article-body img')?.naturalWidth === 1");
-  await clickText(".reader-controls button", "阅读");
+  await evaluate("document.querySelector('[aria-label=\"打开设置\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.settings-segmented'))");
+  await clickText(".settings-segmented button", "阅读");
   await evaluate("document.querySelector('[aria-label=\"缩小字号\"]').click()");
-  await waitFor(window, "document.querySelector('.reader-view').style.getPropertyValue('--reader-font-scale') === '1'");
+  await evaluate("document.querySelector('[aria-label=\"返回阅读器\"]').click()");
+  await waitFor(window, "document.querySelector('.reader-view')?.style.getPropertyValue('--reader-font-scale') === '1' && document.querySelector('.article-body img')?.naturalWidth === 1");
   await writeFile(path.join(tmpdir(), "reading-hub-reader.png"), (await window.capturePage()).toPNG());
   await evaluate("document.querySelector('.article-body img').focus()");
   await pressKey("Enter");
@@ -1232,8 +1240,8 @@ try {
   database.markFailure(database.getSource(longSource.id), `Synthetic source failure ${"UnbrokenDiagnostic".repeat(16)}`);
   database.publishChanges();
   await clickText(".library-filter", "全部内容");
-  await waitFor(window, "[...document.querySelectorAll('.source-filter')].some(button => button.textContent.startsWith('LongSource'))");
-  await evaluate("[...document.querySelectorAll('.source-filter')].find(button => button.textContent.startsWith('LongSource')).click()");
+  await waitFor(window, "[...document.querySelectorAll('.source-filter')].some(button => button.querySelector('.source-title')?.textContent.startsWith('LongSource'))");
+  await evaluate("[...document.querySelectorAll('.source-filter')].find(button => button.querySelector('.source-title')?.textContent.startsWith('LongSource')).click()");
   await waitFor(window, "document.querySelector('.timeline h1')?.textContent.startsWith('LongSource')");
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
     await setViewport(width, height, scale);
@@ -1241,7 +1249,7 @@ try {
     assert(await evaluate("!document.querySelector('.timeline [aria-label=\"来源状态\"]') && document.querySelector('.timeline > header').nextElementSibling.classList.contains('entry-search')"), "A source timeline must go directly from its heading to search without a redundant status/settings panel.");
     await writeFile(path.join(tmpdir(), `reading-hub-source-layout-${width}.png`), (await window.capturePage()).toPNG());
   }
-  await evaluate("[...document.querySelectorAll('.source-filter')].find(button => button.textContent.startsWith('LongSource')).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))");
+  await evaluate("[...document.querySelectorAll('.source-filter')].find(button => button.querySelector('.source-title')?.textContent.startsWith('LongSource')).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))");
   await waitFor(window, "document.querySelector('.source-settings-form input')?.value.startsWith('LongSource')");
   await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
   console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore/settings-draft/settings-save-lock/settings-close/modal-keyboard/modal-focus/image-preview-dismissal/source-preview-lifetime, library layouts and four academic/settings layouts verified.");

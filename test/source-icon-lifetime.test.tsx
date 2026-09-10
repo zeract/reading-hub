@@ -17,17 +17,17 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 async function render(item = source) { await act(async () => root.render(<SourceIcon source={item} />)); }
 
-it("restores the local mark after decoding fails without requesting the same icon again", async () => {
+it("restores the source initial after decoding fails without requesting the same icon again", async () => {
   await render();
   const image = container.querySelector("img")!;
   expect(image.src).toBe(icon);
   await act(async () => image.dispatchEvent(new Event("error")));
   expect(container.querySelector("img")).toBeNull();
-  expect(container.querySelector(".source-icon--rss svg")).not.toBeNull();
+  expect(container.querySelector(".source-icon-initial")?.textContent).toBe("F");
   expect(container.querySelector(".source-icon--favicon")).toBeNull();
   await render({ ...source, title: "Renamed" });
   expect(load).toHaveBeenCalledTimes(1);
-  expect(container.querySelector("svg")).not.toBeNull();
+  expect(container.querySelector(".source-icon-initial")?.textContent).toBe("R");
 });
 
 it("permits changed icon metadata to load after an earlier decode failure", async () => {
@@ -39,11 +39,11 @@ it("permits changed icon metadata to load after an earlier decode failure", asyn
   expect(container.querySelector("img")?.src).toBe("data:image/png;base64,bmV3");
 });
 
-it("keeps the local mark when the main-process request fails", async () => {
+it("keeps the source initial when the main-process request fails", async () => {
   load.mockRejectedValueOnce(new Error("Synthetic icon failure"));
   await render();
   expect(container.querySelector("img")).toBeNull();
-  expect(container.querySelector("svg")).not.toBeNull();
+  expect(container.querySelector(".source-icon-initial")?.textContent).toBe("F");
 });
 
 it("does not let an obsolete image error remove a newer image candidate", async () => {
@@ -62,4 +62,10 @@ it("ignores a superseded source response and retains the current icon", async ()
   await render({ ...source, id: "replacement", url: "https://replacement.example/feed" });
   await act(async () => resolve("data:image/png;base64,b2xk"));
   expect(container.querySelector("img")?.src).toBe(icon);
+});
+
+it.each([["  科学空间", "科"], ["👩‍💻 Blog", "👩‍💻"], ["   ", "?"]])("uses one complete initial for %s without an icon", async (title, initial) => {
+  load.mockResolvedValue(undefined);
+  await render({ ...source, title });
+  expect(container.querySelector(".source-icon-initial")?.textContent).toBe(initial);
 });

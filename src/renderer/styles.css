@@ -110,7 +110,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .app-titlebar-button, .reader-toolbar .toolbar-icon-button, .notice-close { display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: var(--control-radius); background: transparent; color: var(--ink-soft); box-shadow: none; line-height: 1; }
 .app-titlebar-button { width: 30px; height: 30px; }
 .app-titlebar-button svg { display: block; flex: 0 0 auto; width: 16px; height: 16px; }
-.app-titlebar-button svg, .library-filter svg, .source-group-label svg, .source-icon svg, .sidebar-settings-button svg, .settings-sidebar nav button svg { fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.app-titlebar-button svg, .library-filter svg, .source-group-label svg, .sidebar-settings-button svg, .settings-sidebar nav button svg { fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
 .app-titlebar-button:hover:not(:disabled), .app-titlebar-button:active:not(:disabled) { border-color: transparent; background: transparent; color: var(--ink); }
 .app-titlebar-button:focus-visible { outline: 1px solid var(--line-strong); outline-offset: 2px; }
 .reader-toolbar .toolbar-icon-button:hover:not(:disabled), .notice-close:hover:not(:disabled) { border-color: var(--line); background: var(--hover); color: var(--accent-deep); }
@@ -147,7 +147,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .source-filter { display: flex; align-items: center; width: 100%; min-height: 34px; gap: 8px; padding: 5px 8px 5px 24px; border: 0; border-radius: 6px; background: transparent; color: var(--ink-soft); text-align: left; }
 .source-filter.selected { background: var(--selection-surface); color: var(--accent-ink); box-shadow: none; font-weight: 700; }
 .source-icon { display: grid; flex: 0 0 18px; width: 18px; height: 18px; place-items: center; overflow: hidden; border: 0; border-radius: 4px; background: color-mix(in srgb, currentColor 12%, var(--paper-bright)); color: var(--ink-soft); line-height: 1; }
-.source-icon svg { width: 12px; height: 12px; }
+.source-icon-initial { font-size: 12px; font-weight: 500; line-height: 1; }
 .source-icon--favicon { border: 1px solid color-mix(in srgb, var(--line-strong) 74%, transparent); background: var(--paper-bright); color: var(--ink-soft); }
 .source-icon img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .source-filter.selected .source-icon { background: var(--paper-bright); }
@@ -248,10 +248,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .reader-language-switcher button { min-width: 0; max-width: 7.5em; overflow: hidden; padding: 3px 7px; color: var(--ink-soft); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .reader-language-switcher button.selected { background: var(--selection-surface); color: var(--accent-ink); }
 .reader-language-error { display: block; max-width: min(100%,30em); overflow: hidden; color: var(--danger); font-size: 9px; font-weight: 650; line-height: 1.3; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
-.reader-controls { display: inline-flex; align-items: center; gap: 1px; padding: 2px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); }
-.reader-controls button { padding: 3px 6px; border-radius: var(--control-radius); font-size: 10px; }
-.reader-controls button.selected { background: var(--selection-surface); color: var(--accent-ink); }
-.reader-controls span { width: 1px; height: 13px; margin: 0 2px; background: var(--line-strong); }
 .reader-workspace { position: relative; min-height: 0; overflow: hidden; }
 .reader-workspace > .reader-scroll { height: 100%; }
 .reader-scroll { min-height: 0; padding: clamp(38px,5vw,68px) clamp(24px,7vw,104px) clamp(72px,9vw,112px); overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; scrollbar-gutter: stable; container-type: inline-size; }
@@ -446,7 +442,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* A separate preferences surface keeps configuration out of the reading desk. */
 .settings-shell { --titlebar-leading-inset: 96px; display: grid; grid-template-columns: 230px minmax(0,1fr); grid-template-rows: 58px minmax(0,1fr); height: 100%; min-height: 0; overflow: hidden; background: var(--paper-bright); }
 .settings-shell--fullscreen { --titlebar-leading-inset: 16px; }
-.settings-titlebar { grid-column: 1 / -1; }.settings-titlebar > p { margin: 0 0 0 8px; color: var(--ink-soft); font-size: 12px; font-weight: 750; }
+.settings-titlebar { grid-column: 1 / -1; }.settings-titlebar .app-titlebar-actions > p { margin: 0 0 0 8px; color: var(--ink-soft); font-size: 12px; font-weight: 750; }
 .settings-sidebar { grid-column: 1; grid-row: 2; display: flex; min-height: 0; flex-direction: column; padding: 14px 10px; border-right: 1px solid var(--line); background: var(--paper-deep); }
 .settings-sidebar-title { margin: 0 8px 10px; color: var(--ink); font-size: 13px; font-weight: 750; }.settings-sidebar nav { display: grid; gap: 1px; }.settings-sidebar nav button { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 6px 8px; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--ink-soft); font-size: 12px; font-weight: 600; text-align: left; }.settings-sidebar nav button svg { width: 15px; height: 15px; }.settings-sidebar nav button:hover { background: var(--hover); }.settings-sidebar nav button.selected { background: var(--selection-surface); box-shadow: none; color: var(--accent-ink); font-weight: 700; }.settings-sidebar-note { margin: auto 8px 0; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; line-height: 1.55; }
 .settings-content { grid-column: 2; grid-row: 2; min-width: 0; padding: clamp(30px,5vw,72px); overflow: auto; background: var(--paper-bright); }.settings-content > header { width: min(100%,710px); margin: 0 auto 28px; }.settings-content h1 { margin: 0 0 7px; color: var(--ink); font: 650 clamp(26px,2.7vw,34px)/1.2 var(--font-ui); letter-spacing: normal; }.settings-content > header > p:last-child { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }

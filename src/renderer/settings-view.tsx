@@ -83,8 +83,7 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
 
   return <main className={`settings-shell${windowFullscreen ? " settings-shell--fullscreen" : ""}`} aria-label="Reading Hub 设置">
     <header className="app-titlebar settings-titlebar">
-      <div className="app-titlebar-actions"><button type="button" className="app-titlebar-button" onClick={onClose} aria-label="返回阅读器" title="返回阅读器"><AppIcon name="back" /></button></div>
-      <p>设置</p>
+      <div className="app-titlebar-actions"><button type="button" className="app-titlebar-button" onClick={onClose} aria-label="返回阅读器" title="返回阅读器"><AppIcon name="back" /></button><p>设置</p></div>
     </header>
     <aside className="settings-sidebar" aria-label="设置分类">
       <p className="settings-sidebar-title">设置</p>
