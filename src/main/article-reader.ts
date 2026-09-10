@@ -547,7 +547,7 @@ export class ArticleReader {
       title: entry.title,
       author: entry.author,
       publishedAt: entry.publishedAt,
-      coverImageUrl: coverCandidate && !containsImage(contentHtml, coverCandidate) ? coverCandidate : undefined,
+      coverImageUrl: coverCandidate && !containsImage(contentHtml, coverCandidate, item.feedContentHtml, response.url) ? coverCandidate : undefined,
       renderProfile: effectiveReaderProfile(renderProfile, sanitised.formulaRenderPolicy),
       contentMode: "feed_body",
       formulaDiagnostics: sanitised.formulaDiagnostics,
@@ -670,7 +670,7 @@ function finishReaderArticle(prepared: PreparedReaderArticle, sanitised: Sanitiz
   // An Open Graph image is often also the article's first figure. Rendering it
   // once as a cover and once in the preserved body creates an artificial
   // duplicate, so the body remains the single source of truth in that case.
-  const coverImageUrl = prepared.coverCandidate && !containsImage(contentHtml, prepared.coverCandidate) ? prepared.coverCandidate : undefined;
+  const coverImageUrl = prepared.coverCandidate && !containsImage(contentHtml, prepared.coverCandidate, prepared.rawContentHtml, prepared.resourceBaseUrl) ? prepared.coverCandidate : undefined;
 
   return {
     article: {
@@ -1246,22 +1246,30 @@ function hydrateLazyImages($: ReturnType<typeof load>, root: any, pageUrl: strin
       const fallbackImage = fallback(fallbackNode);
       const fallbackSrc = imageSource(fallbackImage, pageUrl);
       if (!fallbackSrc) return;
-      const equivalentSibling = $(node).siblings("img").toArray().map((sibling: any) => $(sibling)).find((image: any) => {
-        return sameImageAsset(fallbackSrc, imageSource(image, pageUrl));
+      const neighbours = $(node).prev().add($(node).next());
+      const candidates = $(node).siblings("img").toArray();
+      neighbours.each((_index: number, sibling: any) => {
+        const wrapper = $(sibling);
+        // A transparent media wrapper still belongs to this fallback pair.
+        // Do not search across prose or separate authored figures.
+        if (wrapper.is("a, span, div, picture") && !normalText(wrapper.text()) && !wrapper.find("figure, figcaption").length) {
+          candidates.push(...wrapper.find("img").toArray());
+        }
+      });
+      const fallbackKeys = new Set(imageSources(fallbackImage, pageUrl).map(imageAssetKey));
+      const equivalentSibling = candidates.map((sibling: any) => $(sibling)).find((image: any) => {
+        const selectedKey = imageAssetKey(imageSource(image, pageUrl));
+        return fallbackKeys.has(selectedKey) || imageSources(image, pageUrl).some((url) => imageAssetKey(url) === imageAssetKey(fallbackSrc));
       });
       // WordPress can put the static fallback before a lazy sibling. Merge
       // only an equivalent asset; adjacency alone does not establish identity.
-      if (equivalentSibling) {
-        const alt = normalText(fallbackImage.attr("alt") || "");
-        if (alt && !normalText(equivalentSibling.attr("alt") || "")) equivalentSibling.attr("alt", alt);
-        return;
-      }
-      if (previousImage.length && !imageSource(previousImage, pageUrl)) {
-        previousImage.attr("data-reader-noscript-src", fallbackSrc);
+      const targetImage = equivalentSibling || (previousImage.length && !imageSource(previousImage, pageUrl) ? previousImage : undefined);
+      if (targetImage) {
+        if (!equivalentSibling) targetImage.attr("data-reader-noscript-src", fallbackSrc);
         const srcset = fallbackImage.attr("data-srcset") || fallbackImage.attr("srcset");
-        if (srcset && !previousImage.attr("data-reader-noscript-srcset")) previousImage.attr("data-reader-noscript-srcset", srcset);
+        if (srcset && !targetImage.attr("data-reader-noscript-srcset")) targetImage.attr("data-reader-noscript-srcset", srcset);
         const alt = normalText(fallbackImage.attr("alt") || "");
-        if (alt && !normalText(previousImage.attr("alt") || "")) previousImage.attr("alt", alt);
+        if (alt && !normalText(targetImage.attr("alt") || "")) targetImage.attr("alt", alt);
         return;
       }
       // Keep every distinct fallback in author order. Copy only validated
@@ -1311,10 +1319,21 @@ function removeDuplicateImagesIn($: ReturnType<typeof load>, container: any, pag
   }
 }
 
-function containsImage(contentHtml: string, imageUrl: string): boolean {
+function containsImage(contentHtml: string, imageUrl: string, sourceHtml: string, pageUrl: string): boolean {
   const content = load(`<div>${contentHtml}</div>`);
   const target = imageAssetKey(imageUrl);
-  return content("img").toArray().some((node) => imageAssetKey(content(node).attr("src")) === target);
+  const renderedKeys = new Set(content("img").toArray().map((node) => imageAssetKey(content(node).attr("src"))));
+  if (renderedKeys.has(target)) return true;
+  // src/srcset and lazy-image attributes explicitly identify alternate sizes.
+  // Only suppress a cover if that image actually survived sanitization; never
+  // guess by stripping arbitrary CDN query parameters or comparing filenames.
+  const source = load(`<div id="reader-image-source">${sourceHtml}</div>`);
+  hydrateLazyImages(source, source("#reader-image-source"), pageUrl);
+  return source("img").toArray().some((node) => {
+    const image = source(node);
+    const selectedKey = imageAssetKey(imageSource(image, pageUrl));
+    return selectedKey && renderedKeys.has(selectedKey) && imageSources(image, pageUrl).some((url) => imageAssetKey(url) === target);
+  });
 }
 
 function imageUrlKey(value: string | undefined): string | undefined {
@@ -1344,12 +1363,6 @@ function imageAssetKey(value: string | undefined): string | undefined {
   } catch {
     return key.replace(/-\d{1,5}x\d{1,5}(?=\.[a-z0-9]{2,5}(?:[?#]|$))/i, "");
   }
-}
-
-function sameImageAsset(left: string | undefined, right: string | undefined): boolean {
-  const leftKey = imageAssetKey(left);
-  const rightKey = imageAssetKey(right);
-  return Boolean(leftKey && rightKey && leftKey === rightKey);
 }
 
 /**
@@ -2517,6 +2530,11 @@ function escapeHtml(value: string): string {
 }
 
 function imageSource(element: any, pageUrl: string): string | undefined {
+  return imageSources(element, pageUrl)[0];
+}
+
+/** Ordered, validated candidates retain the publisher's image equivalence. */
+function imageSources(element: any, pageUrl: string): string[] {
   const srcsets = [
     element.attr("data-srcset"),
     element.attr("data-lazy-srcset"),
@@ -2540,11 +2558,7 @@ function imageSource(element: any, pageUrl: string): string | undefined {
     element.attr("data-reader-noscript-src"),
     element.attr("src")
   ];
-  for (const value of values) {
-    const src = safeUrl(value, pageUrl);
-    if (src) return src;
-  }
-  return undefined;
+  return [...new Set(values.map((value) => safeUrl(value, pageUrl)).filter((value): value is string => Boolean(value)))];
 }
 
 function removeAllAttributes(element: any): void {

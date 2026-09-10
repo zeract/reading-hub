@@ -1095,6 +1095,47 @@ describe("article reader extraction", () => {
     expect(content).toContain("图片说明。");
   });
 
+  it.each([false, true])("merges an adjacent wrapped lazy image and its fallback (fallback first: %s)", (fallbackFirst) => {
+    const lazy = '<a href="/full.png"><span><img src="/small.png" srcset="/small.png 400w, /full.png 1200w"></span></a>';
+    const fallback = '<noscript><img src="/small.png" alt="保留图注"></noscript>';
+    const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p><div><div>${fallbackFirst ? fallback + lazy : lazy + fallback}</div></div></article>`, entry.url, entry);
+    const images = load(result?.article.contentHtml || "")("img");
+    expect(images).toHaveLength(1);
+    expect(images.attr("src")).toBe("https://example.com/full.png");
+    expect(images.attr("alt")).toBe("保留图注");
+  });
+
+  it("does not add a cover when the body declares it as a responsive image candidate", () => {
+    const result = extractReaderArticle(`<html><head><meta property="og:image" content="/small.png"></head><body><article><p>${"正文内容 ".repeat(35)}</p><img src="/small.png" srcset="/small.png 400w, /full.png 1200w"></article></body></html>`, entry.url, entry);
+    expect(result?.article.coverImageUrl).toBeUndefined();
+    expect(load(result?.article.contentHtml || "")("img").attr("src")).toBe("https://example.com/full.png");
+  });
+
+  it("retains the fallback's responsive candidates when merging into a wrapped image", () => {
+    const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p><span><img src="/small.png"></span><noscript><img src="/small.png" srcset="/small.png 400w, /full.png 1200w"></noscript></article>`, entry.url, entry);
+    const images = load(result?.article.contentHtml || "")("img");
+    expect(images).toHaveLength(1);
+    expect(images.attr("src")).toBe("https://example.com/full.png");
+  });
+
+  it("does not merge distinct photos that share a lazy placeholder", () => {
+    const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p><span><img src="/placeholder.gif" data-src="/first.png"></span><noscript><img src="/placeholder.gif" data-src="/second.png"></noscript></article>`, entry.url, entry);
+    expect(load(result?.article.contentHtml || "")("img").toArray().map(image => image.attribs.src)).toEqual([
+      "https://example.com/first.png", "https://example.com/second.png"
+    ]);
+  });
+
+  it("keeps a distinct fallback and does not merge images across authored prose", () => {
+    const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p>
+      <div><img src="/image?id=1"><p>第一处解释。</p></div>
+      <noscript><img src="/image?id=1"><img src="/image?id=2"></noscript>
+      </article>`, entry.url, entry);
+    const images = load(result?.article.contentHtml || "")("img");
+    expect(images.toArray().map(image => image.attribs.src)).toEqual([
+      "https://example.com/image?id=1", "https://example.com/image?id=1", "https://example.com/image?id=2"
+    ]);
+  });
+
   it("keeps a noscript image when its preceding image is a different authored figure", () => {
     const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p>
       <img src="/first.png" alt="第一张图"><noscript><img src="/second.png" alt="第二张图"></noscript>
@@ -1272,7 +1313,7 @@ describe("article reader extraction", () => {
             url: source.url,
             status: 200,
             contentType: "application/rss+xml",
-            text: `<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>RSSHub</title><item><title>示例推文</title><link>${xEntry.url}</link><description>${xEntry.summary}</description><content:encoded><![CDATA[<p>RSSHub 提供的 <strong>完整推文正文</strong>，可在本地安全阅读。</p><img src="https://pbs.twimg.com/media/diagram.jpg" onerror="alert(1)"><script>alert(1)</script>]]></content:encoded></item></channel></rss>`
+            text: `<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>RSSHub</title><item><title>示例推文</title><link>${xEntry.url}</link><description>${xEntry.summary}</description><content:encoded><![CDATA[<p>RSSHub 提供的 <strong>完整推文正文</strong>，可在本地安全阅读。</p><img src="https://pbs.twimg.com/media/diagram.jpg" srcset="https://pbs.twimg.com/media/diagram.jpg 400w, https://pbs.twimg.com/media/diagram-large.jpg 1200w" onerror="alert(1)"><script>alert(1)</script>]]></content:encoded></item></channel></rss>`
           };
         }
         throw new Error("不应请求其他地址");
@@ -1286,7 +1327,7 @@ describe("article reader extraction", () => {
 
     expect(article.contentMode).toBe("feed_body");
     expect(article.contentHtml).toContain("RSSHub 提供的");
-    expect(article.contentHtml).toContain('src="https://pbs.twimg.com/media/diagram.jpg"');
+    expect(article.contentHtml).toContain('src="https://pbs.twimg.com/media/diagram-large.jpg"');
     expect(article.contentHtml).not.toMatch(/script|onerror/);
     expect(article.coverImageUrl).toBeUndefined();
     expect(requests).toEqual([
