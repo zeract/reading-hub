@@ -155,7 +155,8 @@ export class ScientificArticleVisualAuditor {
       ]).then(([katex, reader]) => {
         const katexFontsUrl = pathToFileURL(path.join(root, "node_modules", "katex", "dist", "fonts")).href.replace(/\/$/, "");
         const resolvedKatex = katex.replace(/url\((['"]?)fonts\//g, (_match, quote: string) => `url(${quote}${katexFontsUrl}/`);
-        return `${resolvedKatex}\n${reader}`;
+        const resolvedReader = reader.replaceAll("./fonts/", `${pathToFileURL(path.join(root, "src/renderer/fonts")).href}/`);
+        return `${resolvedKatex}\n${resolvedReader}`;
       });
     }
     return this.styles;

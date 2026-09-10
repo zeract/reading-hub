@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -15,11 +16,12 @@ const root = path.resolve(import.meta.dirname, "..");
 // deterministic fixtures, so they neither need nor should contend for that
 // profile's SingletonLock.
 app.setPath("userData", path.join(tmpdir(), `reading-hub-visual-audit-${process.pid}`));
-const css = await readFile(path.join(root, "src/renderer/styles.css"), "utf8");
+const css = (await readFile(path.join(root, "src/renderer/styles.css"), "utf8")).replaceAll("./fonts/", `${pathToFileURL(path.join(root, "src/renderer/fonts")).href}/`);
+const fixturePath = path.join(await mkdtemp(path.join(tmpdir(), "reading-hub-visual-page-")), "index.html");
 // The renderer loads KaTeX's own stylesheet before our reader overrides.
 // Include both here and render formulas with KaTeX itself so geometry checks
 // exercise the same DOM/CSS contract that users see.
-const katexCss = await readFile(path.join(root, "node_modules/katex/dist/katex.min.css"), "utf8");
+const katexCss = (await readFile(path.join(root, "node_modules/katex/dist/katex.min.css"), "utf8")).replaceAll("url(fonts/", `url(${pathToFileURL(path.join(root, "node_modules/katex/dist/fonts")).href}/`);
 const outputDirectory = process.env.READING_HUB_VISUAL_OUTPUT;
 const viewports = [
   { name: "compact", width: 1024, height: 768, zoom: 1 },
@@ -73,7 +75,9 @@ function overlaps(a, b) {
 async function auditViewport(window, viewport, mathJaxSvg) {
   window.setSize(viewport.width, viewport.height);
   window.webContents.setZoomFactor(viewport.zoom);
-  await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(page(mathJaxSvg))}`);
+  await writeFile(fixturePath, page(mathJaxSvg));
+  await window.loadFile(fixturePath);
+  await window.webContents.executeJavaScript(`document.fonts.load('19px "Zhuque Fangsong"', "中文阅读").then(async fonts => { if (fonts.length !== 1 || fonts[0].status !== "loaded") throw new Error("Bundled Chinese font did not load"); await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); })`);
   const geometry = await window.webContents.executeJavaScript(`(() => { try { return (${() => {
     const rect = (selector) => {
       const element = document.querySelector(selector);

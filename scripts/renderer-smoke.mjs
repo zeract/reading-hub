@@ -324,6 +324,7 @@ let failure;
 try {
   await verifyNavigationPolicy();
   await window.loadFile(renderer);
+  await window.webContents.executeJavaScript(`document.fonts.ready.then(() => document.fonts.load('19px "Zhuque Fangsong"', "中文阅读")).then(fonts => { if (fonts.length !== 1 || fonts[0].status !== "loaded") throw new Error("Bundled Chinese font failed to load"); })`);
   await waitFor(window, "typeof window.reader === 'object' && typeof window.reader.listSources === 'function' && Boolean(document.querySelector('.shell'))");
   await fullscreenSnapshotStarted;
   window.webContents.send("window:fullscreen-changed", true);

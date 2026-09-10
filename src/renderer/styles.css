@@ -1,6 +1,16 @@
+/* Local CJK face only: Latin, code and mathematical fonts keep their roles. */
+@font-face {
+  font-family: "Zhuque Fangsong";
+  src: url("./fonts/ZhuqueFangsong-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  unicode-range: U+2E80-303F, U+3100-312F, U+31A0-31BF, U+31C0-31EF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE10-FE1F, U+FE30-FE4F, U+FF01-FF60, U+FFE0-FFE6, U+20000-323AF;
+}
+
 :root {
-  --font-ui: -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Helvetica Neue",sans-serif;
-  --font-reading: "Songti SC",Georgia,"STSong",serif;
+  --font-ui: "Zhuque Fangsong",-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Helvetica Neue",sans-serif;
+  --font-reading: "Zhuque Fangsong",Georgia,"Songti SC","STSong",serif;
   --font-mono: "SFMono-Regular",Menlo,Consolas,monospace;
   --control-radius: 8px;
   --control-height: 32px;
