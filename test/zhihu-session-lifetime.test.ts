@@ -30,7 +30,7 @@ vi.mock("electron", async () => {
   }) } };
 });
 vi.mock("../src/main/network", () => ({ configureChromiumSession: mocks.configure }));
-vi.mock("../src/main/zhihu-follow-parser", () => ({ extractZhihuFollowPage: mocks.extract }));
+vi.mock("../src/main/zhihu-follow-parser", async (importOriginal) => ({ ...await importOriginal<typeof import("../src/main/zhihu-follow-parser")>(), extractZhihuFollowPage: mocks.extract }));
 import { ZhihuFollowConnector } from "../src/main/zhihu-follow";
 import { ConnectorRegistry } from "../src/main/connector-registry";
 import { ReadingDatabase } from "../src/main/database";
@@ -82,6 +82,24 @@ it("rechecks follow-page authorization after the DOM wait", async () => {
     await rejected;
     expect(mocks.extract).not.toHaveBeenCalled();
     expect(mocks.windows.at(-1).isDestroyed()).toBe(true);
+  } finally { connector.close(); }
+});
+
+it("rejects an article redirected to sign-in instead of returning login HTML", async () => {
+  mocks.evaluate.mockImplementationOnce(async () => { mocks.windows.at(-1).url = "https://www.zhihu.com/signin?next=answer"; return "Login HTML"; });
+  const connector = new ZhihuFollowConnector();
+  try {
+    const rejected = expect(connector.renderArticle("https://www.zhihu.com/question/1/answer/2")).rejects.toThrow("当前会话未登录");
+    await vi.advanceTimersByTimeAsync(1_200);
+    await rejected;
+  } finally { connector.close(); }
+});
+
+it("does not render an old follow-home record as an article", async () => {
+  const connector = new ZhihuFollowConnector();
+  try {
+    await expect(connector.renderArticle("https://www.zhihu.com/follow")).rejects.toThrow("不是文章链接");
+    expect(mocks.windows).toHaveLength(0);
   } finally { connector.close(); }
 });
 

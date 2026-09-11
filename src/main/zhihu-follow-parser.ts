@@ -161,7 +161,7 @@ function parseUnixTimestamp(value?: string): number | undefined {
   return value.trim().length === 10 ? number * 1_000 : number;
 }
 
-function isZhihuContentUrl(rawUrl: string): boolean {
+export function isZhihuContentUrl(rawUrl: string): boolean {
   try {
     const url = new URL(rawUrl);
     return (url.hostname === "www.zhihu.com" || url.hostname === "zhuanlan.zhihu.com") && PUBLISHED_POST_LINK.test(url.pathname);

@@ -1392,6 +1392,15 @@ describe("article reader extraction", () => {
     expect(article.contentHtml).toContain("授权会话正文");
   });
 
+  it("preserves the authorized session's actionable failure when public HTTP is not used", async () => {
+    const reason = new Error("知乎登录已失效或当前会话未登录，请重新登录。");
+    const source = { kind: "zhihu_follow" } as Source;
+    const http = { getText: vi.fn() };
+    const reader = new ArticleReader(http as never, { render: vi.fn() }, async () => { throw reason; });
+    await expect(reader.read(entry, source)).rejects.toBe(reason);
+    expect(http.getText).not.toHaveBeenCalled();
+  });
+
   it("keeps annotated Zhihu RichContent text while excluding its page-level discussion thread", () => {
     const result = extractReaderArticle(
       `<article class="QuestionAnswer-content" data-answer-id="456">

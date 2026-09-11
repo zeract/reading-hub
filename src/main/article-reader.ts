@@ -460,7 +460,7 @@ export class ArticleReader {
     if (staticArticle) return this.rememberLanguageVariants(entry.id, staticArticle.article, knownLanguageVariants, options?.signal);
     // An observed HTTP failure is more useful than an earlier transport error.
     // Preserve local Feed fallbacks before surfacing this fixed diagnostic.
-    const failure = renderedFailure instanceof RenderedPageHttpError ? renderedFailure : staticFailure;
+    const failure = renderedFailure instanceof RenderedPageHttpError ? renderedFailure : staticFailure ?? renderedFailure;
     // A public original can intermittently reject a reader request (or time
     // out) even though its RSS response already supplied a body. That body is
     // part of the user's subscription, so re-fetch and sanitise it in memory

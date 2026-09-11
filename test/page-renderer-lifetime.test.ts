@@ -16,6 +16,7 @@ const fixture = vi.hoisted(() => {
     listeners = new Map<string, (...args: any[]) => void>();
     webContents = {
       stop: vi.fn(),
+      isLoading: () => false,
       getURL: () => this.url,
       setWindowOpenHandler: vi.fn(),
       on: (event: string, listener: (...args: any[]) => void) => this.listeners.set(event, listener),
@@ -68,6 +69,22 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("public rendering task lifetime", () => {
+  it("captures a ready document while optional subresources are still loading", async () => {
+    fixture.navigate.mockImplementationOnce(async (window) => {
+      window.webContents.isLoading = () => true;
+      window.webContents.stop.mockImplementation(() => window.listeners.get("did-stop-loading")?.());
+      window.listeners.get("did-navigate")?.({}, window.url, 200, "OK");
+      window.listeners.get("dom-ready")?.();
+      await never();
+    });
+    const outcome = new IsolatedPageRenderer(robots() as never).render("https://example.com/article");
+    await vi.advanceTimersByTimeAsync(800);
+    expect(await outcome).toMatchObject({ html: "<p>Public document</p>" });
+    expect(fixture.windows[0].isDestroyed()).toBe(true);
+    expect(fixture.windows[0].listeners.has("dom-ready")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("retains the shorter navigation deadline and destroys its window", async () => {
     fixture.navigate.mockImplementationOnce(never);
     const outcome = new IsolatedPageRenderer(robots() as never).render("https://example.com/article").catch((error) => error);

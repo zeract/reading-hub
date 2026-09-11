@@ -65,8 +65,12 @@ export class IsolatedPageRenderer implements PageRenderer {
       throwIfAborted(request.signal);
       window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       window.webContents.on("will-attach-webview", (event) => event.preventDefault());
-      await loadWithVerifiedRedirects(window, this.robots, url, request.signal);
+      const pendingResources = await loadWithVerifiedRedirects(window, this.robots, url, request.signal);
       await delayWithAbort(800, request.signal);
+      // Electron queues isolated-world evaluation until loading stops. Once
+      // the DOM and hydration grace period are complete, cancel remaining
+      // subresources so they cannot also stall the bounded DOM snapshot.
+      if (pendingResources) await stopRemainingResources(window, request.signal);
       const page = await capture.read({ ...options, signal: request.signal });
       throwIfAborted(request.signal);
       failed = false;
@@ -100,7 +104,7 @@ export class IsolatedPageRenderer implements PageRenderer {
  * fresh isolated navigation. Subframes cannot export HTML to the host and do
  * not become the reader document.
  */
-async function loadWithVerifiedRedirects(window: BrowserWindow, robots: RobotsPolicy, initialUrl: string, signal?: AbortSignal): Promise<void> {
+async function loadWithVerifiedRedirects(window: BrowserWindow, robots: RobotsPolicy, initialUrl: string, signal?: AbortSignal): Promise<boolean> {
   let targetUrl = initialUrl;
   let redirectCount = 0;
   let redirectedTo: string | undefined;
@@ -114,17 +118,46 @@ async function loadWithVerifiedRedirects(window: BrowserWindow, robots: RobotsPo
   while (true) {
     throwIfAborted(signal);
     redirectedTo = undefined;
+    let pendingResources = false;
     try {
-      await withTimeout(window.loadURL(targetUrl), RENDER_TIMEOUT_MS, RENDER_TIMEOUT_MESSAGE, signal);
+      pendingResources = await loadDocument(window, targetUrl, signal);
     } catch (error) {
       if (!redirectedTo) throw error;
     }
     throwIfAborted(signal);
-    if (!redirectedTo) return;
+    if (!redirectedTo) return pendingResources;
     targetUrl = assertPublicUrl(redirectedTo).toString();
     redirectCount += 1;
     if (redirectCount > MAX_RENDER_REDIRECTS) throw new Error("页面重定向次数过多，已停止渲染。");
     await awaitWithAbort(robots.assertAllowed(targetUrl, { signal }), signal);
+  }
+}
+
+/** DOM readiness is independent of slow images/analytics. Keep loading those
+ * resources during the hydration grace period, but do not make them a
+ * prerequisite for extracting the document. Navigation failures still reject,
+ * and the capture separately verifies the main-frame HTTP response. */
+async function loadDocument(window: BrowserWindow, url: string, signal?: AbortSignal): Promise<boolean> {
+  let ready!: () => void;
+  const documentReady = new Promise<void>((resolve) => { ready = resolve; });
+  window.webContents.on("dom-ready", ready);
+  try {
+    return await withTimeout(Promise.race([window.loadURL(url).then(() => false), documentReady.then(() => true)]), RENDER_TIMEOUT_MS, RENDER_TIMEOUT_MESSAGE, signal);
+  } finally {
+    window.webContents.removeListener("dom-ready", ready);
+  }
+}
+
+async function stopRemainingResources(window: BrowserWindow, signal?: AbortSignal): Promise<void> {
+  if (!window.webContents.isLoading()) return;
+  let stopped!: () => void;
+  const settled = new Promise<void>((resolve) => { stopped = resolve; });
+  window.webContents.on("did-stop-loading", stopped);
+  try {
+    window.webContents.stop();
+    await withTimeout(settled, 5_000, RENDER_TIMEOUT_MESSAGE, signal);
+  } finally {
+    window.webContents.removeListener("did-stop-loading", stopped);
   }
 }
 

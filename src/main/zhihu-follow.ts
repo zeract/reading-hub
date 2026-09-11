@@ -4,7 +4,7 @@ import type { ConnectorAdapter, RawEntry, Source, SyncContext, SyncResult } from
 import { builtInManifest } from "./connector-registry";
 import { contentNormalizer } from "./content-normalizer";
 import { abortError, awaitWithAbort, combineAbortSignals, delayWithAbort, throwIfAborted, withRequestTimeout } from "./cancellation";
-import { extractZhihuFollowPage } from "./zhihu-follow-parser";
+import { extractZhihuFollowPage, isZhihuContentUrl } from "./zhihu-follow-parser";
 import { configureChromiumSession } from "./network";
 import { createBackgroundWindow } from "./background-window";
 import { guardMainFrameNavigation } from "./navigation-policy";
@@ -116,11 +116,14 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
     throwIfAborted(options?.signal);
     const url = assertPublicUrl(rawUrl).toString();
     if (!isZhihuUrl(url)) throw new Error("只能在知乎授权会话中打开知乎内容。");
+    if (!isZhihuContentUrl(url)) throw new Error("这条旧记录指向知乎列表或导航页，不是文章链接；请刷新信源后打开具体文章。");
     return this.withReadingWindow(options?.signal, async (window, signal, capture) => {
       await awaitWithAbort(window.loadURL(url), signal);
       await delayWithAbort(900, signal);
       const page = await capture.read({ ...options, signal });
       if (!isZhihuUrl(page.url)) throw new Error("只能在知乎授权会话中打开知乎内容。");
+      if (/^\/(?:signin|signup|login)(?:\/|$)/.test(new URL(page.url).pathname)) throw new Error("知乎登录已失效或当前会话未登录，请点击“重新登录知乎”后重试。");
+      if (!isZhihuContentUrl(page.url)) throw new Error("知乎未返回文章页面，请在原文中确认登录与内容是否可用。");
       return page;
     });
   }
