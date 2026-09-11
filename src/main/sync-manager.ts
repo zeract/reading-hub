@@ -1,4 +1,6 @@
 import { isRecruitmentUrl } from "./content-eligibility";
+import { isManualExtractionRule } from "./extraction-rule";
+import { canonicalizeContentUrl } from "../shared/url";
 import { throwIfAborted } from "./cancellation";
 import type { RawEntry, Source, Subscription } from "../shared/types";
 import { createSubscriptionScopeMatcher, sameSubscriptionScope } from "../shared/subscription-scope";
@@ -139,6 +141,11 @@ export class SyncManager {
             ? { inserted: 0, accepted: 0 }
             : this.saveRawEntries(effectiveSource, outcome.entries, subscription);
           const inserted = saved.inserted;
+          if (connectorId === "generic" && !isManualExtractionRule(effectiveSource.extractionRule) && saved.accepted >= 2) {
+            const pageIdentity = canonicalizeContentUrl(effectiveSource.url);
+            const identities = new Set(outcome.entries.map(entry => canonicalizeContentUrl(entry.url)));
+            if (identities.size >= 2 && !identities.has(pageIdentity)) this.db.deleteSupersededSourcePage(effectiveSource);
+          }
           this.maintenance?.afterSuccessfulSync(effectiveSource);
           if (outcome.followees) this.db.upsertFollowees(outcome.followees);
           if (outcome.checkpoint) this.db.saveCheckpoint(subscription.id, outcome.checkpoint);

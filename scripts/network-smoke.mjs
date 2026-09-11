@@ -151,6 +151,7 @@ try {
   const snapshotPageUrl = "https://rendered.example/snapshots/original.html";
   const snapshotReloadUrl = "https://rendered.example/snapshots/reloaded.html";
   const slowResourcePageUrl = "https://rendered.example/slow-resource";
+  const hydrationPageUrl = "https://rendered.example/hydration";
   const changedHistoryUrls = [];
   const checkedPages = [];
   const statusPageUrl = (status) => `https://rendered.example/http-status/${status}`;
@@ -171,6 +172,8 @@ try {
       if (request.url.startsWith("https://rendered.example/http-status/")) return new Response(`<article><h1>Readable error fixture</h1><p>${"This is an HTTP error, not an article. ".repeat(40)}</p></article>`, { status: Number(request.url.split("/").at(-1)), headers: { "content-type": "text/html" } });
       if (request.url === initialPageUrl) return new Response(null, { status: 302, headers: { location: finalPageUrl } });
       if (request.url === slowResourcePageUrl) return new Response('<article><h1>Ready document</h1><p>Usable DOM before image download completes.</p><img src="/never-finishes"></article>', { headers: { "content-type": "text/html" } });
+      if (request.url === hydrationPageUrl) return new Response('<main id="app"></main><script async src="/delayed-script"></script>', { headers: { "content-type": "text/html" } });
+      if (request.url === "https://rendered.example/delayed-script") return new Promise(resolve => setTimeout(() => resolve(new Response('document.querySelector("#app").innerHTML = "<article>Hydrated article content</article>"', { headers: { "content-type": "text/javascript" } })), 1_500));
       if (request.url === "https://rendered.example/never-finishes") return new Promise(() => {});
       if (request.url === finalPageUrl) return new Response(`<article><h1>Fixture article</h1><p>${"Synthetic paragraph. ".repeat(50)}</p><img src="figure.svg"><a href="appendix.html">Fixture appendix</a></article>`, { headers: { "content-type": "text/html" } });
       if (request.url === basedPageUrl) return new Response(`<head><base href="../assets/"><link rel="alternate" type="application/rss+xml" href="feed.xml"></head><article><h1>Fixture article</h1><time datetime="2026-08-02"></time><p>${"Synthetic paragraph. ".repeat(50)}</p><img src="figure.svg"><a href="appendix.html">Fixture appendix</a><a href="archive.html">Archives</a></article>`, { headers: { "content-type": "text/html" } });
@@ -184,7 +187,7 @@ try {
   app.on("web-contents-created", interceptRenderedPage);
   try {
     const renderer = new IsolatedPageRenderer({ async assertAllowed(url) {
-      assert([initialPageUrl, finalPageUrl, oversizedPageUrl, patchedDomPageUrl, basedPageUrl, snapshotPageUrl, snapshotReloadUrl, slowResourcePageUrl].includes(url) || url.startsWith("https://rendered.example/http-status/")); checkedPages.push(url);
+      assert([initialPageUrl, finalPageUrl, oversizedPageUrl, patchedDomPageUrl, basedPageUrl, snapshotPageUrl, snapshotReloadUrl, slowResourcePageUrl, hydrationPageUrl].includes(url) || url.startsWith("https://rendered.example/http-status/")); checkedPages.push(url);
     } });
     const page = await renderer.render(initialPageUrl);
     assert.equal(page.url, finalPageUrl);
@@ -193,6 +196,7 @@ try {
     const resourcePage = await renderer.render(slowResourcePageUrl);
     assert(resourcePage.html.includes("Usable DOM before image download completes."));
     assert(Date.now() - resourceStarted < 5_000, "An unfinished image must not stall the document snapshot.");
+    assert((await renderer.render(hydrationPageUrl)).html.includes("<article>Hydrated article content</article>"), "Async content scripts must finish before the snapshot.");
     const article = extractReaderArticle(page.html, page.url, { id: "fixture", title: "Fixture", url: initialPageUrl });
     assert.equal(article.article.url, finalPageUrl);
     assert(article.article.contentHtml.includes('src="https://rendered.example/papers/figure.svg"'));

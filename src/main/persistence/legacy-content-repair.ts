@@ -62,6 +62,18 @@ export function deleteRecruitmentEntries(database: SqliteDatabase, sourceId: str
   return removeEntriesForSourceOrigins(database, sourceId, candidates.filter((entry) => isRecruitmentUrl(entry.original_url)));
 }
 
+/** Only called after an automatic source has yielded a real multi-post list. */
+export function deleteSupersededSourcePage(database: SqliteDatabase, source: Source): number {
+  const identity = canonicalizeContentUrl(source.url);
+  const candidates = database.prepare(`SELECT DISTINCT e.id, e.source_id, o.original_url FROM entries e
+    JOIN entry_origins o ON o.entry_id = e.id WHERE o.source_id = ? AND e.title = ?`)
+    .all(source.id, source.title) as Array<SourceEntryRow & { original_url: string }>;
+  return removeEntriesForSourceOrigins(database, source.id, candidates.filter(entry => {
+    try { return canonicalizeContentUrl(entry.original_url) === identity; }
+    catch { return false; }
+  }));
+}
+
 export function deleteTaxonomyEntries(database: SqliteDatabase, sourceId: string): number {
   // Do not encode taxonomy detection as broad SQL `LIKE '%/archives/%'`.
   // Scientific Spaces uses `/archives/<article-id>` for real posts, so that

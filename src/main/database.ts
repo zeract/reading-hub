@@ -30,6 +30,7 @@ import {
   deletePromotedZhihuFollowEntries,
   deleteTaxonomyEntries,
   deleteRecruitmentEntries,
+  deleteSupersededSourcePage,
   deleteUnsupportedZhihuFollowEntries,
   removeEntriesForSourceOrigins,
   repairGenericHomepageEntryUrls,
@@ -972,6 +973,10 @@ export class ReadingDatabase {
 
   deleteRecruitmentEntries(sourceId: string): number {
     return deleteRecruitmentEntries(this.db, sourceId);
+  }
+
+  deleteSupersededSourcePage(source: Source): number {
+    return deleteSupersededSourcePage(this.db, source);
   }
 
   /** @deprecated ContentMaintenance owns legacy repair scheduling. */

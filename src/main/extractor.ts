@@ -703,6 +703,11 @@ function isCommentThreadContext($: ReturnType<typeof load>, root: any): boolean 
 }
 
 function openGraphFallback($: ReturnType<typeof load>, urls: ExtractionUrls, title: string): RawEntry | undefined {
+  const body = $("body").clone();
+  body.find("script, style, noscript, template").remove();
+  // A client-rendered shell has site metadata but no authored content yet.
+  // It is not a single-page article and must not create a homepage card.
+  if ($("script[src]").length && !body.text().trim() && !body.find("article, a[href], img").length) return undefined;
   const url = publicDocumentUrl($("meta[property='og:url']").attr("content"), urls.baseUrl) || urls.pageUrl;
   const description = compactText($("meta[property='og:description'],meta[name='description']").first().attr("content"), 500);
   const imageUrl = publicDocumentUrl($("meta[property='og:image']").attr("content"), urls.baseUrl);

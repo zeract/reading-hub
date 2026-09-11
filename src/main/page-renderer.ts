@@ -1,6 +1,7 @@
 import { BrowserWindow, session } from "electron";
 import { assertPublicUrl } from "../shared/url";
-import { awaitWithAbort, delayWithAbort, throwIfAborted, withRequestTimeout } from "./cancellation";
+import { awaitWithAbort, throwIfAborted, withRequestTimeout } from "./cancellation";
+import { observeRenderResources } from "./render-resource-readiness";
 import { configureChromiumSession } from "./network";
 import { RobotsPolicy } from "./robots";
 import { createBackgroundWindow } from "./background-window";
@@ -29,6 +30,7 @@ export class IsolatedPageRenderer implements PageRenderer {
     let isolatedSession: ReturnType<typeof session.fromPartition> | undefined;
     let window: BrowserWindow | undefined;
     let capture: RenderedPageCapture | undefined;
+    let resources: ReturnType<typeof observeRenderResources> | undefined;
     let failed = true;
     const stopAndDestroy = () => {
       try {
@@ -50,6 +52,7 @@ export class IsolatedPageRenderer implements PageRenderer {
       throwIfAborted(request.signal);
       isolatedSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
       isolatedSession.setPermissionCheckHandler(() => false);
+      resources = observeRenderResources(isolatedSession.webRequest);
       window = createBackgroundWindow({
         webPreferences: {
           partition,
@@ -66,7 +69,7 @@ export class IsolatedPageRenderer implements PageRenderer {
       window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       window.webContents.on("will-attach-webview", (event) => event.preventDefault());
       const pendingResources = await loadWithVerifiedRedirects(window, this.robots, url, request.signal);
-      await delayWithAbort(800, request.signal);
+      await resources.wait(request.signal);
       // Electron queues isolated-world evaluation until loading stops. Once
       // the DOM and hydration grace period are complete, cancel remaining
       // subresources so they cannot also stall the bounded DOM snapshot.
@@ -78,6 +81,7 @@ export class IsolatedPageRenderer implements PageRenderer {
     } finally {
       try {
         capture?.dispose();
+        resources?.dispose();
         request.signal.removeEventListener("abort", stopAndDestroy);
         stopAndDestroy();
         if (isolatedSession) {
