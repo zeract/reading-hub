@@ -83,6 +83,7 @@ export function parseEntryListQuery(value: unknown): EntryListQuery | undefined 
     sourceId,
     ...(search ? { search } : {}),
     ...(value.dismissed === undefined ? {} : { dismissed: requireBoolean(value.dismissed) }),
+    ...(value.collectedToday === undefined ? {} : { collectedToday: requireBoolean(value.collectedToday) }),
     ...(value.publishedOnly === undefined ? {} : { publishedOnly: requireBoolean(value.publishedOnly) }),
     ...(value.collection ? { collection: value.collection as "current" | "history" } : {}),
     ...(value.sort ? { sort: value.sort as "published" | "collected" } : {}),
@@ -102,6 +103,7 @@ export function parseEntryPageQuery(value: unknown): EntryPageQuery | undefined 
   const parsedBase = parseEntryListQuery({
     dismissed: value.dismissed,
     publishedOnly: value.publishedOnly,
+    collectedToday: value.collectedToday,
     collection: value.collection,
     sort: value.sort,
     sourceId: value.sourceId,

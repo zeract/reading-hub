@@ -187,7 +187,7 @@ export class SyncManager {
     const accepted = subscription
       ? normalized.filter(createSubscriptionScopeMatcher(subscription.scope))
       : normalized;
-    return { inserted: this.db.saveEntries(accepted), accepted: accepted.length };
+    return { inserted: this.db.saveEntries(accepted, { initialCollection: source.lastSuccessfulAt === undefined }), accepted: accepted.length };
   }
 
   private assertOpen(): void {

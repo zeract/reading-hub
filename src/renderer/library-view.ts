@@ -12,7 +12,7 @@ export function entryQueryForLibrary(view: LibraryView, sourceId?: string, now =
   if (view === "today") {
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-    return { sourceId, ...search, startAt: start.getTime(), endAt: end.getTime(), publishedOnly: true };
+    return { sourceId, ...search, startAt: start.getTime(), endAt: end.getTime(), collectedToday: true };
   }
   // Reading-state filters belong in the database query rather than the first
   // client page. Otherwise an old unread/saved item could disappear simply

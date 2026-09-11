@@ -205,6 +205,7 @@ describe("publication timeline indexing", () => {
         ALTER TABLE entries DROP COLUMN timeline_group;
         ALTER TABLE entries DROP COLUMN timeline_published;
         ALTER TABLE entries DROP COLUMN timeline_observed;
+        ALTER TABLE entries DROP COLUMN initial_collection;
         DELETE FROM schema_migrations WHERE version > ${version};`);
       const oldOrder = "CASE WHEN published_at IS NULL THEN 1 ELSE 0 END ASC, COALESCE(published_at, -9007199254740991) DESC, COALESCE(observed_at, created_at) DESC, created_at DESC, id DESC";
       if (version === 8) native.exec("CREATE INDEX entries_timeline ON entries(is_read, published_at DESC, created_at DESC)");
@@ -226,8 +227,9 @@ describe("publication timeline indexing", () => {
       for (const query of publicationQueries) expect(pagePlan(database, query).filter((row) => /TEMP B-TREE/i.test(row.detail))).toEqual([]);
       // The physical row values survive unchanged; virtual keys are derived.
       const current = raw(database);
-      const columns = (current.pragma("table_info(entries)") as Array<{ name: string }>).map((column) => column.name);
+      const columns = (current.pragma("table_info(entries)") as Array<{ name: string }>).map((column) => column.name).filter((name) => name !== "initial_collection");
       expect(current.prepare(`SELECT ${columns.join(",")} FROM entries ORDER BY id`).all()).toEqual(beforeRows);
+      expect(current.prepare("SELECT COUNT(*) AS count FROM entries WHERE initial_collection != 0").get()).toEqual({ count: 0 });
       database.close(); database = new ReadingDatabase(path);
       expect(queries.map((query) => database.listEntryPage(query))).toEqual(before);
     } finally { database.close(); rmSync(directory, { recursive: true }); }

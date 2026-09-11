@@ -834,7 +834,7 @@ export class ReadingDatabase {
       if (query.sourceId) parameters.push(query.sourceId);
       for (const selection of selections) parameters.push(selection.scheme, selection.key);
     }
-    const dateFilter = entryDateFilter(startAt, endAt, query.publishedOnly);
+    const dateFilter = entryDateFilter(startAt, endAt, query.collectedToday ? "today" : query.publishedOnly ? "published" : "timeline");
     if (dateFilter.sql) conditions.push(dateFilter.sql);
     parameters.push(...dateFilter.parameters);
     if (query.read !== undefined) {
@@ -858,7 +858,7 @@ export class ReadingDatabase {
     const cached = this.countsSnapshot;
     if (revision !== undefined && cached?.revision === revision && cached.start === start && cached.end === end
       && cached.previousVisitAt === this.previousVisitAt) return { ...cached.counts };
-    const today = entryDateFilter(start, end, true);
+    const today = entryDateFilter(start, end, "today");
     const row = this.db.prepare(`SELECT
       SUM(CASE WHEN ingestion_kind = 'current' THEN 1 ELSE 0 END) AS collected,
       SUM(CASE WHEN ingestion_kind = 'history' THEN 1 ELSE 0 END) AS history,
@@ -1066,12 +1066,12 @@ export class ReadingDatabase {
     return removeEntriesForSourceOrigins(this.db, source.id, doomed);
   }
 
-  saveEntries(entries: Entry[]): number {
+  saveEntries(entries: Entry[], options?: { initialCollection?: boolean }): number {
     const insert = this.db.prepare(`INSERT INTO entries (
       id, source_id, canonical_url, original_url, title, author, published_at, summary, image_url,
-      content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity, ingestion_kind
+      content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity, ingestion_kind, initial_collection
     ) VALUES (@id, @sourceId, @canonicalUrl, @url, @title, @author, @publishedAt, @summary, @imageUrl,
-      @contentHash, 0, 0, @createdAt, @observedAt, @providerId, @providerLabel, @externalId, @canonicalIdentity, @ingestionKind)
+      @contentHash, 0, 0, @createdAt, @observedAt, @providerId, @providerLabel, @externalId, @canonicalIdentity, @ingestionKind, @initialCollection)
     ON CONFLICT(canonical_url) DO UPDATE SET
       title = excluded.title,
       author = COALESCE(excluded.author, entries.author),
@@ -1119,6 +1119,7 @@ export class ReadingDatabase {
           providerLabel: entry.providerLabel ?? null,
           externalId: entry.externalId ?? null,
           ingestionKind: entry.ingestionKind ?? "current",
+          initialCollection: Number(options?.initialCollection === true),
           canonicalIdentity: identity
         });
         // The upsert retains an existing ID or inserts the supplied ID. Both
@@ -1289,13 +1290,20 @@ function legacyResumeJitter(sourceId: string): number {
   return hash % (15 * 60_000);
 }
 
-/** Lists, pages and the Today count share the same publication-day predicate.
- * General date queries retain their existing fallback unless publishedOnly is set. */
-function entryDateFilter(start: number | undefined, end: number | undefined, publishedOnly = false): { sql: string; parameters: number[] } {
-  const column = publishedOnly ? "entries.published_at" : "COALESCE(entries.published_at, entries.observed_at, entries.created_at)";
+/** Lists, pages and Today counts share collection/provenance semantics. */
+function entryDateFilter(start: number | undefined, end: number | undefined, mode: "timeline" | "published" | "today" = "timeline"): { sql: string; parameters: number[] } {
   const parameters: number[] = [];
-  const parts: string[] = [];
-  if (start !== undefined) { parts.push(`${column} >= ?`); parameters.push(start); }
-  if (end !== undefined) { parts.push(`${column} < ?`); parameters.push(end); }
-  return { sql: parts.length ? `(${parts.join(" AND ")})` : "", parameters };
+  const range = (column: string) => {
+    const parts: string[] = [];
+    if (start !== undefined) { parts.push(`${column} >= ?`); parameters.push(start); }
+    if (end !== undefined) { parts.push(`${column} < ?`); parameters.push(end); }
+    return parts.length ? `(${parts.join(" AND ")})` : "";
+  };
+  if (mode === "today") {
+    const collected = range("entries.created_at");
+    if (!collected) return { sql: "", parameters };
+    const published = range("entries.published_at");
+    return { sql: `(${collected} AND (entries.initial_collection = 0 OR ${published}))`, parameters };
+  }
+  return { sql: range(mode === "published" ? "entries.published_at" : "COALESCE(entries.published_at, entries.observed_at, entries.created_at)"), parameters };
 }

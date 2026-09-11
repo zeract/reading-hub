@@ -49,6 +49,8 @@ describe("IPC input validation", () => {
     expect(() => parseEntryPageQuery({ sort: "invalid" })).toThrow("排序方式无效");
     expect(() => parseEntryPageQuery({ dismissed: "true" })).toThrow();
     for (const parse of [parseEntryListQuery, parseEntryPageQuery]) {
+      expect(parse({ collectedToday: true, startAt: 1, endAt: 2 })).toMatchObject({ collectedToday: true, startAt: 1, endAt: 2 });
+      expect(() => parse({ collectedToday: "true" })).toThrow();
       expect(parse({ publishedOnly: true, startAt: 1, endAt: 2 })).toMatchObject({ publishedOnly: true, startAt: 1, endAt: 2 });
       expect(() => parse({ publishedOnly: "true" })).toThrow();
     }

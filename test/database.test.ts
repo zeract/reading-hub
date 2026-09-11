@@ -39,7 +39,7 @@ describe("ReadingDatabase", () => {
       const query = { publishedOnly: true, startAt, endAt };
       const listed = db.listEntries(query).map((item) => item.id);
       expect(new Set(listed)).toEqual(new Set(["date-0", "date-3"]));
-      expect(db.getLibraryCounts(startAt + 1).today).toBe(listed.length);
+      expect(db.getLibraryCounts(startAt + 1).today).toBe(4);
       const first = db.listEntryPage({ ...query, pageSize: 1 });
       const second = db.listEntryPage({ ...query, pageSize: 1, cursor: first.nextCursor });
       expect([...first.entries, ...second.entries].map((item) => item.id)).toEqual(listed);
@@ -331,8 +331,8 @@ describe("ReadingDatabase", () => {
     const today = new Date(2026, 7, 18, 10).getTime();
     const yesterday = new Date(2026, 7, 17, 10).getTime();
     db.saveEntries([
-      entry(source.id, "今日未读", { canonicalUrl: "https://example.com/counts/today", url: "https://example.com/counts/today", publishedAt: today }),
-      entry(source.id, "昨日收藏", { canonicalUrl: "https://example.com/counts/yesterday", url: "https://example.com/counts/yesterday", publishedAt: yesterday })
+      entry(source.id, "今日未读", { canonicalUrl: "https://example.com/counts/today", url: "https://example.com/counts/today", publishedAt: today, createdAt: today }),
+      entry(source.id, "昨日收藏", { canonicalUrl: "https://example.com/counts/yesterday", url: "https://example.com/counts/yesterday", publishedAt: yesterday, createdAt: yesterday })
     ]);
     const saved = db.listEntries();
     const favourite = saved.find((item) => item.title === "昨日收藏");
