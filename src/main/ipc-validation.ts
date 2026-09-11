@@ -1,3 +1,4 @@
+import { validAiEffort } from "../shared/ai-model";
 import type {
   AiArticleContext,
   AiProviderConfiguration,
@@ -28,7 +29,6 @@ import {
 
 const SOURCE_KINDS: SourceKind[] = ["rss", "generic", "manual", "zhihu", "zhihu_follow", "x", "xiaohongshu", "academic"];
 const AI_PROVIDERS = ["openai", "deepseek", "codex-cli"] as const;
-const AI_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 const REFRESH_INTERVALS = [30, 60, 120, 240, 720, 1440];
 
 type JsonRecord = Record<string, unknown>;
@@ -224,7 +224,7 @@ export function parseAiProviderConfiguration(value: unknown): AiProviderConfigur
   const apiKey = optionalString(value.apiKey, "AI 密钥格式无效。", 1_000);
   const model = optionalString(value.model, "AI 模型名称无效。", 160);
   const effort = value.effort === undefined ? undefined : value.effort;
-  if (effort !== undefined && !AI_EFFORTS.includes(effort as typeof AI_EFFORTS[number])) throw new Error("推理强度无效。");
+  if (effort !== undefined && !validAiEffort(effort)) throw new Error("推理强度无效。");
   return { provider: value.provider as AiProviderConfiguration["provider"], apiKey, model, effort: effort as AiProviderConfiguration["effort"] };
 }
 

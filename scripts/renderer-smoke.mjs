@@ -94,6 +94,7 @@ function deferNavigationCommand(operation) {
   });
 }
 let providerListFailure = false;
+let modelListFailure = false;
 const fixtureProviders = [
   { id: "openai", label: "Fixture AI", model: "fixture", configured: true, requiresApiKey: true },
   { id: "deepseek", label: "Fixture secondary AI", model: "fixture-secondary", configured: true, requiresApiKey: true }
@@ -133,6 +134,7 @@ const channels = [
       previewRequested?.();
     });
   }],
+  ["ai:list-models", () => { if (modelListFailure) throw new Error("Synthetic catalog failure"); return { models: [{ id: "future-codex", label: "Future Codex", efforts: ["low", "ultra"], defaultEffort: "low" }], stale: false, updatedAt: Date.now() }; }],
   ["ai:list-providers", () => { providerLists++; if (providerListFailure) throw new Error(`Synthetic provider discovery failure ${"UnbrokenDiagnostic".repeat(35)}`); return fixtureProviders; }],
   ["ai:configure", (_event, configuration) => {
     settingsSaves++;
@@ -789,6 +791,23 @@ try {
   pendingSettingsSave();
   await evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   assert(providerLists === listsBeforeCloseCompletion, "A closed settings view must not start another provider query.");
+  fixtureProviders.push({ id: "codex-cli", label: "Local fixture", model: "saved-codex", effort: "high", configured: true, requiresApiKey: false });
+  await evaluate("document.querySelector('[aria-label=\"打开设置\"]').click()");
+  await clickText(".settings-sidebar nav button", "AI 功能");
+  await waitFor(window, "[...document.querySelectorAll('.settings-ai-form option')].some(option => option.value === 'future-codex')");
+  assert(await evaluate("document.querySelectorAll('.settings-ai-form select')[1].value === 'saved-codex'"), "Catalog discovery must preserve the saved model.");
+  await evaluate("(() => { const model = document.querySelectorAll('.settings-ai-form select')[1]; model.value = 'future-codex'; model.dispatchEvent(new Event('change', { bubbles: true })); })()");
+  assert(await evaluate("[...document.querySelectorAll('.settings-ai-form select')[2].options].map(option => option.value).join(',') === 'default,low,ultra'"), "Codex reasoning options must come from the selected model.");
+  modelListFailure = true;
+  await clickText(".settings-actions button", "刷新模型");
+  await waitFor(window, "document.querySelector('.settings-ai-form [role=status]')?.textContent.includes('已有选择保持不变')");
+  assert(await evaluate("document.querySelectorAll('.settings-ai-form select')[1].value === 'future-codex'"), "Failed catalog refresh must preserve the draft.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("document.documentElement.scrollWidth <= innerWidth + 1 && document.querySelector('.settings-content').scrollWidth <= document.querySelector('.settings-content').clientWidth + 1"), `Dynamic model settings overflow at ${width}px.`);
+  }
+  await evaluate("document.querySelector('[aria-label=\"返回阅读器\"]').click()");
+  fixtureProviders.pop(); modelListFailure = false;
   database.createSource({ url: "https://example.com/management", title: "Management fixture", kind: "generic", pollingEnabled: true });
   database.publishChanges();
   const openManagement = async () => {

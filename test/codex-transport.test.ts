@@ -10,7 +10,7 @@ import { LocalCodexCli, invalidateCodexCommandDiscovery } from "../src/main/code
 const clients: LocalCodexCli[] = [];
 afterEach(() => { for (const cli of clients.splice(0)) cli.dispose(); invalidateCodexCommandDiscovery(); vi.useRealTimers(); vi.clearAllMocks(); });
 
-function fixture(mode: "server" | "exec", output: (child: any, server: boolean) => void) {
+function fixture(mode: "server" | "exec", output: (child: any, server: boolean) => void, models?: (message: any) => unknown) {
   mocks.spawn.mockImplementation((_command, args) => {
     const server = args[0] === "app-server";
     const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), killed: false, unref: vi.fn(), stdin: undefined as any, kill: vi.fn() });
@@ -22,6 +22,7 @@ function fixture(mode: "server" | "exec", output: (child: any, server: boolean) 
           const message = JSON.parse(chunk.toString());
           queueMicrotask(() => {
             if (message.method === "initialize") send(mode === "exec" ? { id: message.id, error: { message: "unsupported" } } : { id: message.id, result: {} });
+            if (message.method === "model/list" && models) send({ id: message.id, result: models(message) });
             if (message.method === "thread/start") send({ id: message.id, result: { thread: { id: "fixture-thread" } } });
             if (message.method === "turn/start") {
               send({ id: message.id, result: { turn: { id: "fixture-turn" } } });
@@ -193,4 +194,18 @@ it("cleans up the owned App Server on a broken stdin before dropping its referen
   expect(child.kill.mock.calls.map((args: string[]) => args[0])).toEqual(["SIGTERM", "SIGKILL"]);
   await cli.close();
   expect(vi.getTimerCount()).toBe(0);
+});
+
+
+it("discovers paginated models through the shared bridge without starting an AI turn", async () => {
+  const output = vi.fn();
+  const page = vi.fn(message => ({ data: [{ model: message.params.cursor ? "future-second" : "future-first", displayName: "Future", defaultReasoningEffort: "ultra", supportedReasoningEfforts: [{ reasoningEffort: "ultra" }] }], nextCursor: message.params.cursor ? null : "next" }));
+  const cli = fixture("server", output, page);
+  expect((await cli.listModels()).map(model => model.id)).toEqual(["future-first", "future-second"]);
+  expect(page).toHaveBeenCalledTimes(2); expect(output).not.toHaveBeenCalled();
+  expect(mocks.spawn).toHaveBeenCalledTimes(1);
+});
+it("rejects repeating model-list cursors instead of looping", async () => {
+  const cli = fixture("server", vi.fn(), () => ({ data: [], nextCursor: "same" }));
+  await expect(cli.listModels()).rejects.toThrow("分页无效");
 });

@@ -24,7 +24,7 @@ async function verify() {
   const { registerIpcHandlers } = require("../../dist/main/main/ipc-handlers.js");
   const database = new ReadingDatabase(":memory:");
   const requests = [];
-  const drain = registerIpcHandlers({ database, sources: {
+  const drain = registerIpcHandlers({ database, learningAssistant: { listModels: async (provider, refresh) => ({ models: [{ id: "future-model", label: provider }], stale: false, refreshed: refresh }) }, sources: {
     preview: (_url, signal) => new Promise((resolve) => { requests.push({ signal, resolve }); })
   } });
   const windows = [];
@@ -37,6 +37,11 @@ async function verify() {
       } });
       windows.push(window);
       await window.loadURL("about:blank");
+      const catalog = await window.webContents.executeJavaScript("window.reader.listAiModels('codex-cli', true)");
+      assert.equal(catalog.models[0].id, "future-model");
+      assert.equal(catalog.refreshed, true);
+      assert(await window.webContents.executeJavaScript("window.reader.listAiModels('invalid').then(() => false, () => true)"));
+      assert(await window.webContents.executeJavaScript("window.reader.listAiModels('openai', 'true').then(() => false, () => true)"));
       baselines.push(window.webContents.listenerCount("destroyed"));
       await window.webContents.executeJavaScript("globalThis.revisions = []; window.reader.onLibraryChanged(revision => revisions.push(revision)); window.reader.listSources()");
       await window.webContents.executeJavaScript("window.reader.listSources()");

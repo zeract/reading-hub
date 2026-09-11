@@ -184,12 +184,12 @@ describe("AI learning service", () => {
 
     const providers = await service.listProviders();
     const codex = providers.find((provider) => provider.id === "codex-cli");
-    expect(codex).toMatchObject({ configured: true, requiresApiKey: false, model: "default", effort: "medium" });
+    expect(codex).toMatchObject({ configured: true, requiresApiKey: false, model: "default", effort: "default" });
 
     const answer = await ask(service, { provider: "codex-cli", question: "请解释公式。", article });
 
-    expect(answer).toEqual({ provider: "codex-cli", model: "Codex 默认模型 · medium", text: "可以把这个公式理解为一个归一化步骤。" });
-    expect(codexCli.ask).toHaveBeenCalledWith(expect.stringContaining("不要运行命令"), expect.stringContaining("<article-excerpt>"), { model: undefined, effort: "medium" });
+    expect(answer).toEqual({ provider: "codex-cli", model: "Codex 默认模型 · 默认推理强度", text: "可以把这个公式理解为一个归一化步骤。" });
+    expect(codexCli.ask).toHaveBeenCalledWith(expect.stringContaining("不要运行命令"), expect.stringContaining("<article-excerpt>"), { model: undefined, effort: "default" });
     expect(fetcher).not.toHaveBeenCalled();
     expect(secrets.values).toHaveLength(0);
   });
@@ -230,14 +230,14 @@ describe("AI learning service", () => {
     expect([...secrets.values.values()][0]).not.toContain("apiKey");
   });
 
-  it("accepts only the models presented by the Codex CLI selector", async () => {
+  it("accepts future Codex model identifiers without a release-time allowlist", async () => {
     const codexCli: CodexCliRunner = {
       status: vi.fn().mockResolvedValue({ available: true, command: "/usr/local/bin/codex" }),
       ask: vi.fn()
     };
     const service = new AiService(new MemorySecrets(), vi.fn(), codexCli);
 
-    await expect(service.configure({ provider: "codex-cli", model: "arbitrary-model", effort: "medium" })).rejects.toThrow("请选择 Reading Hub 提供的 Codex 模型");
+    await expect(service.configure({ provider: "codex-cli", model: "future-model", effort: "ultra" })).resolves.toMatchObject({ model: "future-model", effort: "ultra" });
   });
 
   it("reports a local Codex login failure without leaking CLI details", async () => {

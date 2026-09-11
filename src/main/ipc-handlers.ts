@@ -191,6 +191,11 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     database.markFavorite(requireEntityId(id), requireBoolean(favorite)));
   handle(IPC_CHANNELS.entry.dismiss, (_event, id: unknown) => database.dismissEntry(requireEntityId(id)));
 
+  handle(IPC_CHANNELS.ai.listModels, (event, provider: unknown, refresh: unknown) => {
+    const id = parseAiProviderId(provider);
+    const force = refresh === undefined ? false : requireBoolean(refresh);
+    return foregroundRequests.run(event.sender, signal => awaitWithAbort(learningAssistant.listModels(id, force), signal));
+  });
   handle(IPC_CHANNELS.ai.listProviders, () => learningAssistant.listProviders());
   handle(IPC_CHANNELS.ai.configure, (_event, configuration: unknown) =>
     learningAssistant.configure(parseAiProviderConfiguration(configuration)));

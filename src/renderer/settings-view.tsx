@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
-import { CODEX_CLI_MODEL_OPTIONS, type AiProviderId, type AiReasoningEffort } from "../shared/types";
-import { CODEX_EFFORT_OPTIONS } from "./ai-options";
+import { type AiProviderId, type AiReasoningEffort } from "../shared/types";
+import { AiModelPicker } from "./ai-model-picker";
 import { ReaderPreferenceStatus, useReaderPreferences } from "./reader-preferences-context";
 import { AppIcon } from "./ui-icons";
 import { useAsyncAction } from "./use-async-action";
@@ -16,7 +16,7 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
   const { providers, status: providerState, error: providerError, reload } = useAiProviders({ autoLoad: false });
   const [providerId, setProviderId] = useState<AiProviderId>("codex-cli");
   const [model, setModel] = useState("");
-  const [effort, setEffort] = useState<AiReasoningEffort>("medium");
+  const [effort, setEffort] = useState<AiReasoningEffort>("default");
   const [apiKey, setApiKey] = useState("");
   const { busy, error, run, clearError, isRunning } = useAsyncAction();
   const [updateCommitted, setUpdateCommitted] = useState(false);
@@ -27,7 +27,7 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
     const active = next.find((provider) => provider.id === preferredId) || next[0];
     setProviderId(active.id);
     setModel(active.model);
-    setEffort(active.effort || "medium");
+    setEffort(active.effort || "default");
     setUpdateCommitted(false);
   }, [reload]);
 
@@ -46,7 +46,7 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
     const next = providers.find((provider) => provider.id === nextId);
     setProviderId(nextId);
     setModel(next?.model || "");
-    setEffort(next?.effort || "medium");
+    setEffort(next?.effort || "default");
     setApiKey("");
     clearError();
   }
@@ -111,14 +111,8 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
             errorPrefix={updateCommitted ? "设置操作已完成，但无法重新读取配置。" : undefined}
             onRetry={() => void run((isCurrent) => reloadProviders(isCurrent, providerId))} />
           <label>服务<select value={providerId} onChange={(event) => switchProvider(event.target.value as AiProviderId)} disabled={controlsDisabled}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
-          {usingLocalCodex ? <>
-            <label>模型<select value={model} onChange={(event) => setModel(event.target.value)} disabled={controlsDisabled}>{CODEX_CLI_MODEL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
-            <label>推理强度<select value={effort} onChange={(event) => setEffort(event.target.value as AiReasoningEffort)} disabled={controlsDisabled}>{CODEX_EFFORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-            <p className="settings-help">模型可用性取决于 Codex/ChatGPT 账户；较高推理强度会延长回答时间。</p>
-          </> : selected ? <>
-            <label>模型<input value={model} onChange={(event) => setModel(event.target.value)} placeholder={selected?.model || "模型名称"} required disabled={controlsDisabled} /></label>
-            <label>API Key<input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" autoComplete="off" placeholder={selected?.configured ? "留空则保留现有密钥" : "仅保存到 macOS Keychain"} required={requiresApiKey && !selected?.configured} disabled={controlsDisabled} /></label>
-          </> : null}
+          {selected && <AiModelPicker provider={selected} model={model} effort={effort} disabled={controlsDisabled} onModel={setModel} onEffort={setEffort} />}
+          {selected && !usingLocalCodex && <label>API Key<input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" autoComplete="off" placeholder={selected?.configured ? "留空则保留现有密钥" : "仅保存到 macOS Keychain"} required={requiresApiKey && !selected?.configured} disabled={controlsDisabled} /></label>}
           {selected?.availabilityMessage && <p className="settings-help">{selected.availabilityMessage}</p>}
           {error && <p className="error ai-provider-error" role="alert" tabIndex={0}>{error}</p>}
           <div className="settings-actions"><button type="submit" className="primary" disabled={!selected || controlsDisabled}>{providerState === "loading" ? "正在读取…" : busy ? "正在保存…" : "保存设置"}</button>{selected?.configured && <button type="button" className="danger" onClick={() => void clearAiSettings()} disabled={controlsDisabled}>{usingLocalCodex ? "恢复默认" : "清除密钥"}</button>}</div>

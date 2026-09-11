@@ -430,19 +430,22 @@ export type ReaderRenderProfile = "standard" | "scientific";
 /** AI providers supported by the local reading assistant. */
 export type AiProviderId = "openai" | "deepseek" | "codex-cli";
 
-/** The built-in selector only presents verified Codex model identifiers. */
-export const CODEX_CLI_MODEL_OPTIONS = [
-  { id: "default", label: "跟随本机 Codex 默认模型" },
-  { id: "gpt-5.6", label: "GPT-5.6 Sol（推荐）" },
-  { id: "gpt-5.6-sol", label: "GPT-5.6 Sol（固定版本）" },
-  { id: "gpt-5.6-terra", label: "GPT-5.6 Terra（均衡）" },
-  { id: "gpt-5.6-luna", label: "GPT-5.6 Luna（更快、更省）" }
-] as const;
+/** Validated opaque reasoning levels advertised by the selected provider. */
+export type AiReasoningEffort = string;
 
-export type CodexCliModelId = (typeof CODEX_CLI_MODEL_OPTIONS)[number]["id"];
-
-/** Codex CLI exposes these bounded reasoning levels for its supported models. */
-export type AiReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export interface AiModelOption {
+  id: string;
+  label: string;
+  efforts?: string[];
+  defaultEffort?: string;
+  isDefault?: boolean;
+}
+export interface AiModelCatalog {
+  models: AiModelOption[];
+  updatedAt?: number;
+  stale: boolean;
+  error?: string;
+}
 
 /** Non-secret provider state exposed to the renderer. */
 export interface AiProviderSettings {

@@ -43,6 +43,7 @@ const IPC_CHANNELS = {
   },
   ai: {
     listProviders: "ai:list-providers",
+    listModels: "ai:list-models",
     configure: "ai:configure",
     clearProvider: "ai:clear-provider",
     askStream: "ai:ask-stream",
@@ -96,6 +97,7 @@ const readerApi: ReaderApi = {
   markRead: (id, read) => ipcRenderer.invoke(IPC_CHANNELS.entry.markRead, id, read),
   markFavorite: (id, favorite) => ipcRenderer.invoke(IPC_CHANNELS.entry.markFavorite, id, favorite),
   dismissEntry: (id) => ipcRenderer.invoke(IPC_CHANNELS.entry.dismiss, id),
+  listAiModels: (provider, refresh) => ipcRenderer.invoke(IPC_CHANNELS.ai.listModels, provider, refresh),
   listAiProviders: () => ipcRenderer.invoke(IPC_CHANNELS.ai.listProviders),
   configureAiProvider: (configuration) => ipcRenderer.invoke(IPC_CHANNELS.ai.configure, configuration),
   clearAiProvider: (provider) => ipcRenderer.invoke(IPC_CHANNELS.ai.clearProvider, provider),

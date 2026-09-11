@@ -3,11 +3,12 @@ import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import type { AiReasoningEffort } from "../shared/types";
+import type { AiModelOption, AiReasoningEffort } from "../shared/types";
 import { AiAnswerBudget } from "./ai-answer-budget";
 import { awaitWithAbort, combineAbortSignals } from "./cancellation";
 import { ChildProcessScope } from "./child-process-scope";
 import { Utf8LineDecoder } from "./utf8-line-decoder";
+import { parseModelPage } from "./ai-model-catalog";
 import { TaskPool } from "./task-pool";
 
 const CODEX_TIMEOUT_MS = 90_000;
@@ -56,6 +57,7 @@ export type CodexCliDeltaListener = (text: string) => void;
  */
 export interface CodexCliRunner {
   status(): Promise<CodexCliStatus>;
+  listModels?(signal?: AbortSignal): Promise<AiModelOption[]>;
   ask(instruction: string, articleContext: string, options: CodexCliOptions, signal?: AbortSignal): Promise<string>;
   /** The local Codex App Server exposes incremental agent-message events while a turn is running. */
   askStream?(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener, signal?: AbortSignal): Promise<string>;
@@ -73,6 +75,17 @@ export class LocalCodexCli implements CodexCliRunner {
   async status(): Promise<CodexCliStatus> {
     const command = await findCodexCommand();
     return command ? { available: true, command } : { available: false };
+  }
+
+  async listModels(signal?: AbortSignal): Promise<AiModelOption[]> {
+    const request = combineAbortSignals(signal, this.shutdown.signal);
+    try {
+      throwIfCodexCancelled(request.signal);
+      const { command } = await awaitWithAbort(this.status(), request.signal);
+      throwIfCodexCancelled(request.signal);
+      if (!command) throw new CodexCliError("未检测到本机 Codex。");
+      return await this.getAppServer(command).listModels(request.signal);
+    } finally { request.dispose(); }
   }
 
   async ask(instruction: string, articleContext: string, options: CodexCliOptions, signal?: AbortSignal): Promise<string> {
@@ -256,6 +269,27 @@ class PersistentCodexAppServer {
 
   get reusable(): boolean {
     return !this.disposed;
+  }
+
+  async listModels(signal?: AbortSignal): Promise<AiModelOption[]> {
+    const release = await this.acquireTurnSlot(signal);
+    this.clearIdleTimer();
+    try {
+      await awaitWithAbort(this.ensureReady(), signal);
+      const models: AiModelOption[] = [];
+      const seen = new Set<string>();
+      let cursor: string | undefined;
+      for (let page = 0; page < 20; page++) {
+        throwIfCodexCancelled(signal);
+        const result = parseModelPage(await awaitWithAbort(this.request("model/list", { limit: 100, includeHidden: false, ...(cursor ? { cursor } : {}) }), signal), true);
+        models.push(...result.models);
+        if (models.length > 1_000) throw new CodexCliError("模型列表过大。");
+        if (!result.cursor) return models;
+        if (seen.has(result.cursor)) throw new CodexCliError("模型列表分页无效。");
+        seen.add(result.cursor); cursor = result.cursor;
+      }
+      throw new CodexCliError("模型列表分页过多。");
+    } finally { release(); this.scheduleIdleDispose(); }
   }
 
   async ask(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener, signal?: AbortSignal): Promise<string> {
@@ -710,8 +744,7 @@ export function codexExecArguments(instruction: string, options: CodexCliOptions
     "read-only",
     "--skip-git-repo-check",
     ...(options.model ? ["--model", options.model] : []),
-    "--config",
-    `model_reasoning_effort=${options.effort}`,
+    ...(options.effort === "default" ? [] : ["--config", `model_reasoning_effort=${options.effort}`]),
     ...(jsonEvents ? ["--json"] : []),
     instruction
   ];
@@ -739,15 +772,15 @@ export function codexAppServerTurnStartParameters(threadId: string, articleConte
     threadId,
     input: [{ type: "text", text: articleContext, text_elements: [] }],
     ...(options.model ? { model: options.model } : {}),
-    effort: options.effort
+    ...(options.effort === "default" ? {} : { effort: options.effort })
   };
 }
 
 /** Keep long reasoning modes useful without allowing a stalled CLI to hang forever. */
 function codexTimeout(options: CodexCliOptions): number {
-  return options.effort === "high" || options.effort === "xhigh" || options.effort === "max"
-    ? CODEX_EXTENDED_TIMEOUT_MS
-    : CODEX_TIMEOUT_MS;
+  return ["default", "none", "minimal", "low", "medium"].includes(options.effort)
+    ? CODEX_TIMEOUT_MS
+    : CODEX_EXTENDED_TIMEOUT_MS;
 }
 
 /** App-server receives the article as a turn rather than stdin. */

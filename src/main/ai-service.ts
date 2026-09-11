@@ -15,8 +15,11 @@ import { Utf8LineDecoder } from "./utf8-line-decoder";
 import { chromiumFetch } from "./network";
 import { ApiRequestBoundaryError, fetchApiResponse } from "./api-response";
 import { AiAnswerBudget, truncateAiAnswer } from "./ai-answer-budget";
-import { CODEX_CLI_MODEL_OPTIONS } from "../shared/types";
+import { validAiModelId, validAiEffort } from "../shared/ai-model";
+import { AiModelCatalogCache, AiModelCatalogError, parseModelPage } from "./ai-model-catalog";
 import type {
+  AiModelCatalog,
+  AiModelOption,
   AiAnswer,
   AiArticleContext,
   AiProviderConfiguration,
@@ -36,7 +39,7 @@ type StoredAiConfiguration = { apiKey: string; model: string };
 type StoredCodexConfiguration = { model: string; effort: AiReasoningEffort };
 
 const CODEX_DEFAULT_MODEL = "default";
-const CODEX_DEFAULT_EFFORT: AiReasoningEffort = "medium";
+const CODEX_DEFAULT_EFFORT: AiReasoningEffort = "default";
 
 const PROVIDERS: Record<AiProviderId, ProviderDefinition> = {
   openai: { label: "OpenAI API（GPT）", defaultModel: "gpt-5.6", requiresApiKey: true, endpoint: "https://api.openai.com/v1/responses" },
@@ -60,6 +63,7 @@ export type AiDeltaListener = (text: string) => void;
  */
 export class AiService {
   private readonly configurationTasks = new KeyedTaskQueue();
+  private readonly modelCatalog = new AiModelCatalogCache();
 
   constructor(
     private readonly secrets: AiSecretStore,
@@ -68,8 +72,9 @@ export class AiService {
   ) {}
 
   async close(): Promise<void> {
-    if (this.codexCli.close) await this.codexCli.close();
-    else this.codexCli.dispose?.();
+    const catalogClosing = this.modelCatalog.close();
+    const codexClosing = this.codexCli.close ? this.codexCli.close() : this.codexCli.dispose?.();
+    await Promise.all([catalogClosing, codexClosing]);
   }
 
   async listProviders(): Promise<AiProviderSettings[]> {
@@ -101,9 +106,37 @@ export class AiService {
     }));
   }
 
+  async listModels(provider: AiProviderId, refresh = false): Promise<AiModelCatalog> {
+    getProvider(provider);
+    return this.modelCatalog.list(provider, refresh, signal => this.configurationTasks.run(provider, () => this.loadModels(provider, signal), signal));
+  }
+
+  private async loadModels(provider: AiProviderId, signal: AbortSignal): Promise<AiModelOption[]> {
+    if (provider === "codex-cli") {
+      if (!this.codexCli.listModels) throw new AiModelCatalogError("本机 Codex 版本不支持模型发现，请更新 Codex。已有配置仍保留。");
+      return this.codexCli.listModels(signal);
+    }
+    const configuration = await this.readStoredConfiguration(provider);
+    if (!configuration) throw new AiModelCatalogError("请先保存 API Key，再刷新模型列表。");
+    const endpoint = provider === "openai" ? "https://api.openai.com/v1/models" : "https://api.deepseek.com/models";
+    const response = await fetchApiResponse(this.fetcher, endpoint, {
+      method: "GET", headers: { authorization: `Bearer ${configuration.apiKey}` }, signal
+    });
+    try {
+      if ([401, 403].includes(response.status)) throw new AiModelCatalogError("模型列表访问被拒绝，请检查 API Key 和账户权限。已有选择保持不变。");
+      if (!response.ok) throw new Error("模型目录请求失败。");
+      const bytes = await readResponseBytes(response, (_chunk, size) => { if (size > 1_000_000) throw new Error("模型目录过大。"); }, signal);
+      return parseModelPage(JSON.parse(new TextDecoder().decode(bytes))).models;
+    } finally { discardResponseBody(response); }
+  }
+
   async configure(input: AiProviderConfiguration): Promise<AiProviderSettings> {
     const configuration = { ...input };
-    return this.configurationTasks.run(configuration.provider, () => this.configureProvider(configuration));
+    return this.configurationTasks.run(configuration.provider, async () => {
+      const result = await this.configureProvider(configuration);
+      this.modelCatalog.invalidate(configuration.provider);
+      return result;
+    });
   }
 
   private async configureProvider(input: AiProviderConfiguration): Promise<AiProviderSettings> {
@@ -134,7 +167,10 @@ export class AiService {
 
   async clear(providerId: AiProviderId): Promise<void> {
     getProvider(providerId);
-    await this.configurationTasks.run(providerId, () => this.secrets.clearConnectorSecret(this.keychainAccount(providerId)));
+    await this.configurationTasks.run(providerId, async () => {
+      await this.secrets.clearConnectorSecret(this.keychainAccount(providerId));
+      this.modelCatalog.invalidate(providerId);
+    });
   }
 
   /** The sole answer path emits text only, never provider events or diagnostics. */
@@ -358,25 +394,16 @@ function requiredEndpoint(provider: ProviderDefinition): string {
 
 function normaliseModel(value: string): string {
   const model = value.trim();
-  if (!/^[A-Za-z0-9._:-]{1,120}$/.test(model)) throw new AiServiceError("模型名称格式不正确。");
+  if (!validAiModelId(model)) throw new AiServiceError("模型名称格式不正确。");
   return model;
 }
 
 function normaliseCodexConfiguration(value: Pick<AiProviderConfiguration, "model" | "effort">): StoredCodexConfiguration {
   const requestedModel = value.model?.trim();
   const model = !requestedModel ? CODEX_DEFAULT_MODEL : normaliseModel(requestedModel);
-  if (!isCodexModel(model)) throw new AiServiceError("请选择 Reading Hub 提供的 Codex 模型。可用模型会随本机 Codex 版本与账户权限变化。");
   const effort = value.effort || CODEX_DEFAULT_EFFORT;
-  if (!isCodexEffort(effort)) throw new AiServiceError("Codex 推理强度必须为 low、medium、high、xhigh 或 max。");
+  if (!validAiEffort(effort)) throw new AiServiceError("Codex 推理强度格式无效。");
   return { model, effort };
-}
-
-function isCodexModel(value: string): boolean {
-  return CODEX_CLI_MODEL_OPTIONS.some((option) => option.id === value);
-}
-
-function isCodexEffort(value: string): value is AiReasoningEffort {
-  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max";
 }
 
 function codexOptions(configuration: StoredCodexConfiguration): { model?: string; effort: AiReasoningEffort } {
@@ -389,7 +416,7 @@ function codexOptions(configuration: StoredCodexConfiguration): { model?: string
 function describeCodexSelection(configuration: StoredCodexConfiguration): string {
   const options = codexOptions(configuration);
   const model = options.model || "Codex 默认模型";
-  return `${model} · ${options.effort}`;
+  return `${model} · ${options.effort === "default" ? "默认推理强度" : options.effort}`;
 }
 
 function normaliseQuestion(value: string): string {

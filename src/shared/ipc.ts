@@ -1,4 +1,5 @@
 import type {
+  AiModelCatalog,
   AiProviderConfiguration,
   AiProviderId,
   AiProviderSettings,
@@ -62,6 +63,7 @@ export const IPC_CHANNELS = {
   },
   ai: {
     listProviders: "ai:list-providers",
+    listModels: "ai:list-models",
     configure: "ai:configure",
     clearProvider: "ai:clear-provider",
     askStream: "ai:ask-stream",
@@ -114,6 +116,7 @@ export interface ReaderApi {
   markRead(id: string, read: boolean): Promise<void>;
   markFavorite(id: string, favorite: boolean): Promise<void>;
   dismissEntry(id: string): Promise<void>;
+  listAiModels(provider: AiProviderId, refresh?: boolean): Promise<AiModelCatalog>;
   listAiProviders(): Promise<AiProviderSettings[]>;
   configureAiProvider(configuration: AiProviderConfiguration): Promise<AiProviderSettings>;
   clearAiProvider(provider: AiProviderId): Promise<void>;
