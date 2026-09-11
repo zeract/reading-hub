@@ -23,10 +23,14 @@ export class MainWindowLifecycle<Window extends MainWindowHandle> {
   private window?: Window;
   private hiddenByUser = false;
   private userRequestedForeground = false;
+  private closing = false;
 
   constructor(private readonly createWindow: () => Window) {}
 
-  presentOnStartup(): Window {
+  beginShutdown(): void { this.closing = true; }
+
+  presentOnStartup(): Window | undefined {
+    if (this.closing) return;
     const window = this.getOrCreate();
     // A second-instance or tray action can race startup. Never downgrade an
     // explicit foreground request into an inactive presentation.
@@ -36,7 +40,8 @@ export class MainWindowLifecycle<Window extends MainWindowHandle> {
     return window;
   }
 
-  presentForUser(): Window {
+  presentForUser(): Window | undefined {
+    if (this.closing) return;
     const window = this.getOrCreate();
     this.hiddenByUser = false;
     this.userRequestedForeground = true;
@@ -58,7 +63,8 @@ export class MainWindowLifecycle<Window extends MainWindowHandle> {
    * until it was explicitly hidden/minimised by the user; otherwise a delayed
    * native `activate` event would turn into an unexpected Space switch.
    */
-  presentForApplicationActivation(): Window {
+  presentForApplicationActivation(): Window | undefined {
+    if (this.closing) return;
     if (this.window && !this.window.isDestroyed() && !this.hiddenByUser && !this.window.isMinimized()) return this.window;
     return this.presentForUser();
   }

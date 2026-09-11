@@ -231,7 +231,10 @@ describe("AI stream IPC cancellation", () => {
     const request = list({ sender: createSender(10) });
     let drained = false;
     const closing = drain().then(() => { drained = true; });
-    expect(electron.handlers.size).toBe(0);
+    expect(electron.handlers.has(IPC_CHANNELS.entry.revision)).toBe(true);
+    expect(electron.handlers.has(IPC_CHANNELS.window.isFullscreen)).toBe(true);
+    expect(() => handler(IPC_CHANNELS.entry.revision)({ sender: createSender(10) })).toThrow("应用正在退出");
+    expect(() => handler(IPC_CHANNELS.window.isFullscreen)({ sender: createSender(10) })).toThrow("应用正在退出");
     expect(() => list({ sender: createSender(10) })).toThrow("应用正在退出");
     await flushAsyncWork();
     expect(drained).toBe(false);

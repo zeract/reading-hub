@@ -76,6 +76,11 @@ async function verify() {
     const rejected = await windows[1].webContents.executeJavaScript("window.reader.previewSource('https://example.com/after-drain').then(() => false, () => true)");
     assert.equal(rejected, true, "Shutdown must stop accepting new IPC work.");
     assert.equal(requests.length, 2);
+    for (const method of ["getLibraryRevision", "isWindowFullscreen"]) {
+      const issue = await windows[1].webContents.executeJavaScript(`window.reader.${method}().then(() => "unexpected success", error => error.message)`);
+      assert(issue.includes("应用正在退出"), `Late ${method} must reach the shutdown guard: ${issue}`);
+      assert(!issue.includes("No handler registered"));
+    }
     console.log("Reading Hub IPC smoke: passed; real preload, observer deduplication, window destruction, request isolation, late result cancellation and shutdown drain.");
   } finally {
     for (const request of requests) request.resolve({});

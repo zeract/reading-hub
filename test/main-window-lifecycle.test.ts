@@ -16,6 +16,19 @@ class WindowStub implements MainWindowHandle {
 }
 
 describe("main window lifecycle", () => {
+  it.each([false, true])("does not revive windows during shutdown (already created: %s)", (created) => {
+    const window = new WindowStub();
+    const create = vi.fn(() => window);
+    const lifecycle = new MainWindowLifecycle(create);
+    if (created) lifecycle.presentOnStartup();
+    window.destroyed = true;
+    lifecycle.beginShutdown();
+    expect(lifecycle.presentForApplicationActivation()).toBeUndefined();
+    expect(lifecycle.presentForUser()).toBeUndefined();
+    expect(lifecycle.presentOnStartup()).toBeUndefined();
+    expect(create).toHaveBeenCalledTimes(created ? 1 : 0);
+    expect(window.focus).not.toHaveBeenCalled();
+  });
   it("shows delayed startup without taking foreground focus", () => {
     const window = new WindowStub();
     const lifecycle = new MainWindowLifecycle(() => window);

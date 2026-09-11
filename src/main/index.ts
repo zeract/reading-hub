@@ -100,6 +100,8 @@ if (isDevelopment) installDevelopmentSupervisorGuard(process, quitApplication);
 // outside bootstrap also covers a quit request that races startup.
 app.on("before-quit", () => {
   quitting = true;
+  mainRendererReady = false;
+  mainWindowLifecycle.beginShutdown();
 });
 app.on("will-quit", createShutdownHandler(closeApplicationServices, () => app.quit(), () => {
   console.error("Reading Hub 未能正常释放本地服务。");
@@ -162,7 +164,7 @@ const mainWindowLifecycle = new MainWindowLifecycle(createWindow);
 
 /** Load React only after the database and all renderer IPC handlers are ready. */
 function loadMainRenderer(window: BrowserWindow): void {
-  if (window.isDestroyed() || rendererLoadedWindows.has(window)) return;
+  if (quitting || !mainRendererReady || window.isDestroyed() || rendererLoadedWindows.has(window)) return;
   rendererLoadedWindows.add(window);
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   const load = devUrl
@@ -178,7 +180,7 @@ function showWindow(): void {
   mainWindowLifecycle.presentForUser();
 }
 
-function showStartupWindow(): BrowserWindow {
+function showStartupWindow(): BrowserWindow | undefined {
   // On macOS, automatic startup/restart must not jump from the user's current
   // Space back to Reading Hub. Other platforms retain their conventional
   // launch-to-foreground behaviour.
@@ -205,6 +207,7 @@ async function bootstrap(): Promise<void> {
   // Showing it only after the awaited service boot can move macOS back to the
   // original Space even without an explicit BrowserWindow.focus() call.
   const startupWindow = showStartupWindow();
+  if (!startupWindow) return;
   app.on("activate", () => mainWindowLifecycle.presentForApplicationActivation());
 
   const icon = applicationIcon();

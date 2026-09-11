@@ -76,11 +76,9 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     }
   });
   const pending = new Set<Promise<unknown>>();
-  const channels: string[] = [];
   let closing = false;
 
   function handle(channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void {
-    channels.push(channel);
     ipcMain.removeHandler(channel);
     ipcMain.handle(channel, (event, ...args) => {
       if (closing) throw new Error("应用正在退出，请稍后重新打开。");
@@ -259,7 +257,10 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     closing = true;
     unsubscribeChanges?.();
     for (const observer of observers.values()) releaseObserver(observer);
-    for (const channel of channels) ipcMain.removeHandler(channel);
+    // Keep the admission guards registered until process exit. Electron may
+    // still deliver an already-queued invoke after a window closes; removing
+    // handlers here turns normal shutdown into "No handler registered".
+    // The closing check prevents every late call from reaching closed services.
     foregroundRequests.close();
     await Promise.allSettled([...pending]);
   };
