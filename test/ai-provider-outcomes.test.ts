@@ -37,7 +37,12 @@ const cases: Array<{ provider: Provider; label: string; event: Record<string, un
     provider: "deepseek" as const, label: reason,
     event: { choices: [{ delta: { content: diagnostic }, finish_reason: reason }] },
     json: output("deepseek", { finish_reason: reason }),
-    message: reason === "insufficient_system_resource" ? failed : incomplete
+    message: {
+      length: "DeepSeek 已达到生成长度或上下文上限，回答未完成。请分步提问或减少所选正文。",
+      content_filter: "DeepSeek 因内容过滤停止了回答，请调整问题后重试。",
+      insufficient_system_resource: failed,
+      tool_calls: "DeepSeek 请求调用工具，当前阅读问答不支持工具调用。请更换模型后重试。"
+    }[reason]
   })),
   ...(["openai", "deepseek"] as const).map((provider) => ({
     provider, label: "error envelope", event: { error: { message: diagnostic } },

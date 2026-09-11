@@ -69,7 +69,7 @@ describe.each(["openai", "deepseek"] as const)("%s semantic stream completion", 
   it.each(["", "data: [DONE]", "data: [DONE]\n"])("rejects EOF without a complete terminal event (suffix=%j)", async (suffix) => {
     const { service, body, cancel } = fixture(frame(delta(provider)) + suffix, false, vi.fn(), true);
     const update = vi.fn();
-    await expect(service.askStream(request(provider), update)).rejects.toThrow("AI 回答未完整生成，请缩短问题或稍后重试。");
+    await expect(service.askStream(request(provider), update)).rejects.toThrow("AI 回答未完整生成：连接在收到完成标记前结束，请稍后重试。");
     expect(update).toHaveBeenCalledExactlyOnceWith("Draft");
     expect(cancel).not.toHaveBeenCalled();
     expect(body.locked).toBe(false);
@@ -78,7 +78,7 @@ describe.each(["openai", "deepseek"] as const)("%s semantic stream completion", 
 
 it("does not apply a completion frame without its SSE blank-line boundary", async () => {
   const { service, body, cancel } = fixture(frame(delta("openai")) + frame(completion("Unfinished snapshot")).trimEnd(), false, vi.fn(), true);
-  await expect(service.askStream(request("openai"), vi.fn())).rejects.toThrow("AI 回答未完整生成，请缩短问题或稍后重试。");
+  await expect(service.askStream(request("openai"), vi.fn())).rejects.toThrow("AI 回答未完整生成：连接在收到完成标记前结束，请稍后重试。");
   expect(cancel).not.toHaveBeenCalled();
   expect(body.locked).toBe(false);
 });

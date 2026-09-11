@@ -31,6 +31,9 @@ import type {
 } from "../shared/types";
 
 const REQUEST_TIMEOUT_MS = 45_000;
+// Keep a bounded budget while allowing DeepSeek reasoning before visible text.
+const DEEPSEEK_MAX_TOKENS = 8_192;
+const DEEPSEEK_REQUEST_TIMEOUT_MS = 180_000;
 // Bound protocol metadata and unfinished events as well as displayed text.
 const MAX_AI_RESPONSE_BYTES = 8_000_000;
 
@@ -269,7 +272,7 @@ export class AiService {
     const payload = {
       model: configuration.model,
       stream: true,
-      max_tokens: 1_400,
+      max_tokens: DEEPSEEK_MAX_TOKENS,
       messages: [
         { role: "system", content: instruction },
         { role: "user", content: prompt }
@@ -283,11 +286,11 @@ export class AiService {
       }, requestSignal);
       if (!output) throw new AiServiceError("DeepSeek 没有返回可显示的回答，请调整问题后重试。");
       return output;
-    });
+    }, DEEPSEEK_REQUEST_TIMEOUT_MS);
   }
 
-  private async postStreaming<T>(endpoint: string, apiKey: string, body: unknown, providerLabel: string, parentSignal: AbortSignal | undefined, consume: (response: Response, signal: AbortSignal) => Promise<T>): Promise<T> {
-    const request = withRequestTimeout(parentSignal, REQUEST_TIMEOUT_MS, `${providerLabel} 请求超时，请稍后重试。`);
+  private async postStreaming<T>(endpoint: string, apiKey: string, body: unknown, providerLabel: string, parentSignal: AbortSignal | undefined, consume: (response: Response, signal: AbortSignal) => Promise<T>, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+    const request = withRequestTimeout(parentSignal, timeoutMs, `${providerLabel} 请求超时，请稍后重试。`);
     try {
       let response: Response;
       try {
@@ -641,7 +644,7 @@ async function readServerSentEvents(response: Response, onDelta: AiDeltaListener
     }
     // EOF is not an SSE event delimiter. Do not publish a partially received
     // event, even if its data happens to be valid JSON already.
-    if (!completed) throw new AiServiceError(AI_GENERATION_INCOMPLETE);
+    if (!completed) throw new AiServiceError("AI 回答未完整生成：连接在收到完成标记前结束，请稍后重试。");
   } finally {
     // A semantic completion, error or cancellation can precede EOF. Release
     // the unread transport without waiting for its cancellation to settle.
@@ -720,9 +723,9 @@ function readDeepSeekError(body: Record<string, unknown>): string | undefined {
   // reason; a tool handoff cannot complete this text-only question workflow.
   switch (readDeepSeekChoice(body)?.finish_reason) {
     case "insufficient_system_resource": return AI_GENERATION_FAILED;
-    case "length":
-    case "content_filter":
-    case "tool_calls": return AI_GENERATION_INCOMPLETE;
+    case "length": return "DeepSeek 已达到生成长度或上下文上限，回答未完成。请分步提问或减少所选正文。";
+    case "content_filter": return "DeepSeek 因内容过滤停止了回答，请调整问题后重试。";
+    case "tool_calls": return "DeepSeek 请求调用工具，当前阅读问答不支持工具调用。请更换模型后重试。";
     default: return undefined;
   }
 }

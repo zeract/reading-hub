@@ -35,16 +35,21 @@ describe("AI response transport lifetime", () => {
     expect(pull).not.toHaveBeenCalled();
   });
 
-  it("finishes a stalled body timeout even when transport cancellation never settles", async () => {
+  it.each([
+    { provider: "openai" as const, timeout: 45_000 },
+    { provider: "deepseek" as const, timeout: 180_000 }
+  ])("$provider finishes a stalled body timeout even when transport cancellation never settles", async ({ provider, timeout }) => {
     vi.useFakeTimers();
     let stream!: ReadableStreamDefaultController<Uint8Array>;
     const cancel = vi.fn(() => new Promise<void>(() => undefined));
     const body = new ReadableStream<Uint8Array>({ start(controller) { stream = controller; }, cancel });
     const ai = service(async () => new Response(body, { headers: { "content-type": "text/event-stream" } }));
     let settled = false;
-    const outcome = ai.askStream(question, () => undefined).catch((error) => error).then((value) => { settled = true; return value; });
+    const outcome = ai.askStream({ ...question, provider }, () => undefined).catch((error) => error).then((value) => { settled = true; return value; });
     try {
-      await vi.advanceTimersByTimeAsync(45_000);
+      await vi.advanceTimersByTimeAsync(timeout - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
       expect(settled).toBe(true);
       expect((await outcome).message).toContain("请求超时");
       expect(cancel).toHaveBeenCalledTimes(1);
@@ -152,4 +157,31 @@ describe("AI response transport lifetime", () => {
     await expect(ai.askStream(question, () => undefined)).rejects.toThrow("读取 AI 回答失败，请稍后重试。");
     expect(body.locked).toBe(false);
   });
+});
+
+
+it("allows DeepSeek reasoning beyond 45 seconds without displaying reasoning or retrying", async () => {
+  vi.useFakeTimers();
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const cancel = vi.fn();
+  const body = new ReadableStream<Uint8Array>({ start(controller) {
+    stream = controller;
+    controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"private reasoning"}}]}\n\n'));
+  }, cancel });
+  const fetcher = vi.fn(async () => new Response(body, { headers: { "content-type": "text/event-stream" } }));
+  const ai = service(fetcher);
+  const delta = vi.fn(), settled = vi.fn();
+  const pending = ai.askStream({ ...question, provider: "deepseek" }, delta).then(settled, settled);
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(settled).not.toHaveBeenCalled();
+  expect(delta).not.toHaveBeenCalled();
+  const answer = "这是完整回答。".repeat(500);
+  stream.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: answer }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`));
+  await pending;
+  expect(settled).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ text: answer }));
+  expect(delta).toHaveBeenCalledExactlyOnceWith(answer);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(cancel).toHaveBeenCalledTimes(1);
+  expect(body.locked).toBe(false);
+  expect(vi.getTimerCount()).toBe(0);
 });

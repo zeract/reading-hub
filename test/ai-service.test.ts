@@ -88,7 +88,7 @@ describe("AI learning service", () => {
     expect(answer).toEqual({ provider: "deepseek", model: "deepseek-v4-pro", text: "可以从这个定义开始理解。" });
     expect(fetcher).toHaveBeenCalledWith("https://api.deepseek.com/chat/completions", expect.objectContaining({ method: "POST" }));
     const request = JSON.parse(String(fetcher.mock.calls[0][1].body));
-    expect(request).toMatchObject({ model: "deepseek-v4-pro", stream: true, max_tokens: 1_400 });
+    expect(request).toMatchObject({ model: "deepseek-v4-pro", stream: true, max_tokens: 8_192 });
   });
 
   it("forwards only incremental OpenAI text deltas and returns the completed answer", async () => {
