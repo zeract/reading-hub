@@ -29,11 +29,13 @@ describe("main-process boundaries", () => {
   it("keeps services alive through the renderer shutdown drain before closing SQLite", () => {
     const index = mainFile("index.ts");
 
-    const admission = index.match(/app\.on\("before-quit", \(\) => \{([\s\S]*?)\n\}\);/)?.[1];
+    const admission = index.match(/app\.on\("before-quit", \(event\) => \{([\s\S]*?)\n\}\);/)?.[1];
     expect(admission).toContain("quitting = true;");
     expect(admission).toContain("mainWindowLifecycle.beginShutdown();");
     expect(admission).not.toContain("closeApplicationServices");
-    expect(index).toContain('app.on("will-quit", createShutdownHandler(closeApplicationServices');
+    expect(admission).toContain("handleQuit(event)");
+    expect(index).toContain('createShutdownHandler(closeApplicationServices');
+    expect(index).not.toContain('app.on("will-quit"');
     expect(index).toContain('await drainIpc?.();');
     expect(index).toContain('await activeServices?.close();');
     expect(index).not.toMatch(/app\.on\("before-quit", \(\) => \{[\s\S]*?services\?\.close\(\)/);

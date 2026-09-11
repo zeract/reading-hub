@@ -1,4 +1,4 @@
-/** Electron may emit will-quit again while an earlier quit is still draining. */
+/** Intercept before-quit so window vetoes cannot prevent cancellation/draining. */
 export function createShutdownHandler(
   close: () => Promise<void>,
   quit: () => void,

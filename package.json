@@ -17,6 +17,7 @@
     "audit:network": "npm run build && electron scripts/network-smoke-app",
     "audit:renderer": "npm run build && electron scripts/renderer-smoke-app",
     "audit:ipc": "npm run build && electron scripts/ipc-smoke-app",
+    "audit:shutdown": "npm run build && node scripts/shutdown-smoke.mjs",
     "refresh:generic": "npm run build && node node_modules/electron/cli.js scripts/source-refresh-app",
     "audit:style": "node scripts/style-contract.mjs",
     "audit:visual": "npm run build && electron scripts/visual-audit-app",

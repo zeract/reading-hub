@@ -14,6 +14,7 @@ import { createShutdownHandler } from "./shutdown";
 
 let tray: Tray | undefined;
 let services: ApplicationServices | undefined;
+let servicesStartup: Promise<ApplicationServices> | undefined;
 let drainIpc: (() => Promise<void>) | undefined;
 let quitting = false;
 
@@ -69,15 +70,13 @@ function quitApplication(): void {
 }
 
 /**
- * SQLite must outlive every renderer IPC request that Electron drains while a
- * window is closing. `before-quit` runs before that drain has finished; in
- * development a main-process rebuild therefore used to close the database
- * while the outgoing renderer was still requesting its initial source list.
- * `will-quit` closes admission, then waits for pending IPC and connector work.
- * Closed windows alone do not imply that their async main-process work ended.
+ * Stop admission and cancel work before asking windows to close: a remote
+ * beforeunload handler can otherwise prevent will-quit from ever running.
+ * SQLite still outlives all admitted IPC and connector work, including service
+ * creation that was already in progress when the user requested shutdown.
  */
 async function closeApplicationServices(): Promise<void> {
-  const activeServices = services;
+  const activeServices = services ?? await servicesStartup;
   activeServices?.beginShutdown();
   await drainIpc?.();
   await activeServices?.close();
@@ -95,18 +94,21 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, quitAppl
 // allowed to remain resident in the macOS menu bar after their window closes.
 if (isDevelopment) installDevelopmentSupervisorGuard(process, quitApplication);
 
-// Mark shutdown at the earliest lifecycle signal, but defer resource release
-// until Electron has finished closing every renderer. Keeping these listeners
-// outside bootstrap also covers a quit request that races startup.
-app.on("before-quit", () => {
+const handleQuit = createShutdownHandler(closeApplicationServices, () => {
+  // Services and durable writes have settled. Reader/login pages must not
+  // veto the user's explicit application quit with remote beforeunload code.
+  for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.destroy();
+  setImmediate(() => app.quit());
+}, () => {
+  console.error("Reading Hub 未能正常释放本地服务。");
+  app.exit(1);
+});
+app.on("before-quit", (event) => {
   quitting = true;
   mainRendererReady = false;
   mainWindowLifecycle.beginShutdown();
+  handleQuit(event);
 });
-app.on("will-quit", createShutdownHandler(closeApplicationServices, () => app.quit(), () => {
-  console.error("Reading Hub 未能正常释放本地服务。");
-  app.exit(1);
-}));
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -212,12 +214,9 @@ async function bootstrap(): Promise<void> {
 
   const icon = applicationIcon();
   if (process.platform === "darwin" && !icon.isEmpty()) app.dock?.setIcon(icon);
-  services = await createApplicationServices(path.join(app.getPath("userData"), "reading-hub.sqlite"));
-  if (quitting) {
-    await services.close();
-    services = undefined;
-    return;
-  }
+  servicesStartup = createApplicationServices(path.join(app.getPath("userData"), "reading-hub.sqlite"));
+  services = await servicesStartup;
+  if (quitting) return;
   drainIpc = registerIpcHandlers(services);
   mainRendererReady = true;
   loadMainRenderer(startupWindow);
