@@ -1,3 +1,4 @@
+import { isRecruitmentUrl } from "./content-eligibility";
 import { throwIfAborted } from "./cancellation";
 import type { RawEntry, Source, Subscription } from "../shared/types";
 import { createSubscriptionScopeMatcher, sameSubscriptionScope } from "../shared/subscription-scope";
@@ -174,7 +175,8 @@ export class SyncManager {
 
   private saveRawEntries(source: Source, entries: RawEntry[], subscription?: Subscription): { inserted: number; accepted: number } {
     const connector = this.registry.get(source.connectorId ?? source.kind);
-    const normalized = entries.map((entry) => connector.normalize(entry, source));
+    const eligible = (source.connectorId ?? source.kind) === "generic" ? entries.filter((entry) => !isRecruitmentUrl(entry.url)) : entries;
+    const normalized = eligible.map((entry) => connector.normalize(entry, source));
     const accepted = subscription
       ? normalized.filter(createSubscriptionScopeMatcher(subscription.scope))
       : normalized;

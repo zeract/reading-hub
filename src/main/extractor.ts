@@ -1,3 +1,4 @@
+import { isRecruitmentContext, isRecruitmentUrl } from "./content-eligibility";
 import { load } from "cheerio";
 import { htmlDocumentBaseUrl, publicDocumentUrl } from "./html-document-url";
 import { isManualExtractionRule } from "./extraction-rule";
@@ -54,7 +55,7 @@ export function extractGenericPage(html: string, pageUrl: string, existingRule?:
  * intended archive. Confirmed rules retain ownership even without field
  * selectors. Legacy rules retain the conservative ownership fallback.
  */
-export const AUTOMATIC_RULE_REVISION = 5;
+export const AUTOMATIC_RULE_REVISION = 6;
 /**
  * Bump this only when the page-level publish-date parser gains a new safe
  * capability. Generic sources then make one unconditional request so entries
@@ -63,7 +64,7 @@ export const AUTOMATIC_RULE_REVISION = 5;
 export const PUBLICATION_DATE_REVISION = 2;
 
 function withAutomaticRuleRevision(rule: ExtractionRule): ExtractionRule {
-  return rule.autoRepairRevision === AUTOMATIC_RULE_REVISION ? rule : { ...rule, autoRepairRevision: AUTOMATIC_RULE_REVISION };
+  return { ...rule, selection: isManualExtractionRule(rule) ? "manual" : "automatic", autoRepairRevision: AUTOMATIC_RULE_REVISION };
 }
 
 export function withPublicationDateRevision(rule?: ExtractionRule): ExtractionRule {
@@ -102,7 +103,7 @@ function extractJsonLd($: ReturnType<typeof load>, pageUrl: string): RawEntry[] 
   for (const item of nodes) {
     const url = publicDocumentUrl(item.url || item.mainEntityOfPage?.["@id"], pageUrl);
     const title = compactText(item.headline || item.name, 240);
-    if (!url || !title) continue;
+    if (!url || !title || isRecruitmentUrl(url)) continue;
     entries.push({
       url,
       title,
@@ -229,7 +230,7 @@ function collectSemanticBlogCandidates($: ReturnType<typeof load>, urls: Extract
       const rootSelectors = new Map<string, any[]>();
       const links = scopeRoot.is("a[href]") ? scopeRoot.add(scopeRoot.find("a[href]")) : scopeRoot.find("a[href]");
       links.each((_linkIndex, link) => {
-        if (!isSameOriginContentLink($, link, urls)) return;
+        if (!isPublicationContentLink($, link, urls)) return;
         const root = semanticCardRoot($, link, scope);
         if (!root || isTaxonomyOrNavigation($, root)) return;
         const selector = semanticCardSelector($, heading, scope, root);
@@ -284,7 +285,7 @@ function isExplicitBlogSection($: ReturnType<typeof load>, heading: any): boolea
   const identity = `${root.attr("id") || ""} ${root.attr("class") || ""}`.toLowerCase();
   const namedList = /\b(?:blog\s+(?:posts?|entries|archive)|(?:latest|recent)\s+(?:blog\s+)?posts?|posts?\s+(?:and|&)\s+notes)\b/.test(text);
   const explicitIdentity = /(?:^|[-_\s])blogs?(?:$|[-_\s])/.test(identity);
-  return namedList || explicitIdentity;
+  return namedList || explicitIdentity || /^(?:all publications|research publications|research articles|全部文章|研究文章)$/.test(text);
 }
 
 function sectionSiblings($: ReturnType<typeof load>, heading: any): any[] {
@@ -301,15 +302,16 @@ function sectionSiblings($: ReturnType<typeof load>, heading: any): any[] {
   return siblings;
 }
 
-function isSameOriginContentLink($: ReturnType<typeof load>, link: any, urls: ExtractionUrls): boolean {
-  if (isTaxonomyOrNavigation($, link)) return false;
+function isPublicationContentLink($: ReturnType<typeof load>, link: any, urls: ExtractionUrls): boolean {
+  if (isTaxonomyOrNavigation($, link) || isRecruitmentContext($, link)) return false;
   const url = publicDocumentUrl($(link).attr("href"), urls.baseUrl);
   const title = compactText($(link).text(), 240);
-  if (!url || !title || url === urls.pageUrl || isTaxonomyUrl(url)) return false;
+  if (!url || !title || url === urls.pageUrl || isTaxonomyUrl(url) || isRecruitmentUrl(url)) return false;
   try {
     const target = new URL(url);
-    const page = new URL(urls.pageUrl);
-    if (target.origin !== page.origin) return false;
+    // Cross-site publications must be explicitly linked, not manufactured by
+    // an off-origin <base> reinterpreting a local relative link.
+    if (target.origin !== new URL(urls.pageUrl).origin && !/^https?:\/\//i.test($(link).attr("href") || "")) return false;
     if (/^\/assets\//i.test(target.pathname) || /\.(?:pdf|png|jpe?g|gif|svg|zip)$/i.test(target.pathname)) return false;
     return target.pathname !== "/";
   } catch {
@@ -351,11 +353,22 @@ function semanticCardSelector($: ReturnType<typeof load>, heading: any, scope: a
     if (root === scope) return `${headingTag}#${cssEscape(headingId)} ~ ${rootSelector}`;
     return `${headingTag}#${cssEscape(headingId)} + ${scopeSelector} ${rootSelector}`;
   }
-  // Without a named heading, only retain a selector if the containing block
-  // itself advertises a blog/post identity.  This prevents a generic one-card
-  // page from becoming an automatic source merely because it has a heading.
+  // A named publication heading with an anonymous container still needs a
+  // bounded selector. Re-detection validates this structural path on refresh;
+  // never persist a page-wide li selector for a section-specific candidate.
   const scopeIdentity = `${$(scope).attr("class") || ""} ${$(scope).attr("id") || ""}`.toLowerCase();
-  if (!scopeSelector || !/(?:^|[-_\s])blogs?(?:$|[-_\s])|(?:^|[-_\s])posts?(?:$|[-_\s])/.test(scopeIdentity)) return undefined;
+  if (!scopeSelector || !/(?:^|[-_\s])blogs?(?:$|[-_\s])|(?:^|[-_\s])posts?(?:$|[-_\s])/.test(scopeIdentity)) {
+    const parts: string[] = [];
+    let current = $(scope);
+    while (current.length && !current.is("html")) {
+      const tag = current.get(0)?.tagName;
+      if (!tag) return undefined;
+      parts.unshift(`${tag}:nth-of-type(${current.prevAll(tag).length + 1})`);
+      current = current.parent();
+    }
+    const scoped = parts.join(" > ");
+    return root === scope ? scoped : `${scoped} ${rootSelector}`;
+  }
   return root === scope ? scopeSelector : `${scopeSelector} ${rootSelector}`;
 }
 
@@ -500,7 +513,7 @@ function extractUsingRule($: ReturnType<typeof load>, urls: ExtractionUrls, rule
 
 function entryFromElement($: ReturnType<typeof load>, element: any, urls: ExtractionUrls, rule: ExtractionRule): RawEntry | undefined {
   const root = $(element);
-  if (isTaxonomyOrNavigation($, element)) return undefined;
+  if (isTaxonomyOrNavigation($, element) || isRecruitmentContext($, element)) return undefined;
   const titleNode = rule.titleSelector
     ? findSelfOrDescendant(root, rule.titleSelector)
     : preferredTitleNode($, root);
@@ -509,7 +522,7 @@ function entryFromElement($: ReturnType<typeof load>, element: any, urls: Extrac
   const linkNode = titleNode.is("a[href]") ? titleNode : titleLink.length ? titleLink : fallbackLink;
   const title = compactText(titleNode.text() || linkNode.text(), 240);
   const url = publicDocumentUrl(linkNode.attr("href"), urls.baseUrl);
-  if (!title || !url || url === urls.pageUrl || isTaxonomyUrl(url)) return undefined;
+  if (!title || !url || url === urls.pageUrl || isTaxonomyUrl(url) || isRecruitmentUrl(url)) return undefined;
   const timeNode = rule.timeSelector ? root.find(rule.timeSelector).first() : root.find("time,[datetime]").first();
   const authorNode = rule.authorSelector ? root.find(rule.authorSelector).first() : root.find("[rel='author'],.author,[class*='author']").first();
   const imageNode = rule.imageSelector ? root.find(rule.imageSelector).first() : root.find("img").first();
@@ -680,5 +693,5 @@ function openGraphFallback($: ReturnType<typeof load>, urls: ExtractionUrls, tit
   const url = publicDocumentUrl($("meta[property='og:url']").attr("content"), urls.baseUrl) || urls.pageUrl;
   const description = compactText($("meta[property='og:description'],meta[name='description']").first().attr("content"), 500);
   const imageUrl = publicDocumentUrl($("meta[property='og:image']").attr("content"), urls.baseUrl);
-  return title ? { url, title, summary: description, imageUrl, publishedAt: extractPagePublishedAt($) } : undefined;
+  return title && !isRecruitmentUrl(url) ? { url, title, summary: description, imageUrl, publishedAt: extractPagePublishedAt($) } : undefined;
 }

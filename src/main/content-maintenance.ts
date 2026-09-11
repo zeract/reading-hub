@@ -7,13 +7,14 @@ import { ReadingDatabase } from "./database";
  * replayed for every existing source. New collection logic belongs in a
  * connector; this service is intentionally for historical local data only.
  */
-export const SOURCE_CONTENT_MAINTENANCE_REVISION = 1;
+export const SOURCE_CONTENT_MAINTENANCE_REVISION = 2;
 
 export type ContentMaintenanceReport = {
   inspectedSources: number;
   maintainedSources: number;
   skippedSources: number;
   taxonomyEntriesRemoved: number;
+  recruitmentEntriesRemoved: number;
   homepageUrlsRepaired: number;
   scourEntriesMerged: number;
   zhihuIdeasRemoved: number;
@@ -25,6 +26,7 @@ export type SourceMaintenanceResult = {
   sourceId: string;
   skipped: boolean;
   taxonomyEntriesRemoved: number;
+  recruitmentEntriesRemoved: number;
   homepageUrlsRepaired: number;
   scourEntriesMerged: number;
   zhihuIdeasRemoved: number;
@@ -47,6 +49,7 @@ export class ContentMaintenance {
       maintainedSources: 0,
       skippedSources: 0,
       taxonomyEntriesRemoved: 0,
+      recruitmentEntriesRemoved: 0,
       homepageUrlsRepaired: 0,
       scourEntriesMerged: 0,
       zhihuIdeasRemoved: 0,
@@ -103,6 +106,7 @@ export class ContentMaintenance {
       const result = emptyResult(source.id, false);
       const connectorId = source.connectorId ?? source.kind;
       if (connectorId === "generic") {
+        result.recruitmentEntriesRemoved = this.database.deleteRecruitmentEntries(source.id);
         result.taxonomyEntriesRemoved = this.database.deleteTaxonomyEntries(source.id);
         result.homepageUrlsRepaired = this.database.repairGenericHomepageEntryUrls(source);
       }
@@ -124,6 +128,7 @@ function emptyResult(sourceId: string, skipped: boolean): SourceMaintenanceResul
     sourceId,
     skipped,
     taxonomyEntriesRemoved: 0,
+    recruitmentEntriesRemoved: 0,
     homepageUrlsRepaired: 0,
     scourEntriesMerged: 0,
     zhihuIdeasRemoved: 0,
@@ -132,6 +137,7 @@ function emptyResult(sourceId: string, skipped: boolean): SourceMaintenanceResul
 }
 
 function addToReport(report: ContentMaintenanceReport, result: SourceMaintenanceResult): void {
+  report.recruitmentEntriesRemoved += result.recruitmentEntriesRemoved;
   report.taxonomyEntriesRemoved += result.taxonomyEntriesRemoved;
   report.homepageUrlsRepaired += result.homepageUrlsRepaired;
   report.scourEntriesMerged += result.scourEntriesMerged;

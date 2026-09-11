@@ -29,6 +29,7 @@ import { defaultSubscriptionScope, facetIdentity, normaliseFacetReference, norma
 import {
   deletePromotedZhihuFollowEntries,
   deleteTaxonomyEntries,
+  deleteRecruitmentEntries,
   deleteUnsupportedZhihuFollowEntries,
   removeEntriesForSourceOrigins,
   repairGenericHomepageEntryUrls,
@@ -976,6 +977,10 @@ export class ReadingDatabase {
     const affected = this.db.prepare("SELECT id, source_id FROM entries WHERE source_id = ? OR id IN (SELECT entry_id FROM entry_origins WHERE source_id = ?)")
       .all(sourceId, sourceId) as Array<{ id: string; source_id: string }>;
     removeEntriesForSourceOrigins(this.db, sourceId, affected, preserveSaved);
+  }
+
+  deleteRecruitmentEntries(sourceId: string): number {
+    return deleteRecruitmentEntries(this.db, sourceId);
   }
 
   /** @deprecated ContentMaintenance owns legacy repair scheduling. */

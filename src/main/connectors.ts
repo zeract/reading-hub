@@ -1,3 +1,4 @@
+import { isRecruitmentUrl } from "./content-eligibility";
 import { throwIfAborted } from "./cancellation";
 import { load } from "cheerio";
 import type { ConnectorAdapter, DiscoveryContext, Entry, ExtractionRule, RawEntry, Source, Subscription, SyncCheckpoint, SyncContext, SyncResult } from "../shared/types";
@@ -150,7 +151,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
         const feed = await parseFeed(feedResponse.text, feedResponse.url);
         if (!feed.entries.length) continue;
         return {
-          entries: feed.entries,
+          entries: feed.entries.filter((entry) => !isRecruitmentUrl(entry.url)),
           notModified: false,
           emptyIsHealthy: true,
           ...responseValidators(feedResponse),
@@ -227,7 +228,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
     if (!looksLikeFeed(response.contentType, response.text)) throw new Error("来源声明的 Feed 已不再是有效订阅，请重新校准该来源。");
     const feed = await parseFeed(response.text, response.url);
     return {
-      entries: feed.entries,
+      entries: feed.entries.filter((entry) => !isRecruitmentUrl(entry.url)),
       notModified: false,
       emptyIsHealthy: true,
       ...responseValidators(response),

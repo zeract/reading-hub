@@ -1,3 +1,4 @@
+import { isRecruitmentUrl } from "../content-eligibility";
 import { rekeyDismissedContent } from "./dismissed-content";
 import type Database from "better-sqlite3";
 import type { Source } from "../../shared/types";
@@ -53,6 +54,12 @@ export function removeEntriesForSourceOrigins(database: SqliteDatabase, sourceId
     }
   })();
   return removed;
+}
+
+export function deleteRecruitmentEntries(database: SqliteDatabase, sourceId: string): number {
+  const candidates = database.prepare(`SELECT DISTINCT e.id, e.source_id, o.original_url FROM entries e
+    JOIN entry_origins o ON o.entry_id = e.id WHERE o.source_id = ?`).all(sourceId) as Array<SourceEntryRow & { original_url: string }>;
+  return removeEntriesForSourceOrigins(database, sourceId, candidates.filter((entry) => isRecruitmentUrl(entry.original_url)));
 }
 
 export function deleteTaxonomyEntries(database: SqliteDatabase, sourceId: string): number {
