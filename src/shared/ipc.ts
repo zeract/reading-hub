@@ -35,7 +35,6 @@ export const IPC_CHANNELS = {
     list: "source:list",
     remove: "source:delete",
     subscribe: "source:set-subscribed",
-    clearContent: "source:clear-content",
     refresh: "source:refresh",
     updateSettings: "source:update-settings",
     collectionSettings: "source:collection-settings",
@@ -91,7 +90,6 @@ export interface ReaderApi {
   listSources(): Promise<Source[]>;
   deleteSource(id: string): Promise<void>;
   setSourceSubscribed(id: string, subscribed: boolean): Promise<Source>;
-  clearSourceContent(id: string): Promise<number>;
   restoreEntry(id: string): Promise<void>;
   getLibraryRevision(): Promise<number>;
   onLibraryChanged(listener: (revision: number) => void): () => void;

@@ -1,3 +1,4 @@
+import { assertAnswerNavigation, selectZhihuAnswer } from "./zhihu-answer-identity";
 import { Readability } from "@mozilla/readability";
 import { load } from "cheerio";
 import { JSDOM, VirtualConsole } from "jsdom";
@@ -413,6 +414,7 @@ export class ArticleReader {
         // HTML, even when their text is long enough to pass extraction scoring.
         // Keep the existing isolated-browser/Feed fallback for unavailable HTML.
         if (response.contentType && !isHtmlDocumentContentType(response.contentType)) throw new ArticleContentUnavailableError();
+        assertAnswerNavigation(targetUrl, response.url);
         staticArticle = await awaitWithAbort(this.extractWithMathFallback(response.text, response.url, entry), options?.signal);
         throwIfAborted(options?.signal);
         if (staticArticle && staticArticle.textLength >= 220) return this.rememberLanguageVariants(entry.id, staticArticle.article, knownLanguageVariants, options?.signal);
@@ -449,6 +451,7 @@ export class ArticleReader {
       // Keep a usable static article when Chromium rendering is unavailable.
     }
     throwIfAborted(options?.signal);
+    if (renderedPage) assertAnswerNavigation(targetUrl, renderedPage.url);
     const renderedArticle = renderedPage?.html ? await awaitWithAbort(this.extractWithMathFallback(renderedPage.html, renderedPage.url, entry), options?.signal) : undefined;
     throwIfAborted(options?.signal);
     if (renderedArticle && renderedArticle.textLength > (staticArticle?.textLength ?? 0)) {
@@ -615,12 +618,16 @@ function createFeedSummaryArticle(entry: Entry, source?: Source): ReaderArticle 
  * removal, metadata, or image handling.
  */
 function prepareReaderArticle(html: string, pageUrl: string, entry: Entry): PreparedReaderArticle | undefined {
-  const $ = load(html);
+  let $ = load(html);
   const resourceBaseUrl = htmlDocumentBaseUrl($, pageUrl);
+  const globalMathMacros = collectGlobalMathMacros($);
+  const answerHtml = selectZhihuAnswer($, pageUrl);
+  if (answerHtml) $ = load(answerHtml);
   const renderProfile = resolveReaderProfile(pageUrl);
   const languageVariants = discoverReaderLanguageVariants($, pageUrl, resourceBaseUrl);
   const activeLanguage = languageVariants.find((variant) => sameCanonicalUrl(variant.url, pageUrl))?.language;
-  const content = chooseContentCandidate(pickContentRoot($, renderProfile, pageUrl), extractReadabilityContent(html, pageUrl));
+  const content = answerHtml ? pickContentRoot($, renderProfile, pageUrl)
+    : chooseContentCandidate(pickContentRoot($, renderProfile, pageUrl), extractReadabilityContent(html, pageUrl));
   if (!content) return undefined;
   const contentDocument = load(`<article id="reader-selected-content">${content.html}</article>`);
   const selectedContent = contentDocument("#reader-selected-content");
@@ -636,6 +643,7 @@ function prepareReaderArticle(html: string, pageUrl: string, entry: Entry): Prep
   removeDuplicateArticleChrome(contentDocument, selectedContent, title, renderProfile, entry.summary);
 
   const author = compactText(
+    (answerHtml ? $(".AuthorInfo-name").first().text() : undefined) ||
     $("meta[name='author']").attr("content") ||
       $("[rel='author'], [class*='author']").first().text() ||
       content.author ||
@@ -659,7 +667,7 @@ function prepareReaderArticle(html: string, pageUrl: string, entry: Entry): Prep
     renderProfile,
     languageVariants,
     activeLanguage,
-    globalMathMacros: collectGlobalMathMacros($)
+    globalMathMacros
   };
 }
 

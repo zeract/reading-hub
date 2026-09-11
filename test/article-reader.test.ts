@@ -1394,7 +1394,7 @@ describe("article reader extraction", () => {
 
   it("keeps annotated Zhihu RichContent text while excluding its page-level discussion thread", () => {
     const result = extractReaderArticle(
-      `<article class="QuestionAnswer-content">
+      `<article class="QuestionAnswer-content" data-answer-id="456">
         <div class="RichContent-inner">
           <p>${"知乎正文内容 ".repeat(24)}</p>
           <p>这段<span class="RichContent-commented-inline">被评论标注的文字</span>仍是作者正文，必须保留。</p>
@@ -1413,7 +1413,7 @@ describe("article reader extraction", () => {
 
   it("retains authored text wrapped by Zhihu's line-comment control without keeping the control itself", () => {
     const result = extractReaderArticle(
-      `<article class="QuestionAnswer-content">
+      `<article class="QuestionAnswer-content" data-answer-id="456">
         <div class="RichContent-inner">
           <p>${"知乎正文内容 ".repeat(24)}</p>
           <p>前文<a class="CommentLink" href="#comments">被评论的<strong>作者原句</strong></a>后文。</p>
@@ -1437,7 +1437,7 @@ describe("article reader extraction", () => {
 
   it("keeps lower-camel Zhihu line-comment markup without relying on a class-name whitelist", () => {
     const result = extractReaderArticle(
-      `<article class="QuestionAnswer-content">
+      `<article class="QuestionAnswer-content" data-answer-id="456">
         <div class="RichContent-inner">
           <p>${"知乎正文内容 ".repeat(24)}</p>
           <p>开头<a class="RichContent-commentLink" href="#comment-123">被读者评论的作者原句</a>结尾。</p>
@@ -1464,7 +1464,7 @@ describe("article reader extraction", () => {
 
   it("distinguishes an inline Zhihu CommentItem annotation from a block discussion record", () => {
     const result = extractReaderArticle(
-      `<article class="QuestionAnswer-content">
+      `<article class="QuestionAnswer-content" data-answer-id="456">
         <div class="RichContent-inner">
           <p>${"知乎正文内容 ".repeat(24)}</p>
           <p>前文<span class="CommentItem CommentItemV2">被读者评论但仍属于作者的原句</span>后文。</p>
@@ -1483,7 +1483,7 @@ describe("article reader extraction", () => {
 
   it("keeps a block-wrapped Zhihu line annotation inside RichContent while excluding its discussion tree", () => {
     const result = extractReaderArticle(
-      `<article class="QuestionAnswer-content">
+      `<article class="QuestionAnswer-content" data-answer-id="456">
         <div class="RichContent-inner">
           <p>${"知乎正文内容 ".repeat(24)}</p>
           <div class="CommentItem RichContent-commented">这个块级包装的被评论作者段落仍然必须显示。</div>
@@ -1504,7 +1504,7 @@ describe("article reader extraction", () => {
 
   it("preserves a nested block CommentItem when an authored Zhihu annotation owns the subtree", () => {
     const result = extractReaderArticle(
-      `<article class="QuestionAnswer-content">
+      `<article class="QuestionAnswer-content" data-answer-id="456">
         <div class="Post-RichTextContainer">
           <p>${"知乎正文内容 ".repeat(24)}</p>
           <div class="RichContent-commented"><div class="CommentItem"><blockquote>被读者评论的整段作者文字仍然必须显示。</blockquote></div></div>
@@ -1529,7 +1529,7 @@ describe("article reader extraction", () => {
       id: "zhihu-source", url: "https://www.zhihu.com/follow", title: "知乎关注动态", kind: "zhihu_follow", status: "active",
       pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1
     };
-    const reader = new ArticleReader(http, { render: async (url) => ({ html: "", url }) }, async (url) => ({ url, html: `<div class="RichContent-inner">
+    const reader = new ArticleReader(http, { render: async (url) => ({ html: "", url }) }, async (url) => ({ url, html: `<div class="RichContent-inner" data-answer-id="456">
       <p>${"授权会话正文 ".repeat(80)}</p>
       <p><a class="CommentLink" href="#comments">授权会话中的被评论作者文字</a></p>
       <a class="CommentLink" href="#comments">3 条评论</a>

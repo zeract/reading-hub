@@ -1,3 +1,4 @@
+import { answerIdFromElement, zhihuAnswerId } from "./zhihu-answer-identity";
 import { load } from "cheerio";
 import { compactText, parsePublishedAt } from "../shared/text";
 import { isZhihuBusinessPromotionUrl, toAbsoluteUrl } from "../shared/url";
@@ -12,7 +13,7 @@ const PUBLISHED_POST_LINK = /^(?:\/question\/\d+\/answer\/\d+|\/p\/\d+|\/zvideo\
 export function extractZhihuFollowPage(html: string, pageUrl = "https://www.zhihu.com/follow"): RawEntry[] {
   const $ = load(html);
   const roots = new Set<any>();
-  for (const selector of [".TopstoryItem", ".FeedItem", ".ContentItem", "article"]) {
+  for (const selector of [".AnswerItem", ".ContentItem", ".TopstoryItem", ".FeedItem", "article"]) {
     $(selector).each((_index, element) => {
       roots.add(element);
     });
@@ -21,7 +22,11 @@ export function extractZhihuFollowPage(html: string, pageUrl = "https://www.zhih
   const entries: RawEntry[] = [];
   const seen = new Set<string>();
   for (const element of roots) {
-    const root = $(element);
+    const original = $(element);
+    if (original.parents(".RichContent-inner, .RichText").length) continue;
+    if (original.find(".AnswerItem, .ContentItem").length && !answerIdFromElement($, element)) continue;
+    const root = original.clone();
+    root.find(".AnswerItem, .ContentItem").remove();
     const contentLinks = root
       .find("a[href]")
       .toArray()
@@ -31,8 +36,14 @@ export function extractZhihuFollowPage(html: string, pageUrl = "https://www.zhih
       })
       .filter((link): link is { href: string; text: string | undefined } => Boolean(link.href && isZhihuContentUrl(link.href) && !isZhihuBusinessPromotionUrl(link.href)));
     if (!contentLinks.length) continue;
-    contentLinks.sort((left, right) => linkScore(right) - linkScore(left));
-    const contentLink = contentLinks[0];
+    const declaredId = answerIdFromElement($, element);
+    const headingLinks = root.find("h1 a[href],h2 a[href],h3 a[href],.ContentItem-title a[href]").toArray()
+      .map(node => toAbsoluteUrl($(node).attr("href"), pageUrl));
+    const candidates = declaredId ? contentLinks.filter(link => zhihuAnswerId(link.href) === declaredId)
+      : contentLinks.filter(link => headingLinks.includes(link.href));
+    const unique = new Map((candidates.length ? candidates : declaredId ? [] : contentLinks).map(link => [link.href, link]));
+    if (unique.size !== 1) continue;
+    const contentLink = [...unique.values()][0];
     if (seen.has(contentLink.href)) continue;
 
     const heading = root.find("h1,h2,h3,[class*='Title'],[class*='title']").filter((_index, node) => {
@@ -148,14 +159,6 @@ function parseUnixTimestamp(value?: string): number | undefined {
   if (!value || !/^\d{10,13}$/.test(value.trim())) return undefined;
   const number = Number(value.trim());
   return value.trim().length === 10 ? number * 1_000 : number;
-}
-
-function linkScore(link: { href: string; text?: string }): number {
-  const path = new URL(link.href).pathname;
-  const answer = /\/answer\/\d+/.test(path) ? 5 : 0;
-  const article = /^\/p\/\d+/.test(path) ? 4 : 0;
-  const video = /^\/zvideo\//.test(path) ? 3 : 0;
-  return answer + article + video + Math.min(link.text?.length ?? 0, 120) / 120;
 }
 
 function isZhihuContentUrl(rawUrl: string): boolean {

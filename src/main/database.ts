@@ -946,15 +946,6 @@ export class ReadingDatabase {
     });
   }
 
-  /** Keep saved and shared cards; this explicit cleanup never deletes provenance. */
-  clearSourceContent(sourceId: string): number {
-    const result = this.db.prepare(`INSERT OR IGNORE INTO dismissed_contents (canonical_identity, dismissed_at)
-      SELECT COALESCE(canonical_identity, canonical_url), ? FROM entries WHERE source_id = ? AND is_favorite = 0
-      AND NOT EXISTS (SELECT 1 FROM entry_origins WHERE entry_id = entries.id AND source_id != ?)`)
-      .run(Date.now(), sourceId, sourceId);
-    return result.changes;
-  }
-
   deleteSource(sourceId: string): void {
     const source = this.getSource(sourceId);
     if (!source) throw new Error("来源不存在。");

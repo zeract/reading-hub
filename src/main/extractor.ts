@@ -55,7 +55,7 @@ export function extractGenericPage(html: string, pageUrl: string, existingRule?:
  * intended archive. Confirmed rules retain ownership even without field
  * selectors. Legacy rules retain the conservative ownership fallback.
  */
-export const AUTOMATIC_RULE_REVISION = 6;
+export const AUTOMATIC_RULE_REVISION = 7;
 /**
  * Bump this only when the page-level publish-date parser gains a new safe
  * capability. Generic sources then make one unconditional request so entries
@@ -520,7 +520,7 @@ function entryFromElement($: ReturnType<typeof load>, element: any, urls: Extrac
   const titleLink = titleNode.find("a[href]").filter((_index: number, node: any) => Boolean(compactText($(node).text(), 240)?.length)).first();
   const fallbackLink = root.is("a[href]") ? root : root.find("a[href]").filter((_index: number, node: any) => Boolean(compactText($(node).text(), 240)?.length)).first();
   const linkNode = titleNode.is("a[href]") ? titleNode : titleLink.length ? titleLink : fallbackLink;
-  const title = compactText(titleNode.text() || linkNode.text(), 240);
+  const title = extractedTitleText(titleNode) || extractedTitleText(linkNode);
   const url = publicDocumentUrl(linkNode.attr("href"), urls.baseUrl);
   if (!title || !url || url === urls.pageUrl || isTaxonomyUrl(url) || isRecruitmentUrl(url)) return undefined;
   const timeNode = rule.timeSelector ? root.find(rule.timeSelector).first() : root.find("time,[datetime]").first();
@@ -631,6 +631,19 @@ function nodeDateValue($: ReturnType<typeof load>, node: any): string | undefine
 
 function findSelfOrDescendant(root: any, selector: string) {
   return root.is(selector) ? root : root.find(selector).first();
+}
+
+function extractedTitleText(node: any): string | undefined {
+  const title = node.clone();
+  title.find("time, [datetime]").remove();
+  title.find("span, small").filter((_index: number, element: any) => {
+    if (element.children?.some((child: any) => child.type === "tag")) return false;
+    const text = element.children?.filter((child: any) => child.type === "text").map((child: any) => child.data).join("").trim() || "";
+    // A standalone date label is metadata. Do not strip dates embedded in an
+    // authored title such as “2026年9月9日发布了什么”.
+    return /^(?:20\d{2}年\d{1,2}月\d{1,2}日|20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}|[A-Za-z]{3,9}\s+\d{1,2},?\s+20\d{2})$/.test(text);
+  }).remove();
+  return compactText(title.text(), 240);
 }
 
 function preferredTitleNode($: ReturnType<typeof load>, root: any) {

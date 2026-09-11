@@ -37,7 +37,7 @@ describe("retained library lifecycle", () => {
     } finally { original.close(); await snapshot?.dispose(); rmSync(dir, { recursive: true }); }
   });
 
-  it("retains saved content and shared origins through unsubscribe, cleanup and restart", () => {
+  it("retains saved content and shared origins through unsubscribe, individual dismissal and restart", () => {
     const dir = mkdtempSync(join(tmpdir(), "reading-hub-retention-"));
     let db = new ReadingDatabase(join(dir, "library.sqlite"));
     try {
@@ -48,7 +48,7 @@ describe("retained library lifecycle", () => {
       db.setSubscribed(first.id, false);
       expect(db.listDueSources().map((item) => item.id)).not.toContain(first.id);
       expect(db.listEntries({ sourceId: first.id })).toHaveLength(3);
-      expect(db.clearSourceContent(first.id)).toBe(1);
+      db.dismissEntry("ordinary");
       expect(db.listEntries().map((item) => item.id).sort()).toEqual(["saved", "shared"]);
       expect(db.listEntries({ dismissed: true }).map((item) => item.id)).toEqual(["ordinary"]);
       db.close();

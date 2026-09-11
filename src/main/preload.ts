@@ -16,7 +16,6 @@ const IPC_CHANNELS = {
     list: "source:list",
     remove: "source:delete",
     subscribe: "source:set-subscribed",
-    clearContent: "source:clear-content",
     refresh: "source:refresh",
     updateSettings: "source:update-settings",
     collectionSettings: "source:collection-settings",
@@ -67,7 +66,6 @@ const readerApi: ReaderApi = {
   importOpml: () => ipcRenderer.invoke(IPC_CHANNELS.source.importOpml),
   listSources: () => ipcRenderer.invoke(IPC_CHANNELS.source.list),
   setSourceSubscribed: (id, subscribed) => ipcRenderer.invoke(IPC_CHANNELS.source.subscribe, id, subscribed),
-  clearSourceContent: (id) => ipcRenderer.invoke(IPC_CHANNELS.source.clearContent, id),
   restoreEntry: (id) => ipcRenderer.invoke(IPC_CHANNELS.entry.restore, id),
   getLibraryRevision: () => ipcRenderer.invoke(IPC_CHANNELS.entry.revision),
   onLibraryChanged: (listener) => {

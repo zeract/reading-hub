@@ -108,7 +108,6 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     return database.listSources();
   });
   handle(IPC_CHANNELS.source.subscribe, (_event, id: unknown, subscribed: unknown) => sources.setSubscribed(requireEntityId(id), requireBoolean(subscribed)));
-  handle(IPC_CHANNELS.source.clearContent, (_event, id: unknown) => database.clearSourceContent(requireEntityId(id)));
   handle(IPC_CHANNELS.entry.restore, (_event, id: unknown) => database.restoreEntry(requireEntityId(id)));
   handle(IPC_CHANNELS.entry.revision, () => database.getLibraryRevision());
   handle(IPC_CHANNELS.source.remove, (_event, id: unknown) => sources.delete(requireEntityId(id)));
