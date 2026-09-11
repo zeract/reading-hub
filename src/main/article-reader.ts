@@ -550,7 +550,7 @@ export class ArticleReader {
       title: entry.title,
       author: entry.author,
       publishedAt: entry.publishedAt,
-      coverImageUrl: coverCandidate && !containsImage(contentHtml, coverCandidate, item.feedContentHtml, response.url) ? coverCandidate : undefined,
+      coverImageUrl: selectReaderCover(contentHtml, coverCandidate),
       renderProfile: effectiveReaderProfile(renderProfile, sanitised.formulaRenderPolicy),
       contentMode: "feed_body",
       formulaDiagnostics: sanitised.formulaDiagnostics,
@@ -675,10 +675,7 @@ function finishReaderArticle(prepared: PreparedReaderArticle, sanitised: Sanitiz
   const contentHtml = sanitised.html;
   const textLength = normalText(load(contentHtml).text()).length;
   if (!textLength) return undefined;
-  // An Open Graph image is often also the article's first figure. Rendering it
-  // once as a cover and once in the preserved body creates an artificial
-  // duplicate, so the body remains the single source of truth in that case.
-  const coverImageUrl = prepared.coverCandidate && !containsImage(contentHtml, prepared.coverCandidate, prepared.rawContentHtml, prepared.resourceBaseUrl) ? prepared.coverCandidate : undefined;
+  const coverImageUrl = selectReaderCover(contentHtml, prepared.coverCandidate);
 
   return {
     article: {
@@ -1327,21 +1324,14 @@ function removeDuplicateImagesIn($: ReturnType<typeof load>, container: any, pag
   }
 }
 
-function containsImage(contentHtml: string, imageUrl: string, sourceHtml: string, pageUrl: string): boolean {
-  const content = load(`<div>${contentHtml}</div>`);
-  const target = imageAssetKey(imageUrl);
-  const renderedKeys = new Set(content("img").toArray().map((node) => imageAssetKey(content(node).attr("src"))));
-  if (renderedKeys.has(target)) return true;
-  // src/srcset and lazy-image attributes explicitly identify alternate sizes.
-  // Only suppress a cover if that image actually survived sanitization; never
-  // guess by stripping arbitrary CDN query parameters or comparing filenames.
-  const source = load(`<div id="reader-image-source">${sourceHtml}</div>`);
-  hydrateLazyImages(source, source("#reader-image-source"), pageUrl);
-  return source("img").toArray().some((node) => {
-    const image = source(node);
-    const selectedKey = imageAssetKey(imageSource(image, pageUrl));
-    return selectedKey && renderedKeys.has(selectedKey) && imageSources(image, pageUrl).some((url) => imageAssetKey(url) === target);
-  });
+/**
+ * Metadata is a fallback illustration, not authored body content. Social cards
+ * can be crops or separately named exports of a body image, so URL identity
+ * cannot establish whether adding one would duplicate the publisher's layout.
+ * Preserve the body and only supplement image-free articles after sanitization.
+ */
+function selectReaderCover(contentHtml: string, candidate?: string): string | undefined {
+  return candidate && !load(contentHtml)("img").length ? candidate : undefined;
 }
 
 function imageUrlKey(value: string | undefined): string | undefined {

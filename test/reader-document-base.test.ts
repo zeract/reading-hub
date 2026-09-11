@@ -18,7 +18,9 @@ describe.each(["semantic", "combined"])("%s document base", (path) => {
     const $ = load(result.contentHtml);
     expect($("img").map((_, node) => $(node).attr("src")).get()).toEqual(["https://example.com/assets/figure.png", "https://example.com/assets/lazy.png"]);
     expect($("a").first().attr("href")).toBe("https://example.com/assets/appendix.html");
-    expect(result.coverImageUrl).toBe("https://example.com/assets/cover.png");
+    expect(result.coverImageUrl).toBeUndefined();
+    const imageless = document('<base href="../assets/">').replace(/<img[^>]*>/g, "");
+    expect(extractReaderArticle(imageless, pageUrl, entry)!.article.coverImageUrl).toBe("https://example.com/assets/cover.png");
     expect(result.languageVariants).toContainEqual(expect.objectContaining({ url: "https://example.com/assets/zh.html", language: "zh" }));
     expect(result.url).toBe(pageUrl);
     expect(result.activeLanguage).toBe("en");

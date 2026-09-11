@@ -147,7 +147,7 @@ describe("article reader extraction", () => {
 
     expect(result?.article.title).toBe(longTitle);
     expect(result?.textLength).toBeGreaterThan(900);
-    expect(result?.article.coverImageUrl).toBe("https://example.com/covers/hero.jpg");
+    expect(result?.article.coverImageUrl).toBeUndefined();
     expect(result?.article.contentHtml).toContain('src="https://example.com/images/diagram.png"');
     expect(result?.article.contentHtml).toContain('href="https://example.com/reference"');
     expect(result?.article.contentHtml).toContain("图注完整保留");
@@ -1053,6 +1053,23 @@ describe("article reader extraction", () => {
     expect(content).toContain("首图图注");
   });
 
+  it.each(["/social.jpg", "/image?crop=social", "/_next/image?url=%2Fcover.jpg&w=1200&q=75"])("does not inject a separately exported social cover (%s) above authored imagery", (cover) => {
+    const result = extractReaderArticle(`<html><head><meta property="og:image" content="${cover}"></head><body><article>
+      <p>${"Synthetic article text. ".repeat(35)}</p>
+      <div data-rmiz><span data-rmiz-content="not-found"><img src="/cover.jpg" alt="Claimable fixture"></span></div>
+      <p>Another authored position.</p><figure><img src="/cover.jpg"><figcaption>Intentional reuse</figcaption></figure>
+      </article></body></html>`, entry.url, entry);
+    expect(result?.article.coverImageUrl).toBeUndefined();
+    expect(load(result?.article.contentHtml || "")("img")).toHaveLength(2);
+    expect(result?.article.contentHtml).toContain("Intentional reuse");
+  });
+
+  it.each(["", '<img src="javascript:alert(1)">'])("keeps metadata as fallback when no valid body image survives (%s)", (image) => {
+    const result = extractReaderArticle(`<html><head><meta property="og:image" content="/social.jpg"></head><body><article><p>${"Synthetic article text. ".repeat(35)}</p>${image}</article></body></html>`, entry.url, entry);
+    expect(result?.article.coverImageUrl).toBe("https://example.com/social.jpg");
+    expect(load(result?.article.contentHtml || "")("img")).toHaveLength(0);
+  });
+
   it("keeps the highest-resolution WordPress image when noscript and lazy variants coexist", () => {
     const image = "https://developer-blogs.nvidia.com/wp-content/uploads/2020/11/Figure1-625x125.png";
     const originalImage = "https://developer-blogs.nvidia.com/wp-content/uploads/2020/11/Figure1.png";
@@ -1291,7 +1308,7 @@ describe("article reader extraction", () => {
     expect(article.contentHtml).not.toContain("<img");
   });
 
-  it("dynamically sanitizes a subscribed RSSHub item body without reading or storing the blocked X page", async () => {
+  it.each(["diagram.jpg", "social-card.jpg"])("sanitizes RSSHub imagery without injecting its metadata cover (%s) or reading the blocked page", async (coverFile) => {
     const source: Source = {
       id: "rsshub-x", url: "http://127.0.0.1:1200/twitter/user/example", title: "Twitter @example", kind: "rss", status: "active",
       config: { allowTrustedLoopbackFeed: true }, pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1
@@ -1301,7 +1318,7 @@ describe("article reader extraction", () => {
       url: "https://x.com/example/status/1",
       canonicalUrl: "https://x.com/example/status/1",
       summary: "这是卡片摘要，不应作为完整 Feed 正文。",
-      imageUrl: "https://pbs.twimg.com/media/diagram.jpg"
+      imageUrl: `https://pbs.twimg.com/media/${coverFile}`
     };
     const requests: Array<{ url: string; options?: unknown }> = [];
     const http = {
