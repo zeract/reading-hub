@@ -834,7 +834,7 @@ export class ReadingDatabase {
       if (query.sourceId) parameters.push(query.sourceId);
       for (const selection of selections) parameters.push(selection.scheme, selection.key);
     }
-    const dateFilter = entryDateFilter(startAt, endAt, query.publishedOrCollected);
+    const dateFilter = entryDateFilter(startAt, endAt, query.publishedOnly);
     if (dateFilter.sql) conditions.push(dateFilter.sql);
     parameters.push(...dateFilter.parameters);
     if (query.read !== undefined) {
@@ -1289,16 +1289,13 @@ function legacyResumeJitter(sourceId: string): number {
   return hash % (15 * 60_000);
 }
 
-/** One date predicate for lists, pages and the Today count; first collection is
- * immutable created_at, never the latest polling/observation timestamp. */
-function entryDateFilter(start: number | undefined, end: number | undefined, union = false): { sql: string; parameters: number[] } {
-  const columns = union ? ["entries.published_at", "entries.created_at"] : ["COALESCE(entries.published_at, entries.observed_at, entries.created_at)"];
+/** Lists, pages and the Today count share the same publication-day predicate.
+ * General date queries retain their existing fallback unless publishedOnly is set. */
+function entryDateFilter(start: number | undefined, end: number | undefined, publishedOnly = false): { sql: string; parameters: number[] } {
+  const column = publishedOnly ? "entries.published_at" : "COALESCE(entries.published_at, entries.observed_at, entries.created_at)";
   const parameters: number[] = [];
-  const ranges = columns.map((column) => {
-    const parts: string[] = [];
-    if (start !== undefined) { parts.push(`${column} >= ?`); parameters.push(start); }
-    if (end !== undefined) { parts.push(`${column} < ?`); parameters.push(end); }
-    return parts.length ? `(${parts.join(" AND ")})` : "";
-  }).filter(Boolean);
-  return { sql: ranges.length ? `(${ranges.join(" OR ")})` : "", parameters };
+  const parts: string[] = [];
+  if (start !== undefined) { parts.push(`${column} >= ?`); parameters.push(start); }
+  if (end !== undefined) { parts.push(`${column} < ?`); parameters.push(end); }
+  return { sql: parts.length ? `(${parts.join(" AND ")})` : "", parameters };
 }

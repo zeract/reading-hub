@@ -18,7 +18,7 @@ function entry(sourceId: string, title = "测试文章", options: Partial<Entry>
 }
 
 describe("ReadingDatabase", () => {
-  it("unions publication and first collection within a local day without duplicates across pages", () => {
+  it("filters by the local publication day regardless of collection or polling time across pages", () => {
     const db = new ReadingDatabase(":memory:");
     try {
       const source = db.createSource({ url: "https://example.com/feed", title: "Today", kind: "rss", pollingEnabled: true });
@@ -36,15 +36,14 @@ describe("ReadingDatabase", () => {
       db.saveEntries(stamps.map(([publishedAt, createdAt], index) => entry(source.id, `Date ${index}`, {
         id: `date-${index}`, canonicalUrl: `https://example.com/date-${index}`, publishedAt, createdAt: createdAt!, observedAt: startAt + 1
       })));
-      const query = { publishedOrCollected: true, startAt, endAt };
+      const query = { publishedOnly: true, startAt, endAt };
       const listed = db.listEntries(query).map((item) => item.id);
-      expect(new Set(listed)).toEqual(new Set(["date-0", "date-1", "date-2", "date-3", "date-4"]));
+      expect(new Set(listed)).toEqual(new Set(["date-0", "date-3"]));
       expect(db.getLibraryCounts(startAt + 1).today).toBe(listed.length);
-      const first = db.listEntryPage({ ...query, pageSize: 2 });
-      const second = db.listEntryPage({ ...query, pageSize: 2, cursor: first.nextCursor });
-      const third = db.listEntryPage({ ...query, pageSize: 2, cursor: second.nextCursor });
-      expect([...first.entries, ...second.entries, ...third.entries].map((item) => item.id)).toEqual(listed);
-      expect(third.nextCursor).toBeUndefined();
+      const first = db.listEntryPage({ ...query, pageSize: 1 });
+      const second = db.listEntryPage({ ...query, pageSize: 1, cursor: first.nextCursor });
+      expect([...first.entries, ...second.entries].map((item) => item.id)).toEqual(listed);
+      expect(second.nextCursor).toBeUndefined();
     } finally { db.close(); }
   });
 

@@ -4,7 +4,7 @@ import { AppIcon, type AppIconName } from "./ui-icons";
 
 const EMPTY_VIEWS: Record<LibraryView, { title: string; description: string; icon: AppIconName }> = {
   all: { title: "还没有收集到内容", description: "来源同步后的文章会出现在这里。可以查看来源设置中的更新状态。", icon: "reading" },
-  today: { title: "今天还没有内容", description: "今天发布或首次收集的文章会出现在这里。", icon: "today" },
+  today: { title: "今天还没有内容", description: "今天发布的文章会出现在这里。", icon: "today" },
   unread: { title: "没有未读文章", description: "尚未读过的文章会出现在这里。", icon: "unread" },
   favorite: { title: "还没有收藏文章", description: "点击文章旁的星标，即可在这里集中查看。", icon: "favorite" },
 };

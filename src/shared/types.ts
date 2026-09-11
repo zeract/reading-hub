@@ -176,8 +176,6 @@ export interface Entry extends RawEntry {
 export interface EntryListQuery {
   dismissed?: boolean;
   publishedOnly?: boolean;
-  /** Match publication OR first local collection within the date range. */
-  publishedOrCollected?: boolean;
   collection?: "current" | "history";
   sort?: "published" | "collected";
   sourceId?: string;
