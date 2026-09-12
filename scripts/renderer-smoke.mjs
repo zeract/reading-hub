@@ -547,7 +547,12 @@ try {
   assert(aiRequests === 3 && cancelledAiRequests.has(activeAiRequest), "Closing the assistant must cancel its unfinished request over IPC.");
   window.webContents.send("ai:stream", { requestId: activeAiRequest, type: "delta", text: "Late fixture" });
   aiMode = "complete";
-  const selectRewrite = async value => evaluate(`{const select=document.querySelector('.reader-version-select');select.value=${JSON.stringify(value)};select.dispatchEvent(new Event('change',{bubbles:true}));}`);
+  const selectRewrite = async value => {
+    await evaluate("document.querySelector('.reader-version-select').click()");
+    await waitFor(window, "Boolean(document.querySelector('.reader-version-menu'))");
+    assert(await evaluate("document.querySelector('.reader-version-menu').getBoundingClientRect().top >= document.querySelector('.reader-version-select').getBoundingClientRect().bottom && getComputedStyle(document.querySelector('.reader-version-menu')).backgroundColor === getComputedStyle(document.querySelector('.reader-toolbar')).backgroundColor"), "Menu must expand below its trigger with the reader background.");
+    await evaluate(`Array.from(document.querySelectorAll('.reader-version-menu [role="option"]')).find(b=>b.textContent===${JSON.stringify(value === "rewrite" ? "中文改写" : "原文")}).click()`);
+  };
   await selectRewrite("rewrite");
   await waitFor(window,"Array.from(document.querySelectorAll('.reader-rewritten button')).some(b=>b.textContent==='生成中文改写')");
   await evaluate("Array.from(document.querySelectorAll('.reader-rewritten button')).find(b=>b.textContent==='生成中文改写').click()");
@@ -557,13 +562,20 @@ try {
     await selectRewrite("rewrite");
     await waitFor(window,"Boolean(document.querySelector('.reader-rewritten .katex')) && document.querySelector('.reader-rewritten img')?.naturalWidth > 0");
     assert(await evaluate("document.querySelector('.reader-article[hidden]') !== null && document.documentElement.scrollWidth <= innerWidth + 1"), "Rewritten body must be separate from the original and fit the viewport.");
-    assert(await evaluate("document.querySelector('.reader-version-select').value==='rewrite' && getComputedStyle(document.querySelector('.reader-version-select')).borderTopWidth==='0px'"), "Version selection must be a borderless dropdown.");
+    assert(await evaluate("document.querySelector('.reader-version-select').textContent==='中文改写' && getComputedStyle(document.querySelector('.reader-version-select')).borderTopWidth==='0px'"), "Version selection must be a borderless dropdown.");
     assert(await evaluate("document.querySelector('.reader-version-select').closest('.reader-toolbar') === document.querySelector('.favorite-button').closest('.reader-toolbar') && document.querySelector('.reader-version-select').getBoundingClientRect().left < document.querySelector('.favorite-button').getBoundingClientRect().left"), "Version dropdown belongs at the left of the favorite toolbar.");
     assert(await evaluate("document.querySelector('.reader-rewritten button')===null && !/本地保存|理解偏差|未进行额外|fixture-rewrite|重新生成|检查改写/.test(document.querySelector('.reader-rewritten').textContent)"), "Completed rewrite must show only title and body.");
     assert(await evaluate("getComputedStyle(document.querySelector('.reader-rewritten .ai-markdown-paragraph')).fontFamily.startsWith('\"Zhuque Fangsong\"')"), "Rewritten prose must use the bundled Fangsong face.");
     assert(await evaluate("document.querySelector('.reader-rewritten a[href=\"https://example.com/post\"]') && document.querySelector('.reader-rewritten a[href=\"https://example.com/a_(b)\"]') && document.querySelector('.reader-rewritten img').src.startsWith('data:image/')"), "Links and proxied images must render correctly.");
+    assert(await evaluate("document.querySelector('.reader-rewritten a[href=\"https://example.com/post\"]').textContent === '链接' && !document.querySelector('.ai-toggle').disabled"), "Rewrite must hide raw URL labels and enable AI.");
+    assert(await evaluate("(() => { const buttons=[...document.querySelectorAll('.reader-toolbar-actions button')];return buttons.every(b=>b.querySelector('svg') && b.getBoundingClientRect().width===28 && b.getBoundingClientRect().height===28 && getComputedStyle(b).backgroundColor==='rgba(0, 0, 0, 0)'); })()"), "Toolbar icons must share their dimensions and transparent style.");
     await evaluate("document.fonts.ready.then(()=>new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))");
     await writeFile(path.join(tmpdir(), `reading-hub-rewrite-${width}.png`), (await window.capturePage()).toPNG());
+    await evaluate("document.querySelector('.reader-version-select').click()");
+    await waitFor(window, "Boolean(document.querySelector('.reader-version-menu'))");
+    await writeFile(path.join(tmpdir(), 'reading-hub-version-menu-' + width + '.png'), (await window.capturePage()).toPNG());
+    await pressKey("Escape");
+    await waitFor(window, "!document.querySelector('.reader-version-menu')");
     await selectRewrite("original");
   }
   providerListFailure = true;

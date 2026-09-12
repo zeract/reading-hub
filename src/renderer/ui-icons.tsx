@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import type { Source } from "../shared/types";
 import { sourceIconKind } from "../shared/source-icon";
 
-export type AppIconName = "sidebar" | "expand" | "refresh" | "add" | "search" | "today" | "unread" | "favorite" | "folder" | "chevron-down" | "chevron-right" | "settings" | "back" | "reading" | "ai";
+export type AppIconName = "external" | "sidebar" | "expand" | "refresh" | "add" | "search" | "today" | "unread" | "favorite" | "folder" | "chevron-down" | "chevron-right" | "settings" | "back" | "reading" | "ai";
 
 /** Compact, local-only line icons with a native macOS reading-list emphasis. */
 export function AppIcon({ name }: { name: AppIconName }) {
   const props = { viewBox: "0 0 24 24", width: 18, height: 18, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
   switch (name) {
+    case "external": return <svg {...props}><path d="M14 3h7v7M21 3 11 13M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5" /></svg>;
     case "sidebar": return <svg {...props}><rect x="3.5" y="4" width="17" height="16" rx="2" /><path d="M9 4v16M12.5 9h4M12.5 13h4M12.5 17h2.5" /></svg>;
     case "expand": return <svg {...props}><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5" /></svg>;
     case "refresh": return <svg {...props}><path d="M21 12a9 9 0 0 0-15.5-6.2L3 8" /><path d="M3 3v5h5" /><path d="M3 12a9 9 0 0 0 15.5 6.2L21 16" /><path d="M21 21v-5h-5" /></svg>;

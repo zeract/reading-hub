@@ -186,7 +186,7 @@ function renderMarkdownText(value: string, key: string): ReactNode[] {
       else if (token.type === "hardbreak") nodes.push(<br key={nodeKey}/>);
       else if (token.type === "link_open") {
         const children = renderUntil("link_close"); const url = safeExternalUrl(String(token.attrGet("href") || ""));
-        nodes.push(url ? <a className="ai-markdown-link" href={url} key={nodeKey} onClick={event=>{event.preventDefault();void window.reader.openExternal(url).catch(()=>undefined);}}>{children}</a> : <Fragment key={nodeKey}>{children}</Fragment>);
+        nodes.push(url ? <MarkdownLink key={nodeKey} url={url}>{children}</MarkdownLink> : <Fragment key={nodeKey}>{children}</Fragment>);
       } else if (token.type === "image") {
         const url = safeExternalUrl(String(token.attrGet("src") || ""));
         nodes.push(url ? <MarkdownImage key={nodeKey} url={url} alt={token.content}/> : token.content);
@@ -198,6 +198,16 @@ function renderMarkdownText(value: string, key: string): ReactNode[] {
     return nodes;
   }
   return renderUntil();
+}
+
+function MarkdownLink({url, children}: {url: string; children: ReactNode[]}) {
+  const entryId = useContext(ImageEntry);
+  const label = children.every(child => typeof child === "string") ? children.join("") : undefined;
+  const bare = label !== undefined && safeExternalUrl(label) === url;
+  return <a className="ai-markdown-link" href={url} title={url} onClick={event => {
+    event.preventDefault(); event.stopPropagation();
+    void window.reader.openExternal(url).catch(() => undefined);
+  }}>{entryId && bare ? "链接" : children}</a>;
 }
 
 function MarkdownImage({url,alt}:{url:string;alt:string}) {

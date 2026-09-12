@@ -32,8 +32,10 @@ function toSelectionRect(rect: DOMRect): SelectionRect {
   return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
 }
 
-function toAiArticleContext(article: ReaderArticle, sourceTitle?: string): AiArticleContext {
-  const document = new DOMParser().parseFromString(article.contentHtml, "text/html");
+type AiReaderDocument = Pick<ReaderArticle, "title" | "url"> & { contentHtml?: string; plainText?: string };
+
+function toAiArticleContext(article: AiReaderDocument, sourceTitle?: string): AiArticleContext {
+  const document = new DOMParser().parseFromString(article.contentHtml || "", "text/html");
   // Both the side panel and selection helper call this shared path. Capping
   // here keeps their IPC payload within the same bounded contract that the
   // main process enforces before a provider or Codex CLI sees the article.
@@ -41,7 +43,7 @@ function toAiArticleContext(article: ReaderArticle, sourceTitle?: string): AiArt
     title: article.title,
     url: article.url,
     sourceTitle,
-    plainText: collectAiArticleText(textNodeValues(document.body))
+    plainText: article.plainText ?? collectAiArticleText(textNodeValues(document.body))
   });
 }
 
@@ -49,7 +51,7 @@ function toAiArticleContext(article: ReaderArticle, sourceTitle?: string): AiArt
  * Translation is deliberately context-free: it must not parse the article DOM
  * or send a title, link, source label, or article excerpt through IPC.
  */
-function articlePayloadForAiRequest(article: ReaderArticle, sourceTitle: string | undefined, selection?: AiSelectionContext): { article?: AiArticleContext } {
+function articlePayloadForAiRequest(article: AiReaderDocument, sourceTitle: string | undefined, selection?: AiSelectionContext): { article?: AiArticleContext } {
   if (selection?.intent === "translate") return {};
   return { article: toAiArticleContext(article, sourceTitle) };
 }
@@ -82,8 +84,10 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const rewrite = useArticleRewrite(entry.id);
   const rewriteVisible = rewrite.visible;
   const [article, setArticle] = useState<ReaderArticle>();
-  // Keep the wrapper stable too: a fresh dangerouslySetInnerHTML object makes
-  // React rewrite identical HTML, losing proxied images and live DOM state.
+  const aiArticle: AiReaderDocument | undefined = rewriteVisible
+    ? rewrite.record?.result && { title: rewrite.record.result.sourceTitle, url: rewrite.record.result.sourceUrl, plainText: rewrite.record.result.markdown }
+    : article;
+  // Stable markup preserves proxied images and live DOM state on unrelated updates.
   const articleMarkup = useMemo(() => ({ __html: article?.contentHtml ?? "" }), [article?.contentHtml]);
   const [embedded, setEmbedded] = useState(false);
   const [error, setError] = useState<string>();
@@ -190,7 +194,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
     previewImage(image);
   }
   function captureArticleSelection() {
-    const root = articleBodyElement.current;
+    const root = rewriteVisible ? readerWorkspaceElement.current?.querySelector(".reader-rewritten .article-body") : articleBodyElement.current;
     const workspace = readerWorkspaceElement.current;
     const selection = window.getSelection();
     if (!root || !workspace || !selection || selection.isCollapsed || !selection.rangeCount) {
@@ -290,7 +294,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
 
   const readerStyle = { "--reader-font-scale": String(preferences.fontScale) } as CSSProperties & Record<"--reader-font-scale", string>;
   const toggleAssistant = () => {
-    if (!article) return;
+    if (!aiArticle) return;
     setAssistantState((state) => state === "open" ? "minimized" : "open");
   };
   const assistantVisible = assistantState === "open";
@@ -328,20 +332,20 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
         {languageSwitchError && <span className="reader-language-error" role="status" title={languageSwitchError}>{languageSwitchError}</span>}
       </div>
       <div className="reader-toolbar-actions">
-        <button type="button" className={`toolbar-icon-button favorite-button${entry.favorite ? " is-favorite" : ""}`} aria-pressed={entry.favorite} aria-label={entry.favorite ? "取消收藏" : "收藏文章"} title={entry.favorite ? "取消收藏" : "收藏文章"} disabled={favoriteUpdating} onClick={() => void onUpdateEntry(entry, "favorite", !entry.favorite)}>{entry.favorite ? "★" : "☆"}</button>
-        <button type="button" className="toolbar-icon-button ai-toggle" aria-pressed={assistantVisible} aria-label={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} title={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} disabled={!article || rewriteVisible} onClick={toggleAssistant}>✦</button>
-        <button type="button" className="toolbar-icon-button reader-focus-toggle" aria-pressed={readerOnly} aria-label={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} title={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} onClick={onToggleReaderOnly}>⛶</button>
-        <button type="button" className="toolbar-icon-button external-button" aria-label="在浏览器中打开原文" title="在浏览器中打开原文" onClick={() => void window.reader.openExternal(article?.url || entry.url)}>↗</button>
+        <button type="button" className={`toolbar-icon-button favorite-button${entry.favorite ? " is-favorite" : ""}`} aria-pressed={entry.favorite} aria-label={entry.favorite ? "取消收藏" : "收藏文章"} title={entry.favorite ? "取消收藏" : "收藏文章"} disabled={favoriteUpdating} onClick={() => void onUpdateEntry(entry, "favorite", !entry.favorite)}><AppIcon name="favorite"/></button>
+        <button type="button" className="toolbar-icon-button ai-toggle" aria-pressed={assistantVisible} aria-label={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} title={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} disabled={!aiArticle} onClick={toggleAssistant}><AppIcon name="ai"/></button>
+        <button type="button" className="toolbar-icon-button reader-focus-toggle" aria-pressed={readerOnly} aria-label={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} title={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} onClick={onToggleReaderOnly}><AppIcon name="expand"/></button>
+        <button type="button" className="toolbar-icon-button external-button" aria-label="在浏览器中打开原文" title="在浏览器中打开原文" onClick={() => void window.reader.openExternal(article?.url || entry.url)}><AppIcon name="external"/></button>
       </div>
     </header>
     <ReaderPreferenceStatus />
     </div>
-    <div ref={readerWorkspaceElement} className={`reader-workspace ${assistantVisible && article ? "reader-workspace--assistant" : ""}`}>
+    <div ref={readerWorkspaceElement} className={`reader-workspace ${assistantVisible && aiArticle ? "reader-workspace--assistant" : ""}`}>
       <div className="reader-scroll" onScroll={textSelection ? clearTextSelection : undefined}>
         {!rewriteVisible && loading && <div className="reader-loading" role="status"><span className="loading-mark" /><p>正在准备适合阅读的正文…</p></div>}
         {!rewriteVisible && !loading && embedded && <div className="reader-embedded"><h1>{entry.title}</h1><p>该站点不允许自动提取正文，原文已在 Reading Hub 的受限窗口中打开。该窗口不使用外部浏览器，也不会复用登录态。</p><button type="button" className="primary-action" onClick={() => void loadArticle()}>重新打开原文</button></div>}
         {!rewriteVisible && !loading && error && <div className="reader-failure"><h1>{entry.title}</h1><p>{error}</p><div><button type="button" className="primary-action" onClick={() => void loadArticle()}>重试</button><button type="button" onClick={openEmbedded}>在应用内打开原文</button></div></div>}
-        <RewrittenArticle state={rewrite}/>
+        <RewrittenArticle state={rewrite} bodyProps={{onKeyUp: captureArticleSelection, onMouseUp: captureArticleSelection}}/>
         {!loading && article && <article key={documentId} className="reader-article" hidden={rewriteVisible} onErrorCapture={handleContentError}>
           <header><p className="eyebrow">{source?.title || "已保存内容"}</p><h1>{article.title}</h1>{(article.author || date) && <p className="reader-byline">{article.author}{article.author && date ? " · " : ""}{date}</p>}</header>
           {article.contentMode === "feed_body" && <aside className="reader-content-notice" role="note">正在显示订阅 Feed 提供的正文。该原页未被自动读取；请使用右上角 ↗ 查看完整原文。</aside>}
@@ -368,17 +372,17 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
           <button type="button" className="selection-cancel" onClick={clearTextSelection} aria-label="取消所选文字提问">×</button>
         </form>}
       </section>}
-      {textSelection?.request && article && <SelectionAssistantCard
+      {textSelection?.request && aiArticle && <SelectionAssistantCard
         request={textSelection.request}
         overlay={textSelection.overlay}
-        article={article}
+        article={aiArticle}
         sourceTitle={source?.title}
         preferredProviderId={preferredAiProviderId}
         onClose={clearTextSelection}
         onOpenSettings={() => { clearTextSelection(); onOpenSettings(); }}
       />}
-      {assistantMounted && article && <ReaderAssistant
-        article={article}
+      {assistantMounted && aiArticle && <ReaderAssistant
+        article={aiArticle}
         sourceTitle={source?.title}
         providerId={preferredAiProviderId}
         onProviderChange={setPreferredAiProviderId}
@@ -387,7 +391,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
         onClose={() => setAssistantState("closed")}
         onOpenSettings={onOpenSettings}
       />}
-      {assistantState === "minimized" && article && <button type="button" className="assistant-launcher" onClick={() => setAssistantState("open")} aria-label="恢复 AI 学习助手" title="恢复 AI 学习助手">✦</button>}
+      {assistantState === "minimized" && aiArticle && <button type="button" className="assistant-launcher" onClick={() => setAssistantState("open")} aria-label="恢复 AI 学习助手" title="恢复 AI 学习助手">✦</button>}
     </div>
     {imagePreview && <ImagePreview image={imagePreview} onClose={() => setImagePreview(undefined)} />}
   </section>;
@@ -396,7 +400,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
 function SelectionAssistantCard({ request, overlay, article, sourceTitle, preferredProviderId, onClose, onOpenSettings }: {
   request: AssistantSelectionRequest;
   overlay: SelectionOverlay;
-  article: ReaderArticle;
+  article: AiReaderDocument;
   sourceTitle?: string;
   preferredProviderId: AiProviderId;
   onClose: () => void;
@@ -463,7 +467,7 @@ function ImagePreview({ image, onClose }: { image: ReaderImagePreview; onClose: 
 }
 
 function ReaderAssistant({ article, sourceTitle, providerId, onProviderChange, minimized, onMinimize, onClose, onOpenSettings }: {
-  article: ReaderArticle;
+  article: AiReaderDocument;
   sourceTitle?: string;
   providerId: AiProviderId;
   onProviderChange: (providerId: AiProviderId) => void;

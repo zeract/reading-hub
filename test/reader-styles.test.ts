@@ -47,9 +47,11 @@ describe("reader display-equation layout", () => {
     expect(styles).toContain(".selection-assistant-answer { min-height: 72px;");
   });
 
-  it("gives the reader a persistent, stateful favourite control", () => {
-    expect(styles).toMatch(/\.reader-toolbar\s+\.favorite-button\s*\{[^}]*color:\s*var\(--accent-deep\)/s);
-    expect(styles).toMatch(/\.reader-toolbar\s+\.favorite-button\.is-favorite\s*\{[^}]*background:\s*var\(--accent-wash\)/s);
+  it("uses uniform toolbar surfaces and a filled icon for saved favorites", () => {
+    expect(styles).toContain('.reader-toolbar .toolbar-icon-button[aria-pressed="true"] { color: var(--accent-deep); }');
+    expect(styles).toContain('.reader-toolbar .favorite-button.is-favorite svg { fill: currentColor; }');
+    expect(styles).toContain('--font-reading: "Zhuque Fangsong",Georgia,');
+    expect(styles).toContain('unicode-range: U+2E80-303F');
   });
 
   it("visually identifies a locally supplied feed summary without presenting it as full-page content", () => {

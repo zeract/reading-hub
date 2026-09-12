@@ -130,3 +130,32 @@ it("shows a sole English alternative while hiding all other languages", async ()
   await act(async () => buttons[0].click());
   expect(language).toHaveBeenCalledWith(card.id, "https://example.com/en", expect.any(String), undefined);
 });
+
+it.each([false, true])("uses the saved rewrite for AI even when original loading fails: %s", async (offline) => {
+  if (offline) read.mockRejectedValue(new Error("offline"));
+  const result = {markdown:"中文改写内容，与原文区分。",sourceTitle:"One",sourceUrl:card.url};
+  Object.assign(window.reader, {
+    getArticleRewrite: vi.fn().mockResolvedValue({entryId:card.id,status:"complete",result}),
+    listAiProviders: vi.fn().mockResolvedValue([{id:"deepseek",label:"DeepSeek",configured:true,model:"test"}]),
+    onAiStream: vi.fn(() => () => undefined),
+    startAiStream: vi.fn().mockResolvedValue(undefined),
+    cancelAiStream: vi.fn().mockResolvedValue(undefined)
+  });
+  Element.prototype.scrollTo = vi.fn();
+  await render();
+  await act(async () => container.querySelector<HTMLButtonElement>('.reader-version-select')!.click());
+  await act(async () => container.querySelectorAll<HTMLButtonElement>('[role="option"]')[1].click());
+  expect(container.querySelector<HTMLButtonElement>('.ai-toggle')!.disabled).toBe(false);
+  await act(async () => container.querySelector<HTMLButtonElement>('.ai-toggle')!.click());
+  await act(async () => {
+    const input=container.querySelector<HTMLTextAreaElement>('#ai-question')!;
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value")!.set!.call(input,"解释这篇文章");
+    input.dispatchEvent(new Event("input",{bubbles:true}));
+  });
+  await act(async () => container.querySelector('form.ai-question')!.dispatchEvent(new Event("submit",{bubbles:true,cancelable:true})));
+  expect(window.reader.startAiStream).toHaveBeenCalledWith(expect.objectContaining({request:expect.objectContaining({article:expect.objectContaining({text:result.markdown})})}));
+  await act(async () => container.querySelector<HTMLButtonElement>('.reader-version-select')!.click());
+  await act(async () => container.querySelectorAll<HTMLButtonElement>('[role="option"]')[0].click());
+  expect(container.querySelector('.reader-ai-panel')).toBeNull();
+  expect(window.reader.cancelAiStream).toHaveBeenCalledTimes(1);
+});

@@ -71,3 +71,15 @@ it("keeps image URLs containing dollar signs intact and never requests them dire
  const markup=renderToStaticMarkup(<AiMarkdownContent entryId="article" text={'![图](<https://example.com/$s_!signed!/image_(1).png>)'}/>);
  expect(markup).toContain('<img');expect(markup).not.toContain('src="https:');expect(markup).not.toContain('class="katex');
 });
+
+it("compacts bare rewrite links without changing destinations, named labels, code or AI answers", () => {
+  const url = "https://substackcdn.com/image/fetch/$s_!H10G!f_auto/https%3A%2F%2Fexample.com%2Fimage.png";
+  const text = '(' + url + ') [说明](https://example.com/post) [https://example.com/a](https://example.com/a)';
+  const markup = renderToStaticMarkup(<AiMarkdownContent entryId="one" text={text}/>);
+  expect(markup).toContain('href="' + url + '"');
+  expect(markup).not.toContain('>' + url + '</a>');
+  expect(markup).toContain('>链接</a>');
+  expect(markup).toContain('>说明</a>');
+  expect(renderToStaticMarkup(<AiMarkdownContent text={url}/>)).toContain('>' + url + '</a>');
+  expect(renderToStaticMarkup(<AiMarkdownContent entryId="one" text={'`' + url + '`'}/>)).toContain('>' + url + '</code>');
+});

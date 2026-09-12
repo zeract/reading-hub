@@ -1,15 +1,16 @@
-/* One bundled reading face; code and mathematics retain their semantic fonts. */
+/* Chinese coverage only: preserve existing Latin typography. */
 @font-face {
   font-family: "Zhuque Fangsong";
   src: url("./fonts/ZhuqueFangsong-Regular.ttf") format("truetype");
   font-style: normal;
   font-weight: 400;
   font-display: swap;
+  unicode-range: U+2E80-303F, U+3100-312F, U+31A0-31BF, U+31C0-31EF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE10-FE1F, U+FE30-FE4F, U+FF01-FF60, U+FFE0-FFE6, U+20000-323AF;
 }
 
 :root {
   --font-ui: "Zhuque Fangsong",-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Helvetica Neue",sans-serif;
-  --font-reading: "Zhuque Fangsong","Songti SC","STSong",serif;
+  --font-reading: "Zhuque Fangsong",Georgia,"Songti SC","STSong",serif;
   --font-mono: "SFMono-Regular",Menlo,Consolas,monospace;
   --control-radius: 8px;
   --control-height: 32px;
@@ -236,12 +237,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .reader-toolbar button { width: fit-content; padding: 5px 7px; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--ink-soft); font-size: 11px; font-weight: 700; }
 .reader-toolbar button:hover:not(:disabled) { background: var(--hover); }
 .reader-toolbar-actions { display: flex; min-width: 0; align-items: center; justify-self: end; gap: 5px; }
-.reader-toolbar .toolbar-icon-button { width: 28px; height: 28px; font-size: 15px; }
-.reader-toolbar .favorite-button { color: var(--accent-deep); font-size: 17px; }
-.reader-toolbar .favorite-button.is-favorite { border-color: var(--accent); background: var(--accent-wash); color: var(--accent-deep); }
-.reader-toolbar .reader-focus-toggle[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-wash); color: var(--accent-deep); }
-.reader-toolbar .ai-toggle { border-color: var(--line-strong); background: transparent; }
-.reader-toolbar .ai-toggle[aria-pressed="true"] { border-color: var(--ink); background: var(--ink); color: var(--paper-bright); }
 .reader-toolbar-settings { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: center; gap: 5px; }
 .reader-language-switcher { display: inline-flex; min-width: 0; max-width: 100%; align-items: center; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); }
 .reader-language-switcher button { min-width: 0; max-width: 7.5em; overflow: hidden; padding: 3px 7px; color: var(--ink-soft); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
@@ -480,6 +475,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 .reader-video button[hidden] { display: none; }
 
-.reader-version-select { justify-self: start; width: auto; max-width: 100%; min-width: 0; border: 0; border-radius: 0; box-shadow: none; background-color: transparent; color: var(--ink-soft); font: 400 var(--control-font-size)/1.5 var(--font-ui); padding: 4px 0; cursor: pointer; }
 .reader-rewritten .ai-message-content { font-family: var(--font-reading); font-size: inherit; line-height: inherit; }
 .reader-rewritten .ai-markdown-heading { font-family: var(--font-reading); }
+
+.reader-toolbar .toolbar-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 5px; border: 0; background: transparent; color: var(--ink-soft); }
+.reader-toolbar .toolbar-icon-button[aria-pressed="true"] { color: var(--accent-deep); }
+.reader-toolbar .favorite-button.is-favorite svg { fill: currentColor; }
+.reader-version { position: relative; justify-self: start; min-width: 0; }
+.reader-toolbar .reader-version-select { display: flex; align-items: center; gap: 5px; max-width: 100%; padding: 4px 0; border: 0; border-radius: 0; box-shadow: none; background: transparent; font: 400 var(--control-font-size)/1.5 var(--font-ui); }
+.reader-version-select svg { width: 12px; height: 12px; }
+.reader-version-menu { position: absolute; top: calc(100% + 4px); left: 0; min-width: 100%; padding: 4px 0; border: 0; background: var(--paper-bright); }
+.reader-toolbar .reader-version-menu button { display: block; width: 100%; border: 0; border-radius: 0; padding: 6px 10px; background: transparent; white-space: nowrap; text-align: left; font: 400 var(--control-font-size)/1.5 var(--font-ui); }
+.reader-version-menu [aria-selected="true"] { color: var(--accent-deep); }
+
+.reader-toolbar .reader-version button:focus-visible { outline: none; text-decoration: underline; text-underline-offset: .25em; }

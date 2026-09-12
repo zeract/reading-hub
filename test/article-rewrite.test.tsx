@@ -12,7 +12,7 @@ function View({id}:{id:string}){const state=useArticleRewrite(id);return <><Rewr
 beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);get=vi.fn().mockResolvedValue(record);generate=vi.fn().mockResolvedValue({...record,status:"queued"});Object.defineProperty(window,"reader",{configurable:true,value:{getArticleRewrite:get,generateArticleRewrite:generate,cancelArticleRewrite:vi.fn().mockResolvedValue({...record,status:"cancelled"}),removeArticleRewrite:vi.fn().mockResolvedValue(undefined),getRewriteSettings:vi.fn().mockResolvedValue(settings),configureRewrite:vi.fn(async s=>s),listAiModels:vi.fn().mockResolvedValue({models:[],stale:false})}});container=document.createElement("div");document.body.append(container);root=createRoot(container);});
 afterEach(async()=>{await act(async()=>root.unmount());container.remove();vi.useRealTimers();vi.unstubAllGlobals();});
 async function click(text:string){await act(async()=>[...container.querySelectorAll("button")].find(b=>b.textContent===text)!.click());}
-async function select(value:string){await act(async()=>{const el=container.querySelector('select')!;el.value=value;el.dispatchEvent(new Event('change',{bubbles:true}));});}
+async function select(value:string){await act(async()=>container.querySelector<HTMLButtonElement>('.reader-version-select')!.click());await act(async()=>[...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(el=>el.textContent===(value==="rewrite"?"中文改写":"原文"))!.click());}
 it("shows only the saved title and Chinese body without notices, metadata or action buttons",async()=>{
  await act(async()=>root.render(<View id="one"/>));await select("rewrite");expect(generate).not.toHaveBeenCalled();
  expect(container.querySelector(".reader-rewritten h1")?.textContent).toBe("Article");
@@ -26,7 +26,7 @@ it("ignores a late article response after switching entries",async()=>{
 });
 it("polls background completion without regenerating and releases polling on unmount",async()=>{
  vi.useFakeTimers();get.mockResolvedValueOnce({...record,status:"running"}).mockResolvedValue(record);
- await act(async()=>root.render(<View id="one"/>));await act(async()=>vi.advanceTimersByTimeAsync(2000));expect(container.textContent).toContain("中文改写");expect(generate).not.toHaveBeenCalled();const calls=get.mock.calls.length;await act(async()=>vi.advanceTimersByTimeAsync(6000));expect(get).toHaveBeenCalledTimes(calls);
+ await act(async()=>root.render(<View id="one"/>));await act(async()=>vi.advanceTimersByTimeAsync(2000));expect(get).toHaveBeenCalledTimes(2);expect(generate).not.toHaveBeenCalled();const calls=get.mock.calls.length;await act(async()=>vi.advanceTimersByTimeAsync(6000));expect(get).toHaveBeenCalledTimes(calls);
 });
 it("saves rewrite settings independently of question settings",async()=>{
  const api=window.reader;const providers=[{id:"deepseek" as const,label:"DeepSeek",model:"learning-model",configured:true,requiresApiKey:true}];
@@ -39,7 +39,7 @@ it("saves rewrite settings independently of question settings",async()=>{
 it("lets users select the missing Chinese version without automatically generating",async()=>{
  get.mockResolvedValue(undefined);await act(async()=>root.render(<View id="one"/>));await select("rewrite");
  expect(container.textContent).toContain("生成中文改写");expect(generate).not.toHaveBeenCalled();
- expect(container.querySelector("select")?.value).toBe("rewrite");
+ expect(container.querySelector(".reader-version-select")?.textContent).toBe("中文改写");
  await select("original");expect(container.querySelector(".reader-rewritten")).toBeNull();
 });
 it("keeps Chinese readable with review issues and failed background checks",async()=>{
@@ -47,4 +47,19 @@ it("keeps Chinese readable with review issues and failed background checks",asyn
  await act(async()=>root.render(<View id="one"/>));await select("rewrite");
  expect(container.textContent).not.toContain("检查未完成");expect(container.textContent).not.toContain("第 16 节");expect(container.querySelector(".article-body")).not.toBeNull();
  expect(container.textContent).not.toContain("改写设置");
+});
+
+it("supports keyboard selection, escape and outside dismissal without replacing the trigger",async()=>{
+ await act(async()=>root.render(<View id="one"/>));
+ const trigger=container.querySelector<HTMLButtonElement>('.reader-version-select')!;
+ await act(async()=>trigger.click());
+ expect(trigger.textContent).toBe("原文");
+ expect(document.activeElement?.getAttribute("aria-selected")).toBe("true");
+ await act(async()=>document.activeElement!.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowDown",bubbles:true,cancelable:true})));
+ expect(document.activeElement?.textContent).toBe("中文改写");
+ await act(async()=>document.activeElement!.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true})));
+ expect(container.querySelector('[role="listbox"]')).toBeNull();expect(document.activeElement).toBe(trigger);
+ await act(async()=>trigger.click());
+ await act(async()=>document.body.dispatchEvent(new Event("pointerdown",{bubbles:true})));
+ expect(container.querySelector('[role="listbox"]')).toBeNull();expect(trigger.textContent).toBe("原文");
 });
