@@ -1,6 +1,6 @@
 import { load } from "cheerio";
 import type { ReaderArticle } from "../shared/types";
-export const REWRITE_PROMPT_VERSION = 4;
+export const REWRITE_PROMPT_VERSION = 5;
 export class RewriteContentError extends Error {
 }
 /** Use semantic source TeX once, not both rendered and accessibility copies. No network media. */

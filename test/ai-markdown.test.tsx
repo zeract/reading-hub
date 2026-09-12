@@ -83,3 +83,12 @@ it("compacts bare rewrite links without changing destinations, named labels, cod
   expect(renderToStaticMarkup(<AiMarkdownContent text={url}/>)).toContain('>' + url + '</a>');
   expect(renderToStaticMarkup(<AiMarkdownContent entryId="one" text={'`' + url + '`'}/>)).toContain('>' + url + '</code>');
 });
+
+it("renders conditional distributions with complete next-state subscripts in Chinese lists", () => {
+  const markup=renderToStaticMarkup(<AiMarkdownContent entryId="one" text={String.raw`- 当前动作分布 $\pi_\theta(a_t \mid s_t)$。
+- 下一状态分布 $P(s_{t+1} \mid a_t, s_t)$。`}/>);
+  expect((markup.match(/class="katex"/g)||[])).toHaveLength(2);
+  expect(markup).not.toContain('ai-math-fallback');
+  expect(markup).toContain('s_{t+1}');
+  expect(markup).toContain('<li>');
+});

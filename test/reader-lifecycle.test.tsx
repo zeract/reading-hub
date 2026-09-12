@@ -144,7 +144,7 @@ it.each([false, true])("uses the saved rewrite for AI even when original loading
   Element.prototype.scrollTo = vi.fn();
   await render();
   await act(async () => container.querySelector<HTMLButtonElement>('.reader-version-select')!.click());
-  await act(async () => container.querySelectorAll<HTMLButtonElement>('[role="option"]')[1].click());
+  await act(async () => container.querySelectorAll<HTMLButtonElement>('[role="option"]')[0].click());
   expect(container.querySelector<HTMLButtonElement>('.ai-toggle')!.disabled).toBe(false);
   await act(async () => container.querySelector<HTMLButtonElement>('.ai-toggle')!.click());
   await act(async () => {

@@ -114,7 +114,7 @@ const channels = [
   }],
   ["rewrite:generate", (_event,id) => {
     const job=database.rewrites.enqueue(id,database.rewrites.settings());database.rewrites.progress(job,1,1);
-    database.rewrites.finish(job,{markdown:aiAnswer+"\n\n中文正文，链接与图片。参考（https://example.com/post），而不是 [嵌套链接](https://example.com/a_(b))。\n\n![图示](<https://example.com/image_(1).png>)",provider:"deepseek",model:"fixture-rewrite",createdAt:Date.now(),sourceUrl:"https://example.com/success",sourceTitle:"Fixture rewrite",sourceHash:"fixture",promptVersion:4,sections:[aiAnswer],quality:{version:1,reviewedSections:0,reviewedBlocks:0,repairedSections:0,requests:1,terms:[]}});
+    database.rewrites.finish(job,{markdown:aiAnswer+"\n\n中文正文，链接与图片。动作 $\\pi_\\theta(a_t \\mid s_t)$；下一状态 $P(s_{t+1} \\mid a_t, s_t)$。参考（https://example.com/post），而不是 [嵌套链接](https://example.com/a_(b))。\n\n![图示](<https://example.com/image_(1).png>)",provider:"deepseek",model:"fixture-rewrite",createdAt:Date.now(),sourceUrl:"https://example.com/success",sourceTitle:"Fixture rewrite",sourceHash:"fixture",promptVersion:4,sections:[aiAnswer],quality:{version:1,reviewedSections:0,reviewedBlocks:0,repairedSections:0,requests:1,terms:[]}});
     return job;
   }],
   ["source:import-opml", () => new Promise((resolve) => {
@@ -548,9 +548,11 @@ try {
   window.webContents.send("ai:stream", { requestId: activeAiRequest, type: "delta", text: "Late fixture" });
   aiMode = "complete";
   const selectRewrite = async value => {
+    if (await evaluate("document.querySelector('.reader-version-select').textContent") === (value === "rewrite" ? "中文改写" : "原文")) return;
     await evaluate("document.querySelector('.reader-version-select').click()");
     await waitFor(window, "Boolean(document.querySelector('.reader-version-menu'))");
     assert(await evaluate("document.querySelector('.reader-version-menu').getBoundingClientRect().top >= document.querySelector('.reader-version-select').getBoundingClientRect().bottom && getComputedStyle(document.querySelector('.reader-version-menu')).backgroundColor === getComputedStyle(document.querySelector('.reader-toolbar')).backgroundColor"), "Menu must expand below its trigger with the reader background.");
+    assert(await evaluate("document.querySelectorAll('.reader-version-menu [role=\"option\"]').length === 1 && document.querySelector('.reader-version-menu').textContent !== document.querySelector('.reader-version-select').textContent"), "Only the alternative version appears below the current version.");
     await evaluate(`Array.from(document.querySelectorAll('.reader-version-menu [role="option"]')).find(b=>b.textContent===${JSON.stringify(value === "rewrite" ? "中文改写" : "原文")}).click()`);
   };
   await selectRewrite("rewrite");

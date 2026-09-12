@@ -13,7 +13,7 @@ export function RewriteVersion({state, onSelect}: {state: State; onSelect(visibl
   const choose = (visible: boolean) => { onSelect(visible); setOpen(false); trigger.current?.focus(); };
   useEffect(() => {
     if (!open) return;
-    root.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus();
+    root.current?.querySelector<HTMLElement>('[role="option"]')?.focus();
     const dismiss = (event: PointerEvent) => {
       if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false);
     };
@@ -27,16 +27,14 @@ export function RewriteVersion({state, onSelect}: {state: State; onSelect(visibl
     if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
       event.preventDefault();
       if (!open) { setOpen(true); return; }
-      const options = [...root.current!.querySelectorAll<HTMLElement>('[role="option"]')];
-      const index = options.indexOf(document.activeElement as HTMLElement);
-      options[event.key === "Home" ? 0 : event.key === "End" ? 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + 2) % 2]?.focus();
+      root.current?.querySelector<HTMLElement>('[role="option"]')?.focus();
     }
   }}>
     <button ref={trigger} type="button" className="reader-version-select" aria-label="阅读版本" aria-haspopup="listbox" aria-expanded={open} aria-controls={id} onClick={() => setOpen(value => !value)}>
       {state.visible ? "中文改写" : "原文"}<AppIcon name="chevron-down"/>
     </button>
     {open && <div id={id} className="reader-version-menu" role="listbox" aria-label="阅读版本">
-      {[false, true].map(visible => <button key={String(visible)} type="button" role="option" aria-selected={state.visible === visible} tabIndex={-1} onClick={() => choose(visible)}>{visible ? "中文改写" : "原文"}</button>)}
+      <button type="button" role="option" aria-selected={false} tabIndex={-1} onClick={() => choose(!state.visible)}>{state.visible ? "原文" : "中文改写"}</button>
     </div>}
   </div>;
 }

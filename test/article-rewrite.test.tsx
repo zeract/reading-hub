@@ -54,7 +54,9 @@ it("supports keyboard selection, escape and outside dismissal without replacing 
  const trigger=container.querySelector<HTMLButtonElement>('.reader-version-select')!;
  await act(async()=>trigger.click());
  expect(trigger.textContent).toBe("原文");
- expect(document.activeElement?.getAttribute("aria-selected")).toBe("true");
+ expect(container.querySelectorAll('[role="option"]')).toHaveLength(1);
+ expect(document.activeElement?.textContent).toBe("中文改写");
+ expect(container.querySelector(".reader-version")?.textContent).toBe("原文中文改写");
  await act(async()=>document.activeElement!.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowDown",bubbles:true,cancelable:true})));
  expect(document.activeElement?.textContent).toBe("中文改写");
  await act(async()=>document.activeElement!.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true})));
