@@ -1,6 +1,6 @@
 import { load } from "cheerio";
 import type { ReaderArticle } from "../shared/types";
-export const REWRITE_PROMPT_VERSION = 1;
+export const REWRITE_PROMPT_VERSION = 2;
 export class RewriteContentError extends Error {
 }
 /** Use semantic source TeX once, not both rendered and accessibility copies. No network media. */
@@ -32,7 +32,7 @@ export function rewriteText(article: ReaderArticle): string {
     return text;
 }
 /** Preserve complete paragraph/code/math blocks. Oversized blocks fail explicitly instead of silently truncating. */
-export function splitRewriteText(text: string, limit = 9000): string[] {
+export function splitRewriteText(text: string, limit = 9000, separateBlocks = false): string[] {
     const chunks: string[] = [];
     let current = "";
     let block = "";
@@ -45,6 +45,7 @@ export function splitRewriteText(text: string, limit = 9000): string[] {
         }
         if (block.length > limit)
             throw new RewriteContentError("文章中有过长的连续段落、代码或公式，暂时无法安全分段改写。");
+        if (separateBlocks) { chunks.push(block.trim()); block = ""; return; }
         if (current.length + block.length + 2 > limit) {
             chunks.push(current.trim());
             current = "";

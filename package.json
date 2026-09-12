@@ -24,7 +24,8 @@
     "rebuild:electron": "electron-rebuild -f -w better-sqlite3 -w keytar",
     "postinstall": "npm run rebuild:electron",
     "dist": "node scripts/release.mjs",
-    "verify:macos-release": "node scripts/release.mjs --verify-only"
+    "verify:macos-release": "node scripts/release.mjs --verify-only",
+    "audit:rewrite": "npm run build && electron scripts/rewrite-quality-audit-app"
   },
   "build": {
     "appId": "com.local.readinghub",

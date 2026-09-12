@@ -4,8 +4,8 @@ import type { ArticleReader } from "./article-reader";
 import { AiServiceError, type AiService } from "./ai-service";
 import { throwIfAborted } from "./cancellation";
 import { parseRewriteSettings, type ArticleRewrite, type RewriteSettings } from "../shared/rewrite";
-import { MAX_AI_ANSWER_LENGTH } from "../shared/types";
-import { rewriteText, splitRewriteText, REWRITE_PROMPT_VERSION, RewriteContentError } from "./rewrite-content";
+import { runRewritePipeline } from "./rewrite-pipeline";
+import { rewriteText, REWRITE_PROMPT_VERSION, RewriteContentError } from "./rewrite-content";
 /** Durable user-requested jobs, independent of reader windows and source synchronization. */
 export class RewriteService {
     private closing = false;
@@ -98,26 +98,13 @@ export class RewriteService {
         const article = await this.articles.read(entry, this.database.getSource(entry.sourceId), { signal });
         throwIfAborted(signal);
         const text = rewriteText(article);
-        const chunks = splitRewriteText(text);
-        const parts: string[] = [];
-        let outputLength = 0;
         let usedModel = job.settings.model;
-        this.database.rewrites.progress(job, 0, chunks.length);
-        for (let index = 0; index < chunks.length; index++) {
-            throwIfAborted(signal);
-            if (!this.database.getEntry(job.entryId))
-                return;
-            const answer = await this.ai.rewriteChunk(job.settings, `文章标题：${article.title.slice(0, 1000)}\n原文地址：${article.url}\n以下是文章的第 ${index + 1}/${chunks.length} 段，按原文顺序改写本段，不复述其他段，不遗漏本段结尾。\n\n<article-material>\n${chunks[index]}\n</article-material>`, signal);
-            throwIfAborted(signal);
-            if (!answer.text.trim() || answer.text.length >= MAX_AI_ANSWER_LENGTH)
-                throw new RewriteContentError("模型未返回完整改写，已有改写仍保留；请更换模型后重试。");
-            outputLength += answer.text.length;
-            if (outputLength > 240000)
-                throw new RewriteContentError("改写超过保存上限，已有改写仍保留。");
-            parts.push(answer.text.trim());
+        const result = await runRewritePipeline(text, article.title.slice(0,1000), async (stage, prompt, requestSignal) => {
+            if (!this.database.getEntry(job.entryId)) throw new RewriteContentError("文章已删除，停止改写。");
+            const answer = await this.ai.rewriteChunk(job.settings, prompt, requestSignal, stage);
             usedModel = answer.model;
-            this.database.rewrites.progress(job, index + 1, chunks.length);
-        }
-        this.database.rewrites.finish(job, { markdown: parts.join("\n\n"), provider: job.settings.provider, model: usedModel, createdAt: Date.now(), sourceUrl: article.url, sourceTitle: article.title, sourceHash: createHash("sha256").update(text).digest("hex"), promptVersion: REWRITE_PROMPT_VERSION });
+            return answer.text;
+        }, signal, (stage, completed, total) => this.database.rewrites.progress(job, completed, total, stage));
+        this.database.rewrites.finish(job, { ...result, provider: job.settings.provider, model: usedModel, createdAt: Date.now(), sourceUrl: article.url, sourceTitle: article.title, sourceHash: createHash("sha256").update(text).digest("hex"), promptVersion: REWRITE_PROMPT_VERSION });
     }
 }

@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { rewritePending, type ArticleRewrite, type RewriteSettings, type RewriteResult } from "../../shared/rewrite";
+import { rewritePending, type ArticleRewrite, type RewriteSettings, type RewriteStage, type RewriteResult } from "../../shared/rewrite";
 type Row = {
     entry_id: string;
     job_id: string;
@@ -11,6 +11,7 @@ type Row = {
     updated_at: number;
     error: string | null;
     result_json: string | null;
+    stage: RewriteStage | null;
 };
 /** One derived local document per entry; successful output survives failed regeneration. */
 export class RewriteStore {
@@ -26,7 +27,7 @@ export class RewriteStore {
     }
     get(entryId: string): ArticleRewrite | undefined {
         const row = this.db.prepare("SELECT * FROM article_rewrites WHERE entry_id=?").get(entryId) as Row | undefined;
-        return row ? { entryId: row.entry_id, jobId: row.job_id, status: row.status, settings: JSON.parse(row.settings_json), completedChunks: row.completed_chunks, totalChunks: row.total_chunks, updatedAt: row.updated_at, ...(row.error ? { error: row.error } : {}), ...(row.result_json ? { result: JSON.parse(row.result_json) } : {}) } : undefined;
+        return row ? { entryId: row.entry_id, jobId: row.job_id, status: row.status, ...(row.stage ? {stage:row.stage} : {}), settings: JSON.parse(row.settings_json), completedChunks: row.completed_chunks, totalChunks: row.total_chunks, updatedAt: row.updated_at, ...(row.error ? { error: row.error } : {}), ...(row.result_json ? { result: JSON.parse(row.result_json) } : {}) } : undefined;
     }
     enqueue(entryId: string, settings: RewriteSettings): ArticleRewrite {
         const previous = this.get(entryId);
@@ -38,7 +39,7 @@ export class RewriteStore {
         if (count >= 20)
             throw new Error("改写队列已满，请等待部分文章完成后再试。");
         this.db.prepare(`INSERT INTO article_rewrites (entry_id,job_id,status,settings_json,updated_at) VALUES (?,?,'queued',?,?)
-      ON CONFLICT(entry_id) DO UPDATE SET job_id=excluded.job_id,status='queued',settings_json=excluded.settings_json,updated_at=excluded.updated_at,error=NULL,completed_chunks=0,total_chunks=0`)
+      ON CONFLICT(entry_id) DO UPDATE SET job_id=excluded.job_id,status='queued',settings_json=excluded.settings_json,updated_at=excluded.updated_at,error=NULL,completed_chunks=0,total_chunks=0,stage=NULL`)
             .run(entryId, randomUUID(), JSON.stringify(settings), Date.now());
         return this.get(entryId)!;
     }
@@ -51,9 +52,9 @@ export class RewriteStore {
     recover(): void {
         this.db.prepare("UPDATE article_rewrites SET status='failed',error=?,updated_at=? WHERE status='running'").run("上次改写被中断，可手动重试；已有改写仍保留。", Date.now());
     }
-    progress(job: ArticleRewrite, completed: number, total: number): void {
-        this.db.prepare("UPDATE article_rewrites SET status='running',completed_chunks=?,total_chunks=?,updated_at=? WHERE entry_id=? AND job_id=? AND status IN ('queued','running')")
-            .run(completed, total, Date.now(), job.entryId, job.jobId);
+    progress(job: ArticleRewrite, completed: number, total: number, stage?: RewriteStage): void {
+        this.db.prepare("UPDATE article_rewrites SET status='running',completed_chunks=?,total_chunks=?,stage=?,updated_at=? WHERE entry_id=? AND job_id=? AND status IN ('queued','running')")
+            .run(completed, total, stage ?? null, Date.now(), job.entryId, job.jobId);
     }
     finish(job: ArticleRewrite, result: RewriteResult): void {
         this.db.prepare("UPDATE article_rewrites SET status='complete',result_json=?,error=NULL,updated_at=? WHERE entry_id=? AND job_id=? AND status='running'")

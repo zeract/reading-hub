@@ -110,7 +110,7 @@ const channels = [
   ["rewrite:remove", (_event,id) => database.rewrites.remove(id)],
   ["rewrite:generate", (_event,id) => {
     const job=database.rewrites.enqueue(id,database.rewrites.settings());database.rewrites.progress(job,1,1);
-    database.rewrites.finish(job,{markdown:aiAnswer,provider:"deepseek",model:"fixture-rewrite",createdAt:Date.now(),sourceUrl:"https://example.com/success",sourceTitle:"Fixture rewrite",sourceHash:"fixture",promptVersion:1});
+    database.rewrites.finish(job,{markdown:aiAnswer,provider:"deepseek",model:"fixture-rewrite",createdAt:Date.now(),sourceUrl:"https://example.com/success",sourceTitle:"Fixture rewrite",sourceHash:"fixture",promptVersion:2,quality:{version:1,reviewedSections:2,reviewedBlocks:6,repairedSections:1,requests:9,terms:[]}});
     return job;
   }],
   ["source:import-opml", () => new Promise((resolve) => {
