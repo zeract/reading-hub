@@ -1,6 +1,6 @@
 import { load } from "cheerio";
 import type { ReaderArticle } from "../shared/types";
-export const REWRITE_PROMPT_VERSION = 3;
+export const REWRITE_PROMPT_VERSION = 4;
 export class RewriteContentError extends Error {
 }
 /** Use semantic source TeX once, not both rendered and accessibility copies. No network media. */
@@ -8,6 +8,7 @@ export function rewriteText(article: ReaderArticle): string {
     if (article.contentMode === "feed_summary")
         throw new RewriteContentError("当前只有订阅摘要，无法生成完整改写。请先在原文中确认正文可用。");
     const $ = load(`<main>${article.contentHtml}</main>`);
+    if (article.coverImageUrl && !$("main img").length) $("main").prepend($("<img>").attr("src",article.coverImageUrl));
     $(".katex, mjx-container, [data-reader-tex], .reader-math-source").each((_i, node) => {
         const el = $(node);
         if (!el.parents("main").length)
@@ -17,9 +18,20 @@ export function rewriteText(article: ReaderArticle): string {
             el.replaceWith($("<span>").text((el.attr("data-reader-math-display") === "true" || el.hasClass("reader-math-source--block") || el.closest(".katex-display, [data-reader-equation], mjx-container[display='true']").length) ? `\n$$\n${tex}\n$$\n` : `$${tex}$`));
     });
     $("script,style,button,input,video,source,.katex-html").remove();
-    $("img").each((_i, node) => { $(node).replaceWith($("<span>").text($(node).attr("alt") ? `[图片说明：${$(node).attr("alt")}]` : "")); });
-    $("a[href]").each((_i, node) => { const el = $(node); const href = el.attr("href")!; if (/^https:\/\//.test(href))
-        el.append($("<span>").text(` (${href})`)); });
+    const label = (value: string) => value.replace(/[\\\[\]]/g, "\\$&").replace(/\s+/g, " ");
+    const destination = (value: string) => value.replace(/[<>\s]/g, char => encodeURIComponent(char));
+    $("img").each((_i, node) => {
+        const el = $(node); const url = el.attr("src");
+        el.replaceWith($("<span>").text(url?.startsWith("https://") ? `![${label(el.attr("alt") || "图片")}](<${destination(url)}>)` : ""));
+    });
+    $("a[href]").each((_i, node) => {
+        const el = $(node); const href = el.attr("href")!;
+        if (/^https?:\/\//.test(href)) {
+            // Image-only links already retain their actual image destination.
+            const text = el.text();
+            el.replaceWith($("<span>").text(text.startsWith("![") ? text : `[${label(text || href)}](<${destination(href)}>)`));
+        }
+    });
     $("pre").each((_i, node) => { const el = $(node); el.replaceWith($("<div>").text(`\n\n\`\`\`\n${el.text()}\n\`\`\`\n\n`)); });
     $("p,div,section,h1,h2,h3,h4,h5,h6,li,blockquote,tr,figure,figcaption").append("\n\n");
     $("td,th").append(" | ");

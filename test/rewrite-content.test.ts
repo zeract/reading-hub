@@ -19,3 +19,11 @@ it("keeps locally preserved MathJax SVG source and explicit fallback formulas as
  const value=article("");value.contentHtml+=`<mjx-container data-reader-tex="x+y=z" data-reader-math-display="true"><svg><path d="M0 0"/></svg></mjx-container><code class="reader-math-source">\\unknown{x}</code>`;
  const text=rewriteText(value);expect(text).toContain("$$\nx+y=z\n$$");expect(text).toContain("$\\unknown{x}$");
 });
+
+it("preserves image URLs and produces explicit Markdown links with safe delimiters",()=>{
+ const value=article('<p><a href="https://example.com/a_(b)?q=1&amp;x=2">链接 [一]</a></p><figure><a href="https://example.com/full"><img src="https://example.com/img_(1).png" alt="图 [一]"></a><figcaption>图注</figcaption></figure>');
+ const text=rewriteText(value);
+ expect(text).toContain('[链接 \\[一\\]](<https://example.com/a_(b)?q=1&x=2>)');
+ expect(text).toContain('![图 \\[一\\]](<https://example.com/img_(1).png>)');
+ expect(text).toContain('图注');expect(text).not.toContain('https://example.com/full');
+});

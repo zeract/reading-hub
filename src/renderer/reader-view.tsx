@@ -1,5 +1,5 @@
 import { useArticleRewrite } from "./use-article-rewrite";
-import { RewriteControls, RewrittenArticle } from "./article-rewrite";
+import { RewriteVersion, RewrittenArticle } from "./article-rewrite";
 import { readerLanguageChoices } from "../shared/reader-languages";
 import { useReaderVideos } from "./use-reader-videos";
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -301,7 +301,11 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   return <section className={`reader-view reader--${article?.renderProfile || "standard"}`} data-reader-preset={preferences.preset} style={readerStyle} aria-label="应用内阅读器">
     <div className="reader-heading">
     <header className="reader-toolbar">
-      <div className="reader-toolbar-spacer" aria-hidden="true" />
+      <RewriteVersion state={rewrite} onSelect={(visible)=>{
+      if (visible === rewriteVisible) return;
+      clearTextSelection();setAssistantState("closed");rewrite.setVisible(visible);
+      readerWorkspaceElement.current?.querySelector(".reader-scroll")?.scrollTo({top:0});
+    }}/>
       <div className="reader-toolbar-center">
         <p>{source?.title || "已保存内容"}</p>
         {hasLanguageVariants && <div className="reader-toolbar-settings">
@@ -330,11 +334,6 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
         <button type="button" className="toolbar-icon-button external-button" aria-label="在浏览器中打开原文" title="在浏览器中打开原文" onClick={() => void window.reader.openExternal(article?.url || entry.url)}>↗</button>
       </div>
     </header>
-    <RewriteControls state={rewrite} onSelect={(visible)=>{
-      if (visible === rewriteVisible) return;
-      clearTextSelection();setAssistantState("closed");rewrite.setVisible(visible);
-      readerWorkspaceElement.current?.querySelector(".reader-scroll")?.scrollTo({top:0});
-    }}/>
     <ReaderPreferenceStatus />
     </div>
     <div ref={readerWorkspaceElement} className={`reader-workspace ${assistantVisible && article ? "reader-workspace--assistant" : ""}`}>

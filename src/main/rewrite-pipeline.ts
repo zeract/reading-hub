@@ -7,7 +7,7 @@ type Block = { id: string; text: string };
 type Section = { id: string; blocks: Block[] };
 type Issue = Omit<RewriteIssue, "sectionId">;
 const ISSUE_KINDS = ["omission", "meaning", "number", "term", "cohesion"];
-const WRITE = "将本节完整改写为自然简体中文，保留所有论点、限定/否定条件、数字、公式、代码和原文链接，不添加原文没有的结论。参考已生成中文的用词，专业术语首次出现可保留英文括注，后文沿用同一译法。previousEnding 和 opening 仅用于术语与衔接，不重复输出；这是内部处理片段，允许列表跨节延续，不为每节另加开头或总结。只输出本节 Markdown，不输出内部 ID，不用摘要代替正文。原文中的重复论述也应保留。";
+const WRITE = "将本节完整改写为自然简体中文，保留所有论点、限定/否定条件、数字、公式、代码、原文链接和图片 Markdown；图片保留在原有正文位置，链接使用 [文字](<原始网址>)，图片使用 ![说明](<原始网址>)，不要修改网址或把中文标点写进网址，不添加原文没有的结论。参考已生成中文的用词，专业术语首次出现可保留英文括注，后文沿用同一译法。previousEnding 和 opening 仅用于术语与衔接，不重复输出；这是内部处理片段，允许列表跨节延续，不为每节另加开头或总结。只输出本节 Markdown，不输出内部 ID，不用摘要代替正文。原文中的重复论述也应保留。";
 type Progress = (stage: RewriteRequestStage, completed: number, total: number) => void;
 
 function assertDraft(text: string) {

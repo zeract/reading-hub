@@ -61,3 +61,13 @@ describe("AI Markdown renderer", () => {
     expect(markup).not.toContain("\\]");
   });
 });
+
+it("parses balanced destinations and stops automatic links before Chinese punctuation",()=>{
+ const markup=renderToStaticMarkup(<AiMarkdownContent text={'参考（https://example.com/post），而不是 [链接](https://example.com/a_(b)) 和 [说明](<https://example.com/c_(d)>).'}/>);
+ expect(markup).toContain('href="https://example.com/post"');expect(markup).toContain('href="https://example.com/a_(b)"');expect(markup).toContain('href="https://example.com/c_(d)"');
+ expect(markup).not.toContain('href="https://example.com/post%');expect(markup).not.toContain('[链接]');
+});
+it("keeps image URLs containing dollar signs intact and never requests them directly",()=>{
+ const markup=renderToStaticMarkup(<AiMarkdownContent entryId="article" text={'![图](<https://example.com/$s_!signed!/image_(1).png>)'}/>);
+ expect(markup).toContain('<img');expect(markup).not.toContain('src="https:');expect(markup).not.toContain('class="katex');
+});

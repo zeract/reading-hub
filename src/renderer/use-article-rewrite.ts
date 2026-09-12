@@ -36,7 +36,7 @@ export function useArticleRewrite(entryId: string) {
     const pending = rewritePending(record);
     useEffect(() => { if (!pending)
         return; const timer = setInterval(() => void read(), 2000); return () => clearInterval(timer); }, [pending, read]);
-    const act = async (action: "generate" | "review" | "cancel" | "remove") => {
+    const act = async (action: "generate" | "cancel") => {
         if (actionLock.current)
             return;
         actionLock.current = true;
@@ -45,12 +45,10 @@ export function useArticleRewrite(entryId: string) {
         setBusy(true);
         setError(undefined);
         try {
-            const result = action === "review" ? await window.reader.reviewArticleRewrite(entryId) : action === "generate" ? await window.reader.generateArticleRewrite(entryId) : action === "cancel" ? await window.reader.cancelArticleRewrite(entryId) : await window.reader.removeArticleRewrite(entryId);
+            const result = action === "generate" ? await window.reader.generateArticleRewrite(entryId) : await window.reader.cancelArticleRewrite(entryId);
             if (current === epoch.current) {
                 setRecord(result || undefined);
                 setLoaded(true);
-                if (action === "remove")
-                    setVisible(false);
             }
         }
         catch (reason) {

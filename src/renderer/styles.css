@@ -1,16 +1,15 @@
-/* Local CJK face only: Latin, code and mathematical fonts keep their roles. */
+/* One bundled reading face; code and mathematics retain their semantic fonts. */
 @font-face {
   font-family: "Zhuque Fangsong";
   src: url("./fonts/ZhuqueFangsong-Regular.ttf") format("truetype");
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  unicode-range: U+2E80-303F, U+3100-312F, U+31A0-31BF, U+31C0-31EF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE10-FE1F, U+FE30-FE4F, U+FF01-FF60, U+FFE0-FFE6, U+20000-323AF;
 }
 
 :root {
   --font-ui: "Zhuque Fangsong",-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Helvetica Neue",sans-serif;
-  --font-reading: "Zhuque Fangsong",Georgia,"Songti SC","STSong",serif;
+  --font-reading: "Zhuque Fangsong","Songti SC","STSong",serif;
   --font-mono: "SFMono-Regular",Menlo,Consolas,monospace;
   --control-radius: 8px;
   --control-height: 32px;
@@ -481,10 +480,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 .reader-video button[hidden] { display: none; }
 
-.reader-rewrite-controls { padding: 0 18px 8px; color: var(--ink-soft); font: var(--control-font-size)/1.6 var(--font-ui); overflow-wrap: anywhere; }
-.reader-version-switch { display: flex; gap: 2px; }
-.reader-version-switch .action-button[aria-pressed="true"] { --button-surface: var(--accent-wash); --button-ink: var(--accent-deep); --button-border: var(--accent); --button-hover: var(--accent-wash); }
-.reader-rewrite-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.reader-rewrite-controls p { margin: 6px 0 0; }
-.reader-rewritten .ai-message-content { font-size: inherit; line-height: inherit; }
+.reader-version-select { justify-self: start; width: auto; max-width: 100%; min-width: 0; border: 0; border-radius: 0; box-shadow: none; background-color: transparent; color: var(--ink-soft); font: 400 var(--control-font-size)/1.5 var(--font-ui); padding: 4px 0; cursor: pointer; }
+.reader-rewritten .ai-message-content { font-family: var(--font-reading); font-size: inherit; line-height: inherit; }
 .reader-rewritten .ai-markdown-heading { font-family: var(--font-reading); }

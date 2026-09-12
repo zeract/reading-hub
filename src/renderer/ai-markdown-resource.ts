@@ -2,7 +2,7 @@ import type { ComponentType } from "react";
 import moduleUrl from "./ai-markdown.tsx?chunk-url";
 
 type MarkdownState = { status: "idle" | "loading" | "error" }
-  | { status: "ready"; Renderer: ComponentType<{ text: string }> };
+  | { status: "ready"; Renderer: ComponentType<{ text: string; entryId?: string }> };
 let snapshot: MarkdownState = { status: "idle" };
 const listeners = new Set<() => void>();
 let attempt = 0;

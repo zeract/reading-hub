@@ -24,7 +24,7 @@ it("queues immediately, deduplicates double clicks, and stores only derived cont
  await vi.waitFor(()=>expect(f.read).toHaveBeenCalledTimes(1));finish(f.article);
  await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("complete"));
  expect(f.rewriteChunk).toHaveBeenCalledTimes(1);expect(f.db.getEntry("entry")?.title).toBe("Original");
- expect(f.db.rewrites.get("entry")?.result).toMatchObject({sourceUrl:f.entry.url,sourceTitle:"Original",model:settings.model,promptVersion:3});
+ expect(f.db.rewrites.get("entry")?.result).toMatchObject({sourceUrl:f.entry.url,sourceTitle:"Original",model:settings.model,promptVersion:4});
  expect(JSON.stringify(f.db.rewrites.get("entry"))).not.toContain(text);
 });
 it("preserves a completed draft on failed regeneration, with a snapshotted model",async()=>{

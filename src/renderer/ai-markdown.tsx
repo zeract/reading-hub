@@ -1,4 +1,5 @@
-import { Fragment, memo, type JSX, type ReactNode } from "react";
+import { Fragment, memo, createContext, useContext, useEffect, useState, type JSX, type ReactNode } from "react";
+import MarkdownIt from "markdown-it";
 import { renderAiTeX, tokenizeAiMath } from "./ai-math";
 
 /**
@@ -9,7 +10,7 @@ import { renderAiTeX, tokenizeAiMath } from "./ai-math";
  */
 // The input is immutable text. Reuse the rendered tree while a parent updates
 // its draft, layout, provider state or a different streaming message.
-export const AiMarkdownContent = memo(function AiMarkdownContent({ text }: { text: string }) {
+export const AiMarkdownContent = memo(function AiMarkdownContent({ text, entryId }: { text: string; entryId?: string }) {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let index = 0;
@@ -90,7 +91,7 @@ export const AiMarkdownContent = memo(function AiMarkdownContent({ text }: { tex
       index += 1;
     }
   }
-  return <div className="ai-message-content ai-markdown">{blocks}</div>;
+  return <ImageEntry.Provider value={entryId}><div className="ai-message-content ai-markdown">{blocks}</div></ImageEntry.Provider>;
 });
 
 function startsBlock(lines: string[], index: number): boolean {
@@ -167,38 +168,52 @@ function renderMathSegment(tex: string, displayMode: boolean, key: string): Reac
   return <code key={key} className={displayMode ? "ai-math-fallback ai-math-fallback--display" : "ai-math-fallback"}>{rendered.fallback || tex}</code>;
 }
 
+const inlineMarkdown = new MarkdownIt({html:false, linkify:true});
+const ImageEntry = createContext<string | undefined>(undefined);
+
+/** Use CommonMark tokens for escaped/nested destinations; model HTML stays React text. */
 function renderMarkdownText(value: string, key: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  const pattern = /`([^`\n]+)`|(!?)\[([^\]]*)\]\(([^()\s]+)\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|~~([^~\n]+)~~|\*([^*\n]+)\*|_([^_\n]+)_/g;
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(value))) {
-    if (match.index > cursor) nodes.push(value.slice(cursor, match.index));
-    const nodeKey = `${key}-${match.index}`;
-    if (match[1] !== undefined) {
-      nodes.push(<code className="ai-inline-code" key={nodeKey}>{match[1]}</code>);
-    } else if (match[3] !== undefined) {
-      const label = match[3] || "打开链接";
-      const url = safeExternalUrl(match[4]);
-      if (url) {
-        nodes.push(<a className="ai-markdown-link" href={url} key={nodeKey} onClick={(event) => {
-          event.preventDefault();
-          void window.reader.openExternal(url).catch(() => undefined);
-        }}>{match[2] === "!" ? `图片：${label}` : renderInline(label, `${nodeKey}-link`)}</a>);
-      } else {
-        nodes.push(match[0]);
-      }
-    } else if (match[5] !== undefined || match[6] !== undefined) {
-      nodes.push(<strong key={nodeKey}>{renderInline(match[5] || match[6], `${nodeKey}-strong`)}</strong>);
-    } else if (match[7] !== undefined) {
-      nodes.push(<del key={nodeKey}>{renderInline(match[7], `${nodeKey}-delete`)}</del>);
-    } else if (match[8] !== undefined || match[9] !== undefined) {
-      nodes.push(<em key={nodeKey}>{renderInline(match[8] || match[9], `${nodeKey}-em`)}</em>);
+  const tokens = inlineMarkdown.parseInline(value, {})[0]?.children || [];
+  let index = 0;
+  function renderUntil(close?: string): ReactNode[] {
+    const nodes: ReactNode[] = [];
+    while (index < tokens.length) {
+      const token = tokens[index++]; const nodeKey = `${key}-${index}`;
+      if (token.type === close) break;
+      if (token.type === "text" || token.type === "html_inline") nodes.push(token.content);
+      else if (token.type === "code_inline") nodes.push(<code className="ai-inline-code" key={nodeKey}>{token.content}</code>);
+      else if (token.type === "softbreak") nodes.push(" ");
+      else if (token.type === "hardbreak") nodes.push(<br key={nodeKey}/>);
+      else if (token.type === "link_open") {
+        const children = renderUntil("link_close"); const url = safeExternalUrl(String(token.attrGet("href") || ""));
+        nodes.push(url ? <a className="ai-markdown-link" href={url} key={nodeKey} onClick={event=>{event.preventDefault();void window.reader.openExternal(url).catch(()=>undefined);}}>{children}</a> : <Fragment key={nodeKey}>{children}</Fragment>);
+      } else if (token.type === "image") {
+        const url = safeExternalUrl(String(token.attrGet("src") || ""));
+        nodes.push(url ? <MarkdownImage key={nodeKey} url={url} alt={token.content}/> : token.content);
+      } else if (token.type === "strong_open") nodes.push(<strong key={nodeKey}>{renderUntil("strong_close")}</strong>);
+      else if (token.type === "em_open") nodes.push(<em key={nodeKey}>{renderUntil("em_close")}</em>);
+      else if (token.type === "s_open") nodes.push(<del key={nodeKey}>{renderUntil("s_close")}</del>);
+      else if (token.content) nodes.push(token.content);
     }
-    cursor = match.index + match[0].length;
+    return nodes;
   }
-  if (cursor < value.length) nodes.push(value.slice(cursor));
-  return nodes;
+  return renderUntil();
+}
+
+function MarkdownImage({url,alt}:{url:string;alt:string}) {
+  const entryId = useContext(ImageEntry);
+  const [image,setImage] = useState<{key:string;data?:string;failed?:boolean}>();
+  const key = `${entryId}:${url}`;
+  useEffect(()=>{
+    if(!entryId || !url.startsWith("https://"))return;
+    let active=true; const requestId=`image-${crypto.randomUUID()}`;
+    void window.reader.loadArticleImage(entryId,url,requestId).then(data=>{if(active)setImage({key,data});}).catch(()=>{if(active)setImage({key,failed:true});});
+    return ()=>{active=false;void window.reader.cancelArticleImage(requestId).catch(()=>undefined);};
+  },[entryId,url,key]);
+  if (!entryId) return <a className="ai-markdown-link" href={url} onClick={event=>{event.preventDefault();void window.reader.openExternal(url).catch(()=>undefined);}}>图片：{alt || "打开图片"}</a>;
+  const openImage = () => { void window.reader.openExternal(url).catch(()=>undefined); };
+  if (!url.startsWith("https://") || (image?.key===key && image.failed)) return <span className="reader-image-failure" role="link" tabIndex={0} onClick={event=>{event.preventDefault();event.stopPropagation();openImage();}} onKeyDown={event=>{if(event.key==="Enter"){event.preventDefault();event.stopPropagation();openImage();}}}>图片未能加载 · {alt || "查看原图"}</span>;
+  return <img src={image?.key===key?image.data:undefined} alt={alt} loading="lazy" onError={()=>setImage({key,failed:true})}/>;
 }
 
 function listKind(line: string): { ordered: boolean; text: string } | undefined {
