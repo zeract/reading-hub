@@ -37,7 +37,7 @@ it.each(['missing','duplicate','empty','unclosed'])("rejects %s structural data 
 it("restores protected assets before checkpointing in one model call",async()=>{
  const saved:string[][]=[];let calls=0;
  const r=await runRewritePipeline('Read [a report](<https://example.com/a>) and $x_1$.','Test',async(_stage,prompt)=>{
-  calls++;const material=JSON.parse(prompt);return material.section.blocks.map((b:any)=>b.text).join('\n\n').replace('a report','一份报告')+'\n'+material.endMarker;
+  calls++;const material=JSON.parse(prompt);return JSON.stringify({blocks:material.section.blocks}).replace('a report','一份报告');
  },new AbortController().signal,undefined,{save:d=>saved.push(d)});
  expect(calls).toBe(1);expect(r.markdown).toBe('Read [一份报告](<https://example.com/a>) and $x_1$.');expect(saved[0][0]).toBe(r.markdown);expect(r.markdown).not.toContain('⟦RH');
 });
@@ -72,4 +72,33 @@ it.each(['```ts\nconst x = 1;\n```','![original](<https://example.com/a.png>)','
  const p=protectRewriteAssets(source,'B49');expect(restoreRewriteAssets(source,p)).toBe(source);
  expect(()=>restoreRewriteAssets(source+'\n\n'+source,p)).toThrow('duplicate');
  expect(()=>restoreRewriteAssets(source.replace(/1|original/,'changed'),p)).toThrow('未完整保留');
+});
+
+it("accepts source-owned link IDs and exact signed URLs, including nested inline assets",()=>{
+ const source='Read [guide `$x[a]$`](<https://example.com/a_(b)?sig=x%2By&v=2#part>) and [equation $x_1$](<https://example.com/eq>).';
+ const p=protectRewriteAssets(source,'B114');
+ const answer='阅读 [指南 `$x[a]$`](B114_L1) 和 [公式 '+`⟦${p.atoms[1].id}⟧`+'](<https://example.com/eq>)。';
+ expect(restoreRewriteAssets(answer,p,true)).toBe('阅读 [指南 `$x[a]$`](<https://example.com/a_(b)?sig=x%2By&v=2#part>) 和 [公式 $x_1$](<https://example.com/eq>)。');
+});
+it("restores repeated targets and source order without duplicating explicitly identified occurrences",()=>{
+ const p=protectRewriteAssets('[first](https://example.com) and [second](https://example.com)','B4');
+ expect(restoreRewriteAssets('[第二处](https://example.com) 与 [第一处](B4_L1)',p,true)).toBe('[第二处](<https://example.com>) 与 [第一处](<https://example.com>)');
+});
+it.each(['missing','wrong-url','foreign-id','duplicate','empty-label','bare-url','extra-image','extra-marker'])("rejects %s without inventing or borrowing link ownership",kind=>{
+ const p=protectRewriteAssets('See [guide](https://example.com/guide).','B114');
+ let draft='参考 [指南](B114_L1)。';
+ if(kind==='missing')draft='参考指南。';
+ if(kind==='wrong-url')draft='参考 [指南](https://example.com/guide?modified=1)。';
+ if(kind==='foreign-id')draft='参考 [指南](B113_L1)。';
+ if(kind==='duplicate')draft+=' [指南](https://example.com/guide)';
+ if(kind==='empty-label')draft='参考 [](B114_L1)。';
+ if(kind==='bare-url')draft='参考 https://example.com/guide。';
+ if(kind==='extra-image')draft+=' ![extra](https://example.com/extra.png)';
+ if(kind==='extra-marker')draft+=' ⟦B113_A1⟧';
+ expect(()=>restoreRewriteAssets(draft,p,true)).toThrow('未完整保留');
+});
+it("keeps links inside code opaque and numbered references bound to their original target",()=>{
+ const p=protectRewriteAssets('Code `[x](https://example.com/x)` then [7](https://example.com/#eq7), [guide](https://example.com/g).','B5');
+ const text=p.text.replace(`⟦${p.links[0].id}⟧guide⟦/${p.links[0].id}⟧`,'[指南](B5_L1)');
+ expect(restoreRewriteAssets(text,p,true)).toContain('`[x](https://example.com/x)` then [7](https://example.com/#eq7), [指南](<https://example.com/g>)');
 });

@@ -120,9 +120,9 @@ export class RewriteService {
         }
         const checkpointKey=(version:number)=>createHash("sha256").update(JSON.stringify({sourceHash,title:article.title,url:article.url,settings:job.settings,version})).digest("hex");
         const key=checkpointKey(REWRITE_PROMPT_VERSION);
-        // v8/v9 change only marker representation, not source conversion or accepted
-        // derived content. Reuse v7/v8's already-validated sections under identical inputs.
-        const compatibleKeys=REWRITE_PROMPT_VERSION===9 ? [key,checkpointKey(8),checkpointKey(7)] : [key];
+        // v8–v10 change only model-facing representation, not source conversion or accepted
+        // derived content. Reuse v7–v9's already-validated sections under identical inputs.
+        const compatibleKeys=REWRITE_PROMPT_VERSION===10 ? [key,checkpointKey(9),checkpointKey(8),checkpointKey(7)] : [key];
         const resumedKey=compatibleKeys.find(candidate=>this.database.rewrites.checkpoint(job,candidate).length) || key;
         const result = await runRewritePipeline(text, article.title.slice(0,1000), run, signal, progress, {
             drafts: this.database.rewrites.checkpoint(job,resumedKey),

@@ -125,7 +125,7 @@ it("migrates old results with a cascade-owned backup and skips malformed queued 
  f.db.deleteSource(f.source.id);expect(sql.prepare("SELECT COUNT(*) AS count FROM rewrite_migration_backups").get().count).toBe(0);
 });
 
-it.each([7,8])("reuses validated v%s checkpoints after the envelope-only protocol upgrade",async(version)=>{
+it.each([7,8,9])("reuses validated v%s checkpoints after the envelope-only protocol upgrade",async(version)=>{
  const f=fixture();f.article.contentHtml=Array.from({length:3},()=>`<p>${"A detailed explanation of delivery and validation. ".repeat(100)}</p>`).join("");
  let calls=0;f.rewriteChunk.mockImplementation(async(_s,p)=>{if(++calls===2)throw new AiServiceError("stop");return {provider:"deepseek",model:settings.model,text:rewriteModelResponse(p)};});
  f.service.start();f.service.enqueue("entry");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("failed"));

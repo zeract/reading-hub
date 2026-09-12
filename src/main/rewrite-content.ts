@@ -5,7 +5,7 @@ import { gfm } from "turndown-plugin-gfm";
 import { normalizeRewriteCards } from "./rewrite-cards";
 import { load } from "cheerio";
 import type { ReaderArticle } from "../shared/types";
-export const REWRITE_PROMPT_VERSION = 9;
+export const REWRITE_PROMPT_VERSION = 10;
 const markdownLabel = (value:string) => value.replace(/[\\\[\]]/g, "\\$&").replace(/\s+/g," ");
 const markdownDestination = (value:string) => value.replace(/[<>\s]/g,c=>encodeURIComponent(c));
 const imageMarkdown = (url:string,alt:string) => `![${markdownLabel(alt || "图片")}](<${markdownDestination(url)}>)`;

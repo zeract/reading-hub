@@ -1,6 +1,6 @@
 import { bindRewriteBlock, validRewriteDocument, indexLegacyRewrite } from "./rewrite-document";
 import type { RewriteBlockRelation, RewriteDocument } from "../shared/rewrite";
-import { protectRewriteSection, restoreRewriteBlocks, RewriteProtocolError, rewriteSectionEnd, isFixedRewriteBlock } from "./rewrite-assets";
+import { protectRewriteSection, restoreRewriteBlocks, RewriteProtocolError, rewriteModelText, isFixedRewriteBlock } from "./rewrite-assets";
 import { throwIfAborted } from "./cancellation";
 import { RewriteContentError, splitRewriteText } from "./rewrite-content";
 import type { RewriteRequestStage, RewriteQuality, RewriteIssue, RewriteReview } from "../shared/rewrite";
@@ -10,7 +10,7 @@ type Block = { id: string; text: string };
 type Section = { id: string; blocks: Block[] };
 type Issue = Omit<RewriteIssue, "sectionId">;
 const ISSUE_KINDS = ["omission", "meaning", "number", "term", "cohesion"];
-const WRITE = "将本节完整改写为自然简体中文，保留所有论点、限定/否定条件、数字、公式、代码、原文链接和图片 Markdown；图片保留在原有正文位置，链接使用 [文字](<原始网址>)，图片使用 ![说明](<原始网址>)，不要修改网址或把中文标点写进网址，不添加原文没有的结论。参考已生成中文的用词，专业术语首次出现可保留英文括注，后文沿用同一译法。previousEnding 和 opening 仅用于术语与衔接，不重复输出；这是内部处理片段，允许列表跨节延续，不为每节另加开头或总结。输出带原样段落开始标记和整节结束标记的本节 Markdown，不用摘要代替正文；不要额外输出 JSON 字段名、节号或说明。原文中的重复论述也应保留。数学排版：已有 TeX 公式保留原式及分隔符；原文用普通字符或 Unicode 写出的数学表达式也须转为标准 TeX，行内使用 $...$，独立公式使用 $$ 换行包围。按原文语义保留下标和上下标分组（例如下一时刻的状态下标是整个 t+1），条件概率竖线、希腊字母和括号不得丢失；不要将公式降为无分隔符的普通文字。代码块、行内代码、网址和普通标识符不作公式转换。";
+const WRITE = "将本节完整改写为自然简体中文，保留所有论点、限定/否定条件、数字、公式、代码、原文链接和图片 Markdown；资产保留在原有正文位置，链接目标由程序依据 ID 恢复，不生成或修改网址，不添加原文没有的结论。参考已生成中文的用词，专业术语首次出现可保留英文括注，后文沿用同一译法。previousEnding 和 opening 仅用于术语与衔接，不重复输出；这是内部处理片段，允许列表跨节延续，不为每节另加开头或总结。正文使用 Markdown，不用摘要代替正文；只返回规定的 JSON 对象，不加说明。原文中的重复论述也应保留。数学排版：已有 TeX 公式保留原式及分隔符；原文用普通字符或 Unicode 写出的数学表达式也须转为标准 TeX，行内使用 $...$，独立公式使用 $$ 换行包围。按原文语义保留下标和上下标分组（例如下一时刻的状态下标是整个 t+1），条件概率竖线、希腊字母和括号不得丢失；不要将公式降为无分隔符的普通文字。代码块、行内代码、网址和普通标识符不作公式转换。";
 type Progress = (stage: RewriteRequestStage, completed: number, total: number) => void;
 
 function assertDraft(text: string) {
@@ -47,10 +47,9 @@ export async function runRewritePipeline(text: string, title: string, run: Rewri
     const materials=allMaterials.filter(block=>!isFixedRewriteBlock(block));
     let generated:string[]=[];
     if(materials.length) {
-      const answer = await request(run, "write", { instruction: WRITE + "每个正文块 text 只含一个开始标记（如 ⟦B1⟧）。逐一复制开始标记并在其后输出该块中文；下一个块的开始标记就是前一块的结束，不输出 /B 结束标记。输出最后一个块后，另起一行原样输出 endMarker 一次，随后立即结束。不得遗漏、重复或重排开始标记，也不要用代码围栏包裹整个回答。同一块中的资产标记带有该块编号（例如 B44_A1、B44_L1）；不要借用相邻块的标记。同名代码在不同位置也有独立标记。保留块内标题级别、列表嵌套、表格行列和引用结构；允许在段落内自然改写。结构标记必须逐一原样保留：独立的 ⟦...A...⟧ 代表公式、图片、代码或编号引用，不能改写、删除或重复。行内代码可以保留其标记，也可以原样输出带反引号的代码，二者只能选一个；其他资产不展开。成对的 ⟦...L...⟧中文锚文本⟦/...L...⟧ 代表链接，只翻译其中的原有锚文本并自然融入句子，不另加（链接）、来源或裸网址。assets 提供被保护内容以便理解，不能重复输出。其中未出现在 section.blocks 中的完整代码、图片或公式块由程序保留，不要输出这些块或其编号。", title, endMarker:rewriteSectionEnd(materials), section: {...sections[i], blocks: materials.map(b=>({id:b.id,text:`${b.open}\n${b.material.text}`}))}, assets:allMaterials.flatMap(b=>b.material.atoms.map(a=>({id:a.id,kind:a.kind,source:a.source,blockId:b.id}))),
+      const answer = await request(run, "write", { instruction: WRITE + '输出格式为 {"blocks":[{"id":"原块ID","text":"本块中文 Markdown"}]}。逐一返回 section.blocks 中的所有块，每个 ID 恰好一次；不要输出任何段落边界标记。JSON 字符串里的换行、引号、反斜杠按 JSON 规范转义。保留块内标题级别、列表嵌套、表格行列和引用结构。链接格式是 [中文锚文本](链接ID)，例如 [使用指南](B1_L1)，只翻译原有锚文本并自然融入句子，不添加（链接）、来源或裸网址；目标 ID 由程序替换成原网址。独立的 ⟦...A...⟧ 是不可改写资产，须留在所属块中，每个恰好一次；也接受与原文完全相同的 Markdown 资产，二者只能选一个。不能改变、重复或借用其他块的资产。assets 是只读理解上下文，其中未出现在 section.blocks 中的完整代码、图片或公式块由程序原位保留，不输出这些块或其内容。', title, section: {...sections[i], blocks: materials.map(b=>({id:b.id,text:rewriteModelText(b.material)}))}, assets:allMaterials.flatMap(b=>b.material.atoms.map(a=>({id:a.id,kind:a.kind,source:a.source,blockId:b.id}))),
         opening: i > 1 ? drafts[0].slice(0, 1200) : "", previousEnding: drafts[i-1]?.slice(-1500) || "" }, signal);
       try {
-        if(allMaterials.some(block=>isFixedRewriteBlock(block) && answer.includes(block.open)))throw new RewriteProtocolError("outside-text","fixed-block");
         generated=restoreRewriteBlocks(answer,materials);
       }
       catch(error){

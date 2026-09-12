@@ -17,7 +17,7 @@ it("preserves the complete article structure from safe HTML through generation i
  const input=article(`<h2>Methods</h2><p><strong>Important</strong>: see <a href="${url}">the evidence</a> and <code>value_name</code>.</p><ol start="3"><li>Outer<ul><li>Inner</li></ul></li><li>Second</li></ol><blockquote><p>First quote</p><p>Second quote</p></blockquote><table><thead><tr><th>Method</th><th>Cost</th></tr></thead><tbody><tr><td>Linear</td><td>$O(n)$</td></tr></tbody></table><figure><img src="https://example.com/plot.png" alt="Result"><figcaption>Observed result, with limitations.</figcaption></figure><pre><code>if ready:\n    value = 1\n\n    print(value)</code></pre>${card}<p>Independently consult <a href="${url}">this report</a> for another claim.</p>`);
  const source=rewriteText(input);let calls=0;
  const result=await runRewritePipeline(source,"Fixture",async(_stage,prompt)=>{
-  calls++;return JSON.parse(prompt).section.blocks.map((b:any)=>b.text.replace('the evidence','对应证据').replace('Methods','方法')).join('\n\n')+'\n'+JSON.parse(prompt).endMarker;
+  calls++;return JSON.stringify({blocks:JSON.parse(prompt).section.blocks}).replace('the evidence','对应证据').replace('Methods','方法');
  },new AbortController().signal);
  const $=load(renderToStaticMarkup(<AiMarkdownContent text={result.markdown} entryId="fixture"/>));
  expect(calls).toBe(1);expect($('h2').text()).toBe('方法');expect($('strong').text()).toBe('Important');expect($('ol').attr('start')).toBe('3');expect($('ol > li > ul > li').text()).toBe('Inner');expect($('blockquote p')).toHaveLength(2);expect($('tbody tr td')).toHaveLength(2);expect($('.katex')).toHaveLength(1);expect($('img')).toHaveLength(1);expect($('img').attr('src')).toBeUndefined();expect($('img').parent().text()).toContain('Observed result');expect($('pre code').text()).toContain('    value = 1\n\n    print(value)');expect($(`a[href="${url}"]`)).toHaveLength(3);expect($.text()).not.toContain('Read full story');expect($.text()).not.toContain('September 29');
@@ -45,9 +45,9 @@ it("rejects asset movement across blocks and missing list structure without chec
  await expect(runRewritePipeline(source,'Fixture',async(_s,p)=>{
   const blocks=JSON.parse(p).section.blocks;const marker=blocks[0].text.match(/⟦B\d+_A1⟧/)[0];
   blocks[0].text=blocks[0].text.replace(marker,'');blocks[1].text=blocks[1].text.replace('- First',`- First ${marker}`);
-  return blocks.map((b:any)=>b.text).join('\n\n')+'\n'+JSON.parse(p).endMarker;
+  return JSON.stringify({blocks});
  },new AbortController().signal,undefined,{save:()=>{saved=true;}})).rejects.toThrow('asset-marker');expect(saved).toBe(false);
- await expect(runRewritePipeline(source,'Fixture',async(_s,p)=>JSON.parse(p).section.blocks.map((b:any)=>b.text.replace('- First\n- Second','First and Second')).join('\n\n')+'\n'+JSON.parse(p).endMarker,new AbortController().signal)).rejects.toThrow('列表');
+ await expect(runRewritePipeline(source,'Fixture',async(_s,p)=>JSON.stringify({blocks:JSON.parse(p).section.blocks.map((b:any)=>({...b,text:b.text.replace('- First\n- Second','First and Second')}))}),new AbortController().signal)).rejects.toThrow('列表');
 });
 
 it("keeps conditional-probability pipes inside table cells and fenced code literal",()=>{
@@ -90,4 +90,32 @@ it("never chooses an action as the replacement title or removes the same words f
  const prose="此处说明如何阅读完整故事。\n\n`阅读完整文章`\n\n[阅读完整故事](<https://example.com/unrelated>)";
  expect(repairRewriteCards(prose,cards).markdown).toBe(prose);
  expect(repairRewriteCards(text,[]).markdown).toBe(text);
+});
+
+it.each([
+ ['科学空间',String.raw`## 条件概率
+
+参见 [推导 $P(a|s)$](https://spaces.ac.cn/example)，有 $\pi_\theta(a_t|s_t)$。
+
+$$
+x_{t+1}=f(x_t)\tag{7}
+$$`],
+ ['普通 RSS','## Example\n\nRead [the report](https://example.com/report) and `x[y]`.\n\n![chart](https://example.com/chart.png)'],
+ ['知乎','## 回答\n\n具体限定见 [回答原文](https://www.zhihu.com/question/123/answer/456)。\n\n> 仅在满足假设时成立。'],
+ ['AI 学习',String.raw`## 推导
+
+参考 [算法说明](https://example.com/algorithm)，时间复杂度 $O(n)$。
+
+| 项目 | 表达式 |
+| --- | --- |
+| 概率 | $P(a | s)$ |`]
+])("preserves %s fixture assets through structured rewriting and the shared renderer",async(title,text)=>{
+ const result=await runRewritePipeline(text,title,async(_stage,prompt)=>JSON.stringify({blocks:JSON.parse(prompt).section.blocks}),new AbortController().signal);
+ const $=load(renderToStaticMarkup(<AiMarkdownContent text={result.markdown} entryId="fixture"/>));
+ expect($('h2')).toHaveLength(1);expect($('a[href^="https:"]')).toHaveLength(1);
+ expect($.text()).not.toMatch(/⟦B\d+_|\(B\d+_L\d+\)/);
+ if(title==='科学空间'){expect($('.katex')).toHaveLength(3);expect($.text()).toContain('(7)');}
+ if(title==='普通 RSS'){expect($('img')).toHaveLength(1);expect($('code').text()).toBe('x[y]');}
+ if(title==='知乎')expect($('blockquote')).toHaveLength(1);
+ if(title==='AI 学习'){expect($('td')).toHaveLength(2);expect($('.katex')).toHaveLength(2);}
 });

@@ -83,7 +83,7 @@ function inlineCodeValue(source:string):string|undefined {
 /** Accept an unchanged Markdown asset as another explicit representation
  * of that block's asset. Only inline-code whitespace follows Markdown semantics;
  * other assets must match exactly. Never infer assets from prose or reassign foreign IDs. */
-function normalizeLiteralAssets(draft:string, material:ProtectedRewrite):string {
+function normalizeLiteralAssets(draft:string, material:ProtectedRewrite, strict:boolean):string {
   const candidates=protectRewriteAssets(draft).atoms.filter(a=>a.range);
   const value=(a:Atom)=>JSON.stringify([a.kind,a.kind==="code" && inlineCodeValue(a.source)!==undefined ? "inline" : "exact",a.kind==="code" ? inlineCodeValue(a.source) ?? a.source : a.source]);
   const groups=new Map<string,Atom[]>();
@@ -93,7 +93,7 @@ function normalizeLiteralAssets(draft:string, material:ProtectedRewrite):string 
   }
   // A code block copied from context must not reappear in another prose block.
   // Formula synthesis from explicit plain-text maths remains supported.
-  for(const candidate of candidates)if(candidate.kind==="code" && !groups.has(value(candidate)))throw new RewriteAssetError("literal","code","unknown");
+  for(const candidate of candidates)if((candidate.kind==="code" || strict && ["image","reference"].includes(candidate.kind)) && !groups.has(value(candidate)))throw new RewriteAssetError("literal",candidate.kind,"unknown");
   const edits:Array<{start:number;end:number;text:string}>=[];
   for(const [key,assets] of groups) {
     const missing=assets.filter(a=>!draft.includes(`⟦${a.id}⟧`));
@@ -110,10 +110,52 @@ function normalizeLiteralAssets(draft:string, material:ProtectedRewrite):string 
   return result;
 }
 
+/** Model-facing links use ordinary Markdown with a source-owned ID as destination.
+ * The internal paired representation remains private to legacy repair and asset restoration. */
+export function rewriteModelText(material:ProtectedRewrite):string {
+  let text=material.text;
+  for(const link of material.links) {
+    const open=`⟦${link.id}⟧`,close=`⟦/${link.id}⟧`;
+    const start=text.indexOf(open),end=text.indexOf(close);
+    text=text.slice(0,start)+`[${text.slice(start+open.length,end)}](${link.id})`+text.slice(end+close.length);
+  }
+  return text;
+}
+
+/** Normalize explicit Markdown links only. Never infer an anchor from nearby prose.
+ * Exact source URLs are accepted as well as IDs; unknown destinations cannot enter a draft. */
+function normalizeModelLinks(draft:string, material:ProtectedRewrite):string {
+  const opaque=protectRewriteAssets(draft).atoms.filter(a=>a.range);
+  const found:Array<{start:number;end:number;label:string;destination:string}>=[];
+  for(let i=0;i<draft.length;) {
+    const atom=opaque.find(a=>a.range![0]===i);
+    if(atom){i=atom.range![1];continue;}
+    const link=rewriteLinkAt(draft,i);
+    if(link && !link.image){found.push({start:i,...link});i=link.end;}else i++;
+  }
+  const used=new Set(material.links.filter(l=>draft.includes(`⟦${l.id}⟧`) || draft.includes(`⟦/${l.id}⟧`)).map(l=>l.id));
+  const edits:Array<{start:number;end:number;text:string}>=[];
+  // Claim explicit IDs first so identical original URLs cannot steal their occurrence.
+  for(const candidate of [...found].sort((a,b)=>Number(material.links.some(l=>l.id===b.destination))-Number(material.links.some(l=>l.id===a.destination)))) {
+    const matches=material.links.filter(l=>l.id===candidate.destination || l.destination===candidate.destination);
+    const link=matches.find(l=>!used.has(l.id));
+    if(!link)throw new RewriteAssetError(matches[0]?.id || "literal","link",matches.length ? "duplicate" : "unknown");
+    if(!candidate.label.trim())throw new RewriteAssetError(link.id,"link","label");
+    used.add(link.id);
+    edits.push({start:candidate.start,end:candidate.end,text:`⟦${link.id}⟧${candidate.label}⟦/${link.id}⟧`});
+  }
+  let result=draft;
+  for(const edit of edits.sort((a,b)=>b.start-a.start))result=result.slice(0,edit.start)+edit.text+result.slice(edit.end);
+  return result;
+}
+
 /** Local structural validation; no extra model roundtrip, no arbitrary text-to-link guesses. */
-export function restoreRewriteAssets(draft:string, material:ProtectedRewrite):string {
+export function restoreRewriteAssets(draft:string, material:ProtectedRewrite, modelOutput=false):string {
   const invalid=(id:string,kind:string,reason:AssetFailure):never=>{throw new RewriteAssetError(id,kind,reason);};
-  let result=normalizeLiteralAssets(draft,material);
+  let result=normalizeLiteralAssets(modelOutput ? normalizeModelLinks(draft,material) : draft,material,modelOutput);
+  if(modelOutput)for(const match of result.matchAll(/⟦[^⟦⟧]+⟧/g)) {
+    if(!material.text.includes(match[0]))invalid(material.prefix,"marker","unknown");
+  }
   for(const link of material.links) {
     const open=`⟦${link.id}⟧`,close=`⟦/${link.id}⟧`;
     if(!result.includes(open) || !result.includes(close))invalid(link.id,"link","missing");
@@ -138,14 +180,7 @@ export function restoreRewriteAssets(draft:string, material:ProtectedRewrite):st
 }
 
 export function protectRewriteSection(blocks:ReadonlyArray<{id:string;text:string}>) {
-  // Block IDs are short and document-local. Fall back to a source-derived
-  // namespace only if authored text already contains a reserved block marker.
-  let prefix="";
-  while(blocks.some(b=>blocks.some(other=>b.text.includes(`⟦${prefix}${other.id}⟧`) || b.text.includes(`⟦/${prefix}${other.id}⟧`)))) prefix+="R";
-  return blocks.map(block=>{
-    const material=protectRewriteAssets(block.text,block.id),id=prefix+block.id;
-    return {id:block.id,material,open:`⟦${id}⟧`,close:`⟦/${id}⟧`};
-  });
+  return blocks.map(block=>({id:block.id,material:protectRewriteAssets(block.text,block.id)}));
 }
 /** Whole immutable blocks have no language for the model to rewrite. */
 export function isFixedRewriteBlock(block:ReturnType<typeof protectRewriteSection>[number]):boolean {
@@ -156,11 +191,10 @@ const structureParser=createReaderMarkdown();
 function structure(text:string):string {
   return structureParser.parse(text,{}).filter(t=>/^(heading|bullet_list|ordered_list|list_item|blockquote|table|thead|tbody|tr|th|td)_/.test(t.type)).map(t=>`${t.type}:${t.tag}:${t.attrGet("start")||""}`).join("|");
 }
-export type RewriteProtocolCode = "missing-open" | "missing-close" | "duplicate-marker" | "block-order" | "outside-text" | "empty-block" | "block-shape" | "asset-marker" | "missing-end";
+export type RewriteProtocolCode = "response-format" | "missing-block" | "duplicate-block" | "unknown-block" | "empty-block" | "block-shape" | "asset-marker";
 const protocolMessages: Record<RewriteProtocolCode,string> = {
-  "missing-open":"缺少段落开始标记", "missing-close":"缺少段落结束标记", "duplicate-marker":"段落标记重复",
-  "block-order":"段落标记顺序错误", "outside-text":"段落标记外存在内容", "empty-block":"段落内容为空",
-  "block-shape":"标题、列表或表格结构发生变化", "missing-end":"缺少整节结束标记", "asset-marker":"链接、公式、代码或图片标记不完整"
+  "response-format":"须返回完整的 blocks JSON 数据", "missing-block":"缺少正文块", "duplicate-block":"正文块重复", "unknown-block":"存在未知正文块",
+  "empty-block":"段落内容为空", "block-shape":"标题、列表或表格结构发生变化", "asset-marker":"链接、公式、代码或图片标记不完整"
 };
 /** Diagnostics contain only program-owned IDs and categories, never model text. */
 export class RewriteProtocolError extends RewriteContentError {
@@ -170,49 +204,27 @@ export class RewriteProtocolError extends RewriteContentError {
   }
 }
 
-export function rewriteSectionEnd(blocks:ReturnType<typeof protectRewriteSection>):string {
-  let id="END";while(blocks.some(b=>b.material.text.includes(`⟦${id}⟧`)))id+="X";
-  return `⟦${id}⟧`;
-}
-function unwrapResponseFence(answer:string, blocks:ReturnType<typeof protectRewriteSection>):string {
-  const text=answer.trim();
-  const wrapped=/^(`{3,}|~{3,})(?:markdown|md)?[ \t]*\r?\n([\s\S]*)\r?\n\1[ \t]*$/i.exec(text);
-  const inner=wrapped?.[2].trim();
-  // Only unwrap a complete document envelope, not arbitrary prose/code.
-  return inner && blocks.length && inner.startsWith(blocks[0].open)
-    && (inner.endsWith(blocks.at(-1)!.close) || inner.endsWith(rewriteSectionEnd(blocks))) ? inner : text;
-}
-
-/** Single start marker per block plus one section terminator. The legacy paired
- * form remains readable for deterministic fixtures and previously issued prompts. */
+/** The response is data, not a custom stream of paired delimiters. IDs define source
+ * position; array order is immaterial. Reject incomplete/extra data before checkpointing. */
 export function restoreRewriteBlocks(answer:string,blocks:ReturnType<typeof protectRewriteSection>):string[] {
-  let remaining=unwrapResponseFence(answer,blocks);const result:string[]=[];
-  const sectionEnd=rewriteSectionEnd(blocks);
-  const stream=remaining.includes(sectionEnd);
-  if(stream && remaining.split(sectionEnd).length!==2)throw new RewriteProtocolError("duplicate-marker","END");
-  if(!stream && !blocks.some(b=>remaining.includes(b.close)))throw new RewriteProtocolError("missing-end","END");
-  for(let index=0;index<blocks.length;index++){
-    const block=blocks[index];
-    const fail=(code:RewriteProtocolCode):never=>{throw new RewriteProtocolError(code,block.id);};
-    const close=stream ? blocks[index+1]?.open || sectionEnd : block.close;
-    const opens=remaining.split(block.open).length-1,closes=remaining.split(close).length-1;
-    if(!opens)fail("missing-open");
-    if(!closes)throw new RewriteProtocolError(stream ? "missing-open" : "missing-close",stream ? blocks[index+1]?.id || "END" : block.id);
-    if(opens!==1 || closes!==1)fail("duplicate-marker");
-    const start=remaining.indexOf(block.open),end=remaining.indexOf(close);
-    if(end<start)fail("block-order");
-    if(remaining.slice(0,start).trim())fail(blocks.some(b=>remaining.slice(0,start).includes(b.open)) ? "block-order" : "outside-text");
-    const draft=remaining.slice(start+block.open.length,end).trim();
-    if(stream && blocks.some(b=>draft.includes(b.close)))fail("block-order");
-    if(!draft)fail("empty-block");
-    if(structure(block.material.text)!==structure(draft))fail("block-shape");
-    try {result.push(restoreRewriteAssets(draft,block.material));}
-    catch(error){if(error instanceof RewriteAssetError)throw new RewriteProtocolError("asset-marker",block.id,error);if(error instanceof RewriteContentError)fail("asset-marker");throw error;}
-    remaining=remaining.slice(stream && index<blocks.length-1 ? end : end+close.length);
+  const fail=(code:RewriteProtocolCode,id="response"):never=>{throw new RewriteProtocolError(code,id);};
+  const text=answer.trim();
+  const fenced=/^(`{3,}|~{3,})(?:json)?[ \t]*\r?\n([\s\S]*)\r?\n\1[ \t]*$/i.exec(text);
+  let parsed:any;
+  try{parsed=JSON.parse(fenced ? fenced[2] : text);}catch{return fail("response-format");}
+  if(!parsed || typeof parsed!=="object" || Array.isArray(parsed) || Object.keys(parsed).length!==1 || !Array.isArray(parsed.blocks))return fail("response-format");
+  const expected=new Set(blocks.map(b=>b.id));const values=new Map<string,string>();
+  for(const b of parsed.blocks) {
+    if(!b || typeof b!=="object" || Array.isArray(b) || Object.keys(b).length!==2 || typeof b.id!=="string" || typeof b.text!=="string")return fail("response-format");
+    if(!expected.has(b.id))return fail("unknown-block");
+    if(values.has(b.id))return fail("duplicate-block",b.id);
+    if(!b.text.trim())return fail("empty-block",b.id);
+    values.set(b.id,b.text.trim());
   }
-  if(remaining.trim())throw new RewriteProtocolError("outside-text",blocks.at(-1)?.id || "document");
-  return result;
-}
-export function restoreRewriteSection(answer:string,blocks:ReturnType<typeof protectRewriteSection>):string {
-  return restoreRewriteBlocks(answer,blocks).join("\n\n");
+  return blocks.map(block=>{
+    const draft=values.get(block.id);if(draft===undefined)return fail("missing-block",block.id);
+    if(structure(block.material.text)!==structure(draft))return fail("block-shape",block.id);
+    try{return restoreRewriteAssets(draft,block.material,true);}
+    catch(error){if(error instanceof RewriteAssetError)throw new RewriteProtocolError("asset-marker",block.id,error);throw error;}
+  });
 }
