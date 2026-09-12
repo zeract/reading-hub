@@ -1,3 +1,4 @@
+import {parseRewriteResponse,RewriteResponseError} from './rewrite-response';
 import {prepareRewriteParagraphs,ParagraphReferenceError} from './rewrite-paragraphs';
 import {createHash} from 'node:crypto';
 import {documentTextNodes,articleDocumentText,type ArticleNode,type ArticleDocument} from '../shared/article-document';
@@ -22,7 +23,7 @@ class MissingTextNodes extends RewriteContentError {
 /** Formula presentation IDs and SVG geometry are derived, not source identity. */
 export const structuredSourceHash=(doc:ArticleDocument)=>createHash('sha256').update(JSON.stringify(doc,(_key,value)=>value?.type==='asset'&&value.kind==='math'?{type:value.type,id:value.id,kind:value.kind,tex:value.tex,display:value.display,tag:value.tag}:value)).digest('hex');
 function parsePatch(raw:string,nodes:ReturnType<typeof documentTextNodes>):Record<string,string> {
- let value:any;try{value=JSON.parse(raw.trim().replace(/^```json\s*([\s\S]*?)\s*```$/i,'$1'));}catch{throw new RewriteContentError('改写响应不是完整的 JSON，已完成分节仍保留。');}
+ const value:any=parseRewriteResponse(raw);
  if(!value||!Array.isArray(value.blocks)||Object.keys(value).length!==1)throw new RewriteContentError('改写文字节点格式无效，已完成分节仍保留。');
  const expected=new Map(nodes.map(n=>[n.id,n]));const result:Record<string,string>={};
  for(const b of value.blocks){
@@ -87,13 +88,22 @@ export async function rewriteArticleDocument(source:ArticleDocument,title:string
   let patch:Record<string,string>;let repaired=false;
   try{patch=parsePatch(await generate(units[i]),units[i]);}
   catch(error){
-   throwIfAborted(signal);if(!(error instanceof MissingTextNodes))throw error;
+   throwIfAborted(signal);
+   if(error instanceof RewriteResponseError){
+    // Regenerate this section from source, never ask the model to patch a
+    // malformed response or replay already completed sections.
+    try{patch=parsePatch(await generate(units[i]),units[i]);}
+    catch(retryError){if(retryError instanceof RewriteResponseError)throw new RewriteContentError(`${retryError.message}已自动重试本节一次，请稍后重试。`);throw retryError;}
+    repairs++;repaired=true;
+   }else{
+   if(!(error instanceof MissingTextNodes))throw error;
    const owners=textOwners(source);const affected=new Set(units[i].filter(n=>!Object.hasOwn(error.patch,n.id)).map(n=>owners.get(n.id)));
    const repair=units[i].filter(n=>affected.has(owners.get(n.id)));
    // One bounded repair of whole affected paragraphs avoids duplicating a sentence
    // that the first response merged into a neighbouring text node.
    const replacement=parsePatch(await generate(repair),repair);
    patch={...error.patch,...replacement};repairs++;repaired=true;
+   }
   }
   throwIfAborted(signal);
   try{validate(applyPatches(source,[...patches,patch]));}catch(error){
