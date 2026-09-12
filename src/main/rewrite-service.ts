@@ -121,7 +121,8 @@ export class RewriteService {
         const key = createHash("sha256").update(JSON.stringify({sourceHash, title:article.title, url:article.url, settings:job.settings, version:REWRITE_PROMPT_VERSION})).digest("hex");
         const result = await runRewritePipeline(text, article.title.slice(0,1000), run, signal, progress, {
             drafts: this.database.rewrites.checkpoint(job,key),
-            save: drafts => this.database.rewrites.saveCheckpoint(job,key,drafts)
+            document: this.database.rewrites.checkpointDocument(job,key),
+            save: (drafts,document) => this.database.rewrites.saveCheckpoint(job,key,drafts,document)
         });
         throwIfAborted(signal);
         this.database.rewrites.finish(job, { ...result, provider: job.settings.provider, model: usedModel, createdAt: Date.now(), sourceUrl: article.url, sourceTitle: article.title, sourceHash, promptVersion: REWRITE_PROMPT_VERSION });

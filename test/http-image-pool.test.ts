@@ -84,9 +84,9 @@ describe("reader image admission", () => {
     const http = client();
     const active = Promise.all(Array.from({ length: 4 }, (_, i) => expect(http.getImageDataUrl(url(i), referrer)).rejects.toThrow("超时")));
     const queued = http.getImageDataUrl(url(4), referrer);
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(40_500);
     await active; await expect(queued).resolves.toContain("data:image/png;base64,");
-    expect(network.fetch).toHaveBeenCalledTimes(5);
+    expect(network.fetch).toHaveBeenCalledTimes(9);
     expect(vi.getTimerCount()).toBe(0);
   });
 

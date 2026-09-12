@@ -104,7 +104,7 @@ function structure(text:string):string {
   return structureParser.parse(text,{}).filter(t=>/^(heading|bullet_list|ordered_list|list_item|blockquote|table|thead|tbody|tr|th|td)_/.test(t.type)).map(t=>`${t.type}:${t.tag}:${t.attrGet("start")||""}`).join("|");
 }
 /** Bind links/media to their source block; language changes must not move assets to another paragraph. */
-export function restoreRewriteSection(answer:string,blocks:ReturnType<typeof protectRewriteSection>):string {
+export function restoreRewriteBlocks(answer:string,blocks:ReturnType<typeof protectRewriteSection>):string[] {
   let remaining=answer;const result:string[]=[];
   for(const block of blocks){
     const start=remaining.indexOf(block.open),end=remaining.indexOf(block.close);
@@ -114,5 +114,8 @@ export function restoreRewriteSection(answer:string,blocks:ReturnType<typeof pro
     result.push(restoreRewriteAssets(draft,block.material));remaining=remaining.slice(end+block.close.length);
   }
   if(remaining.trim())throw new RewriteContentError("改写包含无法归属原文的额外段落，未替换已有稿。");
-  return result.join("\n\n");
+  return result;
+}
+export function restoreRewriteSection(answer:string,blocks:ReturnType<typeof protectRewriteSection>):string {
+  return restoreRewriteBlocks(answer,blocks).join("\n\n");
 }

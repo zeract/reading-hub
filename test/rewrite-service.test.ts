@@ -108,3 +108,17 @@ it("does not send changed source to compare against an older draft",async()=>{
  f.article.contentHtml+="<p>Changed.</p>";f.rewriteChunk.mockClear();f.service.enqueue("entry","review");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("failed"));
  expect(f.rewriteChunk).not.toHaveBeenCalled();expect(f.db.rewrites.get("entry")?.error).toContain("原文已变化");expect(f.db.rewrites.get("entry")?.result).toBeDefined();
 });
+it("migrates old results with a cascade-owned backup and skips malformed queued jobs",async()=>{
+ const f=fixture();const job=f.service.enqueue("entry");f.db.rewrites.progress(job,1,1);
+ const raw={markdown:"旧稿 [链接](https://example.com/link)",provider:"deepseek",model:"model",createdAt:1,sourceUrl:f.entry.url,sourceTitle:"Title",sourceHash:"hash",promptVersion:7};
+ const sql=(f.db as any).db;
+ sql.prepare("UPDATE article_rewrites SET status='complete',result_json=? WHERE entry_id=?").run(JSON.stringify(raw),"entry");
+ const migrated=f.db.rewrites.get("entry")!.result!;expect(migrated.schemaVersion).toBe(1);expect(migrated.markdown).toBe(raw.markdown);
+ expect(sql.prepare("SELECT result_json FROM rewrite_migration_backups WHERE entry_id='entry'").get().result_json).toBe(JSON.stringify(raw));
+ f.db.rewrites.get("entry");expect(sql.prepare("SELECT COUNT(*) AS count FROM rewrite_migration_backups").get().count).toBe(1);
+ sql.prepare("UPDATE article_rewrites SET status='queued',settings_json='{' WHERE entry_id='entry'").run();
+ f.db.saveEntries([{...f.entry,id:"next",url:"https://example.com/next",canonicalUrl:"https://example.com/next"}]);
+ f.service.enqueue("next");expect(f.db.rewrites.next()?.entryId).toBe("next");
+ expect(sql.prepare("SELECT status FROM article_rewrites WHERE entry_id='entry'").get().status).toBe("failed");
+ f.db.deleteSource(f.source.id);expect(sql.prepare("SELECT COUNT(*) AS count FROM rewrite_migration_backups").get().count).toBe(0);
+});

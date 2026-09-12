@@ -5,7 +5,30 @@ export interface RewriteSettings {
     model: string;
     effort: AiReasoningEffort;
 }
+export interface RewriteAssetRelation {
+    id: string;
+    kind: "formula" | "image" | "code" | "reference" | "link";
+    hash: string;
+    destination?: string;
+}
+export interface RewriteBlockRelation {
+    id: string;
+    sectionId: string;
+    start: number;
+    end: number;
+    hash: string;
+    type: string;
+    sourceHash?: string;
+    assets: RewriteAssetRelation[];
+}
+export interface RewriteDocument {
+    version: 1;
+    provenance: "source-bound" | "derived-only";
+    blocks: RewriteBlockRelation[];
+}
 export interface RewriteResult {
+    schemaVersion?: 1;
+    document?: RewriteDocument;
     markdown: string;
     provider: AiProviderId;
     model: string;

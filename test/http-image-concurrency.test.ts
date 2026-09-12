@@ -103,7 +103,7 @@ describe("shared reader image requests", () => {
   });
 
   it("shares a failed response without caching the failure or duplicating a retry", async () => {
-    network.fetch.mockImplementationOnce(async () => new Response(null, { status: 503 }));
+    network.fetch.mockImplementation(async () => new Response(null, { status: 503 }));
     const http = client();
     await Promise.all([
       expect(http.getImageDataUrl(target, referrer)).rejects.toThrow("503"),
@@ -111,7 +111,7 @@ describe("shared reader image requests", () => {
     ]);
     network.fetch.mockImplementation(async () => response());
     await Promise.all([http.getImageDataUrl(target, referrer), http.getImageDataUrl(target, referrer)]);
-    expect(network.fetch).toHaveBeenCalledTimes(2);
+    expect(network.fetch).toHaveBeenCalledTimes(3);
   });
 
   it("keeps one deadline when a second reader joins a stalled response", async () => {
@@ -121,9 +121,9 @@ describe("shared reader image requests", () => {
     const first = expect(http.getImageDataUrl(target, referrer)).rejects.toThrow("超时");
     await vi.advanceTimersByTimeAsync(10_000);
     const second = expect(http.getImageDataUrl(target, referrer)).rejects.toThrow("超时");
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(30_500);
     await Promise.all([first, second]);
-    expect(network.fetch).toHaveBeenCalledTimes(1);
+    expect(network.fetch).toHaveBeenCalledTimes(2);
     expect(vi.getTimerCount()).toBe(0);
   });
 

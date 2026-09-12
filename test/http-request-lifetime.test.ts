@@ -15,11 +15,11 @@ describe("public response header lifetime", () => {
   it.each([false, true])("ends a stalled header timeout (image=%s)", async (image) => {
     vi.useFakeTimers();
     let finish!: (response: Response) => void;
-    network.fetch.mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    network.fetch.mockImplementation(() => new Promise<Response>((resolve) => { finish = resolve; }));
     let settled = false;
     let failure: unknown;
     const pending = read(client(), image).then(() => { settled = true; }, (error) => { settled = true; failure = error; });
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(image ? 40_500 : 20_000);
     try { expect(settled).toBe(true); expect(failure).toBeInstanceOf(Error); expect((failure as Error).message).toMatch(/超时/); }
     finally { finish(new Response("", { headers: { "content-type": "image/png" } })); await pending; }
   });
@@ -41,7 +41,7 @@ describe("public response header lifetime", () => {
 
   it.each([false, true])("discards late headers without following redirects or caching data, then retries (image=%s)", async (image) => {
     let finish!: (response: Response) => void;
-    network.fetch.mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    network.fetch.mockImplementation(() => new Promise<Response>((resolve) => { finish = resolve; }));
     const controller = new AbortController();
     const http = client();
     const pending = read(http, image, controller.signal);

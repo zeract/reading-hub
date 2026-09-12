@@ -1,3 +1,4 @@
+import { replaceReaderImageFailure } from "./reader-image-loader";
 import { useArticleRewrite } from "./use-article-rewrite";
 import { RewriteVersion, RewrittenArticle } from "./article-rewrite";
 import { readerLanguageChoices } from "../shared/reader-languages";
@@ -103,7 +104,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const articleBodyElement = useRef<HTMLDivElement>(null);
   useReaderVideos(entry.id, rewriteVisible ? undefined : article, articleBodyElement);
   const readerWorkspaceElement = useRef<HTMLDivElement>(null);
-  const { documentId, loadImage: loadReaderImage } = useReaderImages(entry.id, article, readerWorkspaceElement);
+  const { documentId, loadImage: loadReaderImage } = useReaderImages(entry.id, rewriteVisible ? undefined : article, readerWorkspaceElement);
   const beginArticleRequest = useReaderRequest(entry.id);
   const renderedEntryId = useRef(entry.id);
   const loadedEntryId = useRef<string | undefined>(undefined);
@@ -255,13 +256,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
     loadReaderImage(image, originalUrl, () => replaceBrokenImage(image));
   }
   function replaceBrokenImage(image: HTMLImageElement) {
-    if (!image.isConnected || image.dataset.readerImageUnavailable === "1") return;
-    image.dataset.readerImageUnavailable = "1";
-    const fallback = document.createElement("a");
-    fallback.href = entry.url;
-    fallback.className = "reader-image-failure";
-    fallback.textContent = "图片未能加载 · 在浏览器中查看原文";
-    image.replaceWith(fallback);
+    replaceReaderImageFailure(image,entry.url,image.dataset.imageFailure);
   }
   function openEmbedded() {
     void window.reader.openEmbeddedEntry(entry.id).catch((reason) => setError(errorMessage(reason)));

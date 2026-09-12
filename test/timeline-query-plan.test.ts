@@ -201,7 +201,7 @@ describe("publication timeline indexing", () => {
       const before = queries.map((query) => database.listEntryPage(query));
       const revision = database.getLibraryRevision();
       // Recreate the actual old schema, including absence of generated keys.
-      native.exec(`DROP TABLE article_rewrites; DROP TABLE rewrite_settings;
+      native.exec(`DROP TABLE rewrite_migration_backups; DROP TABLE article_rewrites; DROP TABLE rewrite_settings;
         DROP INDEX entries_publication_order; DROP INDEX entries_timeline;
         ALTER TABLE entries DROP COLUMN timeline_group;
         ALTER TABLE entries DROP COLUMN timeline_published;

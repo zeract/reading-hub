@@ -1,3 +1,5 @@
+import { decodeRewriteResult } from "../rewrite-document";
+import { parseRewriteSettings, type RewriteDocument } from "../../shared/rewrite";
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { rewritePending, type ArticleRewrite, type RewriteSettings, type RewriteStage, type RewriteResult } from "../../shared/rewrite";
@@ -21,17 +23,35 @@ export class RewriteStore {
         const row = this.db.prepare("SELECT settings_json FROM rewrite_settings WHERE id=1").get() as {
             settings_json: string;
         } | undefined;
-        return row ? JSON.parse(row.settings_json) : undefined;
+        return row ? parseRewriteSettings(JSON.parse(row.settings_json)) : undefined;
     }
     configure(settings: RewriteSettings): void {
         this.db.prepare("INSERT INTO rewrite_settings VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET settings_json=excluded.settings_json").run(JSON.stringify(settings));
     }
     get(entryId: string): ArticleRewrite | undefined {
         const row = this.db.prepare("SELECT * FROM article_rewrites WHERE entry_id=?").get(entryId) as Row | undefined;
-        return row ? { entryId: row.entry_id, jobId: row.job_id, kind: row.kind, status: row.status, ...(row.stage ? {stage:row.stage} : {}), settings: JSON.parse(row.settings_json), completedChunks: row.completed_chunks, totalChunks: row.total_chunks, updatedAt: row.updated_at, ...(row.error ? { error: row.error } : {}), ...(row.result_json ? { result: JSON.parse(row.result_json) } : {}) } : undefined;
+        if (!row) return;
+        let result: RewriteResult | undefined;
+        let error=row.error || undefined;
+        if(row.result_json) {
+            try {
+                result=decodeRewriteResult(row.result_json);
+                const migrated=JSON.stringify(result);
+                if(migrated!==row.result_json) this.db.transaction(()=>{
+                    this.db.prepare("INSERT OR IGNORE INTO rewrite_migration_backups VALUES (?,?)").run(entryId,row.result_json);
+                    this.db.prepare("UPDATE article_rewrites SET result_json=? WHERE entry_id=? AND result_json=?").run(migrated,entryId,row.result_json);
+                })();
+            } catch { error="保存的改写格式无法读取，原始记录仍保留；请检查应用版本。"; }
+        }
+        const settings=parseRewriteSettings(JSON.parse(row.settings_json));
+        return { entryId:row.entry_id,jobId:row.job_id,kind:row.kind,status:row.status,settings,
+            completedChunks:row.completed_chunks,totalChunks:row.total_chunks,updatedAt:row.updated_at,
+            ...(row.stage ? {stage:row.stage}:{}), ...(error ? {error}:{}), ...(result ? {result}:{}) };
+
     }
     enqueue(entryId: string, settings: RewriteSettings, kind: "generate" | "review" = "generate"): ArticleRewrite {
-        const previous = this.get(entryId);
+        let previous: ArticleRewrite | undefined;
+        try {previous=this.get(entryId);} catch { /* Explicit enqueue replaces unreadable settings, never the saved result. */ }
         if (rewritePending(previous))
             return previous!;
         const count = (this.db.prepare("SELECT COUNT(*) AS count FROM article_rewrites WHERE status IN ('queued','running')").get() as {
@@ -45,10 +65,13 @@ export class RewriteStore {
         return this.get(entryId)!;
     }
     next(): ArticleRewrite | undefined {
-        const row = this.db.prepare("SELECT entry_id FROM article_rewrites WHERE status='queued' ORDER BY updated_at,entry_id LIMIT 1").get() as {
-            entry_id: string;
-        } | undefined;
-        return row ? this.get(row.entry_id) : undefined;
+        // Isolate malformed jobs so one old record cannot stall the whole queue.
+        const rows=this.db.prepare("SELECT entry_id FROM article_rewrites WHERE status='queued' ORDER BY updated_at,entry_id").all() as {entry_id:string}[];
+        for(const row of rows) {
+            try { return this.get(row.entry_id); }
+            catch { this.db.prepare("UPDATE article_rewrites SET status='failed',error=? WHERE entry_id=? AND status='queued'").run("任务设置无法读取，请重新选择模型；已有记录仍保留。",row.entry_id); }
+        }
+
     }
     recover(): void {
         this.db.prepare("UPDATE article_rewrites SET status='failed',error=?,updated_at=? WHERE status='running'").run("上次改写被中断，可手动重试；已有改写仍保留。", Date.now());
@@ -59,16 +82,20 @@ export class RewriteStore {
     }
     finish(job: ArticleRewrite, result: RewriteResult): void {
         this.db.prepare("UPDATE article_rewrites SET status='complete',result_json=?,error=NULL,checkpoint_json=CASE WHEN kind='generate' THEN NULL ELSE checkpoint_json END,updated_at=? WHERE entry_id=? AND job_id=? AND status='running'")
-            .run(JSON.stringify(result), Date.now(), job.entryId, job.jobId);
+            .run(JSON.stringify(decodeRewriteResult(JSON.stringify(result))), Date.now(), job.entryId, job.jobId);
     }
     checkpoint(job: ArticleRewrite, key: string): string[] {
         const row = this.db.prepare("SELECT checkpoint_json FROM article_rewrites WHERE entry_id=? AND job_id=?").get(job.entryId, job.jobId) as {checkpoint_json:string|null} | undefined;
-        const value = row?.checkpoint_json ? JSON.parse(row.checkpoint_json) : undefined;
-        return value?.key === key && Array.isArray(value.drafts) ? value.drafts : [];
+        let value; try { value = row?.checkpoint_json ? JSON.parse(row.checkpoint_json) : undefined; } catch { return []; }
+        return value?.key === key && Array.isArray(value.drafts) && value.drafts.length<=48 && value.drafts.every((draft:unknown)=>typeof draft==="string" && draft.length<=13000) ? value.drafts : [];
     }
-    saveCheckpoint(job: ArticleRewrite, key: string, drafts: string[]): void {
+    checkpointDocument(job: ArticleRewrite, key: string): RewriteDocument | undefined {
+        const row=this.db.prepare("SELECT checkpoint_json FROM article_rewrites WHERE entry_id=? AND job_id=?").get(job.entryId,job.jobId) as {checkpoint_json:string|null}|undefined;
+        try {const v=JSON.parse(row?.checkpoint_json || "null"); return v?.key===key ? v.document : undefined;} catch {return undefined;}
+    }
+    saveCheckpoint(job: ArticleRewrite, key: string, drafts: string[], document?: RewriteDocument): void {
         this.db.prepare("UPDATE article_rewrites SET checkpoint_json=? WHERE entry_id=? AND job_id=? AND status='running'")
-            .run(JSON.stringify({key,drafts}), job.entryId, job.jobId);
+            .run(JSON.stringify({key,drafts,document}), job.entryId, job.jobId);
     }
     fail(job: ArticleRewrite, error: string): void {
         this.db.prepare("UPDATE article_rewrites SET status='failed',error=?,updated_at=? WHERE entry_id=? AND job_id=? AND status IN ('queued','running')").run(error, Date.now(), job.entryId, job.jobId);

@@ -1,3 +1,4 @@
+import { retryReaderImage, ReaderImageHttpError } from "./reader-image-retry";
 import { downloadReaderVideo } from "./reader-video";
 import { assertFeedSubscriptionUrl, assertPublicUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 import { abortError, throwIfAborted, withRequestTimeout } from "./cancellation";
@@ -230,7 +231,7 @@ export class PublicHttpClient {
     const cached = this.imageCache.get(cacheKey);
     if (cached) return cached;
     return this.imageTasks.run(cacheKey, (signal) => this.imagePool.run(async () => {
-      const result = await this.downloadImage(targetUrl, referrer, signal);
+      const result = await retryReaderImage(() => this.downloadImage(targetUrl, referrer, signal), signal);
       throwIfAborted(signal);
       this.imageCache.set(cacheKey, result);
       return result;
@@ -266,7 +267,7 @@ export class PublicHttpClient {
           targetUrl = assertPublicUrl(new URL(location, targetUrl).toString()).toString();
           continue;
         }
-        if (!response.ok) throw new Error(`图片请求失败（HTTP ${response.status}）`);
+        if (!response.ok) throw new ReaderImageHttpError(response.status);
         const contentType = response.headers.get("content-type")?.split(";", 1)[0].toLowerCase() || "";
         if (!/^(image\/(?:avif|gif|jpe?g|png|webp|x-icon|vnd\.microsoft\.icon))$/.test(contentType)) {
           throw new UnsupportedReaderImageTypeError(contentType);

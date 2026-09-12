@@ -1,3 +1,4 @@
+import { readerImageDiagnostic } from "./reader-image-retry";
 import { parseRewriteSettings } from "../shared/rewrite";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC_CHANNELS } from "../shared/ipc";
@@ -189,7 +190,10 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     const entry = findEntry(database, requireEntityId(entryId));
     const url = requireText(imageUrl, "图片地址无效。", 4_000);
     const requestId = requireText(rawRequestId, "图片请求标识无效。", 160);
-    return foregroundRequests.run(event.sender, (signal) => http.getImageDataUrl(url, entry.url, { signal }), `image:${requestId}`);
+    return foregroundRequests.run(event.sender, async (signal) => {
+      try {return await http.getImageDataUrl(url, entry.url, {signal});}
+      catch(error){throwIfAborted(signal);throw readerImageDiagnostic(error);}
+    }, `image:${requestId}`);
   });
   handle(IPC_CHANNELS.entry.cancelImage, (event, rawRequestId: unknown) => {
     const requestId = requireText(rawRequestId, "图片请求标识无效。", 160);

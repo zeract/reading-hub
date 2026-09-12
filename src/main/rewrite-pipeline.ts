@@ -1,4 +1,6 @@
-import { protectRewriteSection, restoreRewriteSection } from "./rewrite-assets";
+import { bindRewriteBlock, validRewriteDocument, indexLegacyRewrite } from "./rewrite-document";
+import type { RewriteBlockRelation, RewriteDocument } from "../shared/rewrite";
+import { protectRewriteSection, restoreRewriteBlocks } from "./rewrite-assets";
 import { throwIfAborted } from "./cancellation";
 import { RewriteContentError, splitRewriteText } from "./rewrite-content";
 import type { RewriteRequestStage, RewriteQuality, RewriteIssue, RewriteReview } from "../shared/rewrite";
@@ -26,28 +28,41 @@ async function request(run: RewriteRunner, stage: RewriteRequestStage, material:
 /** One request per section; checkpoints contain derived text only. No model review gates saving. */
 export async function runRewritePipeline(text: string, title: string, run: RewriteRunner, signal: AbortSignal,
   progress: Progress = () => undefined,
-  resume: { drafts?: string[]; save?(drafts: string[]): void } = {}) {
+  resume: { drafts?: string[]; document?: RewriteDocument; save?(drafts: string[], document: RewriteDocument): void } = {}) {
   const sections = makeRewriteSections(text);
   const drafts = [...(resume.drafts || [])];
   if (drafts.length > sections.length) throw new RewriteContentError("改写恢复记录与原文不一致。");
   drafts.forEach(assertDraft);
+  // Retain old derived checkpoints without spending tokens or guessing source ownership.
+  const savedText=drafts.join("\n\n");
+  const blocks: RewriteBlockRelation[] = !drafts.length ? []
+    : validRewriteDocument(resume.document,savedText) ? [...resume.document.blocks]
+    : indexLegacyRewrite(savedText).blocks;
+  const provenance = blocks.some(b=>!b.sourceHash) ? "derived-only" as const : "source-bound" as const;
   let requests = 0;
   for (let i = drafts.length; i < sections.length; i++) {
     progress("write", i, sections.length);
     const materials = protectRewriteSection(sections[i].blocks);
     const answer = await request(run, "write", { instruction: WRITE + "每个正文块的 B 标记必须原样成对保留，按给定顺序输出，不在标记外添加文字。保留块内标题级别、列表嵌套、表格行列和引用结构；允许在段落内自然改写。结构标记必须逐一原样保留：独立的 ⟦...A...⟧ 代表公式、图片、代码或编号引用，不能展开、改写、删除或重复。成对的 ⟦...L...⟧中文锚文本⟦/...L...⟧ 代表链接，只翻译其中的原有锚文本并自然融入句子，不另加（链接）、来源或裸网址。assets 提供被保护内容以便理解，不能重复输出。", title, section: {...sections[i], blocks: materials.map(b=>({id:b.id,text:`${b.open}\n${b.material.text}\n${b.close}`}))}, assets:materials.flatMap(b=>b.material.atoms.map(a=>({...a,blockId:b.id}))),
       opening: i > 1 ? drafts[0].slice(0, 1200) : "", previousEnding: drafts[i-1]?.slice(-1500) || "" }, signal);
-    const draft = restoreRewriteSection(answer, materials);
+    const restored = restoreRewriteBlocks(answer, materials);
+    const draft = restored.join("\n\n");
+    let offset = drafts.length ? drafts.join("\n\n").length + 2 : 0;
+    restored.forEach((target,j) => {
+      const source=sections[i].blocks[j];
+      blocks.push(bindRewriteBlock(source.id,sections[i].id,source.text,target,offset));
+      offset += target.length + 2;
+    });
     assertDraft(draft);
     if ([...drafts, draft].join("\n\n").length > 240_000) throw new RewriteContentError("改写超过保存上限，已有改写仍保留。");
     drafts.push(draft); requests++;
-    resume.save?.([...drafts]);
+    resume.save?.([...drafts], {version:1,provenance,blocks:[...blocks]});
     progress("write", i+1, sections.length);
   }
   const markdown = drafts.join("\n\n");
   if (markdown.length > 240_000) throw new RewriteContentError("改写超过保存上限，已有改写仍保留。");
   const quality: RewriteQuality = {version:1, reviewedSections:0, reviewedBlocks:0, repairedSections:0, requests, terms:[]};
-  return { markdown, sections: drafts, quality };
+  return { markdown, sections: drafts, quality, schemaVersion:1 as const, document:{version:1 as const,provenance,blocks} };
 }
 
 /** Optional source comparison annotates the saved document, never changes or hides its text. */

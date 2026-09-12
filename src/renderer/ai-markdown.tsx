@@ -1,15 +1,17 @@
-import { Fragment, memo, createContext, useContext, useEffect, useState, createElement, type ReactNode } from "react";
+import { observeReaderImage, IMAGE_FAILURE_LABEL } from "./reader-image-loader";
+import { Fragment, memo, createContext, useContext, useEffect, useState, useRef, createElement, type ReactNode } from "react";
 import { createReaderMarkdown } from "../shared/markdown";
 import { renderAiTeX } from "./ai-math";
 
 const markdown=createReaderMarkdown();
+const OriginalUrl=createContext<string|undefined>(undefined);
 const ImageEntry=createContext<string|undefined>(undefined);
 type Token=ReturnType<typeof markdown.parse>[number];
 const classes:Record<string,string>={p:"ai-markdown-paragraph",blockquote:"ai-markdown-quote",ul:"ai-markdown-list",ol:"ai-markdown-list",h1:"ai-markdown-heading",h2:"ai-markdown-heading",h3:"ai-markdown-heading",h4:"ai-markdown-heading",h5:"ai-markdown-heading",h6:"ai-markdown-heading"};
 const allowed=new Set(["p","blockquote","ul","ol","li","h1","h2","h3","h4","h5","h6","strong","em","s","table","thead","tbody","tr","th","td"]);
 
-export const AiMarkdownContent=memo(function AiMarkdownContent({text,entryId}:{text:string;entryId?:string}) {
-  return <ImageEntry.Provider value={entryId}><div className="ai-message-content ai-markdown">{renderTokens(markdown.parse(text,{}),"doc")}</div></ImageEntry.Provider>;
+export const AiMarkdownContent=memo(function AiMarkdownContent({text,entryId,sourceUrl}:{text:string;entryId?:string;sourceUrl?:string}) {
+  return <OriginalUrl.Provider value={sourceUrl}><ImageEntry.Provider value={entryId}><div className="ai-message-content ai-markdown">{renderTokens(markdown.parse(text,{}),"doc")}</div></ImageEntry.Provider></OriginalUrl.Provider>;
 });
 
 /** Only allowlisted token types become React elements; remote/model HTML is never executed. */
@@ -82,18 +84,20 @@ function MarkdownLink({url, children}: {url: string; children: ReactNode[]}) {
 
 function MarkdownImage({url,alt}:{url:string;alt:string}) {
   const entryId = useContext(ImageEntry);
-  const [image,setImage] = useState<{key:string;data?:string;failed?:boolean}>();
+  const sourceUrl=useContext(OriginalUrl);
+  const element=useRef<HTMLImageElement>(null);
+  const [image,setImage] = useState<{key:string;data?:string;failed?:string}>();
   const key = `${entryId}:${url}`;
   useEffect(()=>{
     if(!entryId || !url.startsWith("https://"))return;
-    let active=true; const requestId=`image-${crypto.randomUUID()}`;
-    void window.reader.loadArticleImage(entryId,url,requestId).then(data=>{if(active)setImage({key,data});}).catch(()=>{if(active)setImage({key,failed:true});});
-    return ()=>{active=false;void window.reader.cancelArticleImage(requestId).catch(()=>undefined);};
+    if(!element.current)return;
+    return observeReaderImage(element.current,entryId,url,
+      data=>setImage({key,data}),code=>setImage({key,failed:code}));
   },[entryId,url,key]);
   if (!entryId) return <a className="ai-markdown-link" href={url} onClick={event=>{event.preventDefault();void window.reader.openExternal(url).catch(()=>undefined);}}>图片：{alt || "打开图片"}</a>;
-  const openImage = () => { void window.reader.openExternal(url).catch(()=>undefined); };
-  if (!url.startsWith("https://") || (image?.key===key && image.failed)) return <span className="reader-image-failure" role="link" tabIndex={0} onClick={event=>{event.preventDefault();event.stopPropagation();openImage();}} onKeyDown={event=>{if(event.key==="Enter"){event.preventDefault();event.stopPropagation();openImage();}}}>图片未能加载 · {alt || "查看原图"}</span>;
-  return <img src={image?.key===key?image.data:undefined} alt={alt} loading="lazy" onError={()=>setImage({key,failed:true})}/>;
+  const openImage = () => { void window.reader.openExternal(safeExternalUrl(sourceUrl || "") || url).catch(()=>undefined); };
+  if (!url.startsWith("https://") || (image?.key===key && image.failed)) return <span className="reader-image-failure" role="link" tabIndex={0} onClick={event=>{event.preventDefault();event.stopPropagation();openImage();}} onKeyDown={event=>{if(event.key==="Enter"){event.preventDefault();event.stopPropagation();openImage();}}} data-image-failure={image?.failed}>{IMAGE_FAILURE_LABEL}</span>;
+  return <img ref={element} src={image?.key===key?image.data:undefined} alt={alt} loading="lazy" onError={()=>setImage({key,failed:"DECODE"})}/>;
 }
 
 function safeExternalUrl(value: string): string | undefined {
