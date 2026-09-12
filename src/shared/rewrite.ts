@@ -36,6 +36,7 @@ export interface RewriteResult {
     createdAt: number;
     sourceUrl: string;
     sourceTitle: string;
+    rewrittenTitle?: string;
     sourceHash: string;
     promptVersion: number;
     quality?: RewriteQuality;

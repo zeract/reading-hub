@@ -49,6 +49,7 @@ export function validRewriteDocument(value: unknown, markdown: string): value is
 export function decodeRewriteResult(raw: string): RewriteResult {
   const v=JSON.parse(raw);
   if(v?.schemaVersion!==undefined && ![1,2].includes(v.schemaVersion))throw new Error("此改写由更新版本保存，请升级应用后读取。");
+  if(v?.rewrittenTitle!==undefined && (typeof v.rewrittenTitle!=="string" || !v.rewrittenTitle.trim() || v.rewrittenTitle.length>6000))throw new Error("保存的中文标题无效，原始记录仍保留。");
   if(v?.content!==undefined && !validArticleDocument(v.content))throw new Error("保存的正文结构无效，原始记录仍保留。");
   if(v?.content && typeof v.markdown!=="string")v.markdown=articleDocumentMarkdown(v.content);
   if (!v || typeof v!=="object" || typeof v.markdown!=="string" || !v.markdown.trim() || v.markdown.length>240000) throw new Error("保存的改写格式无效，原始记录仍保留。");

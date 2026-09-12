@@ -280,7 +280,7 @@ it("uses a task-specific rewrite model without changing the learning model or ex
   expect(requests[0].messages[0].content).toContain("按请求 instruction 指定的数据格式");
   expect(requests[0].messages[0].content).not.toContain("只输出本片段的 Markdown 正文");
   expect(requests[0].thinking).toEqual({type:"disabled"});
-  expect(requests[0].response_format).toBeUndefined();
+  expect(requests[0].response_format).toEqual({type:"json_object"});
   await service.rewriteChunk({provider:"deepseek",model:"rewrite-model",effort:"default"},"review material",new AbortController().signal,"review");
   expect(requests[1].messages[0].content).toContain("只返回 JSON");
   expect(requests[1].response_format).toEqual({type:"json_object"});

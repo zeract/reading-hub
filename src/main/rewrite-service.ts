@@ -120,7 +120,7 @@ export class RewriteService {
             const saved = this.database.rewrites.get(job.entryId)?.result;
             if(saved?.content && saved.promptVersion>=11){
                 if(saved.sourceHash!==structuredSourceHash(article.document!))throw new RewriteContentError("原文已变化，无法对照生成时的版本；已有改写仍保留。");
-                const review=await reviewArticleDocument(article.document!,saved.content,run,signal);
+                const review=await reviewArticleDocument(article.document!,saved.content,run,signal,saved.promptVersion>=12);
                 throwIfAborted(signal);this.database.rewrites.finish(job,{...saved,review:{...review,provider:job.settings.provider,model:usedModel}});return;
             }
             if (!saved?.sections || saved.sourceHash !== sourceHash)
@@ -134,10 +134,13 @@ export class RewriteService {
         const legacyKey=[10,9,8,7].map(checkpointKey).find(candidate=>this.database.rewrites.checkpoint(job,candidate).length);
         if(!legacyKey){
             const canonicalHash=structuredSourceHash(article.document!);
-            const key=createHash("sha256").update(JSON.stringify({sourceHash:canonicalHash,title:article.title,url:article.url,settings:job.settings,version:11})).digest("hex");
-            const result=await rewriteArticleDocument(article.document!,article.title,run,signal,(done,total)=>progress("write",done,total),this.database.rewrites.structuredCheckpoint(job,key),checkpoint=>this.database.rewrites.saveStructuredCheckpoint(job,key,checkpoint));
+            const canonicalKey=(version:number)=>createHash("sha256").update(JSON.stringify({sourceHash:canonicalHash,title:article.title,url:article.url,settings:job.settings,version})).digest("hex");
+            const oldCheckpoint=this.database.rewrites.structuredCheckpoint(job,canonicalKey(11));
+            const version=oldCheckpoint?.patches.length?11:12;
+            const key=canonicalKey(version);
+            const result=await rewriteArticleDocument(article.document!,article.title,run,signal,(done,total)=>progress("write",done,total),this.database.rewrites.structuredCheckpoint(job,key),checkpoint=>this.database.rewrites.saveStructuredCheckpoint(job,key,checkpoint),version===12);
             throwIfAborted(signal);
-            this.database.rewrites.finish(job,{...result,schemaVersion:2,markdown:articleDocumentMarkdown(result.content),provider:job.settings.provider,model:usedModel,createdAt:Date.now(),sourceUrl:article.url,sourceTitle:article.title,sourceHash:canonicalHash,promptVersion:11});return;
+            this.database.rewrites.finish(job,{...result,schemaVersion:2,markdown:articleDocumentMarkdown(result.content),provider:job.settings.provider,model:usedModel,createdAt:Date.now(),sourceUrl:article.url,sourceTitle:article.title,sourceHash:canonicalHash,promptVersion:version});return;
         }
         // Finish existing Markdown checkpoints without re-running successful sections.
         const key=legacyKey,resumedKey=legacyKey;

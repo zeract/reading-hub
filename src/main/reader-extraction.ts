@@ -1,3 +1,4 @@
+import {normalizePreformattedCode} from "./reader-code";
 import {articleDocumentFromHtml} from "./article-document";
 import { hydrateLazyImages, imageSource, selectReaderCover } from "./reader-media";
 export { selectReaderCover } from "./reader-media";
@@ -334,6 +335,8 @@ function collectGlobalMathMacros($: ReturnType<typeof load>): MathMacroScope {
  */
 function prepareReaderArticle(html: string, pageUrl: string, entry: Entry, inlineLanguage?: string): PreparedReaderArticle | undefined {
   let $ = load(html);
+  normalizePreformattedCode($);
+  html = $.html();
   const resourceBaseUrl = htmlDocumentBaseUrl($, pageUrl);
   const globalMathMacros = collectGlobalMathMacros($);
   const answerHtml = selectZhihuAnswer($, pageUrl);
@@ -815,6 +818,7 @@ function readerContentQuality(root: any): number {
 
 export function prepareSanitizedContent(rawHtml: string, pageUrl: string, resourceBaseUrl = pageUrl): PreparedSanitizedContent {
   const $ = load(`<div id="reader-content">${rawHtml}</div>`);
+  normalizePreformattedCode($);
   const root = $("#reader-content");
   hydrateLazyImages($, root, resourceBaseUrl);
   // Drop thread containers before their nested TeX/image markup can enter

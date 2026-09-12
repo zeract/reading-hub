@@ -22,7 +22,7 @@ export function RewrittenArticle({state, bodyProps, bodyRef}:{state:State; bodyP
   const {record, pending, busy, loaded, error} = state;
   const result = record?.result;
   return <article className="reader-article reader-rewritten" aria-label="中文改写">
-    <header><h1>{result?.sourceTitle || "中文改写"}</h1></header>
+    <header><h1>{result?.sourceTitle || "中文改写"}</h1>{result?.rewrittenTitle&&<p className="reader-rewritten-title">{result.rewrittenTitle}</p>}</header>
     {!result && <>
       {pending ? <p role="status">{record?.status==="queued"?"已排队":`${record?.stage?REWRITE_STAGE_LABELS[record.stage]:"正在读取正文"}${record?.totalChunks?` · ${record.completedChunks}/${record.totalChunks}`:""}`}<button type="button" className="action-button" disabled={busy} onClick={()=>void state.act("cancel")}>取消</button></p> : loaded ? <button type="button" className="action-button" disabled={busy} onClick={()=>void state.act("generate")}>{busy?"正在提交…":"生成中文改写"}</button> : <p role="status">正在读取本地改写…</p>}
       {(error||record?.error)&&<p role="alert">{error||record?.error}{!loaded&&<button type="button" className="action-button" onClick={()=>void state.reload()}>重试读取</button>}</p>}

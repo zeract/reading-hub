@@ -488,3 +488,5 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .article-body .reader-link-card { display:flex; gap:1em; align-items:center; margin:1.5em 0; }
 .article-body .reader-link-card > img { width:5em; max-height:5em; object-fit:contain; flex-shrink:0; }
 .article-body .reader-link-card-meta { font-size:.85em; margin:.25em 0 0; color:var(--muted); }
+
+.reader-rewritten-title { margin: .6em 0 0; font-family: var(--font-reading); font-size: 1.15em; line-height: 1.65; color: var(--ink); overflow-wrap: anywhere; }
