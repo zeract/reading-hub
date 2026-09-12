@@ -125,13 +125,13 @@ it("migrates old results with a cascade-owned backup and skips malformed queued 
  f.db.deleteSource(f.source.id);expect(sql.prepare("SELECT COUNT(*) AS count FROM rewrite_migration_backups").get().count).toBe(0);
 });
 
-it("reuses validated v7 checkpoints after the envelope-only protocol upgrade",async()=>{
+it.each([7,8])("reuses validated v%s checkpoints after the envelope-only protocol upgrade",async(version)=>{
  const f=fixture();f.article.contentHtml=Array.from({length:3},()=>`<p>${"A detailed explanation of delivery and validation. ".repeat(100)}</p>`).join("");
  let calls=0;f.rewriteChunk.mockImplementation(async(_s,p)=>{if(++calls===2)throw new AiServiceError("stop");return {provider:"deepseek",model:settings.model,text:rewriteModelResponse(p)};});
  f.service.start();f.service.enqueue("entry");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("failed"));
  const sql=(f.db as any).db;const cp=JSON.parse(sql.prepare("SELECT checkpoint_json FROM article_rewrites WHERE entry_id='entry'").get().checkpoint_json);
  const sourceHash=createHash("sha256").update(rewriteText(f.article)).digest("hex");
- cp.key=createHash("sha256").update(JSON.stringify({sourceHash,title:f.article.title,url:f.article.url,settings,version:7})).digest("hex");
+ cp.key=createHash("sha256").update(JSON.stringify({sourceHash,title:f.article.title,url:f.article.url,settings,version})).digest("hex");
  sql.prepare("UPDATE article_rewrites SET checkpoint_json=? WHERE entry_id='entry'").run(JSON.stringify(cp));
  f.rewriteChunk.mockClear();f.service.enqueue("entry");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("complete"));
  expect(JSON.parse(f.rewriteChunk.mock.calls[0][1]).section.id).toBe("S2");expect(f.db.rewrites.get("entry")?.result?.sections?.[0]).toBe(cp.drafts[0]);

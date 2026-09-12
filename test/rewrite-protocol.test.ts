@@ -1,5 +1,5 @@
 import {expect,it,vi} from "vitest";
-import {protectRewriteSection,restoreRewriteBlocks,RewriteProtocolError} from "../src/main/rewrite-assets";
+import {protectRewriteSection,restoreRewriteBlocks,RewriteProtocolError,rewriteSectionEnd} from "../src/main/rewrite-assets";
 import {runRewritePipeline} from "../src/main/rewrite-pipeline";
 const source=[{id:"B1",text:"## Delivery lifecycle"},{id:"B2",text:"- Plan\n- Build\n  - Test\n\nReview [the guide](https://example.com/guide)."},{id:"B3",text:"```ts\nconst literal = '$x$';\n```"}];
 const materials=()=>protectRewriteSection(source);
@@ -30,7 +30,7 @@ it("keeps source tables, code and formula assets inside one safe envelope",async
  const text="## Plan\n\n| Stage | Goal |\n| --- | --- |\n| Build | $x_1$ |\n\n```js\nlet count = 1;\n```\n\n![chart](https://example.com/chart.png)";
  const run=vi.fn(async(_stage,prompt)=>{
   const p=JSON.parse(prompt);expect(p.instruction).not.toContain("不输出内部 ID");
-  return "```markdown\n"+p.section.blocks.map((b:any)=>b.text).join("\n\n")+"\n```";
+  return "```markdown\n"+p.section.blocks.map((b:any)=>b.text).join("\n\n")+"\n"+p.endMarker+"\n```";
  });
  const result=await runRewritePipeline(text,"Fixture",run,new AbortController().signal);
  expect(run).toHaveBeenCalledTimes(1);expect(result.markdown).toContain("let count = 1;");expect(result.markdown).toContain("$x_1$");expect(result.markdown).not.toContain("⟦B");
@@ -38,7 +38,15 @@ it("keeps source tables, code and formula assets inside one safe envelope",async
 it("includes failed section and category, retains prior checkpoint, never saves the failed response",async()=>{
  const text="First section ".repeat(450)+"\n\nSecond section ".repeat(400);let calls=0;const save=vi.fn();
  await expect(runRewritePipeline(text,"Fixture",async(_stage,prompt)=>{
-  const blocks=JSON.parse(prompt).section.blocks;calls++;return calls===1?blocks.map((b:any)=>b.text).join("\n\n"):"missing all markers";
- },new AbortController().signal,undefined,{save})).rejects.toThrow(/第 2\/.*missing-open/);
+  const blocks=JSON.parse(prompt).section.blocks;calls++;return calls===1?blocks.map((b:any)=>b.text).join("\n\n")+"\n"+JSON.parse(prompt).endMarker:"missing all markers";
+ },new AbortController().signal,undefined,{save})).rejects.toThrow(/第 2\/.*missing-end/);
  expect(save).toHaveBeenCalledTimes(1);expect(save.mock.calls[0][0]).toHaveLength(1);
+});
+
+it("uses unambiguous one-way boundaries with a single section terminator",()=>{
+ const blocks=materials();const text=blocks.map(b=>b.open+"\n"+b.material.text).join("\n\n")+"\n"+rewriteSectionEnd(blocks);
+ expect(restoreRewriteBlocks(text,blocks)).toEqual(restoreRewriteBlocks(response(blocks),blocks));
+ for(const malformed of [text.replace(rewriteSectionEnd(blocks),""),text.replace(blocks[1].open,""),text.replace(blocks[1].open,blocks[1].open+blocks[1].open),text+"Explanation"])
+   expect(()=>restoreRewriteBlocks(malformed,blocks)).toThrow();
+ expect(restoreRewriteBlocks("```markdown\n"+text+"\n```",blocks)).toEqual(restoreRewriteBlocks(text,blocks));
 });

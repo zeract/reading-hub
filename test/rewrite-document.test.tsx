@@ -17,7 +17,7 @@ it("preserves the complete article structure from safe HTML through generation i
  const input=article(`<h2>Methods</h2><p><strong>Important</strong>: see <a href="${url}">the evidence</a> and <code>value_name</code>.</p><ol start="3"><li>Outer<ul><li>Inner</li></ul></li><li>Second</li></ol><blockquote><p>First quote</p><p>Second quote</p></blockquote><table><thead><tr><th>Method</th><th>Cost</th></tr></thead><tbody><tr><td>Linear</td><td>$O(n)$</td></tr></tbody></table><figure><img src="https://example.com/plot.png" alt="Result"><figcaption>Observed result, with limitations.</figcaption></figure><pre><code>if ready:\n    value = 1\n\n    print(value)</code></pre>${card}<p>Independently consult <a href="${url}">this report</a> for another claim.</p>`);
  const source=rewriteText(input);let calls=0;
  const result=await runRewritePipeline(source,"Fixture",async(_stage,prompt)=>{
-  calls++;return JSON.parse(prompt).section.blocks.map((b:any)=>b.text.replace('the evidence','对应证据').replace('Methods','方法')).join('\n\n');
+  calls++;return JSON.parse(prompt).section.blocks.map((b:any)=>b.text.replace('the evidence','对应证据').replace('Methods','方法')).join('\n\n')+'\n'+JSON.parse(prompt).endMarker;
  },new AbortController().signal);
  const $=load(renderToStaticMarkup(<AiMarkdownContent text={result.markdown} entryId="fixture"/>));
  expect(calls).toBe(1);expect($('h2').text()).toBe('方法');expect($('strong').text()).toBe('Important');expect($('ol').attr('start')).toBe('3');expect($('ol > li > ul > li').text()).toBe('Inner');expect($('blockquote p')).toHaveLength(2);expect($('tbody tr td')).toHaveLength(2);expect($('.katex')).toHaveLength(1);expect($('img')).toHaveLength(1);expect($('img').attr('src')).toBeUndefined();expect($('img').parent().text()).toContain('Observed result');expect($('pre code').text()).toContain('    value = 1\n\n    print(value)');expect($(`a[href="${url}"]`)).toHaveLength(3);expect($.text()).not.toContain('Read full story');expect($.text()).not.toContain('September 29');
@@ -43,11 +43,11 @@ it("keeps raw HTML inert and correctly nests block quotes, lists, escaped table 
 it("rejects asset movement across blocks and missing list structure without checkpointing",async()=>{
  const source='Paragraph one ![figure](<https://example.com/plot.png>).\n\n- First\n- Second';let saved=false;
  await expect(runRewritePipeline(source,'Fixture',async(_s,p)=>{
-  const blocks=JSON.parse(p).section.blocks;const marker=blocks[0].text.match(/⟦RH[^⟧]+A1⟧/)[0];
+  const blocks=JSON.parse(p).section.blocks;const marker=blocks[0].text.match(/⟦B\d+_A1⟧/)[0];
   blocks[0].text=blocks[0].text.replace(marker,'');blocks[1].text=blocks[1].text.replace('- First',`- First ${marker}`);
-  return blocks.map((b:any)=>b.text).join('\n\n');
+  return blocks.map((b:any)=>b.text).join('\n\n')+'\n'+JSON.parse(p).endMarker;
  },new AbortController().signal,undefined,{save:()=>{saved=true;}})).rejects.toThrow('asset-marker');expect(saved).toBe(false);
- await expect(runRewritePipeline(source,'Fixture',async(_s,p)=>JSON.parse(p).section.blocks.map((b:any)=>b.text.replace('- First\n- Second','First and Second')).join('\n\n'),new AbortController().signal)).rejects.toThrow('列表');
+ await expect(runRewritePipeline(source,'Fixture',async(_s,p)=>JSON.parse(p).section.blocks.map((b:any)=>b.text.replace('- First\n- Second','First and Second')).join('\n\n')+'\n'+JSON.parse(p).endMarker,new AbortController().signal)).rejects.toThrow('列表');
 });
 
 it("keeps conditional-probability pipes inside table cells and fenced code literal",()=>{

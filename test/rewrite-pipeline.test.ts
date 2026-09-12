@@ -12,7 +12,7 @@ it("writes a short article once, without planning, review or repair",async()=>{
 it("uses 28 calls instead of 85 for 28 sections and preserves complete source",async()=>{
  const text=Array.from({length:28},(_,i)=>`Section ${i+1}. `+"Every detail remains in the original source. ".repeat(90).trim()).join("\n\n");
  const inputs:any[]=[];
- const result=await runRewritePipeline(text,"Fixture",async(stage,prompt)=>{inputs.push(JSON.parse(prompt));return JSON.parse(prompt).section.blocks.map(b=>b.text.replace(/(⟧\n)[\s\S]*?(\n⟦\/)/,`$1中文术语（terminology）${inputs.length}$2`)).join("\n\n");},signal());
+ const result=await runRewritePipeline(text,"Fixture",async(stage,prompt)=>{const input=JSON.parse(prompt);inputs.push(input);return input.section.blocks.map(b=>b.text.replace(/(⟧\n)[\s\S]*/,`$1中文术语（terminology）${inputs.length}`)).join("\n\n")+"\n"+input.endMarker;},signal());
  expect(result.quality.requests).toBe(28);expect(inputs.flatMap(x=>x.section.blocks.map(b=>b.text.replace(/^⟦[^⟧]+⟧\n|\n⟦\/[^⟧]+⟧$/g,""))).join("\n\n")).toBe(text);
  expect(inputs[1].previousEnding).toBe(result.sections[0]);expect(inputs[2].opening).toBe(result.sections[0]);
 });
@@ -55,4 +55,23 @@ it("rejects missing coverage, duplicated ids, and review/source section mismatch
  expect(()=>parseReview('{"issues":[]}',section)).toThrow("coverage");
  expect(()=>parseReview('{"coverage":[{"blockId":"B1","covered":true},{"blockId":"B1","covered":true}],"issues":[]}',section)).toThrow("coverage");
  const run=vi.fn();await expect(reviewRewrite(source,"Fixture",[],run,signal())).rejects.toThrow("结构");expect(run).not.toHaveBeenCalled();
+});
+it("keeps immutable code, image and formula blocks out of model output while retaining their source positions",async()=>{
+ const text='Before.\n\n```js\nlet x = 1;\n```\n\n![chart](<https://example.com/a.png>)\n\n$$\nx_1=1\n$$\n\nAfter.';
+ const run=vi.fn(async(stage,prompt)=>{const p=JSON.parse(prompt);expect(p.section.blocks).toHaveLength(2);expect(p.assets).toHaveLength(3);return rewriteModelResponse(prompt,stage);});
+ const r=await runRewritePipeline(text,'Fixture',run,signal());expect(r.markdown).toBe(text);expect(run).toHaveBeenCalledTimes(1);expect(r.document.blocks).toHaveLength(5);
+ const empty=vi.fn();const fixed=await runRewritePipeline('```js\nlet x = 1;\n```','Fixture',empty,signal());expect(empty).not.toHaveBeenCalled();expect(fixed.quality.requests).toBe(0);
+});
+
+it("rejects copying a program-owned code block into another generated block",async()=>{
+ const text='Prose.\n\n```js\nlet x = 1;\n```';
+ await expect(runRewritePipeline(text,'Fixture',async(_stage,prompt)=>{
+   const p=JSON.parse(prompt);return p.section.blocks[0].text+'\n\n```js\nlet x = 1;\n```\n'+p.endMarker;
+ },signal())).rejects.toThrow('literal/code/unknown');
+});
+
+it("does not checkpoint an immutable-only section when cancelled during progress",async()=>{
+ const controller=new AbortController();const save=vi.fn(),run=vi.fn();
+ await expect(runRewritePipeline('```js\nlet x = 1;\n```','Fixture',run,controller.signal,()=>controller.abort(),{save})).rejects.toThrow();
+ expect(save).not.toHaveBeenCalled();expect(run).not.toHaveBeenCalled();
 });
