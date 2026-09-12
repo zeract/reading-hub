@@ -53,6 +53,8 @@ export const IPC_CHANNELS = {
     cancelRead: "entry:cancel-read",
     openEmbedded: "entry:open-embedded",
     loadImage: "entry:load-image",
+    loadVideo: "entry:load-video",
+    cancelVideo: "entry:cancel-video",
     cancelImage: "entry:cancel-image",
     markRead: "entry:read",
     markFavorite: "entry:favorite",
@@ -110,6 +112,8 @@ export interface ReaderApi {
   readEntryLanguageVariant(id: string, url: string, requestId: string, inlineLanguage?: string): Promise<ReaderArticle>;
   cancelEntryRead(requestId: string): Promise<void>;
   openEmbeddedEntry(id: string): Promise<void>;
+  loadArticleVideo(id: string, url: string, requestId: string): Promise<{ bytes: Uint8Array; contentType: string }>;
+  cancelArticleVideo(requestId: string): Promise<void>;
   loadArticleImage(id: string, imageUrl: string, requestId: string): Promise<string>;
   cancelArticleImage(requestId: string): Promise<void>;
   loadSourceIcon(id: string): Promise<string | undefined>;

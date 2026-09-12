@@ -24,7 +24,7 @@ function fixture(read: (...args: any[]) => Promise<unknown>) {
   const source = { id: "source", kind: "rss", url: "https://example.com/feed" };
   const database = { getEntry: () => entry, getSource: () => source };
   const articles = { read: vi.fn(read), readLanguageVariant: vi.fn(read) };
-  const http = { getImageDataUrl: vi.fn(read) };
+  const http = { getImageDataUrl: vi.fn(read), getVideo: vi.fn(read) };
   const viewer = { open: vi.fn(async () => undefined) };
   const drain = registerIpcHandlers({ database, articles, http, inAppArticleViewer: viewer } as unknown as ApplicationServices);
   const sender = new Sender();
@@ -170,5 +170,16 @@ it("validates inline language input and forwards it with a scoped cancellation s
     await expect(handler({ sender: run.sender }, "entry", "https://example.com/post", "invalid-inline", invalid)).rejects.toThrow("语言版本标识无效");
   }
   expect(run.articles.readLanguageVariant).toHaveBeenCalledTimes(1);
+  await run.drain();
+});
+
+
+it("cancels video downloads when their owning window closes", async () => {
+  const run = fixture(async (_url, options) => new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true })));
+  const handler = electron.handlers.get(IPC_CHANNELS.entry.loadVideo)!;
+  const pending = handler({ sender: run.sender }, "entry", "https://example.com/video.webm", "video-fixture").catch(error => error);
+  expect(run.http.getVideo).toHaveBeenCalledWith("https://example.com/video.webm", expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  run.sender.destroy(); await pending;
+  expect(run.http.getVideo.mock.calls[0][1].signal.aborted).toBe(true);
   await run.drain();
 });

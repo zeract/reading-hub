@@ -1,3 +1,4 @@
+import { downloadReaderVideo } from "./reader-video";
 import { assertFeedSubscriptionUrl, assertPublicUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 import { abortError, throwIfAborted, withRequestTimeout } from "./cancellation";
 import { discardResponseBody, formatByteLimit, readResponseBytes } from "./byte-limit";
@@ -108,6 +109,7 @@ export class PublicHttpClient {
 
   private readonly imageTasks = new SharedTaskMap<string>();
   private readonly imagePool = new TaskPool(4, 64);
+  private readonly videoPool = new TaskPool(2, 8);
   private readonly imageCache = new WeightedLruCache<string, string>({
     maxEntries: 24,
     maxWeight: 32 * 1_048_576,
@@ -216,6 +218,10 @@ export class PublicHttpClient {
    * redirect is checked against the same public-address and robots policy as
    * article requests.
    */
+  async getVideo(rawUrl: string, options?: Pick<PublicRequestOptions, "signal">) {
+    return this.videoPool.run(() => downloadReaderVideo(rawUrl, this.robots, options?.signal), options?.signal);
+  }
+
   async getImageDataUrl(rawUrl: string, rawReferrer: string, options?: Pick<PublicRequestOptions, "signal">): Promise<string> {
     throwIfAborted(options?.signal);
     const referrer = assertPublicUrl(rawReferrer).toString();

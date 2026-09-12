@@ -1121,6 +1121,23 @@ function prepareSanitizedContent(rawHtml: string, pageUrl: string, resourceBaseU
       }
       continue;
     }
+    if (tag === "video") {
+      // Build a fresh inert media block; remote sources, autoplay, event
+      // handlers and unsupported-browser fallback prose never reach the DOM.
+      const candidates = [element.attr("src"), ...element.find("source").toArray().map(node => $(node).attr("src"))];
+      const sources = [...new Set(candidates.map(value => safeUrl(value, resourceBaseUrl)).filter((value): value is string => Boolean(value?.startsWith("https:"))))].slice(0, 4);
+      const block = $("<div>").attr("class", "reader-video");
+      if (sources.length) {
+        const video = $("<video>").attr("controls", "").attr("playsinline", "").attr("preload", "none").attr("data-reader-video-sources", JSON.stringify(sources));
+        const label = normalText(element.attr("aria-label") || element.attr("title") || "文章视频");
+        video.attr("aria-label", label.slice(0, 300));
+        block.append(video, $("<button>").attr("type", "button").attr("data-reader-video-load", "true").attr("class", "action-button").text("加载视频"));
+        block.append($("<span>").attr("role", "status").attr("class", "reader-video-status"));
+      }
+      block.append($("<a>").attr("href", pageUrl).text(sources.length ? "在原文中观看视频" : "此处包含暂不支持的视频 · 在原文中观看"));
+      element.replaceWith(block);
+      continue;
+    }
     if (!ALLOWED_TAGS.has(tag)) {
       element.replaceWith(element.contents());
       continue;
@@ -1335,7 +1352,7 @@ function removeDuplicateImagesIn($: ReturnType<typeof load>, container: any, pag
  * Preserve the body and only supplement image-free articles after sanitization.
  */
 function selectReaderCover(contentHtml: string, candidate?: string): string | undefined {
-  return candidate && !load(contentHtml)("img").length ? candidate : undefined;
+  return candidate && !load(contentHtml)("img, video").length ? candidate : undefined;
 }
 
 function imageUrlKey(value: string | undefined): string | undefined {

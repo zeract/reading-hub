@@ -473,3 +473,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .source-action-feedback { display: grid; min-width: 0; gap: 8px; margin: 12px 0; }
 .source-action-feedback p { margin: 0; font: 400 12px/1.45 var(--font-ui); }
 .source-action-status { color: var(--muted); }
+
+.reader-video { display: grid; gap: .65em; margin: 1.35em auto; max-width: 100%; }
+.reader-video video { display: block; width: 100%; max-height: min(480px, 60vh); object-fit: contain; background: var(--shade); }
+.reader-video button { justify-self: start; }
+.reader-video-status { color: var(--muted); font-size: .85em; }
+
+.reader-video button[hidden] { display: none; }

@@ -18,6 +18,7 @@ database.markFavorite("success", true);
 const fixtureImage = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 let pauseImages = false;
 let imageLoads = 0;
+let videoLoads = 0;
 let sourceIconReads = 0;
 let pauseSourceIcons = true;
 const pendingSourceIcons = [];
@@ -228,13 +229,15 @@ const channels = [
     config: { authorName: "Alexander Long-Name 同名作者", openAlexId: `A${index + 1}` }
     }));
   }],
+  ["entry:load-video", () => { videoLoads++; throw new Error("Synthetic video failure"); }],
+  ["entry:cancel-video", () => undefined],
   ["entry:cancel-read", (_event, requestId) => { cancelledReads.add(requestId); }],
   ["entry:read-content", (_event, id, requestId) => {
     contentReadRequests++;
     assert(typeof requestId === "string" && requestId.startsWith("read-"), "Read IPC must carry an opaque request id.");
     if (pauseRead) return new Promise((resolve) => { pendingRead = { requestId, resolve }; readRequested?.(); });
     if (id === "failure") throw new Error("Deterministic offline fixture");
-    return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", activeLanguage: "zh", languageVariants: ["zh", "en"].map(language => ({ url: `https://example.com/${id}`, language, inlineLanguage: language, label: language === "zh" ? "中文" : "English" })), contentHtml: '<p>This is a deterministic reader fixture.</p><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image" data-reader-zoomable="true" tabindex="0">' } };
+    return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", activeLanguage: "zh", languageVariants: ["zh", "en"].map(language => ({ url: `https://example.com/${id}`, language, inlineLanguage: language, label: language === "zh" ? "中文" : "English" })), contentHtml: '<p>This is a deterministic reader fixture.</p><div class="reader-video"><video controls preload="none" data-reader-video-sources="[&quot;https://fixture.invalid/video.webm&quot;]"></video><button class="action-button" data-reader-video-load>加载视频</button><span role="status" class="reader-video-status"></span><a href="https://example.com/success">在原文中观看视频</a></div><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image" data-reader-zoomable="true" tabindex="0">' } };
   }],
   ["entry:read-language-variant", (_event, id, url, requestId, inlineLanguage) => {
     assert(url === `https://example.com/${id}` && ["zh", "en"].includes(inlineLanguage), "Inline IPC must carry its approved body separately from the URL.");
@@ -397,6 +400,11 @@ try {
 
   await waitFor(window, "document.querySelector('.article-body img')?.naturalWidth === 1");
   assert(imageLoads === 1, `A native body image error must invoke the proxy exactly once (observed ${imageLoads}).`);
+  assert(videoLoads === 0, "Reader videos must not download on article open.");
+  await evaluate("document.querySelector('[data-reader-video-load]').click()");
+  await waitFor(window, "document.querySelector('.reader-video-status')?.textContent.includes('原文中观看')");
+  assert(videoLoads === 1, "Explicit video loading must make one IPC request.");
+  assert(await evaluate("!document.querySelector('[data-reader-video-load]').disabled"), "A failed video must allow retry.");
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
     await setViewport(width, height, scale);
     for (const language of ["English", "中文"]) {

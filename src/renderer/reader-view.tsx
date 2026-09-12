@@ -1,3 +1,4 @@
+import { useReaderVideos } from "./use-reader-videos";
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AiArticleContext, AiProviderId, AiProviderSettings, AiSelectionContext, AiSelectionIntent, Entry, ReaderArticle, ReaderLanguageVariant, Source } from "../shared/types";
 import { AppIcon } from "./ui-icons";
@@ -91,6 +92,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const [languageSwitching, setLanguageSwitching] = useState<string>();
   const [languageSwitchError, setLanguageSwitchError] = useState<string>();
   const articleBodyElement = useRef<HTMLDivElement>(null);
+  useReaderVideos(entry.id, article, articleBodyElement);
   const readerWorkspaceElement = useRef<HTMLDivElement>(null);
   const { documentId, loadImage: loadReaderImage } = useReaderImages(entry.id, article, readerWorkspaceElement);
   const beginArticleRequest = useReaderRequest(entry.id);

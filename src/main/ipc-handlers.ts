@@ -175,6 +175,15 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     const entry = findEntry(database, requireEntityId(entryId));
     return foregroundRequests.run(event.sender, (signal) => inAppArticleViewer.open(entry.url, entry.title, signal));
   });
+  handle(IPC_CHANNELS.entry.loadVideo, (event, entryId: unknown, rawUrl: unknown, rawRequestId: unknown) => {
+    findEntry(database, requireEntityId(entryId));
+    const url = requireText(rawUrl, "视频地址无效。", 4_000);
+    const requestId = requireText(rawRequestId, "视频请求标识无效。", 160);
+    return foregroundRequests.run(event.sender, signal => http.getVideo(url, { signal }), `video:${requestId}`);
+  });
+  handle(IPC_CHANNELS.entry.cancelVideo, (event, rawRequestId: unknown) => {
+    foregroundRequests.cancel(event.sender, `video:${requireText(rawRequestId, "视频请求标识无效。", 160)}`);
+  });
   handle(IPC_CHANNELS.entry.loadImage, (event, entryId: unknown, imageUrl: unknown, rawRequestId: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));
     const url = requireText(imageUrl, "图片地址无效。", 4_000);
