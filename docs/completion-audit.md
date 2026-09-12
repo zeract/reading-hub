@@ -351,4 +351,4 @@ Schema 15 新增任务类型与分段恢复记录。恢复仅存派生中文，�
 
 验证：197 文件 / 2015 测试通过，build、style、diff check 通过。报告、备份和模型派生正文不提交 Git。开发环境需重启加载维护逻辑；该篇旧稿直接重新打开即可查看，无需重新生成。
 
-本次线上 reader audit 完成 73 项，69 通过；两个知乎样本页面不可用、两项 Yanyan Jiang 论文 HTTP 403，未绕过或计为通过。报告 /tmp/card-actions-online.json。
+本次线上 reader audit 完成 73 项，68 通过；两个知乎样本页面/登录跳转不可用、两项 Yanyan Jiang 论文 HTTP 403、一个 Lil’Log 样本首图代理请求超时，未绕过或计为通过。报告 /tmp/card-actions-online.json。
