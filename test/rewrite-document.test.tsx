@@ -77,3 +77,17 @@ it("does not absorb unwrapped author prose around a valid preview container",()=
  const a=article(`<div>Important unwrapped explanation.${card}An independent conclusion.</div>`);
  const text=rewriteText(a);expect(text).toContain('Important unwrapped explanation.');expect(text).toContain('An independent conclusion.');expect(text.match(/\[Report\]/g)).toHaveLength(1);
 });
+
+it.each(["阅读完整文章","阅读完整故事","阅读全文","Read full story"])("removes legacy card action %s while keeping the title, next section and image",action=>{
+ const cards=rewriteCards(article(card).contentHtml),title=`[报告](<${url}>)`,after='## GRPO\n\n![图示](<https://example.com/figure.png>)';
+ const result=repairRewriteCards(`${title}\n\n阅读完整文章\n\n[${action}](<${url}>)\n\n${after}`,cards);
+ expect(result.markdown).toBe(`${title}\n\n${after}`);expect(repairRewriteCards(result.markdown,cards).repairs).toHaveLength(0);
+ expect(repairRewriteCards(`${title}\n\n${action}`,cards).markdown).toBe(title);
+});
+it("never chooses an action as the replacement title or removes the same words from prose/code",()=>{
+ const cards=rewriteCards(article(card).contentHtml),text=`[阅读完整故事](<${url}>)\n\n[报告](<${url}>)`;
+ expect(repairRewriteCards(text,cards).markdown).toBe(`[报告](<${url}>)`);
+ const prose="此处说明如何阅读完整故事。\n\n`阅读完整文章`\n\n[阅读完整故事](<https://example.com/unrelated>)";
+ expect(repairRewriteCards(prose,cards).markdown).toBe(prose);
+ expect(repairRewriteCards(text,[]).markdown).toBe(text);
+});

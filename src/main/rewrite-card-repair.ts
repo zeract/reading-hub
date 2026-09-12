@@ -1,8 +1,8 @@
 import { rewriteLinkAt } from "./rewrite-assets";
-import type { RewriteCard } from "./rewrite-cards";
+import { isRewriteCardAction, type RewriteCard } from "./rewrite-cards";
 
 const date=/^(?:\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}(?:,?\s+\d{4})?)$/i;
-const action=/^(?:read (?:full (?:story|article)|more)|continue reading|阅读全文|继续阅读|阅读更多|[·•.])$/i;
+const separator=/^[·•.]$/;
 
 /** Repair only adjacent fragments attributable to a source-proven preview. Never merge across prose. */
 export function repairRewriteCards(markdown:string,cards:ReadonlyArray<RewriteCard>) {
@@ -15,21 +15,21 @@ export function repairRewriteCards(markdown:string,cards:ReadonlyArray<RewriteCa
         const link=rewriteLinkAt(text,i);
         if(link){
           if(link.image || !card.destinations.includes(link.destination))return;
-          if(link.destination===card.url){links++;labels.push(link.label);if(action.test(link.label))evidence=true;}
+          if(link.destination===card.url){links++;labels.push(link.label);if(isRewriteCardAction(link.label))evidence=true;}
           else evidence=true;
           i=link.end;
         } else rest+=text[i++];
       }
       rest=rest.replace(/\[图片说明[：:]([^\]]+)\]/g,(whole,title)=>title.trim()===card.title?(evidence=true,""):whole).trim();
-      if(rest && !card.labels.includes(rest) && rest!==card.title && !action.test(rest) && !date.test(rest))return;
-      return {links,labels,evidence:evidence || action.test(rest) || date.test(rest)};
+      if(rest && !card.labels.includes(rest) && rest!==card.title && !isRewriteCardAction(rest) && !separator.test(rest) && !date.test(rest))return;
+      return {links,labels,evidence:evidence || isRewriteCardAction(rest) || date.test(rest)};
     }
     for(let i=0;i<parts.length;i++){
       const first=classify(parts[i].text);if(!first?.links)continue;
       let end=i+1,count=first.links,evidence=first.evidence;const labels=[...first.labels];
       while(end<parts.length){const next=classify(parts[end].text);if(!next)break;count+=next.links;evidence ||= next.evidence;labels.push(...next.labels);end++;}
-      if(count<2 || !evidence)continue;
-      const label=labels.find(s=>/[\u3400-\u9fff]/.test(s) && !/^(链接|来源|阅读全文)$/.test(s)) || card.title.replace(/[\\\[\]]/g,"\\$&");
+      if(!count || (count<2 && end===i+1) || !evidence)continue;
+      const label=labels.find(s=>/[\u3400-\u9fff]/.test(s) && !/^(链接|来源)$/.test(s) && !isRewriteCardAction(s)) || card.title.replace(/[\\\[\]]/g,"\\$&");
       const edit={start:parts[i].start,end:parts[end-1].end,text:`[${label}](<${card.url.replace(/[<>\s]/g,c=>encodeURIComponent(c))}>)`};
       parts.splice(i,end-i,edit);edits.push(edit);
       repairs.push({url:card.url,fragments:end-i,links:count});

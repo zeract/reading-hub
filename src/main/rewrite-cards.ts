@@ -1,7 +1,10 @@
 import { load } from "cheerio";
 
 export interface RewriteCard { url:string; title:string; labels:string[]; destinations:string[] }
-const more = /^(?:read (?:full (?:story|article)|more)|continue reading|阅读全文|继续阅读|阅读更多)$/i;
+/** UI actions may have been translated literally in legacy drafts; they are never article titles. */
+export function isRewriteCardAction(value:string):boolean {
+  return /^(?:read (?:full (?:story|article)|more)|continue reading|阅读(?:全文|更多|(?:完整|全部)(?:文章|故事|内容))|继续阅读)$/i.test(value.trim().replace(/\s+/g," "));
+}
 const metadata = /^(?:[·•.\s]*)(?:(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|[A-Za-z]+\s+\d{1,2}(?:,?\s+\d{4})?)[·•.\s]*)?$/;
 const headingSelector = "h1,h2,h3,h4,h5,h6";
 
@@ -18,7 +21,7 @@ export function normalizeRewriteCards($:ReturnType<typeof load>): RewriteCard[] 
       if(box.find(headingSelector).length!==1 || box.find("p,pre,table,ul,ol,blockquote").length)break;
       const same=box.find("a[href]").filter((_j,a)=>$(a).attr("href")===url);
       const cover=same.find("img").length>0;
-      const action=same.toArray().some(a=>more.test($(a).text().trim()));
+      const action=same.toArray().some(a=>isRewriteCardAction($(a).text()));
       if(cover && action && same.length>=3){
         const remainder=box.clone();remainder.find("a,img,picture").remove();
         if(metadata.test(remainder.text().trim()))chosen=box;
