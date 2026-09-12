@@ -1,3 +1,4 @@
+import { readerLanguageChoices } from "../shared/reader-languages";
 import { useReaderVideos } from "./use-reader-videos";
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AiArticleContext, AiProviderId, AiProviderSettings, AiSelectionContext, AiSelectionIntent, Entry, ReaderArticle, ReaderLanguageVariant, Source } from "../shared/types";
@@ -290,8 +291,8 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   };
   const assistantVisible = assistantState === "open";
   const assistantMounted = assistantState !== "closed";
-  const languageVariants = article?.languageVariants || [];
-  const hasLanguageVariants = languageVariants.length > 1;
+  const languageVariants = readerLanguageChoices(article?.languageVariants || [], article?.url || entry.url, article?.activeLanguage);
+  const hasLanguageVariants = languageVariants.length > 1 || languageVariants.some(item => item.url !== article?.url || item.language !== article?.activeLanguage);
 
   return <section className={`reader-view reader--${article?.renderProfile || "standard"}`} data-reader-preset={preferences.preset} style={readerStyle} aria-label="应用内阅读器">
     <div className="reader-heading">

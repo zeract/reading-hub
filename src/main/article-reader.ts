@@ -1,3 +1,5 @@
+import { readerLanguageChoices } from "../shared/reader-languages";
+import { normalizeReaderLayout } from "./reader-layout";
 import { selectInlineLanguages } from "./reader-inline-languages";
 import { assertAnswerNavigation, selectZhihuAnswer } from "./zhihu-answer-identity";
 import { Readability } from "@mozilla/readability";
@@ -485,12 +487,13 @@ export class ArticleReader {
 
   private rememberLanguageVariants(entryId: string, article: ReaderArticle, knownVariants: ReaderLanguageVariant[], signal?: AbortSignal): ReaderArticle {
     throwIfAborted(signal);
-    const variants = mergeReaderLanguageVariants(knownVariants.filter(item => !item.inlineLanguage || !sameCanonicalUrl(item.url, article.url)), article.languageVariants || [], article.url, article.activeLanguage);
+    const mergedVariants = mergeReaderLanguageVariants(knownVariants.filter(item => !item.inlineLanguage || !sameCanonicalUrl(item.url, article.url)), article.languageVariants || [], article.url, article.activeLanguage);
+    const variants = readerLanguageChoices(mergedVariants, article.url, article.activeLanguage);
     const activeLanguage = article.activeLanguage || variants.find((variant) => sameCanonicalUrl(variant.url, article.url))?.language;
     const result = variants.length
       ? { ...article, languageVariants: variants, ...(activeLanguage ? { activeLanguage } : {}) }
       : article;
-    if (variants.length > 1) {
+    if (variants.length > 1 || variants.some(item => !sameCanonicalUrl(item.url, article.url) || (item.inlineLanguage && item.inlineLanguage !== activeLanguage))) {
       this.languageVariants.set(entryId, { expiresAt: Date.now() + LANGUAGE_VARIANT_CACHE_TTL_MS, variants });
     } else {
       this.languageVariants.delete(entryId);
@@ -694,7 +697,7 @@ function finishReaderArticle(prepared: PreparedReaderArticle, sanitised: Sanitiz
       coverImageUrl,
       renderProfile: effectiveReaderProfile(prepared.renderProfile, sanitised.formulaRenderPolicy),
       formulaDiagnostics: sanitised.formulaDiagnostics,
-      ...(prepared.languageVariants.length ? { languageVariants: prepared.languageVariants } : {}),
+      ...(prepared.languageVariants.length ? { languageVariants: readerLanguageChoices(prepared.languageVariants, prepared.pageUrl, prepared.activeLanguage) } : {}),
       ...(prepared.activeLanguage ? { activeLanguage: prepared.activeLanguage } : {}),
       contentHtml
     },
@@ -779,6 +782,7 @@ function removeReaderNoise(
   pageUrl: string,
   options: { preserveFormulaAssets?: boolean } = {}
 ): void {
+  normalizeReaderLayout($, content, pageUrl);
   preserveZhihuInlineAnnotations($, content, pageUrl);
   content.find(BASE_NOISE_SELECTOR).each((_index: number, node: any) => {
     const element = $(node);
@@ -813,7 +817,12 @@ function removeDuplicateArticleChrome(
   entrySummary?: string
 ): void {
   content.find(ARTICLE_CHROME_SELECTOR).remove();
-  content.find("h1,h2,h3,h4,h5,h6").find("a.headerlink,a[href^='#']").remove();
+  content.find("h1,h2,h3,h4,h5,h6").find("a.headerlink,a[href^='#']").each((_index: number, node: any) => {
+    const anchor = $(node);
+    const text = normalText(anchor.text());
+    if (!text || /^[#¶§🔗]+$/u.test(text)) anchor.remove();
+    else anchor.replaceWith(anchor.contents());
+  });
   content.find("h1, h2, h3").each((_index: number, node: any) => {
     if (normalText($(node).text()) === title) $(node).remove();
   });

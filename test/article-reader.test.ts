@@ -121,7 +121,6 @@ describe("article reader extraction", () => {
 
     expect(result?.article.activeLanguage).toBe("und");
     expect(result?.article.languageVariants).toEqual([
-      { url: entry.url, language: "und", label: "原文" },
       { url: "https://example.com/articles/translated", language: "zh", label: "中文" }
     ]);
   });

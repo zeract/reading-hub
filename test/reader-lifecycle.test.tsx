@@ -115,3 +115,18 @@ it("switches between same-URL bodies with only the selected language pressed", a
   await act(async () => buttons()[0].click());
   expect(language).toHaveBeenLastCalledWith(card.id, card.url, expect.any(String), "zh");
 });
+
+it("shows a sole English alternative while hiding all other languages", async () => {
+  read.mockResolvedValue({ kind: "article", article: { ...article, activeLanguage: "fr", languageVariants: [
+    { url: card.url, language: "fr", label: "Français" },
+    { url: "https://example.com/en", language: "en", label: "English" },
+    { url: "https://example.com/ja", language: "ja", label: "日本語" }
+  ] } });
+  const language = vi.fn(async () => ({ ...article, url: "https://example.com/en", activeLanguage: "en" }));
+  window.reader.readEntryLanguageVariant = language;
+  await render();
+  const buttons = container.querySelectorAll<HTMLButtonElement>(".reader-language-switcher button");
+  expect(buttons).toHaveLength(1); expect(buttons[0].textContent).toBe("English");
+  await act(async () => buttons[0].click());
+  expect(language).toHaveBeenCalledWith(card.id, "https://example.com/en", expect.any(String), undefined);
+});
