@@ -1,3 +1,5 @@
+import { useArticleRewrite } from "./use-article-rewrite";
+import { RewriteControls, RewrittenArticle } from "./article-rewrite";
 import { readerLanguageChoices } from "../shared/reader-languages";
 import { useReaderVideos } from "./use-reader-videos";
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -77,6 +79,8 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   onToggleReaderOnly: () => void;
   onOpenSettings: () => void;
 }) {
+  const rewrite = useArticleRewrite(entry.id);
+  const rewriteVisible = rewrite.visible && Boolean(rewrite.record?.result);
   const [article, setArticle] = useState<ReaderArticle>();
   // Keep the wrapper stable too: a fresh dangerouslySetInnerHTML object makes
   // React rewrite identical HTML, losing proxied images and live DOM state.
@@ -93,7 +97,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const [languageSwitching, setLanguageSwitching] = useState<string>();
   const [languageSwitchError, setLanguageSwitchError] = useState<string>();
   const articleBodyElement = useRef<HTMLDivElement>(null);
-  useReaderVideos(entry.id, article, articleBodyElement);
+  useReaderVideos(entry.id, rewriteVisible ? undefined : article, articleBodyElement);
   const readerWorkspaceElement = useRef<HTMLDivElement>(null);
   const { documentId, loadImage: loadReaderImage } = useReaderImages(entry.id, article, readerWorkspaceElement);
   const beginArticleRequest = useReaderRequest(entry.id);
@@ -310,7 +314,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
                 key={`${variant.url}|${variant.inlineLanguage || ""}`}
                 className={active ? "selected" : ""}
                 aria-pressed={active}
-                disabled={active || Boolean(languageSwitching)}
+                disabled={active || Boolean(languageSwitching) || rewriteVisible}
                 title={active ? `当前：${variant.label}` : `切换为${variant.label}`}
                 onClick={() => void switchLanguage(variant)}
               >{languageSwitching === `${variant.url}|${variant.inlineLanguage || ""}` ? "…" : variant.label}</button>;
@@ -321,19 +325,24 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
       </div>
       <div className="reader-toolbar-actions">
         <button type="button" className={`toolbar-icon-button favorite-button${entry.favorite ? " is-favorite" : ""}`} aria-pressed={entry.favorite} aria-label={entry.favorite ? "取消收藏" : "收藏文章"} title={entry.favorite ? "取消收藏" : "收藏文章"} disabled={favoriteUpdating} onClick={() => void onUpdateEntry(entry, "favorite", !entry.favorite)}>{entry.favorite ? "★" : "☆"}</button>
-        <button type="button" className="toolbar-icon-button ai-toggle" aria-pressed={assistantVisible} aria-label={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} title={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} disabled={!article} onClick={toggleAssistant}>✦</button>
+        <button type="button" className="toolbar-icon-button ai-toggle" aria-pressed={assistantVisible} aria-label={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} title={assistantVisible ? "最小化 AI 学习" : "打开 AI 学习"} disabled={!article || rewriteVisible} onClick={toggleAssistant}>✦</button>
         <button type="button" className="toolbar-icon-button reader-focus-toggle" aria-pressed={readerOnly} aria-label={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} title={readerOnly ? "退出沉浸阅读" : "仅保留阅读栏"} onClick={onToggleReaderOnly}>⛶</button>
         <button type="button" className="toolbar-icon-button external-button" aria-label="在浏览器中打开原文" title="在浏览器中打开原文" onClick={() => void window.reader.openExternal(article?.url || entry.url)}>↗</button>
       </div>
     </header>
+    <RewriteControls state={rewrite} onOpenSettings={onOpenSettings} onToggle={()=>{
+      clearTextSelection();setAssistantState("closed");rewrite.setVisible(!rewriteVisible);
+      readerWorkspaceElement.current?.querySelector(".reader-scroll")?.scrollTo({top:0});
+    }}/>
     <ReaderPreferenceStatus />
     </div>
     <div ref={readerWorkspaceElement} className={`reader-workspace ${assistantVisible && article ? "reader-workspace--assistant" : ""}`}>
       <div className="reader-scroll" onScroll={textSelection ? clearTextSelection : undefined}>
-        {loading && <div className="reader-loading" role="status"><span className="loading-mark" /><p>正在准备适合阅读的正文…</p></div>}
-        {!loading && embedded && <div className="reader-embedded"><h1>{entry.title}</h1><p>该站点不允许自动提取正文，原文已在 Reading Hub 的受限窗口中打开。该窗口不使用外部浏览器，也不会复用登录态。</p><button type="button" className="primary-action" onClick={() => void loadArticle()}>重新打开原文</button></div>}
-        {!loading && error && <div className="reader-failure"><h1>{entry.title}</h1><p>{error}</p><div><button type="button" className="primary-action" onClick={() => void loadArticle()}>重试</button><button type="button" onClick={openEmbedded}>在应用内打开原文</button></div></div>}
-        {!loading && article && <article key={documentId} className="reader-article" onErrorCapture={handleContentError}>
+        {!rewriteVisible && loading && <div className="reader-loading" role="status"><span className="loading-mark" /><p>正在准备适合阅读的正文…</p></div>}
+        {!rewriteVisible && !loading && embedded && <div className="reader-embedded"><h1>{entry.title}</h1><p>该站点不允许自动提取正文，原文已在 Reading Hub 的受限窗口中打开。该窗口不使用外部浏览器，也不会复用登录态。</p><button type="button" className="primary-action" onClick={() => void loadArticle()}>重新打开原文</button></div>}
+        {!rewriteVisible && !loading && error && <div className="reader-failure"><h1>{entry.title}</h1><p>{error}</p><div><button type="button" className="primary-action" onClick={() => void loadArticle()}>重试</button><button type="button" onClick={openEmbedded}>在应用内打开原文</button></div></div>}
+        <RewrittenArticle state={rewrite}/>
+        {!loading && article && <article key={documentId} className="reader-article" hidden={rewriteVisible} onErrorCapture={handleContentError}>
           <header><p className="eyebrow">{source?.title || "已保存内容"}</p><h1>{article.title}</h1>{(article.author || date) && <p className="reader-byline">{article.author}{article.author && date ? " · " : ""}{date}</p>}</header>
           {article.contentMode === "feed_body" && <aside className="reader-content-notice" role="note">正在显示订阅 Feed 提供的正文。该原页未被自动读取；请使用右上角 ↗ 查看完整原文。</aside>}
           {article.contentMode === "feed_summary" && <aside className="reader-content-notice" role="note">正在显示订阅 Feed 提供的内容摘要。该原页不允许自动读取；请使用右上角 ↗ 查看完整原文。</aside>}

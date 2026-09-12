@@ -26,7 +26,7 @@ beforeEach(async () => {
   configure = vi.fn().mockResolvedValue(undefined);
   clear = vi.fn().mockResolvedValue(undefined);
   vi.spyOn(window, "confirm").mockReturnValue(true);
-  Object.defineProperty(window, "reader", { configurable: true, value: { listAiModels: vi.fn().mockResolvedValue({ models: [], stale: false }), listAiProviders: list, configureAiProvider: configure, clearAiProvider: clear } });
+  Object.defineProperty(window, "reader", { configurable: true, value: { getRewriteSettings: vi.fn(async () => undefined), listAiModels: vi.fn().mockResolvedValue({ models: [], stale: false }), listAiProviders: list, configureAiProvider: configure, clearAiProvider: clear } });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   await act(async () => root.render(<ReaderPreferencesProvider><SettingsView onClose={() => undefined} windowFullscreen={false} /></ReaderPreferencesProvider>));
   await act(async () => [...container.querySelectorAll<HTMLButtonElement>("nav button")].find((button) => button.textContent === "AI 功能")!.click());

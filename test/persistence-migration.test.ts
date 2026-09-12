@@ -39,7 +39,7 @@ describe("persistent schema migrations", () => {
       database = undefined;
 
       const firstOpen = inspectMigrationState(filePath);
-      expect(firstOpen.versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+      expect(firstOpen.versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
       expect(firstOpen.originCount).toBe(2);
       expect(firstOpen.hasSourceMaintenance).toBe(true);
       expect(firstOpen.hasFacetTables).toBe(true);

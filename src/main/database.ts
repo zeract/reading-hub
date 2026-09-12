@@ -1,3 +1,4 @@
+import { RewriteStore } from "./persistence/rewrite-store";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import type {
@@ -309,6 +310,7 @@ function subscriptionFromRow(row: SubscriptionRow, scope: SubscriptionScope = de
 
 export class ReadingDatabase {
   private readonly db: Database.Database;
+  readonly rewrites: RewriteStore;
   private readonly changeListeners = new Set<(revision: number) => void>();
   private publishedRevision = -1;
   private publishingChanges = false;
@@ -361,6 +363,7 @@ export class ReadingDatabase {
       this.db.pragma("journal_mode = WAL");
       this.db.pragma("foreign_keys = ON");
       migrateDatabaseSchema(this.db);
+      this.rewrites = new RewriteStore(this.db);
       this.publishedRevision = this.getLibraryRevision();
     } catch (error) {
       // A failed constructor has no owner that can later close its handle.

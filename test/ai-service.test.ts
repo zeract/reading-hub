@@ -264,3 +264,19 @@ describe("AI learning service", () => {
     expect(secrets.values).toHaveLength(0);
   });
 });
+
+it("uses a task-specific rewrite model without changing the learning model or exposing credentials", async () => {
+  const secrets = new MemorySecrets();
+  const requests: any[] = [];
+  const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+    requests.push(JSON.parse(String(init.body)));
+    return eventStream(['data: {"choices":[{"delta":{"content":"中文改写正文。"},"finish_reason":null}]}\n\n','data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n','data: [DONE]\n\n']);
+  });
+  const service = new AiService(secrets, fetcher);
+  await configure(service,"deepseek","learning-model");
+  const answer=await service.rewriteChunk({provider:"deepseek",model:"rewrite-model",effort:"default"},"article material",new AbortController().signal);
+  expect(answer.model).toBe("rewrite-model");expect(requests[0].model).toBe("rewrite-model");
+  expect(requests[0].messages[0].content).toContain("中文技术编辑");
+  expect((await service.listProviders()).find(p=>p.id==="deepseek")?.model).toBe("learning-model");
+  expect(JSON.stringify(answer)).not.toContain("test-key");await service.close();
+});

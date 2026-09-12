@@ -43,6 +43,7 @@ const IPC_CHANNELS = {
     revision: "library:revision",
     changed: "library:changed"
   },
+  rewrite: { get: "rewrite:get", generate: "rewrite:generate", cancel: "rewrite:cancel", remove: "rewrite:remove", settings: "rewrite:settings", configure: "rewrite:configure" },
   ai: {
     listProviders: "ai:list-providers",
     listModels: "ai:list-models",
@@ -64,6 +65,12 @@ const IPC_CHANNELS = {
 } as const satisfies typeof SharedIpcChannels;
 
 const readerApi: ReaderApi = {
+  getArticleRewrite: (id) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.get, id),
+  generateArticleRewrite: (id) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.generate, id),
+  cancelArticleRewrite: (id) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.cancel, id),
+  removeArticleRewrite: (id) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.remove, id),
+  getRewriteSettings: () => ipcRenderer.invoke(IPC_CHANNELS.rewrite.settings),
+  configureRewrite: (settings) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.configure, settings),
   previewSource: (url) => ipcRenderer.invoke(IPC_CHANNELS.source.preview, url),
   confirmSource: (token) => ipcRenderer.invoke(IPC_CHANNELS.source.confirm, token),
   importOpml: () => ipcRenderer.invoke(IPC_CHANNELS.source.importOpml),

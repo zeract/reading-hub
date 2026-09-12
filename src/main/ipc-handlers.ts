@@ -1,3 +1,4 @@
+import { parseRewriteSettings } from "../shared/rewrite";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { awaitWithAbort, combineAbortSignals, throwIfAborted } from "./cancellation";
@@ -199,6 +200,13 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
   handle(IPC_CHANNELS.entry.markFavorite, (_event, id: unknown, favorite: unknown) =>
     database.markFavorite(requireEntityId(id), requireBoolean(favorite)));
   handle(IPC_CHANNELS.entry.dismiss, (_event, id: unknown) => database.dismissEntry(requireEntityId(id)));
+
+  handle(IPC_CHANNELS.rewrite.get, (_event, id: unknown) => database.rewrites.get(requireEntityId(id)));
+  handle(IPC_CHANNELS.rewrite.generate, (_event, id: unknown) => services.rewrites.enqueue(requireEntityId(id)));
+  handle(IPC_CHANNELS.rewrite.cancel, (_event, id: unknown) => services.rewrites.cancel(requireEntityId(id)));
+  handle(IPC_CHANNELS.rewrite.remove, (_event, id: unknown) => services.rewrites.remove(requireEntityId(id)));
+  handle(IPC_CHANNELS.rewrite.settings, () => database.rewrites.settings());
+  handle(IPC_CHANNELS.rewrite.configure, (_event, input: unknown) => services.rewrites.configure(parseRewriteSettings(input)));
 
   handle(IPC_CHANNELS.ai.listModels, (event, provider: unknown, refresh: unknown) => {
     const id = parseAiProviderId(provider);

@@ -101,7 +101,18 @@ const fixtureProviders = [
   { id: "deepseek", label: "Fixture secondary AI", model: "fixture-secondary", configured: true, requiresApiKey: true }
 ];
 const aiAnswer = "## Fixture answer\n\nInline $x^2$.\n\n$$\ny=x+1\n$$";
+database.rewrites.configure({ provider: "deepseek", model: "fixture-rewrite", effort: "default" });
 const channels = [
+  ["rewrite:get", (_event,id) => database.rewrites.get(id)],
+  ["rewrite:settings", () => database.rewrites.settings()],
+  ["rewrite:configure", (_event,settings) => { database.rewrites.configure(settings); return settings; }],
+  ["rewrite:cancel", (_event,id) => { database.rewrites.cancel(id);return database.rewrites.get(id); }],
+  ["rewrite:remove", (_event,id) => database.rewrites.remove(id)],
+  ["rewrite:generate", (_event,id) => {
+    const job=database.rewrites.enqueue(id,database.rewrites.settings());database.rewrites.progress(job,1,1);
+    database.rewrites.finish(job,{markdown:aiAnswer,provider:"deepseek",model:"fixture-rewrite",createdAt:Date.now(),sourceUrl:"https://example.com/success",sourceTitle:"Fixture rewrite",sourceHash:"fixture",promptVersion:1});
+    return job;
+  }],
   ["source:import-opml", () => new Promise((resolve) => {
     importRequests++;
     completeImport = (result = { cancelled: true, imported: 0, existing: 0, skipped: 0 }) => resolve(result);
@@ -312,7 +323,7 @@ window.webContents.on("preload-error", (_event, preloadPath, error) => {
 const unsubscribe = database.onLibraryChanged((revision) => {
   if (!window.isDestroyed()) window.webContents.send("library:changed", revision);
 });
-async function evaluate(code) { return window.webContents.executeJavaScript(code); }
+async function evaluate(code) { try { return await window.webContents.executeJavaScript(code); } catch (error) { throw new Error(`Renderer fixture expression failed: ${code}`, { cause: error }); } }
 async function setViewport(width, height, scale) {
   window.setSize(width, height);
   window.webContents.setZoomFactor(scale);
@@ -531,6 +542,17 @@ try {
   assert(aiRequests === 3 && cancelledAiRequests.has(activeAiRequest), "Closing the assistant must cancel its unfinished request over IPC.");
   window.webContents.send("ai:stream", { requestId: activeAiRequest, type: "delta", text: "Late fixture" });
   aiMode = "complete";
+    await evaluate("Array.from(document.querySelectorAll('.reader-rewrite-actions button')).find(b=>/生成.*改写/.test(b.textContent)).click()");
+    await waitFor(window,"Array.from(document.querySelectorAll('.reader-rewrite-actions button')).some(b=>b.textContent==='查看中文改写') && !Array.from(document.querySelectorAll('.reader-rewrite-actions button')).some(b=>b.textContent==='取消改写')");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    await evaluate("Array.from(document.querySelectorAll('.reader-rewrite-actions button')).find(b=>b.textContent==='查看中文改写').click()");
+    await waitFor(window,"Boolean(document.querySelector('.reader-rewritten .katex'))");
+    assert(await evaluate("document.querySelector('.reader-article[hidden]') !== null && document.documentElement.scrollWidth <= innerWidth + 1"), "Rewritten body must be separate from the original and fit the viewport.");
+    await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    await writeFile(path.join(tmpdir(), `reading-hub-rewrite-${width}.png`), (await window.capturePage()).toPNG());
+    await evaluate("Array.from(document.querySelectorAll('.reader-rewrite-actions button')).find(b=>b.textContent==='查看原文').click()");
+  }
   providerListFailure = true;
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
     await setViewport(width, height, scale);
@@ -783,7 +805,7 @@ try {
   providerListFailure = false;
   await evaluate("document.querySelector('.ai-provider-feedback button').focus()");
   await pressKey("Enter");
-  await waitFor(window, "!document.querySelector('.ai-provider-feedback') && document.querySelectorAll('.settings-ai-form select option').length === 2");
+  await waitFor(window, "!document.querySelector('.ai-provider-feedback') && document.querySelector('.settings-ai-form select').options.length === 2");
   assert(settingsSaves === 0, "Retrying initial provider discovery must not write configuration.");
   const listsBeforeSelection = providerLists;
   await evaluate(`(() => { const provider = document.querySelector('.settings-ai-form select'); provider.value = 'deepseek'; provider.dispatchEvent(new Event('change', { bubbles: true })); })()`);

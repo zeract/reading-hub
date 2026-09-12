@@ -1990,7 +1990,13 @@ function installFormulaOutput(
     const renderedHtml = output.get(item.record.id);
     if (renderedHtml === undefined) fallback.add(item.record.id);
     else rendered.add(item.record.id);
-    $(anchors[0]).replaceWith(renderedHtml ?? renderMathFallback(item.record));
+    const markup = $(renderedHtml ?? renderMathFallback(item.record));
+    // SVG has no readable formula text. Preserve the locally parsed source
+    // on its generated container for derived documents and accessibility.
+    markup.find("mjx-container").addBack("mjx-container").first()
+      .attr("data-reader-tex", item.record.tex)
+      .attr("data-reader-math-display", String(item.record.displayMode));
+    $(anchors[0]).replaceWith(markup);
   }
 
   // Unknown generated-anchor markup cannot be source content. Remove it and

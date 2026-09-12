@@ -1,3 +1,4 @@
+import type { ArticleRewrite, RewriteSettings } from "./rewrite";
 import type {
   AiModelCatalog,
   AiProviderConfiguration,
@@ -63,6 +64,7 @@ export const IPC_CHANNELS = {
     revision: "library:revision",
     changed: "library:changed"
   },
+  rewrite: { get: "rewrite:get", generate: "rewrite:generate", cancel: "rewrite:cancel", remove: "rewrite:remove", settings: "rewrite:settings", configure: "rewrite:configure" },
   ai: {
     listProviders: "ai:list-providers",
     listModels: "ai:list-models",
@@ -88,6 +90,12 @@ export type PendingPreview = Awaited<ReturnType<ReaderApi["previewSource"]>>;
 
 /** Renderer-safe surface exposed by preload through `window.reader`. */
 export interface ReaderApi {
+  getArticleRewrite(entryId: string): Promise<ArticleRewrite | undefined>;
+  generateArticleRewrite(entryId: string): Promise<ArticleRewrite>;
+  cancelArticleRewrite(entryId: string): Promise<ArticleRewrite | undefined>;
+  removeArticleRewrite(entryId: string): Promise<void>;
+  getRewriteSettings(): Promise<RewriteSettings | undefined>;
+  configureRewrite(settings: RewriteSettings): Promise<RewriteSettings>;
   previewSource(url: string): Promise<{ token: string; probe: ProbeResult }>;
   confirmSource(token: string): Promise<Source>;
   importOpml(): Promise<OpmlImportResult>;

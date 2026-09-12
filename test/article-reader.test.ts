@@ -1,3 +1,4 @@
+import { rewriteText } from "../src/main/rewrite-content";
 import katex from "katex";
 import { describe, expect, it, vi } from "vitest";
 import { load } from "cheerio";
@@ -582,7 +583,9 @@ describe("article reader extraction", () => {
     expect(document(".reader-equation--mathjax.reader-equation--native-tags")).toHaveLength(1);
     expect(document(".reader-equation__tag")).toHaveLength(0);
     expect(content).toContain("mjx-container");
-    expect(content).not.toMatch(/\\(?:begin|end|tag|label|eqref|rcos)/);
+    expect(document("mjx-container[data-reader-tex]").length).toBeGreaterThan(0);
+    expect(rewriteText(result!.article)).toContain("\\begin{align}");
+    expect(document.text()).not.toMatch(/\\(?:begin|end|tag|label|eqref|rcos)/);
     expect(nonFormula.text()).toContain("由公式");
   });
 

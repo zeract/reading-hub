@@ -12,6 +12,7 @@ beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   list = vi.fn().mockResolvedValue(providers); start = vi.fn().mockResolvedValue(undefined); settings = vi.fn();
   Object.defineProperty(window, "reader", { configurable: true, value: {
+    getArticleRewrite: vi.fn(async () => undefined),
     readEntry: vi.fn(async () => ({ kind: "article", article: { entryId: entry.id, url: entry.url, title: "Fixture", renderProfile: "standard", contentHtml: "<p>Fixture text to translate.</p>" } })),
     cancelEntryRead: vi.fn(async () => undefined), listAiProviders: list,
     onAiStream: vi.fn(() => () => undefined), startAiStream: start, cancelAiStream: vi.fn(async () => undefined)

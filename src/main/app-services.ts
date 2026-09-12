@@ -1,3 +1,4 @@
+import { RewriteService } from "./rewrite-service";
 import { AcademicAuthorConnector } from "./academic";
 import { AiService } from "./ai-service";
 import { ArticleReader } from "./article-reader";
@@ -30,6 +31,7 @@ export interface ApplicationServices {
   x: XConnector;
   academic: AcademicAuthorConnector;
   learningAssistant: AiService;
+  rewrites: RewriteService;
   articles: ArticleReader;
   inAppArticleViewer: InAppArticleViewer;
   beginShutdown(): void;
@@ -48,6 +50,7 @@ export async function createApplicationServices(databasePath: string): Promise<A
   try {
     services = assembleApplicationServices(database);
     await services.sources.removeUnsubscribedSources();
+    if (!process.env.READING_HUB_READER_AUDIT) services.rewrites.start();
     return services;
   } catch (error) {
     // Until assembly returns, no caller owns a service capable of closing
@@ -93,6 +96,7 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
   const sources = new SourceService(database, probe, sync, zhihuFollow, registry);
   const articles = new ArticleReader(http, renderer, (url, options) => zhihuFollow.renderArticle(url, options));
   const inAppArticleViewer = new InAppArticleViewer();
+  const rewrites = new RewriteService(database, articles, learningAssistant);
 
   sources.retireUnsupportedXPublicProfileSources();
   if (resumedAutomaticSources) {
@@ -112,12 +116,15 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
 
   let closePromise: Promise<void> | undefined;
   let assistantClose: Promise<void> | undefined;
+  let rewriteClose: Promise<void> | undefined;
   const beginShutdown = () => {
     zhihuFollow.close();
     sync.beginShutdown();
+    rewriteClose ??= rewrites.close();
     assistantClose ??= learningAssistant.close();
     // Begin cleanup before the IPC drain; retain any failure for close().
     void assistantClose.catch(() => undefined);
+    void rewriteClose.catch(() => undefined);
   };
   // Failed service assembly is not a library visit. Advance this boundary
   // only after assembly succeeds, so the next launch still sees new arrivals.
@@ -132,12 +139,13 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
     x,
     academic,
     learningAssistant,
+    rewrites,
     articles,
     inAppArticleViewer,
     beginShutdown,
     close: () => {
       beginShutdown();
-      closePromise ??= Promise.all([sync.close(), assistantClose]).then(() => database.close());
+      closePromise ??= Promise.all([sync.close(), assistantClose, rewriteClose]).then(() => database.close());
       return closePromise;
     }
   };

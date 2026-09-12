@@ -1,3 +1,4 @@
+import { RewriteSettingsCard } from "./rewrite-settings";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { type AiProviderId, type AiReasoningEffort } from "../shared/types";
 import { AiModelPicker } from "./ai-model-picker";
@@ -117,6 +118,7 @@ export function SettingsView({ onClose, windowFullscreen }: { onClose: () => voi
           {error && <p className="error ai-provider-error" role="alert" tabIndex={0}>{error}</p>}
           <div className="settings-actions"><button type="submit" className="primary" disabled={!selected || controlsDisabled}>{providerState === "loading" ? "正在读取…" : busy ? "正在保存…" : "保存设置"}</button>{selected?.configured && <button type="button" className="danger" onClick={() => void clearAiSettings()} disabled={controlsDisabled}>{usingLocalCodex ? "恢复默认" : "清除密钥"}</button>}</div>
         </form>
+        <RewriteSettingsCard providers={providers} />
       </>}
     </section>
   </main>;

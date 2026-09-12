@@ -23,6 +23,7 @@ beforeEach(async () => {
   list = vi.fn().mockResolvedValue(providers);
   start = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(window, "reader", { configurable: true, value: {
+    getArticleRewrite: vi.fn(async () => undefined),
     readEntry: vi.fn(async () => ({ kind: "article", article: { entryId: entry.id, url: entry.url, title: "Fixture", renderProfile: "standard", contentHtml: "<p>Fixture body</p>" } })),
     cancelEntryRead: vi.fn(async () => undefined), listAiProviders: list,
     onAiStream: vi.fn((listener) => { receive = listener; return () => undefined; }), startAiStream: start, cancelAiStream: vi.fn(async () => undefined)

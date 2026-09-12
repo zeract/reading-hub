@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { AiModelCatalog, AiProviderSettings } from "../shared/types";
 
 /** Late provider/refresh responses must never replace another provider's draft. */
@@ -6,6 +6,7 @@ export function AiModelPicker({ provider, model, effort, disabled, onModel, onEf
   provider: AiProviderSettings; model: string; effort: string; disabled: boolean;
   onModel(value: string): void; onEffort(value: string): void;
 }) {
+  const listId = useId();
   const [catalog, setCatalog] = useState<AiModelCatalog>({ models: [], stale: true });
   const [loading, setLoading] = useState(false);
   const generation = useRef(0);
@@ -44,8 +45,8 @@ export function AiModelPicker({ provider, model, effort, disabled, onModel, onEf
     {local ? <label>模型<select value={model} onChange={event => chooseModel(event.target.value)} disabled={disabled}>
       {missing && <option value={model}>{model}（已保存，未在当前列表中）</option>}
       {models.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
-    </select></label> : <label>模型<input list={`ai-models-${provider.id}`} value={model} onChange={event => onModel(event.target.value)} placeholder="选择或输入模型名称" required disabled={disabled} />
-      <datalist id={`ai-models-${provider.id}`}>{models.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</datalist>
+    </select></label> : <label>模型<input list={listId} value={model} onChange={event => onModel(event.target.value)} placeholder="选择或输入模型名称" required disabled={disabled} />
+      <datalist id={listId}>{models.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</datalist>
     </label>}
     <div className="settings-actions"><button type="button" onClick={() => void reload(true)} disabled={disabled || loading}>{loading ? "正在获取模型…" : "刷新模型"}</button></div>
     <p className="settings-help" role="status">{catalog.error || (catalog.updatedAt ? `${catalog.stale ? "使用缓存；" : ""}模型列表更新于 ${new Date(catalog.updatedAt).toLocaleString()}` : "首次获取模型列表。API 服务请先保存密钥。")}</p>

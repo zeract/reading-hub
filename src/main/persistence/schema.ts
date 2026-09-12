@@ -9,7 +9,7 @@ import { ENTRY_ORDER_BY } from "./entry-order";
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 12;
+export const CURRENT_SCHEMA_VERSION = 13;
 
 type SqliteDatabase = Database.Database;
 
@@ -358,6 +358,25 @@ const MIGRATIONS: readonly SchemaMigration[] = [
       // from publication dates or rewrite their original collection time.
       database.exec("ALTER TABLE entries ADD COLUMN initial_collection INTEGER NOT NULL DEFAULT 0 CHECK(initial_collection IN (0, 1))");
     }
+  },
+  {
+    version: 13,
+    name: "local-article-rewrites",
+    up: (database) => database.exec(`
+      CREATE TABLE rewrite_settings (id INTEGER PRIMARY KEY CHECK(id=1), settings_json TEXT NOT NULL);
+      CREATE TABLE article_rewrites (
+        entry_id TEXT PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+        job_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('queued','running','complete','failed','cancelled')),
+        settings_json TEXT NOT NULL,
+        completed_chunks INTEGER NOT NULL DEFAULT 0,
+        total_chunks INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        error TEXT,
+        result_json TEXT
+      );
+      CREATE INDEX article_rewrites_status ON article_rewrites(status, updated_at, entry_id);
+    `)
   }
 ];
 
