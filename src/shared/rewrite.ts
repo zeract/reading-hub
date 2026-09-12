@@ -42,8 +42,6 @@ export interface RewriteResult {
     quality?: RewriteQuality;
     sections?: string[];
     review?: RewriteReview;
-    cardRepair?: {version:1;repairedAt:number;sourceHash:string;groups:number};
-    structureRepair?: { version:1; provider:AiProviderId; model:string; repairedAt:number; sourceHash:string };
 }
 export interface ArticleRewrite {
     entryId: string;

@@ -12,7 +12,7 @@ it('normalizes explicitly styled code before losing CSS without guessing JSON pr
 it('allows Chinese word order while preserving links, code and nested formatting',async()=>{
  const source=articleDocumentFromHtml('<p>Use <a href="https://example.com"><strong>this guide</strong></a> to configure <code>agent</code>.</p>');
  const result=await rewriteArticleDocument(source,'Original title',async(_s,p)=>{
-  const input=JSON.parse(p);expect(input.instruction).toContain('智能体');const blocks=input.section.blocks.map((b:any)=>{
+  const input=JSON.parse(p);expect(input.instruction).toContain('不预设');const blocks=input.section.blocks.map((b:any)=>{
    if(b.id==='rewrite-title.text')return {...b,text:'中文标题'};
    const ref=b.text.match(/⟦([^/⟧]+)⟧⟦([^/⟧]+)⟧this guide⟦\/[^⟧]+⟧⟦\/[^⟧]+⟧/)!,code=b.text.match(/⟦[^⟧]+\/⟧/)![0];
    return {...b,text:`配置 ${code} 时，请参阅 ⟦${ref[1]}⟧⟦${ref[2]}⟧本指南⟦/${ref[2]}⟧⟦/${ref[1]}⟧。`};
@@ -35,13 +35,6 @@ it('resumes paragraph checkpoints including the title without new requests',asyn
  const doc=articleDocumentFromHtml('<p>Agent <em>workflow</em>.</p>');let checkpoint:any;
  const result=await rewriteArticleDocument(doc,'Title',async(_s,p)=>JSON.stringify({blocks:JSON.parse(p).section.blocks}),new AbortController().signal,undefined,undefined,c=>checkpoint=c,true);
  const run=vi.fn();const resumed=await rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,checkpoint,undefined,true);expect(resumed.content).toEqual(result.content);expect(resumed.rewrittenTitle).toBe('Title');expect(run).not.toHaveBeenCalled();
-});
-it('restores historical JSON only on an exact source code match, idempotently',async()=>{
- const {repairLegacyJsonCode}=await import('../src/main/rewrite-code-repair');
- const source=articleDocumentFromHtml('<pre><code>{\n "deny": ["Read(.env*)"]\n}</code></pre>');
- const r:any={promptVersion:10,markdown:'前文\n\n{ "deny": \\["Read(.env\\*)"\\] }\n\n后文'};
- const fixed=repairLegacyJsonCode(r,source);expect(fixed.repaired).toBe(1);expect(fixed.result.markdown).toContain('```json');expect(repairLegacyJsonCode(fixed.result,source).repaired).toBe(0);
- expect(repairLegacyJsonCode({...r,markdown:r.markdown.replace('Read','Write')},source).repaired).toBe(0);
 });
 it('repairs only one failed paragraph reference and never loops',async()=>{
  const source=articleDocumentFromHtml('<p>Use <code>x</code>.</p><p>Second paragraph.</p>');

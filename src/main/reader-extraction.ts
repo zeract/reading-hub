@@ -1,3 +1,4 @@
+import {normalizeKeyValueGrids} from "./reader-key-values";
 import {normalizePreformattedCode} from "./reader-code";
 import {articleDocumentFromHtml} from "./article-document";
 import { hydrateLazyImages, imageSource, selectReaderCover } from "./reader-media";
@@ -336,6 +337,7 @@ function collectGlobalMathMacros($: ReturnType<typeof load>): MathMacroScope {
 function prepareReaderArticle(html: string, pageUrl: string, entry: Entry, inlineLanguage?: string): PreparedReaderArticle | undefined {
   let $ = load(html);
   normalizePreformattedCode($);
+  normalizeKeyValueGrids($);
   html = $.html();
   const resourceBaseUrl = htmlDocumentBaseUrl($, pageUrl);
   const globalMathMacros = collectGlobalMathMacros($);

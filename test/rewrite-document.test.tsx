@@ -3,7 +3,6 @@ import {load} from "cheerio";
 import {renderToStaticMarkup} from "react-dom/server";
 import {rewriteText} from "../src/main/rewrite-content";
 import {rewriteCards} from "../src/main/rewrite-cards";
-import {repairRewriteCards,repairRewriteCardSections} from "../src/main/rewrite-card-repair";
 import {runRewritePipeline,makeRewriteSections} from "../src/main/rewrite-pipeline";
 import {AiMarkdownContent} from "../src/renderer/ai-markdown";
 import {extractReaderArticle} from "../src/main/article-reader";
@@ -27,15 +26,6 @@ it("does not classify normal linked headings, repeated prose or a gallery as a p
  const a=article(`<h2><a href="${url}">An authored section</a></h2><p>${prose}<a href="${url}">Read full story</a></p><figure><a href="${url}"><img src="https://example.com/plot.png"></a></figure>`);
  expect(rewriteCards(a.contentHtml)).toHaveLength(0);expect(rewriteText(a)).toContain('An authored section');expect(rewriteText(a)).toContain('![图片]');
 });
-it("collapses only adjacent legacy fragments belonging to a source-proven card",()=>{
- const cards=rewriteCards(article(card).contentHtml);
- const label=`[报告](<${url}>)`;
- const text=`正文继续引用 ${label}，不能删除。\n\n${label} ${label}[图片说明：Report]\n\n[Report](<${url}>)\n\n${label}[Author](<https://example.com/author>)\n\n·\n\n2025 年 9 月 29 日\n\n阅读全文\n\n${label}\n\n另一段论述 ${label}。`;
- const result=repairRewriteCards(text,cards);
- expect(result.markdown).toBe(`正文继续引用 ${label}，不能删除。\n\n${label}\n\n另一段论述 ${label}。`);
- expect(result.repairs).toHaveLength(1);
- expect(repairRewriteCards(result.markdown,cards).repairs).toHaveLength(0);
-});
 it("keeps raw HTML inert and correctly nests block quotes, lists, escaped table pipes and long fences",()=>{
  const text='> 1. Outer\n>    - Inner\n\n| A | B |\n| --- | --- |\n| a \\| b | `value` |\n\n````python\n```\n$x$\n````\n\n<script>alert(1)</script>';
  const $=load(renderToStaticMarkup(<AiMarkdownContent text={text}/>));expect($('blockquote ol ul li').text()).toBe('Inner');expect($('td').first().text()).toBe('a | b');expect($('pre').text()).toBe('```\n$x$');expect($('script')).toHaveLength(0);expect($('.katex')).toHaveLength(0);
@@ -55,41 +45,15 @@ it("keeps conditional-probability pipes inside table cells and fenced code liter
  expect($('th')).toHaveLength(2);expect($('td')).toHaveLength(2);expect($('.katex')).toHaveLength(3);expect($('pre').text()).toBe('| $literal | text$ |');expect($.html()).not.toMatch(/[\uE000-\uF8FF]/);
 });
 
-it("repairs a preview crossing old generation sections without losing neighboring prose",()=>{
- const cards=rewriteCards(article(card).contentHtml);const link=`[报告](<${url}>)`;
- const sections=[`之前正文。\n\n${link} ${link}`,`${link}\n\n阅读全文\n\n${link}\n\n之后正文。`];
- const result=repairRewriteCardSections(sections,cards);
- expect(result.sections).toHaveLength(2);expect(result.markdown).toBe(`之前正文。\n\n${link}\n\n之后正文。`);expect(result.repairs).toHaveLength(1);
-});
-
 it("serializes headerless tables, captions, literal pipes and deletion markup without raw HTML",()=>{
  const source=rewriteText(article('<table><caption>Measured results</caption><tr><td>a | b</td><td><del>old</del><br>new</td></tr><tr><td>c</td><td>d</td></tr></table>'));
  const $=load(renderToStaticMarkup(<AiMarkdownContent text={source}/>));
  expect(source).not.toContain('<table');expect($('tbody tr')).toHaveLength(2);expect($('td').first().text()).toBe('a | b');expect($('del').text()).toBe('old');expect($.text()).toContain('Measured results');expect($('td').eq(1).text()).toContain('new');
 });
 
-it("does not collapse repeated standalone prose links merely because their destination has a card elsewhere",()=>{
- const cards=rewriteCards(article(card).contentHtml),text=`[One](<${url}>)\n\n[Two](<${url}>)`;
- expect(repairRewriteCards(text,cards).markdown).toBe(text);
-});
-
 it("does not absorb unwrapped author prose around a valid preview container",()=>{
  const a=article(`<div>Important unwrapped explanation.${card}An independent conclusion.</div>`);
  const text=rewriteText(a);expect(text).toContain('Important unwrapped explanation.');expect(text).toContain('An independent conclusion.');expect(text.match(/\[Report\]/g)).toHaveLength(1);
-});
-
-it.each(["阅读完整文章","阅读完整故事","阅读全文","Read full story"])("removes legacy card action %s while keeping the title, next section and image",action=>{
- const cards=rewriteCards(article(card).contentHtml),title=`[报告](<${url}>)`,after='## GRPO\n\n![图示](<https://example.com/figure.png>)';
- const result=repairRewriteCards(`${title}\n\n阅读完整文章\n\n[${action}](<${url}>)\n\n${after}`,cards);
- expect(result.markdown).toBe(`${title}\n\n${after}`);expect(repairRewriteCards(result.markdown,cards).repairs).toHaveLength(0);
- expect(repairRewriteCards(`${title}\n\n${action}`,cards).markdown).toBe(title);
-});
-it("never chooses an action as the replacement title or removes the same words from prose/code",()=>{
- const cards=rewriteCards(article(card).contentHtml),text=`[阅读完整故事](<${url}>)\n\n[报告](<${url}>)`;
- expect(repairRewriteCards(text,cards).markdown).toBe(`[报告](<${url}>)`);
- const prose="此处说明如何阅读完整故事。\n\n`阅读完整文章`\n\n[阅读完整故事](<https://example.com/unrelated>)";
- expect(repairRewriteCards(prose,cards).markdown).toBe(prose);
- expect(repairRewriteCards(text,[]).markdown).toBe(text);
 });
 
 it.each([
