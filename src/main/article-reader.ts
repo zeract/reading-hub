@@ -1192,6 +1192,12 @@ function prepareSanitizedContent(rawHtml: string, pageUrl: string, resourceBaseU
       if (!label && !hasContents) element.text(href);
       continue;
     }
+    if (tag === "ol") {
+      const start=element.attr("start");
+      removeAllAttributes(element);
+      if(start && /^-?\d{1,9}$/.test(start))element.attr("start",String(Number(start)));
+      continue;
+    }
     removeAllAttributes(element);
   }
   preserveTextMath($, root, formulas);

@@ -1,4 +1,4 @@
-import { protectRewriteAssets, restoreRewriteAssets } from "./rewrite-assets";
+import { protectRewriteSection, restoreRewriteSection } from "./rewrite-assets";
 import { throwIfAborted } from "./cancellation";
 import { RewriteContentError, splitRewriteText } from "./rewrite-content";
 import type { RewriteRequestStage, RewriteQuality, RewriteIssue, RewriteReview } from "../shared/rewrite";
@@ -34,11 +34,10 @@ export async function runRewritePipeline(text: string, title: string, run: Rewri
   let requests = 0;
   for (let i = drafts.length; i < sections.length; i++) {
     progress("write", i, sections.length);
-    const material = protectRewriteAssets(sections[i].blocks.map(b=>b.text).join("\n\n"));
-    const protectedBlocks = material.text.split("\n\n");
-    const answer = await request(run, "write", { instruction: WRITE + "结构标记必须逐一原样保留：独立的 ⟦...A...⟧ 代表公式、图片、代码或编号引用，不能展开、改写、删除或重复。成对的 ⟦...L...⟧中文锚文本⟦/...L...⟧ 代表链接，只翻译其中的原有锚文本并自然融入句子，不另加（链接）、来源或裸网址。assets 提供被保护内容以便理解，不能重复输出。", title, section: {...sections[i], blocks: protectedBlocks.map((text,j)=>({id:sections[i].blocks[j]?.id || `B${j+1}`,text}))}, assets:material.atoms,
+    const materials = protectRewriteSection(sections[i].blocks);
+    const answer = await request(run, "write", { instruction: WRITE + "每个正文块的 B 标记必须原样成对保留，按给定顺序输出，不在标记外添加文字。保留块内标题级别、列表嵌套、表格行列和引用结构；允许在段落内自然改写。结构标记必须逐一原样保留：独立的 ⟦...A...⟧ 代表公式、图片、代码或编号引用，不能展开、改写、删除或重复。成对的 ⟦...L...⟧中文锚文本⟦/...L...⟧ 代表链接，只翻译其中的原有锚文本并自然融入句子，不另加（链接）、来源或裸网址。assets 提供被保护内容以便理解，不能重复输出。", title, section: {...sections[i], blocks: materials.map(b=>({id:b.id,text:`${b.open}\n${b.material.text}\n${b.close}`}))}, assets:materials.flatMap(b=>b.material.atoms.map(a=>({...a,blockId:b.id}))),
       opening: i > 1 ? drafts[0].slice(0, 1200) : "", previousEnding: drafts[i-1]?.slice(-1500) || "" }, signal);
-    const draft = restoreRewriteAssets(answer, material);
+    const draft = restoreRewriteSection(answer, materials);
     assertDraft(draft);
     if ([...drafts, draft].join("\n\n").length > 240_000) throw new RewriteContentError("改写超过保存上限，已有改写仍保留。");
     drafts.push(draft); requests++;

@@ -1,9 +1,12 @@
-import { tokenizeAiMath } from "../shared/markdown-math";
+import { createHash } from "node:crypto";
+import { createReaderMarkdown } from "../shared/markdown";
+import TurndownService from "turndown";
+import { gfm } from "turndown-plugin-gfm";
+import { normalizeRewriteCards } from "./rewrite-cards";
 import { load } from "cheerio";
 import type { ReaderArticle } from "../shared/types";
-export const REWRITE_PROMPT_VERSION = 6;
+export const REWRITE_PROMPT_VERSION = 7;
 const markdownLabel = (value:string) => value.replace(/[\\\[\]]/g, "\\$&").replace(/\s+/g," ");
-const linkMarkdownLabel = (value:string) => tokenizeAiMath(value).map(part=>part.type==="math" ? `$${part.tex}$` : markdownLabel(part.value)).join("");
 const markdownDestination = (value:string) => value.replace(/[<>\s]/g,c=>encodeURIComponent(c));
 const imageMarkdown = (url:string,alt:string) => `![${markdownLabel(alt || "图片")}](<${markdownDestination(url)}>)`;
 
@@ -25,6 +28,11 @@ export function rewriteText(article: ReaderArticle): string {
     if (article.contentMode === "feed_summary")
         throw new RewriteContentError("当前只有订阅摘要，无法生成完整改写。请先在原文中确认正文可用。");
     const $ = load(`<main>${article.contentHtml}</main>`);
+    normalizeRewriteCards($);
+    const frozen: string[] = [];
+    let prefix=`READER${createHash("sha256").update(article.contentHtml).digest("hex").slice(0,12)}ASSET`;
+    while(article.contentHtml.includes(prefix))prefix+="X";
+    const freeze = (value:string) => {const id=`${prefix}${frozen.length}END`;frozen.push(value);return id;};
     if (article.coverImageUrl && !$("main img").length) $("main").prepend($("<img>").attr("src",article.coverImageUrl));
     const mathSelector = "[data-reader-equation], .katex-display, .katex, mjx-container, [data-reader-tex], .reader-math-source";
     const formulas: Array<{node: ReturnType<typeof $>; tex:string; display:boolean; tag?:string}> = [];
@@ -48,26 +56,47 @@ export function rewriteText(article: ReaderArticle): string {
     for (const {node,tex,display,tag} of formulas) {
         let content = resolveReferences(tex);
         if(display && tag && !/\\tag\*?\{/.test(content)) content += `\\tag{${tag.replace(/[{}]/g,"")}}`;
-        node.replaceWith($("<span>").text(display ? `\n$$\n${content}\n$$\n` : `$${content}$`));
+        node.replaceWith($(display ? "<div>" : "<span>").text(freeze(display ? `$$\n${content}\n$$` : `$${content}$`)));
     }
     $("script,style,button,input,video,source,.katex-html").remove();
-    $("img").each((_i, node) => {
-        const el = $(node); const url = el.attr("src");
-        el.replaceWith($("<span>").text(url?.startsWith("https://") ? imageMarkdown(url,el.attr("alt") || "图片") : ""));
+    const converter = new TurndownService({headingStyle:"atx",codeBlockStyle:"fenced",bulletListMarker:"-",preformattedCode:true});
+    converter.use(gfm);
+    converter.addRule("readerStrike",{filter:node=>["DEL","S","STRIKE"].includes(node.nodeName),replacement:content=>`~~${content}~~`});
+    converter.addRule("readerCell",{filter:["th","td"],replacement:(content,node)=>`${node.previousElementSibling ? " " : "| "}${content.trim().replace(/\n+/g," ").replace(/(?<!\\)\|/g,"\\|")} |`});
+    // GFM requires a header row. An empty header preserves headerless data without
+    // promoting the first data row to a heading or passing raw HTML to the model.
+    $("table").each((_i,node)=>{
+      const table=$(node),first=table.find("tr").first(),cells=first.children("th,td");
+      if(!cells.length){table.remove();return;}
+      if(!first.parent().is("thead")){
+        const head=$("<thead>");
+        if(cells.toArray().every(cell=>$(cell).is("th")))head.append(first);
+        else {const row=$("<tr>");for(let i=0;i<cells.length;i++)row.append($("<th>"));head.append(row);}
+        table.prepend(head);
+      }
+      const caption=table.children("caption");if(caption.length){table.before($("<p>").append(caption.contents()));caption.remove();}
     });
-    $("a[href]").each((_i, node) => {
-        const el = $(node); const href = el.attr("href")!;
-        if (/^https?:\/\//.test(href)) {
-            // Image-only links already retain their actual image destination.
-            const text = el.text();
-            el.replaceWith($("<span>").text(text.startsWith("![") ? text : `[${linkMarkdownLabel(text || href)}](<${markdownDestination(href)}>)`));
-        }
+    converter.addRule("readerCaption",{filter:"figcaption",replacement:content=>`\n${content.trim()} `});
+    converter.addRule("readerFigure",{filter:node=>node.nodeName==="FIGURE" && Boolean(node.querySelector("img")) && !node.querySelector("table,pre"),replacement:content=>`\n\n${content.trim().replace(/\n{2,}/g,"\n")}\n\n`});
+    converter.addRule("readerImage", {filter:"img",replacement:(_content,node)=>{
+        const src=node.getAttribute("src");
+        return src?.startsWith("https://") ? freeze(imageMarkdown(src,node.getAttribute("alt") || "图片")) : "";
+    }});
+    converter.addRule("readerLink", {filter:"a",replacement:(content,node)=>{
+        const href=node.getAttribute("href");
+        // A full-resolution image link is a media action, not a second article link.
+        if(node.querySelector("img") && !(node.textContent || "").trim())return content;
+        return href && /^https?:\/\//.test(href) ? `[${content || markdownLabel(href)}](<${markdownDestination(href)}>)` : content;
+    }});
+    // Freeze source code before conversion so indentation, blank lines and fence characters survive.
+    $("pre").each((_i,node)=>{
+        const el=$(node),code=el.find("code").first();const value=code.length?code.text():el.text();
+        const longest=Math.max(2,...(value.match(/`+/g)||[]).map(s=>s.length));const fence="`".repeat(longest+1);
+        el.replaceWith($("<div>").text(freeze(`${fence}\n${value}\n${fence}`)));
     });
-    $("pre").each((_i, node) => { const el = $(node); el.replaceWith($("<div>").text(`\n\n\`\`\`\n${el.text()}\n\`\`\`\n\n`)); });
-    $("p,div,section,h1,h2,h3,h4,h5,h6,li,blockquote,tr,figure,figcaption").append("\n\n");
-    $("td,th").append(" | ");
-    $("br").replaceWith("\n");
-    const text = $("main").first().text().replace(/\n[ \t]+/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    $("code").each((_i,node)=>{const el=$(node),value=el.text();const fence="`".repeat(Math.max(0,...(value.match(/`+/g)||[]).map(s=>s.length))+1);el.replaceWith($("<span>").text(freeze(`${fence} ${value} ${fence}`)));});
+    // Restore only our own placeholders, after the standard converter has serialized the structure.
+    const text = converter.turndown($("main").html() || "").replace(new RegExp(prefix+"(\\d+)END","g"),(_m,n)=>frozen[Number(n)] ?? _m).trim();
     if (text.length < 80)
         throw new RewriteContentError("可读取的正文太短，无法生成可靠的中文改写。");
     if (text.length > 180000)
@@ -76,37 +105,19 @@ export function rewriteText(article: ReaderArticle): string {
 }
 /** Preserve complete paragraph/code/math blocks. Oversized blocks fail explicitly instead of silently truncating. */
 export function splitRewriteText(text: string, limit = 9000, separateBlocks = false): string[] {
-    const chunks: string[] = [];
-    let current = "";
-    let block = "";
-    let fence = false;
-    let math = false;
-    const flushBlock = () => {
-        if (!block.trim()) {
-            block = "";
-            return;
-        }
-        if (block.length > limit)
-            throw new RewriteContentError("文章中有过长的连续段落、代码或公式，暂时无法安全分段改写。");
-        if (separateBlocks) { chunks.push(block.trim()); block = ""; return; }
-        if (current.length + block.length + 2 > limit) {
-            chunks.push(current.trim());
-            current = "";
-        }
-        current += `${block.trim()}\n\n`;
-        block = "";
-    };
-    for (const line of text.split("\n")) {
-        if (/^\s*```/.test(line))
-            fence = !fence;
-        if (!fence && /^\s*\$\$\s*$/.test(line))
-            math = !math;
-        block += `${line}\n`;
-        if (!line.trim() && !fence && !math)
-            flushBlock();
+    const parser=createReaderMarkdown(),lines=text.split("\n"),blocks:string[]=[];
+    for(const token of parser.parse(text,{})) {
+        if(token.level!==0 || token.nesting===-1 || !token.map)continue;
+        const block=lines.slice(token.map[0],token.map[1]).join("\n").trim();
+        if(block.length>limit)throw new RewriteContentError("文章中有过长的连续段落、代码或公式，暂时无法安全分段改写。");
+        if(block)blocks.push(block);
     }
-    flushBlock();
-    if (current.trim())
-        chunks.push(current.trim());
+    if(separateBlocks)return blocks;
+    const chunks:string[]=[];let current="";
+    for(const block of blocks){
+        if(current && current.length+block.length+2>limit){chunks.push(current);current="";}
+        current+=(current?"\n\n":"")+block;
+    }
+    if(current)chunks.push(current);
     return chunks;
 }

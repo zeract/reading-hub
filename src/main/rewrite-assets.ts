@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import MarkdownIt from "markdown-it";
+import { createReaderMarkdown } from "../shared/markdown";
 import { mathAt } from "../shared/markdown-math";
 import { RewriteContentError } from "./rewrite-content";
 
@@ -38,14 +39,15 @@ export function rewriteLinkAt(text:string, start:number): {end:number; label:str
 }
 
 /** Freeze structural assets while leaving link anchor text available for translation. */
-export function protectRewriteAssets(source:string): ProtectedRewrite {
-  let prefix=`RH${createHash("sha256").update(source).digest("hex").slice(0,8)}_`;
+export function protectRewriteAssets(source:string, namespace=""): ProtectedRewrite {
+  let prefix=`RH${createHash("sha256").update(namespace+source).digest("hex").slice(0,8)}_`;
   while(source.includes(`⟦${prefix}`))prefix+="X";
   const atoms:Atom[]=[], links:Link[]=[]; let text="", i=0;
   const atom=(kind:Atom["kind"],end:number)=>{const id=`${prefix}A${atoms.length+1}`;atoms.push({id,kind,source:source.slice(i,end)});text+=`⟦${id}⟧`;i=end;};
   while(i<source.length) {
-    if((i===0 || source[i-1]==="\n") && source.startsWith("```",i)) {
-      const end=source.indexOf("\n```",i+3);if(end>=0){atom("code",end+4);continue;}
+    if(i===0 || source[i-1]==="\n") {
+      const fence=/^ {0,3}(`{3,}|~{3,})[^\n]*\n/.exec(source.slice(i));
+      if(fence){const end=new RegExp("^ {0,3}"+fence[1][0]+"{"+fence[1].length+",}[ \t]*(?:$|\n)","m").exec(source.slice(i+fence[0].length));if(end){atom("code",i+fence[0].length+end.index+end[0].replace(/\n$/,"").length);continue;}}
     }
     if(source[i]==="`") {const run=/^`+/.exec(source.slice(i))![0];const end=source.indexOf(run,i+run.length);if(end>=0){atom("code",end+run.length);continue;}}
     const link=rewriteLinkAt(source,i);
@@ -89,4 +91,28 @@ export function restoreRewriteAssets(draft:string, material:ProtectedRewrite):st
   }
   if(result.includes(`⟦${material.prefix}`)||result.includes(`⟦/${material.prefix}`))invalid();
   return result;
+}
+
+export function protectRewriteSection(blocks:ReadonlyArray<{id:string;text:string}>) {
+  return blocks.map(block=>{
+    const material=protectRewriteAssets(block.text,block.id),id=material.prefix+block.id;
+    return {id:block.id,material,open:`⟦${id}⟧`,close:`⟦/${id}⟧`};
+  });
+}
+const structureParser=createReaderMarkdown();
+function structure(text:string):string {
+  return structureParser.parse(text,{}).filter(t=>/^(heading|bullet_list|ordered_list|list_item|blockquote|table|thead|tbody|tr|th|td)_/.test(t.type)).map(t=>`${t.type}:${t.tag}:${t.attrGet("start")||""}`).join("|");
+}
+/** Bind links/media to their source block; language changes must not move assets to another paragraph. */
+export function restoreRewriteSection(answer:string,blocks:ReturnType<typeof protectRewriteSection>):string {
+  let remaining=answer;const result:string[]=[];
+  for(const block of blocks){
+    const start=remaining.indexOf(block.open),end=remaining.indexOf(block.close);
+    if(start<0 || end<start || remaining.slice(0,start).trim() || remaining.split(block.open).length!==2 || remaining.split(block.close).length!==2)throw new RewriteContentError("改写未完整保留正文段落结构，未替换已有稿；已完成分段仍保留。");
+    const draft=remaining.slice(start+block.open.length,end).trim();
+    if(!draft || structure(block.material.text)!==structure(draft))throw new RewriteContentError("改写改变了标题、列表或表格结构，未替换已有稿；已完成分段仍保留。");
+    result.push(restoreRewriteAssets(draft,block.material));remaining=remaining.slice(end+block.close.length);
+  }
+  if(remaining.trim())throw new RewriteContentError("改写包含无法归属原文的额外段落，未替换已有稿。");
+  return result.join("\n\n");
 }

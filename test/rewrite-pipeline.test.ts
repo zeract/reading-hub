@@ -12,8 +12,8 @@ it("writes a short article once, without planning, review or repair",async()=>{
 it("uses 28 calls instead of 85 for 28 sections and preserves complete source",async()=>{
  const text=Array.from({length:28},(_,i)=>`Section ${i+1}. `+"Every detail remains in the original source. ".repeat(90).trim()).join("\n\n");
  const inputs:any[]=[];
- const result=await runRewritePipeline(text,"Fixture",async(stage,prompt)=>{inputs.push(JSON.parse(prompt));return `中文术语（terminology）${inputs.length}`;},signal());
- expect(result.quality.requests).toBe(28);expect(inputs.flatMap(x=>x.section.blocks.map(b=>b.text)).join("\n\n")).toBe(text);
+ const result=await runRewritePipeline(text,"Fixture",async(stage,prompt)=>{inputs.push(JSON.parse(prompt));return JSON.parse(prompt).section.blocks.map(b=>b.text.replace(/(⟧\n)[\s\S]*?(\n⟦\/)/,`$1中文术语（terminology）${inputs.length}$2`)).join("\n\n");},signal());
+ expect(result.quality.requests).toBe(28);expect(inputs.flatMap(x=>x.section.blocks.map(b=>b.text.replace(/^⟦[^⟧]+⟧\n|\n⟦\/[^⟧]+⟧$/g,""))).join("\n\n")).toBe(text);
  expect(inputs[1].previousEnding).toBe(result.sections[0]);expect(inputs[2].opening).toBe(result.sections[0]);
 });
 it("keeps every paragraph and code block in exactly one section",()=>{
