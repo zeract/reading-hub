@@ -1,3 +1,4 @@
+import {articleDocumentFromHtml} from "./article-document";
 import { hydrateLazyImages, imageSource, selectReaderCover } from "./reader-media";
 export { selectReaderCover } from "./reader-media";
 import { mergeMathMacros, katexMacros, extractMathJaxConfigMacros, extractMacroDeclarations, readTeXGroup, type MathMacroScope } from "./reader-math-macros";
@@ -408,6 +409,7 @@ function finishReaderArticle(prepared: PreparedReaderArticle, sanitised: Sanitiz
       formulaDiagnostics: sanitised.formulaDiagnostics,
       ...(prepared.languageVariants.length ? { languageVariants: readerLanguageChoices(prepared.languageVariants, prepared.pageUrl, prepared.activeLanguage) } : {}),
       ...(prepared.activeLanguage ? { activeLanguage: prepared.activeLanguage } : {}),
+      document: articleDocumentFromHtml(contentHtml),
       contentHtml
     },
     textLength

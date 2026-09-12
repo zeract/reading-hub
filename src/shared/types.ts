@@ -404,6 +404,9 @@ export interface ReaderLanguageVariant {
 
 /** A transient, sanitised article document shown only inside the local reader. */
 export interface ReaderArticle {
+  /** Transient sanitized import, used only to finish pre-document-model checkpoints. */
+  importHtml?: string;
+  document?: import("./article-document").ArticleDocument;
   entryId: string;
   url: string;
   title: string;

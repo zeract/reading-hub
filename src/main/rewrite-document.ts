@@ -1,3 +1,5 @@
+import {articleDocumentFromMarkdown,articleDocumentMarkdown} from "./article-document";
+import {validArticleDocument} from "../shared/article-document";
 import { createHash } from "node:crypto";
 import { createReaderMarkdown } from "../shared/markdown";
 import type { RewriteBlockRelation, RewriteDocument, RewriteResult } from "../shared/rewrite";
@@ -46,11 +48,25 @@ export function validRewriteDocument(value: unknown, markdown: string): value is
 /** Versioned, lossless migration: retain unknown fields and all readable draft text. */
 export function decodeRewriteResult(raw: string): RewriteResult {
   const v=JSON.parse(raw);
+  if(v?.schemaVersion!==undefined && ![1,2].includes(v.schemaVersion))throw new Error("此改写由更新版本保存，请升级应用后读取。");
+  if(v?.content!==undefined && !validArticleDocument(v.content))throw new Error("保存的正文结构无效，原始记录仍保留。");
+  if(v?.content && typeof v.markdown!=="string")v.markdown=articleDocumentMarkdown(v.content);
   if (!v || typeof v!=="object" || typeof v.markdown!=="string" || !v.markdown.trim() || v.markdown.length>240000) throw new Error("保存的改写格式无效，原始记录仍保留。");
   for (const field of ["provider","model","sourceUrl","sourceTitle","sourceHash"]) if(typeof v[field]!=="string") throw new Error("保存的改写元数据无效，原始记录仍保留。");
   if (!Number.isFinite(v.createdAt) || !Number.isInteger(v.promptVersion)) throw new Error("保存的改写版本无效，原始记录仍保留。");
-  if(v.schemaVersion!==undefined && v.schemaVersion!==1) throw new Error("此改写由更新版本保存，请升级应用后读取。");
+
   if(v.sections!==undefined && (!Array.isArray(v.sections) || v.sections.some((s:unknown)=>typeof s!=="string") || v.sections.join("\n\n")!==v.markdown)) delete v.sections;
-  if(!validRewriteDocument(v.document,v.markdown)) v.document=indexLegacyRewrite(v.markdown);
-  return {...v,schemaVersion:1};
+  if(v.content?.provenance==="rewrite" && v.promptVersion>=11)delete v.document;
+  else if(!validRewriteDocument(v.document,v.markdown)) v.document=indexLegacyRewrite(v.markdown);
+  return {...v,schemaVersion:2,content:v.content || articleDocumentFromMarkdown(v.markdown)};
+}
+
+/** New generated documents store the tree only; Markdown and its old offset index
+ * are derived for exports/legacy IPC. Legacy text remains exact during migration. */
+export function encodeRewriteResult(result:RewriteResult):string {
+ const value={...result};
+ if(value.schemaVersion===2 && value.content && value.content.provenance!=="legacy"){
+  return JSON.stringify({...value,markdown:undefined,document:undefined,sections:undefined});
+ }
+ return JSON.stringify(value);
 }

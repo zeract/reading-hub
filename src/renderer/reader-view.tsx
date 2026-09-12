@@ -1,3 +1,5 @@
+import {ArticleBody} from "./article-body";
+import {articleDocumentText,articleDocumentHtml} from "../shared/article-document";
 import { replaceReaderImageFailure } from "./reader-image-loader";
 import { useArticleRewrite } from "./use-article-rewrite";
 import { RewriteVersion, RewrittenArticle } from "./article-rewrite";
@@ -85,11 +87,16 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const rewrite = useArticleRewrite(entry.id);
   const rewriteVisible = rewrite.visible;
   const [article, setArticle] = useState<ReaderArticle>();
+  const rewriteResult=rewrite.record?.result;
+  const rewriteHtml=useMemo(()=>rewriteResult?.content?articleDocumentHtml(rewriteResult.content):undefined,[rewriteResult?.content]);
+  const rewriteProfile=rewriteResult?.content?.renderProfile||article?.renderProfile||"standard";
+  // Polling may deserialize the same saved tree again. Keep the media owner stable
+  // while its actual presentation is unchanged, so pending image requests survive.
+  const rewritten=useMemo<ReaderArticle|undefined>(()=>rewriteResult?.content&&rewriteHtml!==undefined?{entryId:entry.id,title:rewriteResult.sourceTitle,url:rewriteResult.sourceUrl,renderProfile:rewriteProfile,document:rewriteResult.content,contentHtml:rewriteHtml}:undefined,[entry.id,rewriteHtml,rewriteResult?.sourceTitle,rewriteResult?.sourceUrl,rewriteProfile]);
+  const visibleArticle=rewriteVisible?rewritten:article;
   const aiArticle: AiReaderDocument | undefined = rewriteVisible
-    ? rewrite.record?.result && { title: rewrite.record.result.sourceTitle, url: rewrite.record.result.sourceUrl, plainText: rewrite.record.result.markdown }
+    ? rewrite.record?.result && { title: rewrite.record.result.sourceTitle, url: rewrite.record.result.sourceUrl, plainText: rewrite.record.result.content?articleDocumentText(rewrite.record.result.content):rewrite.record.result.markdown }
     : article;
-  // Stable markup preserves proxied images and live DOM state on unrelated updates.
-  const articleMarkup = useMemo(() => ({ __html: article?.contentHtml ?? "" }), [article?.contentHtml]);
   const [embedded, setEmbedded] = useState(false);
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
@@ -102,9 +109,9 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const [languageSwitching, setLanguageSwitching] = useState<string>();
   const [languageSwitchError, setLanguageSwitchError] = useState<string>();
   const articleBodyElement = useRef<HTMLDivElement>(null);
-  useReaderVideos(entry.id, rewriteVisible ? undefined : article, articleBodyElement);
+  useReaderVideos(entry.id, visibleArticle, articleBodyElement);
   const readerWorkspaceElement = useRef<HTMLDivElement>(null);
-  const { documentId, loadImage: loadReaderImage } = useReaderImages(entry.id, rewriteVisible ? undefined : article, readerWorkspaceElement);
+  const { documentId, loadImage: loadReaderImage } = useReaderImages(entry.id, visibleArticle, readerWorkspaceElement);
   const beginArticleRequest = useReaderRequest(entry.id);
   const renderedEntryId = useRef(entry.id);
   const loadedEntryId = useRef<string | undefined>(undefined);
@@ -246,7 +253,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   }
   function handleContentError(event: SyntheticEvent<HTMLElement>) {
     const image = event.target instanceof HTMLImageElement ? event.target : undefined;
-    if (!image || loadedEntryId.current !== entry.id) return;
+    if (!image) return;
     const originalUrl = image.currentSrc || image.src;
     if (!originalUrl || image.dataset.readerProxyTried === "1") {
       replaceBrokenImage(image);
@@ -297,7 +304,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const languageVariants = readerLanguageChoices(article?.languageVariants || [], article?.url || entry.url, article?.activeLanguage);
   const hasLanguageVariants = languageVariants.length > 1 || languageVariants.some(item => item.url !== article?.url || item.language !== article?.activeLanguage);
 
-  return <section className={`reader-view reader--${article?.renderProfile || "standard"}`} data-reader-preset={preferences.preset} style={readerStyle} aria-label="应用内阅读器">
+  return <section className={`reader-view reader--${visibleArticle?.renderProfile || "standard"}`} data-reader-preset={preferences.preset} style={readerStyle} aria-label="应用内阅读器">
     <div className="reader-heading">
     <header className="reader-toolbar">
       <RewriteVersion state={rewrite} onSelect={(visible)=>{
@@ -340,17 +347,17 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
         {!rewriteVisible && loading && <div className="reader-loading" role="status"><span className="loading-mark" /><p>正在准备适合阅读的正文…</p></div>}
         {!rewriteVisible && !loading && embedded && <div className="reader-embedded"><h1>{entry.title}</h1><p>该站点不允许自动提取正文，原文已在 Reading Hub 的受限窗口中打开。该窗口不使用外部浏览器，也不会复用登录态。</p><button type="button" className="primary-action" onClick={() => void loadArticle()}>重新打开原文</button></div>}
         {!rewriteVisible && !loading && error && <div className="reader-failure"><h1>{entry.title}</h1><p>{error}</p><div><button type="button" className="primary-action" onClick={() => void loadArticle()}>重试</button><button type="button" onClick={openEmbedded}>在应用内打开原文</button></div></div>}
-        <RewrittenArticle state={rewrite} bodyProps={{onKeyUp: captureArticleSelection, onMouseUp: captureArticleSelection}}/>
-        {!loading && article && <article key={documentId} className="reader-article" hidden={rewriteVisible} onErrorCapture={handleContentError}>
+        <RewrittenArticle state={rewrite} bodyRef={articleBodyElement} bodyProps={{onErrorCapture:handleContentError,onClick:handleContentClick,onKeyDown:handleContentKeyDown,onKeyUp:captureArticleSelection,onMouseUp:captureArticleSelection}}/>
+        {!rewriteVisible && !loading && article && <article key={documentId} className="reader-article" hidden={rewriteVisible} onErrorCapture={handleContentError}>
           <header><p className="eyebrow">{source?.title || "已保存内容"}</p><h1>{article.title}</h1>{(article.author || date) && <p className="reader-byline">{article.author}{article.author && date ? " · " : ""}{date}</p>}</header>
           {article.contentMode === "feed_body" && <aside className="reader-content-notice" role="note">正在显示订阅 Feed 提供的正文。该原页未被自动读取；请使用右上角 ↗ 查看完整原文。</aside>}
           {article.contentMode === "feed_summary" && <aside className="reader-content-notice" role="note">正在显示订阅 Feed 提供的内容摘要。该原页不允许自动读取；请使用右上角 ↗ 查看完整原文。</aside>}
           <div>
-              {article.coverImageUrl && <button type="button" className="reader-cover-button" onClick={(event) => {
+              {article.coverImageUrl && !article.document?.cover && <button type="button" className="reader-cover-button" onClick={(event) => {
                 const image = event.currentTarget.querySelector("img");
                 if (image) previewImage(image);
               }} aria-label="放大封面图片"><img className="reader-cover" src={article.coverImageUrl} alt="" /></button>}
-              <div ref={articleBodyElement} className="article-body" onClick={handleContentClick} onKeyDown={handleContentKeyDown} onKeyUp={captureArticleSelection} onMouseUp={captureArticleSelection} dangerouslySetInnerHTML={articleMarkup} />
+              <ArticleBody bodyRef={articleBodyElement} document={article.document} html={article.contentHtml} onClick={handleContentClick} onKeyDown={handleContentKeyDown} onKeyUp={captureArticleSelection} onMouseUp={captureArticleSelection} />
           </div>
         </article>}
       </div>

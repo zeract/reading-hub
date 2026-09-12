@@ -27,7 +27,8 @@ export interface RewriteDocument {
     blocks: RewriteBlockRelation[];
 }
 export interface RewriteResult {
-    schemaVersion?: 1;
+    schemaVersion?: 1 | 2;
+    content?: import("./article-document").ArticleDocument;
     document?: RewriteDocument;
     markdown: string;
     provider: AiProviderId;

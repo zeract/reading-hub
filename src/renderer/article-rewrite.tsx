@@ -1,7 +1,7 @@
-import { type HTMLAttributes } from "react";
+import { type HTMLAttributes, type Ref } from "react";
 import { REWRITE_STAGE_LABELS } from "../shared/rewrite";
 import type { useArticleRewrite } from "./use-article-rewrite";
-import { DeferredAiMarkdownContent } from "./deferred-ai-markdown";
+import {ArticleBody} from "./article-body";
 type State = ReturnType<typeof useArticleRewrite>;
 
 export function RewriteVersion({state, onSelect}: {state: State; onSelect(visible:boolean):void}) {
@@ -17,7 +17,7 @@ export function RewriteVersion({state, onSelect}: {state: State; onSelect(visibl
   </div>;
 }
 
-export function RewrittenArticle({state, bodyProps}:{state:State; bodyProps?: HTMLAttributes<HTMLDivElement>}) {
+export function RewrittenArticle({state, bodyProps, bodyRef}:{state:State; bodyProps?: HTMLAttributes<HTMLDivElement>;bodyRef?:Ref<HTMLDivElement>}) {
   if (!state.visible) return null;
   const {record, pending, busy, loaded, error} = state;
   const result = record?.result;
@@ -27,6 +27,6 @@ export function RewrittenArticle({state, bodyProps}:{state:State; bodyProps?: HT
       {pending ? <p role="status">{record?.status==="queued"?"已排队":`${record?.stage?REWRITE_STAGE_LABELS[record.stage]:"正在读取正文"}${record?.totalChunks?` · ${record.completedChunks}/${record.totalChunks}`:""}`}<button type="button" className="action-button" disabled={busy} onClick={()=>void state.act("cancel")}>取消</button></p> : loaded ? <button type="button" className="action-button" disabled={busy} onClick={()=>void state.act("generate")}>{busy?"正在提交…":"生成中文改写"}</button> : <p role="status">正在读取本地改写…</p>}
       {(error||record?.error)&&<p role="alert">{error||record?.error}{!loaded&&<button type="button" className="action-button" onClick={()=>void state.reload()}>重试读取</button>}</p>}
     </>}
-    {result&&<div className="article-body" {...bodyProps}><DeferredAiMarkdownContent text={result.markdown} entryId={record.entryId} sourceUrl={result.sourceUrl}/></div>}
+    {result&&<ArticleBody document={result.content} html={result.content?undefined:result.markdown.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]!))} bodyRef={bodyRef} {...bodyProps}/>}
   </article>;
 }

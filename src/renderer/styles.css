@@ -475,8 +475,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 .reader-video button[hidden] { display: none; }
 
-.reader-rewritten .ai-message-content { font-family: var(--font-reading); font-size: inherit; line-height: inherit; }
-.reader-rewritten .ai-markdown-heading { font-family: var(--font-reading); }
 
 .reader-toolbar .toolbar-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 5px; border: 0; background: transparent; color: var(--ink-soft); }
 .reader-toolbar .toolbar-icon-button[aria-pressed="true"] { color: var(--accent-deep); }
@@ -485,3 +483,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .reader-version-tabs { display: flex; align-items: center; justify-self: start; gap: 12px; white-space: nowrap; }
 .reader-toolbar .reader-version-tabs button { padding: 4px 0; border: 0; border-radius: 0; background: transparent; font: 400 var(--control-font-size)/1.5 var(--font-ui); }
 .reader-toolbar .reader-version-tabs button[aria-selected="true"] { color: var(--ink); text-decoration: underline; text-underline-offset: .4em; text-decoration-thickness: 1px; }
+
+/* Canonical preview cards share the same layout in both language versions. */
+.article-body .reader-link-card { display:flex; gap:1em; align-items:center; margin:1.5em 0; }
+.article-body .reader-link-card > img { width:5em; max-height:5em; object-fit:contain; flex-shrink:0; }
+.article-body .reader-link-card-meta { font-size:.85em; margin:.25em 0 0; color:var(--muted); }

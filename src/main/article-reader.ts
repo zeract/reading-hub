@@ -1,3 +1,4 @@
+import {withArticleDocument, articleDocumentFromHtml} from "./article-document";
 import { readerLanguageChoices } from "../shared/reader-languages";
 import { assertAnswerNavigation } from "./zhihu-answer-identity";
 import { load } from "cheerio";
@@ -63,7 +64,7 @@ export class ArticleReader {
   ) {}
 
   async read(entry: Entry, source?: Source, options?: ReaderReadOptions): Promise<ReaderArticle> {
-    return this.readAtUrl(entry, source, entry.url, options, true);
+    return withArticleDocument(await this.readAtUrl(entry, source, entry.url, options, true));
   }
 
   async readLanguageVariant(entry: Entry, source: Source | undefined, rawUrl: string, options?: ReaderReadOptions): Promise<ReaderArticle> {
@@ -74,7 +75,7 @@ export class ArticleReader {
     if (!cached || !variant) {
       throw new Error("这个文章的语言版本已过期或不可用，请重新打开文章后再切换。");
     }
-    return this.readAtUrl(entry, source, variant.url, options, false, cached.variants);
+    return withArticleDocument(await this.readAtUrl(entry, source, variant.url, options, false, cached.variants));
   }
 
   private async readAtUrl(
@@ -240,6 +241,7 @@ export class ArticleReader {
       renderProfile: effectiveReaderProfile(renderProfile, sanitised.formulaRenderPolicy),
       contentMode: "feed_body",
       formulaDiagnostics: sanitised.formulaDiagnostics,
+      document: articleDocumentFromHtml(contentHtml),
       contentHtml
     };
   }

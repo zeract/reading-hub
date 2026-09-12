@@ -1,3 +1,6 @@
+import {articleDocumentText} from "../shared/article-document";
+import {withArticleDocument,articleDocumentMarkdown} from "./article-document";
+import {rewriteArticleDocument,structuredSourceHash,reviewArticleDocument} from "./document-rewrite";
 import { createHash } from "node:crypto";
 import type { ReadingDatabase } from "./database";
 import type { ArticleReader } from "./article-reader";
@@ -5,7 +8,7 @@ import { AiServiceError, type AiService } from "./ai-service";
 import { throwIfAborted } from "./cancellation";
 import { parseRewriteSettings, type ArticleRewrite, type RewriteSettings } from "../shared/rewrite";
 import { runRewritePipeline, reviewRewrite } from "./rewrite-pipeline";
-import { rewriteText, REWRITE_PROMPT_VERSION, RewriteContentError } from "./rewrite-content";
+import { rewriteText, RewriteContentError } from "./rewrite-content";
 /** Durable user-requested jobs, independent of reader windows and source synchronization. */
 export class RewriteService {
     private closing = false;
@@ -40,7 +43,7 @@ export class RewriteService {
             throw new Error("应用正在退出。");
         if (!this.database.getEntry(entryId))
             throw new Error("文章已不存在，请刷新列表。");
-        if (kind === "review" && !this.database.rewrites.get(entryId)?.result?.sections)
+        if (kind === "review" && !this.database.rewrites.get(entryId)?.result)
             throw new RewriteContentError("当前改写不支持分节检查，请重新生成后再检查；已有中文仍可阅读。");
         const settings = this.database.rewrites.settings();
         if (!settings)
@@ -97,9 +100,13 @@ export class RewriteService {
         if (!entry)
             return;
         this.database.rewrites.progress(job, 0, 0);
-        const article = await this.articles.read(entry, this.database.getSource(entry.sourceId), { signal });
+        const article = withArticleDocument(await this.articles.read(entry, this.database.getSource(entry.sourceId), { signal }));
         throwIfAborted(signal);
-        const text = rewriteText(article);
+        const plain=articleDocumentText(article.document!);
+        if(article.contentMode==="feed_summary")throw new RewriteContentError("当前只有订阅摘要，无法生成完整改写。");
+        if(plain.length<80 || plain.length>180000)throw new RewriteContentError("可读取的正文长度超出改写范围（80 至 18 万字符）。");
+        const legacy=this.database.rewrites.hasLegacyCheckpoint(job) || job.kind==="review" && (this.database.rewrites.get(job.entryId)?.result?.promptVersion || 0)<11;
+        const text = legacy ? rewriteText({...article,contentHtml:article.importHtml ?? article.contentHtml}) : "";
         let usedModel = job.settings.model;
         const sourceHash = createHash("sha256").update(text).digest("hex");
         const run: import("./rewrite-pipeline").RewriteRunner = async (stage, prompt, requestSignal) => {
@@ -111,6 +118,11 @@ export class RewriteService {
         const progress = (stage: import("../shared/rewrite").RewriteStage, completed: number, total: number) => this.database.rewrites.progress(job, completed, total, stage);
         if (job.kind === "review") {
             const saved = this.database.rewrites.get(job.entryId)?.result;
+            if(saved?.content && saved.promptVersion>=11){
+                if(saved.sourceHash!==structuredSourceHash(article.document!))throw new RewriteContentError("原文已变化，无法对照生成时的版本；已有改写仍保留。");
+                const review=await reviewArticleDocument(article.document!,saved.content,run,signal);
+                throwIfAborted(signal);this.database.rewrites.finish(job,{...saved,review:{...review,provider:job.settings.provider,model:usedModel}});return;
+            }
             if (!saved?.sections || saved.sourceHash !== sourceHash)
                 throw new RewriteContentError("原文已变化，无法对照生成时的版本；已保存中文仍可阅读，可重新生成后检查。");
             const review = await reviewRewrite(text, saved.sourceTitle, saved.sections, run, signal, progress);
@@ -119,17 +131,22 @@ export class RewriteService {
             return;
         }
         const checkpointKey=(version:number)=>createHash("sha256").update(JSON.stringify({sourceHash,title:article.title,url:article.url,settings:job.settings,version})).digest("hex");
-        const key=checkpointKey(REWRITE_PROMPT_VERSION);
-        // v8–v10 change only model-facing representation, not source conversion or accepted
-        // derived content. Reuse v7–v9's already-validated sections under identical inputs.
-        const compatibleKeys=REWRITE_PROMPT_VERSION===10 ? [key,checkpointKey(9),checkpointKey(8),checkpointKey(7)] : [key];
-        const resumedKey=compatibleKeys.find(candidate=>this.database.rewrites.checkpoint(job,candidate).length) || key;
+        const legacyKey=[10,9,8,7].map(checkpointKey).find(candidate=>this.database.rewrites.checkpoint(job,candidate).length);
+        if(!legacyKey){
+            const canonicalHash=structuredSourceHash(article.document!);
+            const key=createHash("sha256").update(JSON.stringify({sourceHash:canonicalHash,title:article.title,url:article.url,settings:job.settings,version:11})).digest("hex");
+            const result=await rewriteArticleDocument(article.document!,article.title,run,signal,(done,total)=>progress("write",done,total),this.database.rewrites.structuredCheckpoint(job,key),checkpoint=>this.database.rewrites.saveStructuredCheckpoint(job,key,checkpoint));
+            throwIfAborted(signal);
+            this.database.rewrites.finish(job,{...result,schemaVersion:2,markdown:articleDocumentMarkdown(result.content),provider:job.settings.provider,model:usedModel,createdAt:Date.now(),sourceUrl:article.url,sourceTitle:article.title,sourceHash:canonicalHash,promptVersion:11});return;
+        }
+        // Finish existing Markdown checkpoints without re-running successful sections.
+        const key=legacyKey,resumedKey=legacyKey;
         const result = await runRewritePipeline(text, article.title.slice(0,1000), run, signal, progress, {
             drafts: this.database.rewrites.checkpoint(job,resumedKey),
             document: this.database.rewrites.checkpointDocument(job,resumedKey),
             save: (drafts,document) => this.database.rewrites.saveCheckpoint(job,key,drafts,document)
         });
         throwIfAborted(signal);
-        this.database.rewrites.finish(job, { ...result, provider: job.settings.provider, model: usedModel, createdAt: Date.now(), sourceUrl: article.url, sourceTitle: article.title, sourceHash, promptVersion: REWRITE_PROMPT_VERSION });
+        this.database.rewrites.finish(job, { ...result, provider: job.settings.provider, model: usedModel, createdAt: Date.now(), sourceUrl: article.url, sourceTitle: article.title, sourceHash, promptVersion: 10 });
     }
 }

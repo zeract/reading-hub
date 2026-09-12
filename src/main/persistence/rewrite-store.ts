@@ -1,4 +1,4 @@
-import { decodeRewriteResult } from "../rewrite-document";
+import { decodeRewriteResult, encodeRewriteResult } from "../rewrite-document";
 import { parseRewriteSettings, type RewriteDocument } from "../../shared/rewrite";
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
@@ -36,7 +36,7 @@ export class RewriteStore {
         if(row.result_json) {
             try {
                 result=decodeRewriteResult(row.result_json);
-                const migrated=JSON.stringify(result);
+                const migrated=encodeRewriteResult(result);
                 if(migrated!==row.result_json) this.db.transaction(()=>{
                     this.db.prepare("INSERT OR IGNORE INTO rewrite_migration_backups VALUES (?,?)").run(entryId,row.result_json);
                     this.db.prepare("UPDATE article_rewrites SET result_json=? WHERE entry_id=? AND result_json=?").run(migrated,entryId,row.result_json);
@@ -82,7 +82,7 @@ export class RewriteStore {
     }
     finish(job: ArticleRewrite, result: RewriteResult): void {
         this.db.prepare("UPDATE article_rewrites SET status='complete',result_json=?,error=NULL,checkpoint_json=CASE WHEN kind='generate' THEN NULL ELSE checkpoint_json END,updated_at=? WHERE entry_id=? AND job_id=? AND status='running'")
-            .run(JSON.stringify(decodeRewriteResult(JSON.stringify(result))), Date.now(), job.entryId, job.jobId);
+            .run(encodeRewriteResult(decodeRewriteResult(JSON.stringify(result))), Date.now(), job.entryId, job.jobId);
     }
     checkpoint(job: ArticleRewrite, key: string): string[] {
         const row = this.db.prepare("SELECT checkpoint_json FROM article_rewrites WHERE entry_id=? AND job_id=?").get(job.entryId, job.jobId) as {checkpoint_json:string|null} | undefined;
@@ -96,6 +96,17 @@ export class RewriteStore {
     saveCheckpoint(job: ArticleRewrite, key: string, drafts: string[], document?: RewriteDocument): void {
         this.db.prepare("UPDATE article_rewrites SET checkpoint_json=? WHERE entry_id=? AND job_id=? AND status='running'")
             .run(JSON.stringify({key,drafts,document}), job.entryId, job.jobId);
+    }
+    hasLegacyCheckpoint(job:ArticleRewrite):boolean {
+        const row=this.db.prepare("SELECT checkpoint_json FROM article_rewrites WHERE entry_id=? AND job_id=?").get(job.entryId,job.jobId) as {checkpoint_json:string|null}|undefined;
+        try{return Boolean(JSON.parse(row?.checkpoint_json||"null")?.drafts?.length);}catch{return false;}
+    }
+    structuredCheckpoint(job:ArticleRewrite,key:string):import("../document-rewrite").DocumentCheckpoint|undefined {
+        const row=this.db.prepare("SELECT checkpoint_json FROM article_rewrites WHERE entry_id=? AND job_id=?").get(job.entryId,job.jobId) as {checkpoint_json:string|null}|undefined;
+        try{const v=JSON.parse(row?.checkpoint_json||"null");return v?.key===key && v.structured?.version===1 && Array.isArray(v.structured.patches) ? v.structured : undefined;}catch{return undefined;}
+    }
+    saveStructuredCheckpoint(job:ArticleRewrite,key:string,structured:import("../document-rewrite").DocumentCheckpoint):void {
+        this.db.prepare("UPDATE article_rewrites SET checkpoint_json=? WHERE entry_id=? AND job_id=? AND status='running'").run(JSON.stringify({key,structured}),job.entryId,job.jobId);
     }
     fail(job: ArticleRewrite, error: string): void {
         this.db.prepare("UPDATE article_rewrites SET status='failed',error=?,updated_at=? WHERE entry_id=? AND job_id=? AND status IN ('queued','running')").run(error, Date.now(), job.entryId, job.jobId);

@@ -9,7 +9,7 @@ const metadata = /^(?:[·•.\s]*)(?:(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{4}\s*年\
 const headingSelector = "h1,h2,h3,h4,h5,h6";
 
 /** Collapse a composed preview, never deduplicate links across the document. Works on sanitized DOM. */
-export function normalizeRewriteCards($:ReturnType<typeof load>): RewriteCard[] {
+export function normalizeRewriteCards($:ReturnType<typeof load>, mode:"collapse"|"mark"="collapse"): RewriteCard[] {
   const cards:RewriteCard[]=[];
   $(headingSelector).each((_i,node)=>{
     const heading=$(node), link=heading.closest("a[href]"), url=link.attr("href"), title=heading.text().trim();
@@ -30,7 +30,8 @@ export function normalizeRewriteCards($:ReturnType<typeof load>): RewriteCard[] 
     if(!chosen)return;
     const labels=chosen.find("a").toArray().map(a=>$(a).text().trim()).filter(Boolean);
     cards.push({url,title,labels:[...new Set(labels)],destinations:[...new Set(chosen.find("a[href]").toArray().map(a=>$(a).attr("href")!))]});
-    chosen.replaceWith($("<p>").append($("<a>").attr("href",url).text(title)));
+    if(mode==="mark")chosen.attr("data-reader-card","true");
+    else chosen.replaceWith($("<p>").append($("<a>").attr("href",url).text(title)));
   });
   return cards;
 }

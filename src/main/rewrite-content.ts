@@ -5,7 +5,7 @@ import { gfm } from "turndown-plugin-gfm";
 import { normalizeRewriteCards } from "./rewrite-cards";
 import { load } from "cheerio";
 import type { ReaderArticle } from "../shared/types";
-export const REWRITE_PROMPT_VERSION = 10;
+export const REWRITE_PROMPT_VERSION = 11;
 const markdownLabel = (value:string) => value.replace(/[\\\[\]]/g, "\\$&").replace(/\s+/g," ");
 const markdownDestination = (value:string) => value.replace(/[<>\s]/g,c=>encodeURIComponent(c));
 const imageMarkdown = (url:string,alt:string) => `![${markdownLabel(alt || "图片")}](<${markdownDestination(url)}>)`;
@@ -24,7 +24,7 @@ export function rewriteImageAliases(article:ReaderArticle): Array<{url:string;ma
 export class RewriteContentError extends Error {
 }
 /** Use semantic source TeX once, not both rendered and accessibility copies. No network media. */
-export function rewriteText(article: ReaderArticle): string {
+export function rewriteText(article: ReaderArticle, validate = true): string {
     if (article.contentMode === "feed_summary")
         throw new RewriteContentError("当前只有订阅摘要，无法生成完整改写。请先在原文中确认正文可用。");
     const $ = load(`<main>${article.contentHtml}</main>`);
@@ -97,9 +97,9 @@ export function rewriteText(article: ReaderArticle): string {
     $("code").each((_i,node)=>{const el=$(node),value=el.text();const fence="`".repeat(Math.max(0,...(value.match(/`+/g)||[]).map(s=>s.length))+1);el.replaceWith($("<span>").text(freeze(`${fence} ${value} ${fence}`)));});
     // Restore only our own placeholders, after the standard converter has serialized the structure.
     const text = converter.turndown($("main").html() || "").replace(new RegExp(prefix+"(\\d+)END","g"),(_m,n)=>frozen[Number(n)] ?? _m).trim();
-    if (text.length < 80)
+    if (validate && text.length < 80)
         throw new RewriteContentError("可读取的正文太短，无法生成可靠的中文改写。");
-    if (text.length > 180000)
+    if (validate && text.length > 180000)
         throw new RewriteContentError("文章超过当前改写长度上限（18 万字符），请在原文中阅读。");
     return text;
 }

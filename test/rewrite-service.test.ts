@@ -17,7 +17,7 @@ function fixture() {
  const db=new ReadingDatabase(":memory:");const source=db.createSource({url:"https://example.com/feed",title:"Fixture",kind:"rss",pollingEnabled:true});
  const entry:Entry={id:"entry",sourceId:source.id,title:"Original",url:"https://example.com/post",canonicalUrl:"https://example.com/post",contentHash:"old",read:false,favorite:true,createdAt:1};db.saveEntries([entry]);
  const article:ReaderArticle={entryId:entry.id,url:entry.url,title:entry.title,renderProfile:"standard",contentHtml:`<p>${text}</p>`};
- const read=vi.fn(async()=>article);const rewriteChunk=vi.fn(async(_settings, prompt, _signal, stage)=>({provider:"deepseek" as const,model:settings.model,text:rewriteModelResponse(prompt,stage)}));
+ const read=vi.fn(async()=>article);const rewriteChunk=vi.fn(async(_settings, prompt, _signal, stage)=>({provider:"deepseek" as const,model:settings.model,text:stage==="write" ? JSON.stringify({blocks:JSON.parse(prompt).section.blocks.map((b:any)=>({id:b.id,text:"对应中文改写内容。"}))}) : rewriteModelResponse(prompt,stage)}));
  const service=new RewriteService(db,{read},{rewriteChunk});live.push({db,service});service.configure(settings);
  return {db,source,entry,article,read,rewriteChunk,service};
 }
@@ -98,7 +98,7 @@ it("invalidates saved sections when source or configured model changes",async()=
 it("optional review saves cohesion advice without replacing or hiding the completed text",async()=>{
  const f=fixture();f.service.start();f.service.enqueue("entry");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("complete"));
  const saved=f.db.rewrites.get("entry")!.result!;
- f.rewriteChunk.mockImplementation(async(_s,p)=>{const input=JSON.parse(p);return {provider:"deepseek",model:"review-model",text:JSON.stringify({coverage:input.section.blocks.map(b=>({blockId:b.id,covered:true})),issues:[{blockId:"B1",kind:"cohesion",message:"过渡可更自然",sourceQuote:""}]})};});
+ f.rewriteChunk.mockImplementation(async(_s,p)=>{const input=JSON.parse(p);return {provider:"deepseek",model:"review-model",text:JSON.stringify({coverage:input.section.blocks.map(b=>({blockId:b.id,covered:true})),issues:[{blockId:input.section.blocks[0].id,kind:"cohesion",message:"过渡可更自然",sourceQuote:""}]})};});
  f.service.enqueue("entry","review");expect(f.db.rewrites.get("entry")?.result?.markdown).toBe(saved.markdown);
  await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("complete"));
  const result=f.db.rewrites.get("entry")!.result!;expect(result.markdown).toBe(saved.markdown);expect(result.createdAt).toBe(saved.createdAt);
@@ -115,7 +115,7 @@ it("migrates old results with a cascade-owned backup and skips malformed queued 
  const raw={markdown:"旧稿 [链接](https://example.com/link)",provider:"deepseek",model:"model",createdAt:1,sourceUrl:f.entry.url,sourceTitle:"Title",sourceHash:"hash",promptVersion:7};
  const sql=(f.db as any).db;
  sql.prepare("UPDATE article_rewrites SET status='complete',result_json=? WHERE entry_id=?").run(JSON.stringify(raw),"entry");
- const migrated=f.db.rewrites.get("entry")!.result!;expect(migrated.schemaVersion).toBe(1);expect(migrated.markdown).toBe(raw.markdown);
+ const migrated=f.db.rewrites.get("entry")!.result!;expect(migrated.schemaVersion).toBe(2);expect(migrated.markdown).toBe(raw.markdown);
  expect(sql.prepare("SELECT result_json FROM rewrite_migration_backups WHERE entry_id='entry'").get().result_json).toBe(JSON.stringify(raw));
  f.db.rewrites.get("entry");expect(sql.prepare("SELECT COUNT(*) AS count FROM rewrite_migration_backups").get().count).toBe(1);
  sql.prepare("UPDATE article_rewrites SET status='queued',settings_json='{' WHERE entry_id='entry'").run();
@@ -125,11 +125,11 @@ it("migrates old results with a cascade-owned backup and skips malformed queued 
  f.db.deleteSource(f.source.id);expect(sql.prepare("SELECT COUNT(*) AS count FROM rewrite_migration_backups").get().count).toBe(0);
 });
 
-it.each([7,8,9])("reuses validated v%s checkpoints after the envelope-only protocol upgrade",async(version)=>{
+it.each([7,8,9,10])("reuses validated v%s checkpoints after the envelope-only protocol upgrade",async(version)=>{
  const f=fixture();f.article.contentHtml=Array.from({length:3},()=>`<p>${"A detailed explanation of delivery and validation. ".repeat(100)}</p>`).join("");
  let calls=0;f.rewriteChunk.mockImplementation(async(_s,p)=>{if(++calls===2)throw new AiServiceError("stop");return {provider:"deepseek",model:settings.model,text:rewriteModelResponse(p)};});
  f.service.start();f.service.enqueue("entry");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("failed"));
- const sql=(f.db as any).db;const cp=JSON.parse(sql.prepare("SELECT checkpoint_json FROM article_rewrites WHERE entry_id='entry'").get().checkpoint_json);
+ const sql=(f.db as any).db;const cp={key:"",drafts:["已经完成的旧中文段落。"]};
  const sourceHash=createHash("sha256").update(rewriteText(f.article)).digest("hex");
  cp.key=createHash("sha256").update(JSON.stringify({sourceHash,title:f.article.title,url:f.article.url,settings,version})).digest("hex");
  sql.prepare("UPDATE article_rewrites SET checkpoint_json=? WHERE entry_id='entry'").run(JSON.stringify(cp));
