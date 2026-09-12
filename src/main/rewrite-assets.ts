@@ -94,8 +94,12 @@ export function restoreRewriteAssets(draft:string, material:ProtectedRewrite):st
 }
 
 export function protectRewriteSection(blocks:ReadonlyArray<{id:string;text:string}>) {
+  // Block IDs are short and document-local. Fall back to a source-derived
+  // namespace only if authored text already contains a reserved block marker.
+  let prefix="";
+  while(blocks.some(b=>blocks.some(other=>b.text.includes(`⟦${prefix}${other.id}⟧`) || b.text.includes(`⟦/${prefix}${other.id}⟧`)))) prefix+="R";
   return blocks.map(block=>{
-    const material=protectRewriteAssets(block.text,block.id),id=material.prefix+block.id;
+    const material=protectRewriteAssets(block.text,block.id),id=prefix+block.id;
     return {id:block.id,material,open:`⟦${id}⟧`,close:`⟦/${id}⟧`};
   });
 }
@@ -103,17 +107,48 @@ const structureParser=createReaderMarkdown();
 function structure(text:string):string {
   return structureParser.parse(text,{}).filter(t=>/^(heading|bullet_list|ordered_list|list_item|blockquote|table|thead|tbody|tr|th|td)_/.test(t.type)).map(t=>`${t.type}:${t.tag}:${t.attrGet("start")||""}`).join("|");
 }
+export type RewriteProtocolCode = "missing-open" | "missing-close" | "duplicate-marker" | "block-order" | "outside-text" | "empty-block" | "block-shape" | "asset-marker";
+const protocolMessages: Record<RewriteProtocolCode,string> = {
+  "missing-open":"缺少段落开始标记", "missing-close":"缺少段落结束标记", "duplicate-marker":"段落标记重复",
+  "block-order":"段落标记顺序错误", "outside-text":"段落标记外存在内容", "empty-block":"段落内容为空",
+  "block-shape":"标题、列表或表格结构发生变化", "asset-marker":"链接、公式、代码或图片标记不完整"
+};
+/** Diagnostics contain only program-owned IDs and categories, never model text. */
+export class RewriteProtocolError extends RewriteContentError {
+  constructor(readonly code:RewriteProtocolCode, readonly blockId:string) {
+    super(`正文段落结构校验失败（${blockId}：${protocolMessages[code]}；${code}），未替换已有稿；已完成分段仍保留。`);
+    this.name="RewriteProtocolError";
+  }
+}
+
+function unwrapResponseFence(answer:string, blocks:ReturnType<typeof protectRewriteSection>):string {
+  const text=answer.trim();
+  const wrapped=/^(`{3,}|~{3,})(?:markdown|md)?[ \t]*\r?\n([\s\S]*)\r?\n\1[ \t]*$/i.exec(text);
+  const inner=wrapped?.[2].trim();
+  // Remove only an envelope surrounding the complete expected block stream.
+  // Never strip explanation prose, a partial fence, or source code inside a block.
+  return inner && blocks.length && inner.startsWith(blocks[0].open) && inner.endsWith(blocks.at(-1)!.close) ? inner : text;
+}
+
 /** Bind links/media to their source block; language changes must not move assets to another paragraph. */
 export function restoreRewriteBlocks(answer:string,blocks:ReturnType<typeof protectRewriteSection>):string[] {
-  let remaining=answer;const result:string[]=[];
+  let remaining=unwrapResponseFence(answer,blocks);const result:string[]=[];
   for(const block of blocks){
+    const fail=(code:RewriteProtocolCode):never=>{throw new RewriteProtocolError(code,block.id);};
+    const opens=remaining.split(block.open).length-1,closes=remaining.split(block.close).length-1;
+    if(!opens)fail("missing-open");if(!closes)fail("missing-close");
+    if(opens!==1 || closes!==1)fail("duplicate-marker");
     const start=remaining.indexOf(block.open),end=remaining.indexOf(block.close);
-    if(start<0 || end<start || remaining.slice(0,start).trim() || remaining.split(block.open).length!==2 || remaining.split(block.close).length!==2)throw new RewriteContentError("改写未完整保留正文段落结构，未替换已有稿；已完成分段仍保留。");
+    if(end<start)fail("block-order");
+    if(remaining.slice(0,start).trim())fail(blocks.some(b=>remaining.slice(0,start).includes(b.open)) ? "block-order" : "outside-text");
     const draft=remaining.slice(start+block.open.length,end).trim();
-    if(!draft || structure(block.material.text)!==structure(draft))throw new RewriteContentError("改写改变了标题、列表或表格结构，未替换已有稿；已完成分段仍保留。");
-    result.push(restoreRewriteAssets(draft,block.material));remaining=remaining.slice(end+block.close.length);
+    if(!draft)fail("empty-block");
+    if(structure(block.material.text)!==structure(draft))fail("block-shape");
+    try {result.push(restoreRewriteAssets(draft,block.material));}
+    catch(error){if(error instanceof RewriteContentError)fail("asset-marker");throw error;}
+    remaining=remaining.slice(end+block.close.length);
   }
-  if(remaining.trim())throw new RewriteContentError("改写包含无法归属原文的额外段落，未替换已有稿。");
+  if(remaining.trim())throw new RewriteProtocolError("outside-text",blocks.at(-1)?.id || "document");
   return result;
 }
 export function restoreRewriteSection(answer:string,blocks:ReturnType<typeof protectRewriteSection>):string {

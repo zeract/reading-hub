@@ -1,6 +1,6 @@
 import { bindRewriteBlock, validRewriteDocument, indexLegacyRewrite } from "./rewrite-document";
 import type { RewriteBlockRelation, RewriteDocument } from "../shared/rewrite";
-import { protectRewriteSection, restoreRewriteBlocks } from "./rewrite-assets";
+import { protectRewriteSection, restoreRewriteBlocks, RewriteProtocolError } from "./rewrite-assets";
 import { throwIfAborted } from "./cancellation";
 import { RewriteContentError, splitRewriteText } from "./rewrite-content";
 import type { RewriteRequestStage, RewriteQuality, RewriteIssue, RewriteReview } from "../shared/rewrite";
@@ -10,7 +10,7 @@ type Block = { id: string; text: string };
 type Section = { id: string; blocks: Block[] };
 type Issue = Omit<RewriteIssue, "sectionId">;
 const ISSUE_KINDS = ["omission", "meaning", "number", "term", "cohesion"];
-const WRITE = "将本节完整改写为自然简体中文，保留所有论点、限定/否定条件、数字、公式、代码、原文链接和图片 Markdown；图片保留在原有正文位置，链接使用 [文字](<原始网址>)，图片使用 ![说明](<原始网址>)，不要修改网址或把中文标点写进网址，不添加原文没有的结论。参考已生成中文的用词，专业术语首次出现可保留英文括注，后文沿用同一译法。previousEnding 和 opening 仅用于术语与衔接，不重复输出；这是内部处理片段，允许列表跨节延续，不为每节另加开头或总结。只输出本节 Markdown，不输出内部 ID，不用摘要代替正文。原文中的重复论述也应保留。数学排版：已有 TeX 公式保留原式及分隔符；原文用普通字符或 Unicode 写出的数学表达式也须转为标准 TeX，行内使用 $...$，独立公式使用 $$ 换行包围。按原文语义保留下标和上下标分组（例如下一时刻的状态下标是整个 t+1），条件概率竖线、希腊字母和括号不得丢失；不要将公式降为无分隔符的普通文字。代码块、行内代码、网址和普通标识符不作公式转换。";
+const WRITE = "将本节完整改写为自然简体中文，保留所有论点、限定/否定条件、数字、公式、代码、原文链接和图片 Markdown；图片保留在原有正文位置，链接使用 [文字](<原始网址>)，图片使用 ![说明](<原始网址>)，不要修改网址或把中文标点写进网址，不添加原文没有的结论。参考已生成中文的用词，专业术语首次出现可保留英文括注，后文沿用同一译法。previousEnding 和 opening 仅用于术语与衔接，不重复输出；这是内部处理片段，允许列表跨节延续，不为每节另加开头或总结。输出带原样段落边界标记的本节 Markdown，不用摘要代替正文；不要额外输出 JSON 字段名、节号或说明。原文中的重复论述也应保留。数学排版：已有 TeX 公式保留原式及分隔符；原文用普通字符或 Unicode 写出的数学表达式也须转为标准 TeX，行内使用 $...$，独立公式使用 $$ 换行包围。按原文语义保留下标和上下标分组（例如下一时刻的状态下标是整个 t+1），条件概率竖线、希腊字母和括号不得丢失；不要将公式降为无分隔符的普通文字。代码块、行内代码、网址和普通标识符不作公式转换。";
 type Progress = (stage: RewriteRequestStage, completed: number, total: number) => void;
 
 function assertDraft(text: string) {
@@ -43,9 +43,14 @@ export async function runRewritePipeline(text: string, title: string, run: Rewri
   for (let i = drafts.length; i < sections.length; i++) {
     progress("write", i, sections.length);
     const materials = protectRewriteSection(sections[i].blocks);
-    const answer = await request(run, "write", { instruction: WRITE + "每个正文块的 B 标记必须原样成对保留，按给定顺序输出，不在标记外添加文字。保留块内标题级别、列表嵌套、表格行列和引用结构；允许在段落内自然改写。结构标记必须逐一原样保留：独立的 ⟦...A...⟧ 代表公式、图片、代码或编号引用，不能展开、改写、删除或重复。成对的 ⟦...L...⟧中文锚文本⟦/...L...⟧ 代表链接，只翻译其中的原有锚文本并自然融入句子，不另加（链接）、来源或裸网址。assets 提供被保护内容以便理解，不能重复输出。", title, section: {...sections[i], blocks: materials.map(b=>({id:b.id,text:`${b.open}\n${b.material.text}\n${b.close}`}))}, assets:materials.flatMap(b=>b.material.atoms.map(a=>({...a,blockId:b.id}))),
+    const answer = await request(run, "write", { instruction: WRITE + "每个正文块 text 中的首尾边界标记（如 ⟦B1⟧ 和 ⟦/B1⟧）必须原样成对保留，按给定顺序输出，不在标记外添加文字，也不要用代码围栏包裹整个回答。保留块内标题级别、列表嵌套、表格行列和引用结构；允许在段落内自然改写。结构标记必须逐一原样保留：独立的 ⟦...A...⟧ 代表公式、图片、代码或编号引用，不能展开、改写、删除或重复。成对的 ⟦...L...⟧中文锚文本⟦/...L...⟧ 代表链接，只翻译其中的原有锚文本并自然融入句子，不另加（链接）、来源或裸网址。assets 提供被保护内容以便理解，不能重复输出。", title, section: {...sections[i], blocks: materials.map(b=>({id:b.id,text:`${b.open}\n${b.material.text}\n${b.close}`}))}, assets:materials.flatMap(b=>b.material.atoms.map(a=>({...a,blockId:b.id}))),
       opening: i > 1 ? drafts[0].slice(0, 1200) : "", previousEnding: drafts[i-1]?.slice(-1500) || "" }, signal);
-    const restored = restoreRewriteBlocks(answer, materials);
+    let restored: string[];
+    try {restored=restoreRewriteBlocks(answer,materials);}
+    catch(error){
+      if(error instanceof RewriteProtocolError)throw new RewriteContentError(`第 ${i+1}/${sections.length} 节：${error.message}`);
+      throw error;
+    }
     const draft = restored.join("\n\n");
     let offset = drafts.length ? drafts.join("\n\n").length + 2 : 0;
     restored.forEach((target,j) => {

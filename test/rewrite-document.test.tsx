@@ -46,7 +46,7 @@ it("rejects asset movement across blocks and missing list structure without chec
   const blocks=JSON.parse(p).section.blocks;const marker=blocks[0].text.match(/⟦RH[^⟧]+A1⟧/)[0];
   blocks[0].text=blocks[0].text.replace(marker,'');blocks[1].text=blocks[1].text.replace('- First',`- First ${marker}`);
   return blocks.map((b:any)=>b.text).join('\n\n');
- },new AbortController().signal,undefined,{save:()=>{saved=true;}})).rejects.toThrow('未完整保留');expect(saved).toBe(false);
+ },new AbortController().signal,undefined,{save:()=>{saved=true;}})).rejects.toThrow('asset-marker');expect(saved).toBe(false);
  await expect(runRewritePipeline(source,'Fixture',async(_s,p)=>JSON.parse(p).section.blocks.map((b:any)=>b.text.replace('- First\n- Second','First and Second')).join('\n\n'),new AbortController().signal)).rejects.toThrow('列表');
 });
 

@@ -118,10 +118,15 @@ export class RewriteService {
             this.database.rewrites.finish(job, {...saved, review:{...review, provider:job.settings.provider, model:usedModel}});
             return;
         }
-        const key = createHash("sha256").update(JSON.stringify({sourceHash, title:article.title, url:article.url, settings:job.settings, version:REWRITE_PROMPT_VERSION})).digest("hex");
+        const checkpointKey=(version:number)=>createHash("sha256").update(JSON.stringify({sourceHash,title:article.title,url:article.url,settings:job.settings,version})).digest("hex");
+        const key=checkpointKey(REWRITE_PROMPT_VERSION);
+        // v8 changes only the output envelope, not source conversion or accepted
+        // derived content. Reuse v7's already-validated sections under identical inputs.
+        const compatibleKeys=REWRITE_PROMPT_VERSION===8 ? [key,checkpointKey(7)] : [key];
+        const resumedKey=compatibleKeys.find(candidate=>this.database.rewrites.checkpoint(job,candidate).length) || key;
         const result = await runRewritePipeline(text, article.title.slice(0,1000), run, signal, progress, {
-            drafts: this.database.rewrites.checkpoint(job,key),
-            document: this.database.rewrites.checkpointDocument(job,key),
+            drafts: this.database.rewrites.checkpoint(job,resumedKey),
+            document: this.database.rewrites.checkpointDocument(job,resumedKey),
             save: (drafts,document) => this.database.rewrites.saveCheckpoint(job,key,drafts,document)
         });
         throwIfAborted(signal);

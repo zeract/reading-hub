@@ -1,3 +1,5 @@
+import {createHash} from "node:crypto";
+import {rewriteText} from "../src/main/rewrite-content";
 import { REWRITE_PROMPT_VERSION } from "../src/main/rewrite-content";
 import { rewriteModelResponse } from "./support/rewrite-model";
 import { afterEach, expect, it, vi } from "vitest";
@@ -121,4 +123,16 @@ it("migrates old results with a cascade-owned backup and skips malformed queued 
  f.service.enqueue("next");expect(f.db.rewrites.next()?.entryId).toBe("next");
  expect(sql.prepare("SELECT status FROM article_rewrites WHERE entry_id='entry'").get().status).toBe("failed");
  f.db.deleteSource(f.source.id);expect(sql.prepare("SELECT COUNT(*) AS count FROM rewrite_migration_backups").get().count).toBe(0);
+});
+
+it("reuses validated v7 checkpoints after the envelope-only protocol upgrade",async()=>{
+ const f=fixture();f.article.contentHtml=Array.from({length:3},()=>`<p>${"A detailed explanation of delivery and validation. ".repeat(100)}</p>`).join("");
+ let calls=0;f.rewriteChunk.mockImplementation(async(_s,p)=>{if(++calls===2)throw new AiServiceError("stop");return {provider:"deepseek",model:settings.model,text:rewriteModelResponse(p)};});
+ f.service.start();f.service.enqueue("entry");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("failed"));
+ const sql=(f.db as any).db;const cp=JSON.parse(sql.prepare("SELECT checkpoint_json FROM article_rewrites WHERE entry_id='entry'").get().checkpoint_json);
+ const sourceHash=createHash("sha256").update(rewriteText(f.article)).digest("hex");
+ cp.key=createHash("sha256").update(JSON.stringify({sourceHash,title:f.article.title,url:f.article.url,settings,version:7})).digest("hex");
+ sql.prepare("UPDATE article_rewrites SET checkpoint_json=? WHERE entry_id='entry'").run(JSON.stringify(cp));
+ f.rewriteChunk.mockClear();f.service.enqueue("entry");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("complete"));
+ expect(JSON.parse(f.rewriteChunk.mock.calls[0][1]).section.id).toBe("S2");expect(f.db.rewrites.get("entry")?.result?.sections?.[0]).toBe(cp.drafts[0]);
 });
