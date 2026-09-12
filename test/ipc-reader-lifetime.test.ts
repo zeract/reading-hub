@@ -159,3 +159,16 @@ describe("reader request lifetime", () => {
     await run.drain();
   });
 });
+
+
+it("validates inline language input and forwards it with a scoped cancellation signal", async () => {
+  const run = fixture(async () => ({}));
+  const handler = electron.handlers.get(IPC_CHANNELS.entry.readLanguageVariant)!;
+  await handler({ sender: run.sender }, "entry", "https://example.com/post", "inline-request", "en");
+  expect(run.articles.readLanguageVariant).toHaveBeenCalledWith(expect.anything(), expect.anything(), "https://example.com/post", expect.objectContaining({ inlineLanguage: "en", signal: expect.any(AbortSignal) }));
+  for (const invalid of [{ selector: "body" }, 12, "x".repeat(33)]) {
+    await expect(handler({ sender: run.sender }, "entry", "https://example.com/post", "invalid-inline", invalid)).rejects.toThrow("语言版本标识无效");
+  }
+  expect(run.articles.readLanguageVariant).toHaveBeenCalledTimes(1);
+  await run.drain();
+});

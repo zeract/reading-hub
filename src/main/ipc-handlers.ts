@@ -159,12 +159,12 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
       }
     }, `read:${requestId}`);
   });
-  handle(IPC_CHANNELS.entry.readLanguageVariant, (event, entryId: unknown, rawUrl: unknown, rawRequestId: unknown) => {
+  handle(IPC_CHANNELS.entry.readLanguageVariant, (event, entryId: unknown, rawUrl: unknown, rawRequestId: unknown, rawInlineLanguage: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));
     const url = requireText(rawUrl, "语言版本地址无效，请重新打开文章后再试。", 2_000);
     const requestId = requireText(rawRequestId, "正文请求标识无效。", 160);
     return foregroundRequests.run(event.sender, (signal) => articles.readLanguageVariant(
-      entry, database.getSource(entry.sourceId), url, { signal }
+      entry, database.getSource(entry.sourceId), url, { signal, ...(rawInlineLanguage === undefined ? {} : { inlineLanguage: requireText(rawInlineLanguage, "语言版本标识无效。", 32) }) }
     ), `read:${requestId}`);
   });
   handle(IPC_CHANNELS.entry.cancelRead, (event, rawRequestId: unknown) => {

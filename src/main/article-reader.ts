@@ -1,3 +1,4 @@
+import { selectInlineLanguages } from "./reader-inline-languages";
 import { assertAnswerNavigation, selectZhihuAnswer } from "./zhihu-answer-identity";
 import { Readability } from "@mozilla/readability";
 import { load } from "cheerio";
@@ -285,8 +286,9 @@ export class ArticleContentUnavailableError extends Error {
 }
 
 export interface ReaderReadOptions {
-  /** Optional audit-only cancellation. Normal renderer IPC requests omit it. */
+  /** Shared cancellation for foreground reads and audits. */
   signal?: AbortSignal;
+  inlineLanguage?: string;
 }
 
 type RenderWithSession = (url: string, options?: ReaderReadOptions) => Promise<RenderedPage>;
@@ -385,7 +387,7 @@ export class ArticleReader {
     const requestedUrl = assertPublicUrl(rawUrl).toString();
     const cached = this.languageVariants.get(entry.id);
     const requestedCanonicalUrl = canonicalizeUrl(requestedUrl);
-    const variant = cached?.variants.find((candidate) => canonicalizeUrl(candidate.url) === requestedCanonicalUrl);
+    const variant = cached?.variants.find((candidate) => canonicalizeUrl(candidate.url) === requestedCanonicalUrl && candidate.inlineLanguage === options?.inlineLanguage);
     if (!cached || !variant) {
       throw new Error("这个文章的语言版本已过期或不可用，请重新打开文章后再切换。");
     }
@@ -415,7 +417,7 @@ export class ArticleReader {
         // Keep the existing isolated-browser/Feed fallback for unavailable HTML.
         if (response.contentType && !isHtmlDocumentContentType(response.contentType)) throw new ArticleContentUnavailableError();
         assertAnswerNavigation(targetUrl, response.url);
-        staticArticle = await awaitWithAbort(this.extractWithMathFallback(response.text, response.url, entry), options?.signal);
+        staticArticle = await awaitWithAbort(this.extractWithMathFallback(response.text, response.url, entry, options?.inlineLanguage), options?.signal);
         throwIfAborted(options?.signal);
         if (staticArticle && staticArticle.textLength >= 220) return this.rememberLanguageVariants(entry.id, staticArticle.article, knownLanguageVariants, options?.signal);
       } catch (error) {
@@ -452,7 +454,7 @@ export class ArticleReader {
     }
     throwIfAborted(options?.signal);
     if (renderedPage) assertAnswerNavigation(targetUrl, renderedPage.url);
-    const renderedArticle = renderedPage?.html ? await awaitWithAbort(this.extractWithMathFallback(renderedPage.html, renderedPage.url, entry), options?.signal) : undefined;
+    const renderedArticle = renderedPage?.html ? await awaitWithAbort(this.extractWithMathFallback(renderedPage.html, renderedPage.url, entry, options?.inlineLanguage), options?.signal) : undefined;
     throwIfAborted(options?.signal);
     if (renderedArticle && renderedArticle.textLength > (staticArticle?.textLength ?? 0)) {
       return this.rememberLanguageVariants(entry.id, renderedArticle.article, knownLanguageVariants, options?.signal);
@@ -483,7 +485,7 @@ export class ArticleReader {
 
   private rememberLanguageVariants(entryId: string, article: ReaderArticle, knownVariants: ReaderLanguageVariant[], signal?: AbortSignal): ReaderArticle {
     throwIfAborted(signal);
-    const variants = mergeReaderLanguageVariants(knownVariants, article.languageVariants || [], article.url, article.activeLanguage);
+    const variants = mergeReaderLanguageVariants(knownVariants.filter(item => !item.inlineLanguage || !sameCanonicalUrl(item.url, article.url)), article.languageVariants || [], article.url, article.activeLanguage);
     const activeLanguage = article.activeLanguage || variants.find((variant) => sameCanonicalUrl(variant.url, article.url))?.language;
     const result = variants.length
       ? { ...article, languageVariants: variants, ...(activeLanguage ? { activeLanguage } : {}) }
@@ -564,8 +566,8 @@ export class ArticleReader {
    * rendering so macro scope, labels and multi-row environments never mix
    * renderers. Both paths reuse the same inert extraction template.
    */
-  private async extractWithMathFallback(html: string, pageUrl: string, entry: Entry): Promise<ExtractedArticle | undefined> {
-    const prepared = prepareReaderExtraction(html, pageUrl, entry);
+  private async extractWithMathFallback(html: string, pageUrl: string, entry: Entry, inlineLanguage?: string): Promise<ExtractedArticle | undefined> {
+    const prepared = prepareReaderExtraction(html, pageUrl, entry, inlineLanguage);
     if (!prepared) return undefined;
     // Complex formula documents must not first be rendered one record at a
     // time with KaTeX and then selectively retried with MathJax.  Start the
@@ -617,16 +619,18 @@ function createFeedSummaryArticle(entry: Entry, source?: Source): ReaderArticle 
  * inert prepared document, so they cannot diverge in root selection, noise
  * removal, metadata, or image handling.
  */
-function prepareReaderArticle(html: string, pageUrl: string, entry: Entry): PreparedReaderArticle | undefined {
+function prepareReaderArticle(html: string, pageUrl: string, entry: Entry, inlineLanguage?: string): PreparedReaderArticle | undefined {
   let $ = load(html);
   const resourceBaseUrl = htmlDocumentBaseUrl($, pageUrl);
   const globalMathMacros = collectGlobalMathMacros($);
   const answerHtml = selectZhihuAnswer($, pageUrl);
   if (answerHtml) $ = load(answerHtml);
   const renderProfile = resolveReaderProfile(pageUrl);
-  const languageVariants = discoverReaderLanguageVariants($, pageUrl, resourceBaseUrl);
-  const activeLanguage = languageVariants.find((variant) => sameCanonicalUrl(variant.url, pageUrl))?.language;
-  const content = answerHtml ? pickContentRoot($, renderProfile, pageUrl)
+  const inline = !answerHtml ? selectInlineLanguages($, pageUrl, inlineLanguage) : undefined;
+  if (inlineLanguage && !inline) throw new Error("这个同页语言版本已不可用，请重新打开文章后再试。");
+  const languageVariants = inline ? [...inline.variants, ...discoverReaderLanguageVariants($, pageUrl, resourceBaseUrl).filter(item => !sameCanonicalUrl(item.url, pageUrl))] : discoverReaderLanguageVariants($, pageUrl, resourceBaseUrl);
+  const activeLanguage = inline?.activeLanguage || languageVariants.find((variant) => sameCanonicalUrl(variant.url, pageUrl))?.language;
+  const content = inline ? { html: inline.html, title: undefined, author: undefined, publishedAt: undefined } : answerHtml ? pickContentRoot($, renderProfile, pageUrl)
     : chooseContentCandidate(pickContentRoot($, renderProfile, pageUrl), extractReadabilityContent(html, pageUrl));
   if (!content) return undefined;
   const contentDocument = load(`<article id="reader-selected-content">${content.html}</article>`);
@@ -703,8 +707,8 @@ function finishReaderArticle(prepared: PreparedReaderArticle, sanitised: Sanitiz
  * only inert reader markup plus internally generated formula anchors, which
  * makes a later MathJax retry deterministic and safe.
  */
-function prepareReaderExtraction(html: string, pageUrl: string, entry: Entry): PreparedReaderExtraction | undefined {
-  const article = prepareReaderArticle(html, pageUrl, entry);
+function prepareReaderExtraction(html: string, pageUrl: string, entry: Entry, inlineLanguage?: string): PreparedReaderExtraction | undefined {
+  const article = prepareReaderArticle(html, pageUrl, entry, inlineLanguage);
   if (!article) return undefined;
   const content = prepareSanitizedContent(article.rawContentHtml, pageUrl, article.resourceBaseUrl);
   // Head-level MathJax macro configuration is inertly parsed while the full
@@ -739,8 +743,8 @@ async function renderPreparedReaderArticleAsync(
 }
 
 /** Exported for deterministic extraction tests; it does not perform network requests. */
-export function extractReaderArticle(html: string, pageUrl: string, entry: Entry, scientificMath?: ScientificMathRenderer): ExtractedArticle | undefined {
-  const prepared = prepareReaderExtraction(html, pageUrl, entry);
+export function extractReaderArticle(html: string, pageUrl: string, entry: Entry, scientificMath?: ScientificMathRenderer, inlineLanguage?: string): ExtractedArticle | undefined {
+  const prepared = prepareReaderExtraction(html, pageUrl, entry, inlineLanguage);
   return prepared ? renderPreparedReaderArticle(prepared, scientificMath) : undefined;
 }
 
@@ -749,8 +753,8 @@ export function extractReaderArticle(html: string, pageUrl: string, entry: Entry
  * process a custom macro asynchronously, so user-visible extraction must use
  * its promise-based renderer instead of degrading a valid formula to raw TeX.
  */
-export async function extractReaderArticleAsync(html: string, pageUrl: string, entry: Entry, scientificMath?: ScientificMathRenderer): Promise<ExtractedArticle | undefined> {
-  const prepared = prepareReaderExtraction(html, pageUrl, entry);
+export async function extractReaderArticleAsync(html: string, pageUrl: string, entry: Entry, scientificMath?: ScientificMathRenderer, inlineLanguage?: string): Promise<ExtractedArticle | undefined> {
+  const prepared = prepareReaderExtraction(html, pageUrl, entry, inlineLanguage);
   return prepared ? renderPreparedReaderArticleAsync(prepared, scientificMath) : undefined;
 }
 

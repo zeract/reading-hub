@@ -107,7 +107,7 @@ export interface ReaderApi {
   getLibraryCounts(): Promise<LibraryCounts>;
   readEntry(id: string, requestId: string): Promise<ArticleReadResult>;
   /** Opens only a language URL declared by the currently loaded article. */
-  readEntryLanguageVariant(id: string, url: string, requestId: string): Promise<ReaderArticle>;
+  readEntryLanguageVariant(id: string, url: string, requestId: string, inlineLanguage?: string): Promise<ReaderArticle>;
   cancelEntryRead(requestId: string): Promise<void>;
   openEmbeddedEntry(id: string): Promise<void>;
   loadArticleImage(id: string, imageUrl: string, requestId: string): Promise<string>;

@@ -234,7 +234,14 @@ const channels = [
     assert(typeof requestId === "string" && requestId.startsWith("read-"), "Read IPC must carry an opaque request id.");
     if (pauseRead) return new Promise((resolve) => { pendingRead = { requestId, resolve }; readRequested?.(); });
     if (id === "failure") throw new Error("Deterministic offline fixture");
-    return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", contentHtml: '<p>This is a deterministic reader fixture.</p><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image" data-reader-zoomable="true" tabindex="0">' } };
+    return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", activeLanguage: "zh", languageVariants: ["zh", "en"].map(language => ({ url: `https://example.com/${id}`, language, inlineLanguage: language, label: language === "zh" ? "中文" : "English" })), contentHtml: '<p>This is a deterministic reader fixture.</p><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image" data-reader-zoomable="true" tabindex="0">' } };
+  }],
+  ["entry:read-language-variant", (_event, id, url, requestId, inlineLanguage) => {
+    assert(url === `https://example.com/${id}` && ["zh", "en"].includes(inlineLanguage), "Inline IPC must carry its approved body separately from the URL.");
+    assert(typeof requestId === "string", "Language switch must remain cancellable.");
+    return { entryId: id, url, title: "Readable fixture", renderProfile: "standard", activeLanguage: inlineLanguage,
+      languageVariants: ["zh", "en"].map(language => ({ url, language, inlineLanguage: language, label: language === "zh" ? "中文" : "English" })),
+      contentHtml: `<p>This is a deterministic reader fixture.</p><p>Inline ${inlineLanguage} body.</p><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image" data-reader-zoomable="true" tabindex="0">` };
   }],
   ["window:is-fullscreen", () => new Promise((resolve) => {
     completeFullscreenSnapshot = () => resolve(false);
@@ -387,9 +394,20 @@ try {
   assert(!database.getEntry("failure").read, "Failed reader load must leave content unread.");
   await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Readable fixture\"]').click()");
   await waitFor(window, "Boolean(document.querySelector('.reader-article')) && Boolean(document.querySelector('.entry-card.read'))");
-  assert(database.getEntry("success").read, "Successful content must become read.");
+
   await waitFor(window, "document.querySelector('.article-body img')?.naturalWidth === 1");
   assert(imageLoads === 1, `A native body image error must invoke the proxy exactly once (observed ${imageLoads}).`);
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    for (const language of ["English", "中文"]) {
+      await evaluate(`Array.from(document.querySelectorAll('.reader-language-switcher button')).find(button => button.textContent === ${JSON.stringify(language)}).click()`);
+      await waitFor(window, `document.querySelector('.reader-language-switcher button[aria-pressed="true"]')?.textContent === ${JSON.stringify(language)}`);
+      assert(await evaluate("document.querySelectorAll('.reader-language-switcher button[aria-pressed=true]').length === 1"), "A same-URL language switch must select one body.");
+    }
+  }
+
+  assert(database.getEntry("success").read, "Successful content must become read.");
+  await waitFor(window, "document.querySelector('.article-body img')?.naturalWidth === 1");
   assert(await evaluate("!document.querySelector('.reader-controls') && !document.querySelector('.reader-toolbar [aria-label=\"放大字号\"]')"), "Typography controls must only appear in settings.");
   await evaluate("document.querySelector('[aria-label=\"打开设置\"]').click()");
   await waitFor(window, "Boolean(document.querySelector('.settings-font-controls'))");

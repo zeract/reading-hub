@@ -89,15 +89,16 @@ export function mergeReaderLanguageVariants(
     const url = normaliseReaderVariantUrl(variant.url, currentUrl);
     const language = readerLanguageFromTag(variant.language);
     if (!url || !language) continue;
-    const key = canonicalizeUrl(url);
-    if (!merged.has(key)) merged.set(key, { url, language, label: readerLanguageLabel(language) });
+    const key = `${canonicalizeUrl(url)}|${variant.inlineLanguage || ""}`;
+    if (!merged.has(key)) merged.set(key, { url, language, label: readerLanguageLabel(language), ...(variant.inlineLanguage ? { inlineLanguage: language } : {}) });
   }
   const currentLanguage = readerLanguageFromTag(activeLanguage);
   const current = normaliseReaderVariantUrl(currentUrl, currentUrl);
-  if (current && currentLanguage && !merged.has(canonicalizeUrl(current))) {
+  if (current && currentLanguage && ![...merged.values()].some(item => sameCanonicalUrl(item.url, current))) {
     merged.set(canonicalizeUrl(current), { url: current, language: currentLanguage, label: readerLanguageLabel(currentLanguage) });
   }
-  return sortReaderLanguageVariants([...merged.values()], currentUrl);
+  const inlineUrls = new Set(discoveredVariants.filter(item => item.inlineLanguage).map(item => canonicalizeUrl(item.url)));
+  return sortReaderLanguageVariants([...merged.values()].filter(item => item.inlineLanguage || !inlineUrls.has(canonicalizeUrl(item.url))), currentUrl);
 }
 
 export function sameCanonicalUrl(left: string, right: string): boolean {
@@ -164,7 +165,7 @@ function hasLanguageSwitchSemantics(element: any): boolean {
     || element.closest("article, main, [role='main'], .post, .post-content, .article, .article-content, .entry-content").length > 0;
 }
 
-function readerLanguageFromTag(value: string | undefined): string | undefined {
+export function readerLanguageFromTag(value: string | undefined): string | undefined {
   const normalized = value?.trim().toLowerCase().replace(/_/g, "-");
   if (!normalized || normalized === "x-default") return undefined;
   const primary = normalized.split("-", 1)[0];
@@ -172,7 +173,7 @@ function readerLanguageFromTag(value: string | undefined): string | undefined {
   return /^[a-z]{2,3}$/.test(primary) ? primary : undefined;
 }
 
-function readerLanguageFromText(value: string): string | undefined {
+export function readerLanguageFromText(value: string): string | undefined {
   if (!value) return undefined;
   if (/(?:简体中文|繁體中文|繁体中文|中文|chinese)/i.test(value)) return "zh";
   if (/(?:english|英文)/i.test(value)) return "en";
@@ -201,7 +202,7 @@ function readerLanguageFromUrl(value: string): string | undefined {
   }
 }
 
-function readerLanguageLabel(language: string): string {
+export function readerLanguageLabel(language: string): string {
   return READER_LANGUAGE_LABELS[language] || language.toUpperCase();
 }
 
@@ -220,4 +221,9 @@ function isZhihuReaderUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Labels used for a tab must describe a language, not a topic mentioning one. */
+export function readerLanguageFromSwitchText(value: string): string | undefined {
+  return LANGUAGE_SWITCH_TEXT.test(value) ? readerLanguageFromText(value) : undefined;
 }

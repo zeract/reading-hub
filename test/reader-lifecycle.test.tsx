@@ -98,3 +98,20 @@ describe("successful reading lifecycle", () => {
     expect(container.textContent).not.toContain("stale");
   });
 });
+
+
+it("switches between same-URL bodies with only the selected language pressed", async () => {
+  const versions = ["zh", "en"].map(language => ({ url: card.url, language, inlineLanguage: language, label: language === "zh" ? "中文" : "English" }));
+  read.mockResolvedValue({ kind: "article", article: { ...article, activeLanguage: "zh", languageVariants: versions } });
+  const language = vi.fn(async (_id, _url, _request, inlineLanguage) => ({ ...article, activeLanguage: inlineLanguage, languageVariants: versions, contentHtml: "<p>Switched translation</p>" }));
+  window.reader.readEntryLanguageVariant = language;
+  await render();
+  const buttons = () => [...container.querySelectorAll<HTMLButtonElement>(".reader-language-switcher button")];
+  expect(buttons().map(button => button.getAttribute("aria-pressed"))).toEqual(["true", "false"]);
+  await act(async () => buttons()[1].click());
+  expect(language).toHaveBeenCalledWith(card.id, card.url, expect.any(String), "en");
+  expect(buttons().map(button => button.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
+  expect(container.textContent).toContain("Switched translation");
+  await act(async () => buttons()[0].click());
+  expect(language).toHaveBeenLastCalledWith(card.id, card.url, expect.any(String), "zh");
+});

@@ -166,3 +166,18 @@ OpenAI 使用 https://api.openai.com/v1/models，DeepSeek 使用 https://api.dee
 
 
 线上 npm run audit:reader 完成全部订阅来源最新/历史 63 个样本；对三个临时 robots.txt 网络失败来源分别复检后，59 个通过，2 个知乎样本未返回文章页面，2 个 Yanyan Jiang 论文样本为远端 HTTP 403，未绕过访问限制或伪称通过。Neon 当前文章及历史文章均通过，当前文章正文图片数量为 1。审计报告与复检记录保留于 /tmp/reading-hub-neon-reader*.json；构建、完整测试、视觉及交互日志位于 /tmp/reading-hub-neon-*。完成错误处理、安全边界、废弃引用和 git diff --check 审查；工作区只包含本次修复、回归测试、规范和审计说明。
+
+
+## 2026-09-12 同页双语正文与统一语言版本管线
+
+用户报告 Haoyi Zhu 的 Sparse Linear Attention 第二篇没有语言按钮。原页将中文和隐藏英文存放在同一 URL 的两个正文容器中，用 JavaScript 按钮切换，而 html 标为 en。旧架构只将 URL 当作语言版本身份，既发现不了两个正文，还可能让 Readability 选择更长的隐藏英文。真实 HTML 旧结果约 11914 字符，对应英文；修复后默认中文约 6115 字符，两版均有 33 个公式。
+
+参考 [HTML lang](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Global_attributes/lang)、[hidden](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Global_attributes/hidden) 和 [WAI-ARIA Tabs Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/) 的语言与面板关联语义，新增独立的同页正文选择模块。标准 lang、显式 data-language/data-lang/data-locale、ARIA tab → aria-controls 面板及静态站点的语言容器标记统一归为作者声明的正文候选；只接受文章区域内完整、同级、语言互异且有隐藏/切换信号的一组正文，最多八种语言。排除导航、边栏、代码、引用区域、短片段、重复语言和多组歧义，不根据域名、文章标题、脚本文本或内容统计猜译文，不运行原站脚本。非标准且没有可靠声明的结构不承诺自动识别。
+
+语言版本契约保留独立页面 URL，并增加可选 inlineLanguage 区分同地址正文。前端、preload、IPC、主进程缓存和读取全部使用页面与语言组合；主进程仅允许缓存中已经发现的组合，不接受选择器，复用原有 15 分钟/240 文章元数据缓存和取消链路。切换重新读取页面、确认版本存在，再对所选正文执行同一净化、图片、公式和 MathJax 异步处理。移除/失效版本明确失败，不回退为错误语言；不缓存或持久化双语全文。正文语言优先于全局 html lang，缓存合并不再按 URL 折叠同页版本，不将元数据原文项与同页版本重复列出。原有独立链接、同源链接和跨域 alternate 安全边界保留。
+
+前端同 URL 的按钮具有独立身份，仅当前语言选中；切换沿用请求取消/过期响应丢弃、图片释放、选区清除和 AI 面板关闭，避免引用旧版本正文。新增通用属性、ARIA 关联、静态站点容器、语言误标、双版公式/净化、普通外语片段/代码主题/歧义组排除、往返切换、未经允许的 URL/语言、版本被移除和 IPC 输入类型/长度测试；真实 React/preload 审计覆盖四档尺寸下中英往返。首次原生脚本在新增八次语言切换后仍断言总图片代理次数为一次，已将原图片断言放回切换前并等待图片完成；最终脚本通过，未放宽生产图片请求行为。
+
+验证：184 文件、1909 项测试、npm run build、npm run audit:style、npm run audit:visual、真实 renderer-smoke-app、git diff --check 通过；四档窗口涵盖 125% 字号、阅读器图片/表格/代码/公式、侧栏和全屏。npm run audit:reader 完成全信源最新/历史 63 样本，59 通过，2 个知乎样本未返回文章页面、2 个论文样本为 HTTP 403；未绕过限制。目标文章及 Haoyi Zhu 历史样本通过，科学空间和普通博客/RSS 通过，知乎与 AI 公式另有确定性夹具。真实目标 HTML 中分别提取中英文验证内容隔离与各 33 个公式，不提交原文。日志位于 /tmp/reading-hub-inline-*。
+
+AGENTS.md 新增语言版本架构规则。审查了重复引用、异步过期响应、缓存授权、取消、空/歧义数据和异常提示；没有数据库迁移、凭据或用户数据修改。完整重启应用并重新打开文章后生效。

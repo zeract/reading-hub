@@ -1,5 +1,5 @@
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AiArticleContext, AiProviderId, AiProviderSettings, AiSelectionContext, AiSelectionIntent, Entry, ReaderArticle, Source } from "../shared/types";
+import type { AiArticleContext, AiProviderId, AiProviderSettings, AiSelectionContext, AiSelectionIntent, Entry, ReaderArticle, ReaderLanguageVariant, Source } from "../shared/types";
 import { AppIcon } from "./ui-icons";
 import { ModalSurface } from "./modal-surface";
 import { DeferredAiMarkdownContent as AiMarkdownContent } from "./deferred-ai-markdown";
@@ -255,13 +255,14 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   function openEmbedded() {
     void window.reader.openEmbeddedEntry(entry.id).catch((reason) => setError(errorMessage(reason)));
   }
-  async function switchLanguage(url: string) {
-    if (!article || languageSwitching || url === article.url) return;
+  async function switchLanguage(variant: ReaderLanguageVariant) {
+    const { url, inlineLanguage } = variant;
+    if (!article || languageSwitching || (url === article.url && (!inlineLanguage || inlineLanguage === article.activeLanguage))) return;
     const request = beginArticleRequest();
-    setLanguageSwitching(url);
+    setLanguageSwitching(`${url}|${inlineLanguage || ""}`);
     setLanguageSwitchError(undefined);
     try {
-      const next = await window.reader.readEntryLanguageVariant(entry.id, url, request.id);
+      const next = await window.reader.readEntryLanguageVariant(entry.id, url, request.id, inlineLanguage);
       if (!request.isCurrent()) return;
       window.getSelection()?.removeAllRanges();
       setArticle(next);
@@ -300,16 +301,16 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
           <div className="reader-language-switcher" role="group" aria-label="文章语言版本">
             {languageVariants.map((variant) => {
               const matchingLanguageCount = languageVariants.filter((candidate) => candidate.language === variant.language).length;
-              const active = variant.url === article?.url || (matchingLanguageCount === 1 && variant.language === article?.activeLanguage);
+              const active = variant.inlineLanguage ? variant.url === article?.url && variant.inlineLanguage === article?.activeLanguage : variant.url === article?.url || (matchingLanguageCount === 1 && variant.language === article?.activeLanguage);
               return <button
                 type="button"
-                key={variant.url}
+                key={`${variant.url}|${variant.inlineLanguage || ""}`}
                 className={active ? "selected" : ""}
                 aria-pressed={active}
                 disabled={active || Boolean(languageSwitching)}
                 title={active ? `当前：${variant.label}` : `切换为${variant.label}`}
-                onClick={() => void switchLanguage(variant.url)}
-              >{languageSwitching === variant.url ? "…" : variant.label}</button>;
+                onClick={() => void switchLanguage(variant)}
+              >{languageSwitching === `${variant.url}|${variant.inlineLanguage || ""}` ? "…" : variant.label}</button>;
             })}
           </div>
         </div>}

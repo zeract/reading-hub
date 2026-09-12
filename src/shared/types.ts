@@ -392,6 +392,8 @@ export interface ReaderFormulaDiagnostics {
  * credential, or stored copy of the translated article.
  */
 export interface ReaderLanguageVariant {
+  /** Present only for a publisher-declared body within the same document. */
+  inlineLanguage?: string;
   /** Public URL that the main process has already approved for this article. */
   url: string;
   /** BCP 47 primary language tag where the publisher made it available. */
