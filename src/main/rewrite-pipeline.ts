@@ -10,7 +10,7 @@ type Term = { source: string; target: string };
 type Plan = { summary: string; terms: Term[] };
 type Issue = { blockId: string; kind: string; message: string; sourceQuote: string };
 const ISSUE_KINDS = ["omission", "meaning", "number", "term", "cohesion"];
-const WRITE = "根据全文提纲、统一术语和上下文，将本节完整改写为自然简体中文。保留全部事实、限定/否定条件、数字（沿用原始数字写法）、公式和必要代码，不添加原文没有的论断。只输出本节 Markdown，不输出内部段落 ID，不复制相邻节，不另加总结。原文本身的重复实验或重复论述仍需保留，不因相邻内容相似而删减本节。";
+const WRITE = "提纲可能节略，仅作导航，绝不能代替本节完整原文。根据全文提纲、统一术语和上下文，将本节完整改写为自然简体中文。保留全部事实、限定/否定条件、数字（沿用原始数字写法）、公式和必要代码，不添加原文没有的论断。只输出本节 Markdown，不输出内部段落 ID，不复制相邻节，不另加总结。原文本身的重复实验或重复论述仍需保留，不因相邻内容相似而删减本节。";
 
 /** All sections share one plan. Reviews see source blocks and actual neighbouring drafts. */
 export async function runRewritePipeline(text: string, title: string, run: RewriteRunner, signal: AbortSignal,
@@ -52,8 +52,9 @@ export async function runRewritePipeline(text: string, title: string, run: Rewri
     plans.push(plan);
   }
   const sourceTerms = [...new Map(plans.flatMap(p => p.terms).map(t => [`${t.source}|${t.target}`,t])).values()].slice(0,64);
+  const proposal = boundOutline(sections.map((s,i) => ({id:s.id,summary:plans[i].summary})), sourceTerms);
   const outline = await structured("outline", "全文", { instruction: '合并全文结构和术语冲突。原文已有中文术语直接保留，不另换称谓、不添加原文未给出的缩写。同一概念的单复数、大小写及其他词形使用相同译名，不为词形差异创建冲突译名。保持所有节的原始顺序及 ID，每节 summary 目标200字以内，最多600字符。术语仅从 candidates 中选取 source，每个 source 只有一个 target，最多64项。整个 JSON 最多9000字符，source 最多80字符，target 最多100字符。只输出 JSON：{"sections":[{"id":"S1","summary":"..."}],"terms":[{"source":"...","target":"..."}]}', title,
-    sections: sections.map((s,i) => ({ id: s.id, summary: plans[i].summary })), candidates: sourceTerms }, raw => parseOutline(raw, sections, sourceTerms));
+    sections: proposal.sections, candidates: proposal.terms }, raw => parseOutline(raw, sections, proposal.terms));
   const drafts: string[] = [];
   for (let i = 0; i < sections.length; i++) {
     drafts.push(await call("write", { instruction: WRITE, title, outline, section: sections[i],
@@ -64,12 +65,12 @@ export async function runRewritePipeline(text: string, title: string, run: Rewri
   // Forward review: a later section sees the already repaired previous ending.
   // Revisions cannot change another section, so its source coverage stays valid.
   for (let i = 0; i < sections.length; i++) {
-    const review = () => structured("review", `第 ${i+1} 节`, { instruction: '你是原文对照编辑，请独立审查，不要因稿件流畅而默认正确。逐个原文 block 检查论点、数字、否定/范围限定、因果、公式、引用是否保留或误解；同时检查统一术语与相邻稿的衔接；只报告有证据的实质问题，不把个人文风偏好、等义表达或原文本身重复的实验/论述算作错误，不要求添加原文没有的过渡结论。原文优先于提纲和术语表，若术语表有误应保留原文含义而非要求错误译名。允许首次出现时括注原词，不将此当作术语不一致。每个问题只能引用其 blockId 对应 block 的原文，不按稿件段落或观察序号推算 ID。coverage 必须逐个列出本节所有 blockId，不能漏项。问题 sourceQuote 必须逐字引用对应原文 block（衔接问题可为空），每个 sourceQuote 和 message 最多500字符，issues 最多24项。message 为具体修订建议。只输出 JSON：{"coverage":[{"blockId":"B1","covered":true}],"issues":[{"blockId":"B1","kind":"omission|meaning|number|term|cohesion","message":"...","sourceQuote":"..."}]}。没有问题时 issues 为 []。', title, outline, section: sections[i], draft: drafts[i],
-          previousEnding: drafts[i-1]?.slice(-1000) || "", nextOpening: drafts[i+1]?.slice(0,1000) || "" }, raw => parseReview(raw, sections[i]));
+    const review = () => structured("review", `第 ${i+1} 节`, { instruction: '你是原文对照编辑，请独立审查，不要因稿件流畅而默认正确。逐个原文 block 检查论点、数字、否定/范围限定、因果、公式、引用是否保留或误解；同时检查统一术语以及本节开头与 previousEnding 的衔接；本节只是内部处理片段，跨节延续列表或章节是合法的，不把片段结尾当作整篇结束。只报告能依据本节原文在本节内修复的问题，不要求修改下一节或补入下一节内容；只报告有证据的实质问题，不把个人文风偏好、等义表达或原文本身重复的实验/论述算作错误，不要求添加原文没有的过渡结论。原文优先于提纲和术语表，若术语表有误应保留原文含义而非要求错误译名。允许首次出现时括注原词，不将此当作术语不一致。每个问题只能引用其 blockId 对应 block 的原文，不按稿件段落或观察序号推算 ID。coverage 必须逐个列出本节所有 blockId，不能漏项。covered 为 false 时，必须在 issues 中给出该 block 的具体遗漏内容和原文引文，不能只标 false 而不解释。问题 sourceQuote 必须逐字引用对应原文 block（衔接问题可为空），每个 sourceQuote 和 message 最多500字符，issues 最多24项。message 为具体修订建议。只输出 JSON：{"coverage":[{"blockId":"B1","covered":true}],"issues":[{"blockId":"B1","kind":"omission|meaning|number|term|cohesion","message":"...","sourceQuote":"..."}]}。没有问题时 issues 为 []。', title, outline, section: sections[i], draft: drafts[i],
+          previousEnding: drafts[i-1]?.slice(-1000) || "" }, raw => parseReview(raw, sections[i]));
     let issues = await review();
     if (issues.length) {
       total += 2;
-      const revised = await call("revise", { instruction: `${WRITE} 仅修复 issues 指出的问题，并保留稿件中正确的内容；修订后会重新对照原文检查。`, title, outline, section: sections[i], draft: drafts[i], issues,
+      const revised = await call("revise", { instruction: "逐项修复 issues 指出的问题，使用完整原文核对。只改动相关句子、公式或链接，保留其他所有已经正确的内容，不重写风格、不复制相邻节。只输出完整修订后的本节 Markdown，随后会再次对照原文检查。", title, outline, section: sections[i], draft: drafts[i], issues,
         previousEnding: drafts[i-1]?.slice(-1000) || "", nextSummary: outline.sections[i+1]?.summary || "" });
       assertDraftSize(revised);
       drafts[i] = revised; repairs++;
@@ -118,26 +119,31 @@ function sourceMatch(source: string, text: string, ignoreCase = false): string |
   return pattern ? new RegExp(pattern, ignoreCase ? "iu" : "u").exec(text)?.[0] : undefined;
 }
 function string(v: unknown, max: number): v is string { return typeof v === "string" && Boolean(v.trim()) && v.length <= max; }
-function terms(v: unknown, max: number): Term[] {
-  if(!Array.isArray(v) || v.length > max || v.some(t => !t || !string(t.source,80) || !string(t.target,100))) return invalid(`terms 须为数组，最多 ${max} 项；每项 source 为1至80字符、target 为1至100字符的字符串。`);
+/** Glossary suggestions are advisory; unusable candidates must not abort source-based writing. */
+function terms(value: unknown, max: number): Term[] {
+  if (!Array.isArray(value)) return [];
   const unique = new Map<string, Term>();
-  for (const term of v) {
+  const conflicting = new Set<string>();
+  for (const term of value) {
+    if (!term || !string(term.source,80) || !string(term.target,100)) continue;
     const source = term.source.trim().replace(/\s+/gu, " ");
     const target = term.target.trim();
     const key = source.toLowerCase();
-    if (unique.has(key) && unique.get(key)!.target !== target) return invalid("同一 source 存在冲突译名，请统一 target。");
+    if (conflicting.has(key)) continue;
+    if (unique.has(key) && unique.get(key)!.target !== target) {
+      unique.delete(key); conflicting.add(key); continue;
+    }
     unique.set(key, {source, target});
   }
-  return [...unique.values()];
+  return [...unique.values()].slice(0,max);
 }
 function parsePlan(raw: string, section: Section): Plan {
   const value=json(raw); if(!string(value.summary,600)) return invalid("summary 须为1至600字符的字符串，请精简提纲而非截断原文。");
   const selected=terms(value.terms,8);
-  const canonical = selected.map(term => {
+  const canonical = selected.flatMap(term => {
     // Terminology identity is case-insensitive; persist the actual source spelling.
     const source = section.blocks.map(block => sourceMatch(term.source, block.text, true)).find(Boolean);
-    if (!source) return invalid("terms.source 须摘自本节原文，不可使用未出现的词形、译文或概括；无法确认的术语可不列出。");
-    return { source, target: term.target };
+    return source ? [{ source, target: term.target }] : [];
   });
   return { summary:value.summary,terms:canonical };
 }
@@ -147,14 +153,29 @@ function parseOutline(raw: string, sections: Section[], candidates: Term[]) {
   value.sections.forEach((s:any,i:number) => {
     if (!string(s.summary,600)) invalid(`sections.${sections[i].id}.summary 须为1至600字符的字符串，请精简此节提纲。`);
   });
-  const selected=terms(value.terms,64).map(term => {
+  const selected=terms(value.terms,64).flatMap(term => {
     const source = candidates.find(c=>c.source.toLowerCase().replace(/\s+/gu," ")===term.source.toLowerCase())?.source;
-    if (!source) return invalid("terms.source 只能选择 candidates 已有的 source，不可改写或合并名称。");
-    return {source, target:term.target};
+    return source ? [{source, target:term.target}] : [];
   });
-  const result={sections:value.sections.map((s:any)=>({id:s.id,summary:s.summary})),terms:selected};
-  if(JSON.stringify(result).length > 9000) return invalid("全文提纲 JSON 超过9000字符，请缩短各节 summary 和术语表，保留全部节 ID。");
-  return result;
+  return boundOutline(value.sections.map((s:any)=>({id:s.id,summary:s.summary})), selected);
+}
+/** Budget advisory context independently from complete source blocks. Never truncate source/drafts. */
+function boundOutline(sections: Array<{id:string;summary:string}>, candidates: Term[]) {
+  const selected: Term[] = [];
+  for (const term of candidates) {
+    if (JSON.stringify([...selected,term]).length <= 3000) selected.push(term);
+  }
+  const base = {sections: sections.map(section => ({id:section.id,summary:""})), terms:selected};
+  const allowance = Math.floor((8500 - JSON.stringify(base).length) / sections.length) + 2;
+  const suffix = "…（提纲节选，以完整原文为准）";
+  return {sections:sections.map(section => {
+    if (JSON.stringify(section.summary).length <= allowance) return section;
+    let end = section.summary.length;
+    while (end > 0 && JSON.stringify(section.summary.slice(0,end) + suffix).length > allowance) end--;
+    // Do not split a Unicode surrogate pair when shortening metadata.
+    if (end > 0 && /[\uD800-\uDBFF]/.test(section.summary[end-1])) end--;
+    return {id:section.id,summary:section.summary.slice(0,end) + suffix};
+  }), terms:selected};
 }
 export function parseReview(raw: string, section: Section): Issue[] {
   const value=json(raw); const ids=section.blocks.map(b=>b.id);
@@ -168,7 +189,7 @@ export function parseReview(raw: string, section: Section): Issue[] {
     if (issue.sourceQuote && !quote) return invalid(`问题引文不属于原文段落 ${block.id}。`);
     return {blockId:issue.blockId,kind:issue.kind,message:issue.message,sourceQuote:quote!};
   });
-  for(const coverage of value.coverage) if(!coverage.covered && !issues.some(i=>i.blockId===coverage.blockId)) issues.push({blockId:coverage.blockId,kind:"omission",message:"原文此段未完整覆盖，请补齐。",sourceQuote:section.blocks.find(b=>b.id===coverage.blockId)!.text.slice(0,240)});
+  for(const coverage of value.coverage) if(!coverage.covered && !issues.some(i=>i.blockId===coverage.blockId)) invalid(`原文段落 ${coverage.blockId} 被标为未覆盖，但 issues 未说明具体漏项。请给出明确修订建议及对应原文引文，不能仅标 false。`);
   return issues;
 }
 function issueLabel(kind: string) { return ({omission:"遗漏",meaning:"含义偏差",number:"数字",term:"术语",cohesion:"衔接"} as Record<string,string>)[kind]; }

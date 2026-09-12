@@ -2,7 +2,7 @@ import { REWRITE_STAGE_LABELS } from "../shared/rewrite";
 import type { useArticleRewrite } from "./use-article-rewrite";
 import { DeferredAiMarkdownContent } from "./deferred-ai-markdown";
 type State=ReturnType<typeof useArticleRewrite>;
-export function RewriteControls({ state, onToggle, onOpenSettings }: { state:State; onToggle():void; onOpenSettings():void }) {
+export function RewriteControls({ state, onToggle }: { state:State; onToggle():void }) {
   const {record,pending,busy,error,loaded}=state;
   return <div className="reader-rewrite-controls">
     <div className="reader-rewrite-actions">
@@ -12,7 +12,7 @@ export function RewriteControls({ state, onToggle, onOpenSettings }: { state:Sta
     </div>
     {pending&&<p role="status">{record?.status==="queued"?"已排队，可继续阅读其他文章。":record?.totalChunks?`${record.stage ? REWRITE_STAGE_LABELS[record.stage] : "正在处理"} · ${record.completedChunks}/${record.totalChunks} 步，可继续阅读其他文章。`:"正在读取正文，准备改写…"}</p>}
     {record?.status==="cancelled"&&<p role="status">改写已取消。</p>}
-    {(error||record?.error)&&<p role="alert">{error||record?.error} <button type="button" className="action-button" onClick={onOpenSettings}>改写设置</button>{!loaded&&<button type="button" className="action-button" onClick={()=>void state.reload()}>重试读取</button>}</p>}
+    {(error||record?.error)&&<p role="alert">{error||record?.error}{!loaded&&<button type="button" className="action-button" onClick={()=>void state.reload()}>重试读取</button>}</p>}
   </div>;
 }
 export function RewrittenArticle({state}:{state:State}) {

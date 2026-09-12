@@ -330,7 +330,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
         <button type="button" className="toolbar-icon-button external-button" aria-label="在浏览器中打开原文" title="在浏览器中打开原文" onClick={() => void window.reader.openExternal(article?.url || entry.url)}>↗</button>
       </div>
     </header>
-    <RewriteControls state={rewrite} onOpenSettings={onOpenSettings} onToggle={()=>{
+    <RewriteControls state={rewrite} onToggle={()=>{
       clearTextSelection();setAssistantState("closed");rewrite.setVisible(!rewriteVisible);
       readerWorkspaceElement.current?.querySelector(".reader-scroll")?.scrollTo({top:0});
     }}/>

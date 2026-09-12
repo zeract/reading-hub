@@ -6,7 +6,7 @@ it("requires every original block in review and rejects invented evidence",()=>{
  const section=makeRewriteSections(source+"\n\nSecond paragraph.")[0];
  expect(()=>parseReview(JSON.stringify({coverage:[{blockId:"B1",covered:true}],issues:[]}),section)).toThrow("格式不完整");
  expect(()=>parseReview(JSON.stringify({coverage:section.blocks.map(b=>({blockId:b.id,covered:true})),issues:[{blockId:"B1",kind:"meaning",message:"Wrong.",sourceQuote:"invented quotation"}]}),section)).toThrow("格式不完整");
- expect(parseReview(JSON.stringify({coverage:section.blocks.map(b=>({blockId:b.id,covered:false})),issues:[]}),section)).toHaveLength(2);
+ expect(()=>parseReview(JSON.stringify({coverage:section.blocks.map(b=>({blockId:b.id,covered:false})),issues:[]}),section)).toThrow("具体漏项");
 });
 it("shares a global glossary, carries neighbouring context and repairs only the flagged section before rechecking",async()=>{
  const inputs:any[]=[];let reviewCount=0;
@@ -21,13 +21,14 @@ it("shares a global glossary, carries neighbouring context and repairs only the 
  expect(result.quality.repairedSections).toBe(1);expect(result.quality.reviewedBlocks).toBe(70);
  expect(inputs.filter(i=>i.stage==="write").every(i=>i.outline.terms[0].target==="缓存")).toBe(true);
  expect(inputs.filter(i=>i.stage==="write")[1].previousEnding).toContain("严谨改写");
- expect(inputs.find(i=>i.stage==="review").nextOpening).toContain("严谨改写");
+ expect(inputs.filter(i=>i.stage==="review").every(i=>i.nextOpening===undefined)).toBe(true);
+ expect(inputs.find(i=>i.stage==="review" && i.section.id==="S2").previousEnding).toContain("严谨改写");
  expect(inputs.filter(i=>i.stage==="revise")).toHaveLength(1);expect(result.quality.requests).toBe(runner.mock.calls.length);
 });
 it("never treats unresolved review issues or malformed plans as a completed rewrite",async()=>{
  const runner=async(stage,prompt)=>{
   const input=JSON.parse(prompt);
-  if(stage==="review")return JSON.stringify({coverage:input.section.blocks.map(b=>({blockId:b.id,covered:false})),issues:[]});
+  if(stage==="review")return JSON.stringify({coverage:input.section.blocks.map(b=>({blockId:b.id,covered:false})),issues:input.section.blocks.map(b=>({blockId:b.id,kind:"omission",message:"缺少原文事实。",sourceQuote:b.text}))});
   return rewriteModelResponse(prompt,stage);
  };
  await expect(runRewritePipeline(source,"Fixture",runner,new AbortController().signal)).rejects.toThrow("修订后仍有");
@@ -66,7 +67,8 @@ it("canonicalizes term casing to real source spelling without accepting invented
  };
  const result=await runRewritePipeline("Median latency fell to 80 ms.","Fixture",runner,new AbortController().signal);
  expect(result.quality.terms).toEqual([{source:"Median latency",target:"延迟中位数"}]);
- await expect(runRewritePipeline("A different experiment.","Fixture",runner,new AbortController().signal)).rejects.toThrow("格式不完整");
+ const withoutTerms = await runRewritePipeline("A different experiment.","Fixture",runner,new AbortController().signal);
+ expect(withoutTerms.quality.terms).toEqual([]);
 });
 it.each(["plan","outline"])("retries invalid %s output with field feedback and stops after one retry",async(badStage)=>{
  const inputs:any[]=[];let invalid=0;
@@ -113,7 +115,7 @@ it("recovers first-plan failure in a 28-section job without skipping later secti
   const input=JSON.parse(prompt);
   if(stage==="plan") {
    if(first){first=false;return "invalid";}
-   return JSON.stringify({summary:input.section.id==="S1"?"中".repeat(350):"本节限定条件。",terms:[]});
+   return JSON.stringify({summary:input.section.id==="S1"?"中".repeat(350):"本节限定条件。",terms:input.section.id==="S7"?[{source:"unsupported glossary term",target:"无来源词条"}]:[]});
   }
   if(stage==="write")writes.push(input.section.id);
   return rewriteModelResponse(prompt,stage);
@@ -121,4 +123,47 @@ it("recovers first-plan failure in a 28-section job without skipping later secti
  const result=await runRewritePipeline(text,"Fixture",runner,new AbortController().signal);
  expect(writes).toEqual(Array.from({length:28},(_,i)=>`S${i+1}`));
  expect(result.quality).toMatchObject({reviewedSections:28,reviewedBlocks:28,requests:86});
+});
+it("drops unsupported advisory terms in both planning stages while retaining grounded terms",async()=>{
+ const materials:any[]=[];
+ const runner=async(stage,prompt)=>{
+  const input=JSON.parse(prompt);materials.push({stage,...input});
+  if(stage==="plan")return JSON.stringify({summary:"缓存的适用条件。",terms:[
+   {source:"caches",target:"缓存"},{source:"cache",target:"缓存"},{source:"invented",target:"编造"},
+   {source:"latency",target:"延迟"},{source:"latency",target:"时延"},null,{source:"wrong"}
+  ]});
+  if(stage==="outline")return JSON.stringify({sections:input.sections,terms:[...input.candidates,{source:"invented glossary",target:"错误候选"}]});
+  return rewriteModelResponse(prompt,stage);
+ };
+ const result=await runRewritePipeline(source,"Fixture",runner,new AbortController().signal);
+ expect(result.quality.terms).toEqual([{source:"cache",target:"缓存"}]);
+ expect(result.quality.requests).toBe(4);
+ expect(materials.find(m=>m.stage==="write").section.blocks[0].text).toBe(source);
+});
+it("allows an absent advisory glossary but never absent source coverage",async()=>{
+ const runner=async(stage,prompt)=>{
+  const input=JSON.parse(prompt);
+  if(stage==="plan")return JSON.stringify({summary:"完整提纲。"});
+  if(stage==="outline")return JSON.stringify({sections:input.sections,terms:null});
+  return rewriteModelResponse(prompt,stage);
+ };
+ const result=await runRewritePipeline(source,"Fixture",runner,new AbortController().signal);
+ expect(result.quality.terms).toEqual([]);expect(result.quality.reviewedBlocks).toBe(1);
+ expect(()=>parseReview('{"issues":[]}',makeRewriteSections(source)[0])).toThrow("coverage");
+});
+it("budgets advisory outlines for long articles without truncating any source block",async()=>{
+ const text=Array.from({length:28},(_,i)=>`Section ${i+1}. `+"Every detail remains in the original source. ".repeat(90).trim()).join("\n\n");
+ const writes:any[]=[];
+ const runner=async(stage,prompt)=>{
+  const input=JSON.parse(prompt);
+  if(stage==="plan")return JSON.stringify({summary:'详述"事实"与限定。'.repeat(55),terms:[]});
+  if(stage==="outline")return JSON.stringify({sections:input.sections.map(s=>({...s,summary:'详述"事实"与限定。'.repeat(55)})),terms:[]});
+  if(stage==="write")writes.push(input);
+  return rewriteModelResponse(prompt,stage);
+ };
+ const result=await runRewritePipeline(text,"Fixture",runner,new AbortController().signal);
+ expect(result.quality.requests).toBe(85);
+ expect(JSON.stringify(writes[0].outline).length).toBeLessThanOrEqual(8500);
+ expect(writes[0].outline.sections[0].summary).toContain("提纲节选");
+ expect(writes.flatMap(w=>w.section.blocks.map(b=>b.text)).join("\n\n")).toBe(text);
 });

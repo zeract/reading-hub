@@ -1093,7 +1093,8 @@ try {
   database.markRead("success", false);
   database.publishChanges();
   await waitFor(window, "document.querySelector('.entry-card.selected [aria-label=\"收藏\"]')?.textContent === '☆' && !document.querySelector('.entry-card.selected')?.classList.contains('read')");
-  assert(await evaluate("document.querySelector('.reader-view .favorite-button')?.getAttribute('aria-pressed') === 'false'"), "A background list refresh must update the selected reader's favorite state.");
+  // Selected-reader metadata follows the list via a React effect. Await that commit too.
+  await waitFor(window, "document.querySelector('.reader-view .favorite-button')?.getAttribute('aria-pressed') === 'false'");
   assert(contentReadRequests === readsBeforeBackgroundChange, "Refreshing entry metadata must not reload the article body.");
   assert(await evaluate("document.querySelector('.article-body') === globalThis.workflowArticleBeforeRefresh"), "Refreshing entry metadata must preserve the mounted article DOM.");
   await evaluate("delete globalThis.workflowArticleBeforeRefresh");

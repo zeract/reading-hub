@@ -282,6 +282,8 @@ it("uses a task-specific rewrite model without changing the learning model or ex
   await service.rewriteChunk({provider:"deepseek",model:"rewrite-model",effort:"default"},"review material",new AbortController().signal,"review");
   expect(requests[1].messages[0].content).toContain("只返回 JSON");
   expect(requests[1].response_format).toEqual({type:"json_object"});
+  expect(requests[1].max_tokens).toBe(32768);
+  expect(requests[0].max_tokens).toBe(8192);
   expect(requests[1].thinking).toEqual({type:"enabled"});
   expect(requests[1].reasoning_effort).toBe("low");
   await ask(service,{provider:"deepseek",question:"请解释。",article});
@@ -293,5 +295,8 @@ it("uses a task-specific rewrite model without changing the learning model or ex
     expect(requests.at(-1).response_format).toEqual({type:"json_object"});
   }
   expect((await service.listProviders()).find(p=>p.id==="deepseek")?.model).toBe("learning-model");
+  await service.rewriteChunk({provider:"deepseek",model:"rewrite-model",effort:"default"},"repair material",new AbortController().signal,"revise");
+  expect(requests.at(-1).messages[0].content).toContain("校对编辑");
+  expect(requests.at(-1).response_format).toBeUndefined();
   expect(JSON.stringify(answer)).not.toContain("test-key");await service.close();
 });
