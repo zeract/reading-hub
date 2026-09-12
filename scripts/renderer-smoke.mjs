@@ -114,7 +114,7 @@ const channels = [
   }],
   ["rewrite:generate", (_event,id) => {
     const job=database.rewrites.enqueue(id,database.rewrites.settings());database.rewrites.progress(job,1,1);
-    database.rewrites.finish(job,{markdown:aiAnswer+"\n\n中文正文，链接与图片。动作 $\\pi_\\theta(a_t \\mid s_t)$；下一状态 $P(s_{t+1} \\mid a_t, s_t)$。参考（https://example.com/post），而不是 [嵌套链接](https://example.com/a_(b))。\n\n![图示](<https://example.com/image_(1).png>)",provider:"deepseek",model:"fixture-rewrite",createdAt:Date.now(),sourceUrl:"https://example.com/success",sourceTitle:"Fixture rewrite",sourceHash:"fixture",promptVersion:4,sections:[aiAnswer],quality:{version:1,reviewedSections:0,reviewedBlocks:0,repairedSections:0,requests:1,terms:[]}});
+    database.rewrites.finish(job,{markdown:aiAnswer+"\n\n$$\n\\begin{align}x&=1\\tag{7}\\\\y&=2\\tag{8}\\end{align}\n$$"+"\n\n中文正文，链接与图片。动作 $\\pi_\\theta(a_t \\mid s_t)$；下一状态 $P(s_{t+1} \\mid a_t, s_t)$。参考（https://example.com/post），而不是 [嵌套链接](https://example.com/a_(b))。\n\n![图示](<https://example.com/image_(1).png>)",provider:"deepseek",model:"fixture-rewrite",createdAt:Date.now(),sourceUrl:"https://example.com/success",sourceTitle:"Fixture rewrite",sourceHash:"fixture",promptVersion:4,sections:[aiAnswer],quality:{version:1,reviewedSections:0,reviewedBlocks:0,repairedSections:0,requests:1,terms:[]}});
     return job;
   }],
   ["source:import-opml", () => new Promise((resolve) => {
@@ -548,12 +548,8 @@ try {
   window.webContents.send("ai:stream", { requestId: activeAiRequest, type: "delta", text: "Late fixture" });
   aiMode = "complete";
   const selectRewrite = async value => {
-    if (await evaluate("document.querySelector('.reader-version-select').textContent") === (value === "rewrite" ? "中文改写" : "原文")) return;
-    await evaluate("document.querySelector('.reader-version-select').click()");
-    await waitFor(window, "Boolean(document.querySelector('.reader-version-menu'))");
-    assert(await evaluate("document.querySelector('.reader-version-menu').getBoundingClientRect().top >= document.querySelector('.reader-version-select').getBoundingClientRect().bottom && getComputedStyle(document.querySelector('.reader-version-menu')).backgroundColor === getComputedStyle(document.querySelector('.reader-toolbar')).backgroundColor"), "Menu must expand below its trigger with the reader background.");
-    assert(await evaluate("document.querySelectorAll('.reader-version-menu [role=\"option\"]').length === 1 && document.querySelector('.reader-version-menu').textContent !== document.querySelector('.reader-version-select').textContent"), "Only the alternative version appears below the current version.");
-    await evaluate(`Array.from(document.querySelectorAll('.reader-version-menu [role="option"]')).find(b=>b.textContent===${JSON.stringify(value === "rewrite" ? "中文改写" : "原文")}).click()`);
+    await evaluate(`Array.from(document.querySelectorAll('.reader-version-tabs [role="tab"]')).find(b=>b.textContent===${JSON.stringify(value === "rewrite" ? "中文改写" : "原文")}).click()`);
+    assert(await evaluate("document.querySelectorAll('.reader-version-tabs [role=\"tab\"]').length===2 && !document.querySelector('.reader-version-menu')"), "Two inline tabs must switch versions without an overlay.");
   };
   await selectRewrite("rewrite");
   await waitFor(window,"Array.from(document.querySelectorAll('.reader-rewritten button')).some(b=>b.textContent==='生成中文改写')");
@@ -564,20 +560,16 @@ try {
     await selectRewrite("rewrite");
     await waitFor(window,"Boolean(document.querySelector('.reader-rewritten .katex')) && document.querySelector('.reader-rewritten img')?.naturalWidth > 0");
     assert(await evaluate("document.querySelector('.reader-article[hidden]') !== null && document.documentElement.scrollWidth <= innerWidth + 1"), "Rewritten body must be separate from the original and fit the viewport.");
-    assert(await evaluate("document.querySelector('.reader-version-select').textContent==='中文改写' && getComputedStyle(document.querySelector('.reader-version-select')).borderTopWidth==='0px'"), "Version selection must be a borderless dropdown.");
-    assert(await evaluate("document.querySelector('.reader-version-select').closest('.reader-toolbar') === document.querySelector('.favorite-button').closest('.reader-toolbar') && document.querySelector('.reader-version-select').getBoundingClientRect().left < document.querySelector('.favorite-button').getBoundingClientRect().left"), "Version dropdown belongs at the left of the favorite toolbar.");
+    assert(await evaluate("document.querySelector('.reader-version-tabs [aria-selected=\"true\"]').textContent==='中文改写' && getComputedStyle(document.querySelector('.reader-version-tabs [aria-selected=\"true\"]')).borderTopWidth==='0px'"), "Version selection must be a borderless dropdown.");
+    assert(await evaluate("document.querySelector('.reader-version-tabs [aria-selected=\"true\"]').closest('.reader-toolbar') === document.querySelector('.favorite-button').closest('.reader-toolbar') && document.querySelector('.reader-version-tabs [aria-selected=\"true\"]').getBoundingClientRect().left < document.querySelector('.favorite-button').getBoundingClientRect().left"), "Version dropdown belongs at the left of the favorite toolbar.");
     assert(await evaluate("document.querySelector('.reader-rewritten button')===null && !/本地保存|理解偏差|未进行额外|fixture-rewrite|重新生成|检查改写/.test(document.querySelector('.reader-rewritten').textContent)"), "Completed rewrite must show only title and body.");
     assert(await evaluate("getComputedStyle(document.querySelector('.reader-rewritten .ai-markdown-paragraph')).fontFamily.startsWith('\"Zhuque Fangsong\"')"), "Rewritten prose must use the bundled Fangsong face.");
     assert(await evaluate("document.querySelector('.reader-rewritten a[href=\"https://example.com/post\"]') && document.querySelector('.reader-rewritten a[href=\"https://example.com/a_(b)\"]') && document.querySelector('.reader-rewritten img').src.startsWith('data:image/')"), "Links and proxied images must render correctly.");
     assert(await evaluate("document.querySelector('.reader-rewritten a[href=\"https://example.com/post\"]').textContent === '链接' && !document.querySelector('.ai-toggle').disabled"), "Rewrite must hide raw URL labels and enable AI.");
     assert(await evaluate("(() => { const buttons=[...document.querySelectorAll('.reader-toolbar-actions button')];return buttons.every(b=>b.querySelector('svg') && b.getBoundingClientRect().width===28 && b.getBoundingClientRect().height===28 && getComputedStyle(b).backgroundColor==='rgba(0, 0, 0, 0)'); })()"), "Toolbar icons must share their dimensions and transparent style.");
+    assert(await evaluate("(() => { const tag=document.querySelector('.reader-rewritten .tag');const base=tag?.parentElement.querySelector('.base');return tag?.textContent.includes('(7)') && tag.textContent.includes('(8)') && tag.getBoundingClientRect().left >= base.getBoundingClientRect().right; })()"), "Explicit equation tags must survive without overlapping the formula body.");
     await evaluate("document.fonts.ready.then(()=>new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))");
     await writeFile(path.join(tmpdir(), `reading-hub-rewrite-${width}.png`), (await window.capturePage()).toPNG());
-    await evaluate("document.querySelector('.reader-version-select').click()");
-    await waitFor(window, "Boolean(document.querySelector('.reader-version-menu'))");
-    await writeFile(path.join(tmpdir(), 'reading-hub-version-menu-' + width + '.png'), (await window.capturePage()).toPNG());
-    await pressKey("Escape");
-    await waitFor(window, "!document.querySelector('.reader-version-menu')");
     await selectRewrite("original");
   }
   providerListFailure = true;

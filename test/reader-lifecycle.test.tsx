@@ -143,8 +143,7 @@ it.each([false, true])("uses the saved rewrite for AI even when original loading
   });
   Element.prototype.scrollTo = vi.fn();
   await render();
-  await act(async () => container.querySelector<HTMLButtonElement>('.reader-version-select')!.click());
-  await act(async () => container.querySelectorAll<HTMLButtonElement>('[role="option"]')[0].click());
+  await act(async () => container.querySelectorAll<HTMLButtonElement>('[role="tab"]')[1].click());
   expect(container.querySelector<HTMLButtonElement>('.ai-toggle')!.disabled).toBe(false);
   await act(async () => container.querySelector<HTMLButtonElement>('.ai-toggle')!.click());
   await act(async () => {
@@ -154,8 +153,7 @@ it.each([false, true])("uses the saved rewrite for AI even when original loading
   });
   await act(async () => container.querySelector('form.ai-question')!.dispatchEvent(new Event("submit",{bubbles:true,cancelable:true})));
   expect(window.reader.startAiStream).toHaveBeenCalledWith(expect.objectContaining({request:expect.objectContaining({article:expect.objectContaining({text:result.markdown})})}));
-  await act(async () => container.querySelector<HTMLButtonElement>('.reader-version-select')!.click());
-  await act(async () => container.querySelectorAll<HTMLButtonElement>('[role="option"]')[0].click());
+  await act(async () => container.querySelectorAll<HTMLButtonElement>('[role="tab"]')[0].click());
   expect(container.querySelector('.reader-ai-panel')).toBeNull();
   expect(window.reader.cancelAiStream).toHaveBeenCalledTimes(1);
 });

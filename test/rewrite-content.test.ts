@@ -27,3 +27,8 @@ it("preserves image URLs and produces explicit Markdown links with safe delimite
  expect(text).toContain('![图 \\[一\\]](<https://example.com/img_(1).png>)');
  expect(text).toContain('图注');expect(text).not.toContain('https://example.com/full');
 });
+
+it("serializes one formula with its external reader number and resolves formula references",()=>{
+ const value=article("");value.contentHtml+=String.raw`<span data-reader-equation="true"><span class="reader-equation"><span class="katex"><math><annotation encoding="application/x-tex">x=y\label{eq:x}</annotation></math><span class="katex-html">duplicate</span></span><span class="reader-equation__tag">(7)</span></span></span><span class="katex"><math><annotation encoding="application/x-tex">\eqref{eq:x}</annotation></math></span>`;
+ const text=rewriteText(value);expect(text).toContain(String.raw`x=y\label{eq:x}\tag{7}`);expect(text).toContain('$(7)$');expect(text.match(/x=y/g)).toHaveLength(1);expect(text).not.toContain('duplicate');
+});

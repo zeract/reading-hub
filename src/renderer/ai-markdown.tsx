@@ -1,3 +1,4 @@
+import { mathAt } from "../shared/markdown-math";
 import { Fragment, memo, createContext, useContext, useEffect, useState, type JSX, type ReactNode } from "react";
 import MarkdownIt from "markdown-it";
 import { renderAiTeX, tokenizeAiMath } from "./ai-math";
@@ -148,16 +149,7 @@ function renderParagraphLines(lines: string[], key: string): ReactNode[] {
 }
 
 function renderInline(value: string, key: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  tokenizeAiMath(value).forEach((segment, segmentIndex) => {
-    const segmentKey = `${key}-math-${segmentIndex}`;
-    if (segment.type === "math") {
-      nodes.push(renderMathSegment(segment.tex, segment.displayMode, segmentKey));
-      return;
-    }
-    nodes.push(...renderMarkdownText(segment.value, segmentKey));
-  });
-  return nodes;
+  return renderMarkdownText(value, key);
 }
 
 function renderMathSegment(tex: string, displayMode: boolean, key: string): ReactNode {
@@ -169,6 +161,12 @@ function renderMathSegment(tex: string, displayMode: boolean, key: string): Reac
 }
 
 const inlineMarkdown = new MarkdownIt({html:false, linkify:true});
+inlineMarkdown.inline.ruler.before("escape", "reader_math", (state, silent) => {
+  const match=mathAt(state.src,state.pos);
+  if(!match || match.end>state.posMax)return false;
+  if(!silent){const token=state.push("reader_math","",0);token.content=match.tex;token.meta={displayMode:match.displayMode};}
+  state.pos=match.end;return true;
+});
 const ImageEntry = createContext<string | undefined>(undefined);
 
 /** Use CommonMark tokens for escaped/nested destinations; model HTML stays React text. */
@@ -180,7 +178,8 @@ function renderMarkdownText(value: string, key: string): ReactNode[] {
     while (index < tokens.length) {
       const token = tokens[index++]; const nodeKey = `${key}-${index}`;
       if (token.type === close) break;
-      if (token.type === "text" || token.type === "html_inline") nodes.push(token.content);
+      if (token.type === "reader_math") nodes.push(renderMathSegment(token.content, Boolean(token.meta?.displayMode), nodeKey));
+      else if (token.type === "text" || token.type === "html_inline") nodes.push(token.content);
       else if (token.type === "code_inline") nodes.push(<code className="ai-inline-code" key={nodeKey}>{token.content}</code>);
       else if (token.type === "softbreak") nodes.push(" ");
       else if (token.type === "hardbreak") nodes.push(<br key={nodeKey}/>);

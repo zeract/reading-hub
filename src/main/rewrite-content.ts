@@ -1,6 +1,23 @@
+import { tokenizeAiMath } from "../shared/markdown-math";
 import { load } from "cheerio";
 import type { ReaderArticle } from "../shared/types";
-export const REWRITE_PROMPT_VERSION = 5;
+export const REWRITE_PROMPT_VERSION = 6;
+const markdownLabel = (value:string) => value.replace(/[\\\[\]]/g, "\\$&").replace(/\s+/g," ");
+const linkMarkdownLabel = (value:string) => tokenizeAiMath(value).map(part=>part.type==="math" ? `$${part.tex}$` : markdownLabel(part.value)).join("");
+const markdownDestination = (value:string) => value.replace(/[<>\s]/g,c=>encodeURIComponent(c));
+const imageMarkdown = (url:string,alt:string) => `![${markdownLabel(alt || "图片")}](<${markdownDestination(url)}>)`;
+
+/** Only declared image-to-full-size links count as aliases; never compare filenames or strip URL parameters. */
+export function rewriteImageAliases(article:ReaderArticle): Array<{url:string;markdown:string}> {
+ const $=load(article.contentHtml);const aliases:Array<{url:string;markdown:string}>=[];
+ $("a[href] img[src]").each((_i,node)=>{
+  const image=$(node),url=image.closest("a").attr("href"),src=image.attr("src");
+  if(!url || !src?.startsWith("https://"))return;
+  try {const target=new URL(url);if(target.protocol==="https:" && /\.(png|jpe?g|webp|gif|avif|svg)$/i.test(target.pathname))aliases.push({url:target.href,markdown:imageMarkdown(src,image.attr("alt")||"图片")});}catch{/* An invalid declaration is not an alias. */}
+ });
+ return aliases;
+}
+
 export class RewriteContentError extends Error {
 }
 /** Use semantic source TeX once, not both rendered and accessibility copies. No network media. */
@@ -9,27 +26,41 @@ export function rewriteText(article: ReaderArticle): string {
         throw new RewriteContentError("当前只有订阅摘要，无法生成完整改写。请先在原文中确认正文可用。");
     const $ = load(`<main>${article.contentHtml}</main>`);
     if (article.coverImageUrl && !$("main img").length) $("main").prepend($("<img>").attr("src",article.coverImageUrl));
-    $(".katex, mjx-container, [data-reader-tex], .reader-math-source").each((_i, node) => {
+    const mathSelector = "[data-reader-equation], .katex-display, .katex, mjx-container, [data-reader-tex], .reader-math-source";
+    const formulas: Array<{node: ReturnType<typeof $>; tex:string; display:boolean; tag?:string}> = [];
+    const labels = new Map<string,string>();
+    $(mathSelector).each((_i, node) => {
         const el = $(node);
-        if (!el.parents("main").length)
-            return;
-        const tex = el.attr("data-reader-tex") || el.find('annotation[encoding="application/x-tex"]').first().text() || el.attr("data-tex") || (el.hasClass("reader-math-source") ? el.text() : undefined);
-        if (tex)
-            el.replaceWith($("<span>").text((el.attr("data-reader-math-display") === "true" || el.hasClass("reader-math-source--block") || el.closest(".katex-display, [data-reader-equation], mjx-container[display='true']").length) ? `\n$$\n${tex}\n$$\n` : `$${tex}$`));
+        if (el.parents(mathSelector).length || !el.parents("main").length) return;
+        const tex = el.attr("data-reader-tex") || el.find("[data-reader-tex]").first().attr("data-reader-tex")
+            || el.find('annotation[encoding="application/x-tex"]').first().text() || el.attr("data-tex")
+            || (el.hasClass("reader-math-source") ? el.text() : el.find(".reader-math-source").first().text());
+        if (!tex) return;
+        const display = el.is("[data-reader-equation], .katex-display, [display='true'], .reader-math-source--block") || el.attr("data-reader-math-display") === "true";
+        const printedTag = el.find(".reader-equation__tag, .tag").first().text().trim().replace(/^\((.*)\)$/s,"$1");
+        const tag = printedTag || /\\tag\*?\{([^{}]*)\}/.exec(tex)?.[1];
+        for (const match of tex.matchAll(/\\label\{([^}]+)\}/g)) if(tag) labels.set(match[1],tag);
+        formulas.push({node:el,tex,display,tag});
     });
+    const resolveReferences = (tex:string) => tex.replace(/\\(eqref|ref)\{([^}]+)\}/g, (original,kind,id) => {
+        const number=labels.get(id);return number===undefined?original:kind==="eqref"?`(${number})`:number;
+    });
+    for (const {node,tex,display,tag} of formulas) {
+        let content = resolveReferences(tex);
+        if(display && tag && !/\\tag\*?\{/.test(content)) content += `\\tag{${tag.replace(/[{}]/g,"")}}`;
+        node.replaceWith($("<span>").text(display ? `\n$$\n${content}\n$$\n` : `$${content}$`));
+    }
     $("script,style,button,input,video,source,.katex-html").remove();
-    const label = (value: string) => value.replace(/[\\\[\]]/g, "\\$&").replace(/\s+/g, " ");
-    const destination = (value: string) => value.replace(/[<>\s]/g, char => encodeURIComponent(char));
     $("img").each((_i, node) => {
         const el = $(node); const url = el.attr("src");
-        el.replaceWith($("<span>").text(url?.startsWith("https://") ? `![${label(el.attr("alt") || "图片")}](<${destination(url)}>)` : ""));
+        el.replaceWith($("<span>").text(url?.startsWith("https://") ? imageMarkdown(url,el.attr("alt") || "图片") : ""));
     });
     $("a[href]").each((_i, node) => {
         const el = $(node); const href = el.attr("href")!;
         if (/^https?:\/\//.test(href)) {
             // Image-only links already retain their actual image destination.
             const text = el.text();
-            el.replaceWith($("<span>").text(text.startsWith("![") ? text : `[${label(text || href)}](<${destination(href)}>)`));
+            el.replaceWith($("<span>").text(text.startsWith("![") ? text : `[${linkMarkdownLabel(text || href)}](<${markdownDestination(href)}>)`));
         }
     });
     $("pre").each((_i, node) => { const el = $(node); el.replaceWith($("<div>").text(`\n\n\`\`\`\n${el.text()}\n\`\`\`\n\n`)); });

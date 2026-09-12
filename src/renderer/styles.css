@@ -481,10 +481,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .reader-toolbar .toolbar-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 5px; border: 0; background: transparent; color: var(--ink-soft); }
 .reader-toolbar .toolbar-icon-button[aria-pressed="true"] { color: var(--accent-deep); }
 .reader-toolbar .favorite-button.is-favorite svg { fill: currentColor; }
-.reader-version { position: relative; justify-self: start; min-width: 0; }
-.reader-toolbar .reader-version-select { display: flex; align-items: center; gap: 5px; max-width: 100%; padding: 4px 0; border: 0; border-radius: 0; box-shadow: none; background: transparent; font: 400 var(--control-font-size)/1.5 var(--font-ui); }
-.reader-version-select svg { width: 12px; height: 12px; }
-.reader-version-menu { position: absolute; top: calc(100% + 4px); left: 0; min-width: 100%; padding: 4px 0; border: 0; background: var(--paper-bright); }
-.reader-toolbar .reader-version-menu button { display: block; width: 100%; border: 0; border-radius: 0; padding: 6px 10px; background: transparent; white-space: nowrap; text-align: left; font: 400 var(--control-font-size)/1.5 var(--font-ui); }
 
-.reader-toolbar .reader-version button:focus-visible { outline: none; text-decoration: underline; text-underline-offset: .25em; }
+.reader-version-tabs { display: flex; align-items: center; justify-self: start; gap: 12px; white-space: nowrap; }
+.reader-toolbar .reader-version-tabs button { padding: 4px 0; border: 0; border-radius: 0; background: transparent; font: 400 var(--control-font-size)/1.5 var(--font-ui); }
+.reader-toolbar .reader-version-tabs button[aria-selected="true"] { color: var(--ink); text-decoration: underline; text-underline-offset: .4em; text-decoration-thickness: 1px; }

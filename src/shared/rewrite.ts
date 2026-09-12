@@ -17,6 +17,7 @@ export interface RewriteResult {
     quality?: RewriteQuality;
     sections?: string[];
     review?: RewriteReview;
+    structureRepair?: { version:1; provider:AiProviderId; model:string; repairedAt:number; sourceHash:string };
 }
 export interface ArticleRewrite {
     entryId: string;

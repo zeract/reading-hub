@@ -92,3 +92,7 @@ it("renders conditional distributions with complete next-state subscripts in Chi
   expect(markup).toContain('s_{t+1}');
   expect(markup).toContain('<li>');
 });
+it("keeps formulas inside named links and emphasis in the same Markdown tree",()=>{
+ const markup=renderToStaticMarkup(<AiMarkdownContent entryId="one" text={String.raw`**系数 $x_1$**，见 [策略 $\pi_\theta$](https://example.com/report)。`}/>);
+ expect(markup).toMatch(/<strong>系数 <span/);expect(markup).toMatch(/<a [^>]*>策略 <span/);expect((markup.match(/class="katex"/g)||[])).toHaveLength(2);expect(markup).not.toContain('[策略');
+});

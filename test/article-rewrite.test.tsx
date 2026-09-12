@@ -12,7 +12,7 @@ function View({id}:{id:string}){const state=useArticleRewrite(id);return <><Rewr
 beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);get=vi.fn().mockResolvedValue(record);generate=vi.fn().mockResolvedValue({...record,status:"queued"});Object.defineProperty(window,"reader",{configurable:true,value:{getArticleRewrite:get,generateArticleRewrite:generate,cancelArticleRewrite:vi.fn().mockResolvedValue({...record,status:"cancelled"}),removeArticleRewrite:vi.fn().mockResolvedValue(undefined),getRewriteSettings:vi.fn().mockResolvedValue(settings),configureRewrite:vi.fn(async s=>s),listAiModels:vi.fn().mockResolvedValue({models:[],stale:false})}});container=document.createElement("div");document.body.append(container);root=createRoot(container);});
 afterEach(async()=>{await act(async()=>root.unmount());container.remove();vi.useRealTimers();vi.unstubAllGlobals();});
 async function click(text:string){await act(async()=>[...container.querySelectorAll("button")].find(b=>b.textContent===text)!.click());}
-async function select(value:string){await act(async()=>container.querySelector<HTMLButtonElement>('.reader-version-select')!.click());await act(async()=>[...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(el=>el.textContent===(value==="rewrite"?"中文改写":"原文"))!.click());}
+async function select(value:string){await act(async()=>[...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(el=>el.textContent===(value==="rewrite"?"中文改写":"原文"))!.click());}
 it("shows only the saved title and Chinese body without notices, metadata or action buttons",async()=>{
  await act(async()=>root.render(<View id="one"/>));await select("rewrite");expect(generate).not.toHaveBeenCalled();
  expect(container.querySelector(".reader-rewritten h1")?.textContent).toBe("Article");
@@ -39,7 +39,7 @@ it("saves rewrite settings independently of question settings",async()=>{
 it("lets users select the missing Chinese version without automatically generating",async()=>{
  get.mockResolvedValue(undefined);await act(async()=>root.render(<View id="one"/>));await select("rewrite");
  expect(container.textContent).toContain("生成中文改写");expect(generate).not.toHaveBeenCalled();
- expect(container.querySelector(".reader-version-select")?.textContent).toBe("中文改写");
+ expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("中文改写");
  await select("original");expect(container.querySelector(".reader-rewritten")).toBeNull();
 });
 it("keeps Chinese readable with review issues and failed background checks",async()=>{
@@ -49,19 +49,13 @@ it("keeps Chinese readable with review issues and failed background checks",asyn
  expect(container.textContent).not.toContain("改写设置");
 });
 
-it("supports keyboard selection, escape and outside dismissal without replacing the trigger",async()=>{
+it("shows two inline tabs and supports keyboard switching without a popup",async()=>{
  await act(async()=>root.render(<View id="one"/>));
- const trigger=container.querySelector<HTMLButtonElement>('.reader-version-select')!;
- await act(async()=>trigger.click());
- expect(trigger.textContent).toBe("原文");
- expect(container.querySelectorAll('[role="option"]')).toHaveLength(1);
- expect(document.activeElement?.textContent).toBe("中文改写");
- expect(container.querySelector(".reader-version")?.textContent).toBe("原文中文改写");
- await act(async()=>document.activeElement!.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowDown",bubbles:true,cancelable:true})));
- expect(document.activeElement?.textContent).toBe("中文改写");
- await act(async()=>document.activeElement!.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true})));
- expect(container.querySelector('[role="listbox"]')).toBeNull();expect(document.activeElement).toBe(trigger);
- await act(async()=>trigger.click());
- await act(async()=>document.body.dispatchEvent(new Event("pointerdown",{bubbles:true})));
- expect(container.querySelector('[role="listbox"]')).toBeNull();expect(trigger.textContent).toBe("原文");
+ const tabs=container.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+ expect([...tabs].map(t=>t.textContent)).toEqual(["原文","中文改写"]);
+ await act(async()=>tabs[0].dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowRight",bubbles:true,cancelable:true})));
+ expect(tabs[1].getAttribute("aria-selected")).toBe("true");expect(document.activeElement).toBe(tabs[1]);
+ expect(container.querySelector('[role="listbox"]')).toBeNull();
+ await act(async()=>tabs[1].dispatchEvent(new KeyboardEvent("keydown",{key:"Home",bubbles:true,cancelable:true})));
+ expect(tabs[0].getAttribute("aria-selected")).toBe("true");
 });

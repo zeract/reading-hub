@@ -1,3 +1,4 @@
+import { protectRewriteAssets, restoreRewriteAssets } from "./rewrite-assets";
 import { throwIfAborted } from "./cancellation";
 import { RewriteContentError, splitRewriteText } from "./rewrite-content";
 import type { RewriteRequestStage, RewriteQuality, RewriteIssue, RewriteReview } from "../shared/rewrite";
@@ -33,8 +34,11 @@ export async function runRewritePipeline(text: string, title: string, run: Rewri
   let requests = 0;
   for (let i = drafts.length; i < sections.length; i++) {
     progress("write", i, sections.length);
-    const draft = await request(run, "write", { instruction: WRITE, title, section: sections[i],
+    const material = protectRewriteAssets(sections[i].blocks.map(b=>b.text).join("\n\n"));
+    const protectedBlocks = material.text.split("\n\n");
+    const answer = await request(run, "write", { instruction: WRITE + "结构标记必须逐一原样保留：独立的 ⟦...A...⟧ 代表公式、图片、代码或编号引用，不能展开、改写、删除或重复。成对的 ⟦...L...⟧中文锚文本⟦/...L...⟧ 代表链接，只翻译其中的原有锚文本并自然融入句子，不另加（链接）、来源或裸网址。assets 提供被保护内容以便理解，不能重复输出。", title, section: {...sections[i], blocks: protectedBlocks.map((text,j)=>({id:sections[i].blocks[j]?.id || `B${j+1}`,text}))}, assets:material.atoms,
       opening: i > 1 ? drafts[0].slice(0, 1200) : "", previousEnding: drafts[i-1]?.slice(-1500) || "" }, signal);
+    const draft = restoreRewriteAssets(answer, material);
     assertDraft(draft);
     if ([...drafts, draft].join("\n\n").length > 240_000) throw new RewriteContentError("改写超过保存上限，已有改写仍保留。");
     drafts.push(draft); requests++;

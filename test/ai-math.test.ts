@@ -1,3 +1,4 @@
+import { load } from "cheerio";
 import { describe, expect, it } from "vitest";
 import { renderAiTeX, tokenizeAiMath } from "../src/renderer/ai-math";
 
@@ -57,4 +58,10 @@ describe("AI answer math rendering", () => {
       { type: "text", value: "。" }
     ]);
   });
+});
+
+it("keeps multiple explicit equation tags and does not discard unresolved references",()=>{
+ const tex=String.raw`\begin{align}x&=1\tag{7}\\y&=2\tag{8}\end{align}`;
+ const result=renderAiTeX(tex,true);expect(result.html).toContain('katex');expect(load(result.html!)(".tag").text()).toContain('(7)(8)');
+ expect(renderAiTeX(String.raw`\eqref{7}`,false).html).toContain('7');
 });
