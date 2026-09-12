@@ -12,6 +12,7 @@ type Row = {
     error: string | null;
     result_json: string | null;
     stage: RewriteStage | null;
+    kind: "generate" | "review";
 };
 /** One derived local document per entry; successful output survives failed regeneration. */
 export class RewriteStore {
@@ -27,9 +28,9 @@ export class RewriteStore {
     }
     get(entryId: string): ArticleRewrite | undefined {
         const row = this.db.prepare("SELECT * FROM article_rewrites WHERE entry_id=?").get(entryId) as Row | undefined;
-        return row ? { entryId: row.entry_id, jobId: row.job_id, status: row.status, ...(row.stage ? {stage:row.stage} : {}), settings: JSON.parse(row.settings_json), completedChunks: row.completed_chunks, totalChunks: row.total_chunks, updatedAt: row.updated_at, ...(row.error ? { error: row.error } : {}), ...(row.result_json ? { result: JSON.parse(row.result_json) } : {}) } : undefined;
+        return row ? { entryId: row.entry_id, jobId: row.job_id, kind: row.kind, status: row.status, ...(row.stage ? {stage:row.stage} : {}), settings: JSON.parse(row.settings_json), completedChunks: row.completed_chunks, totalChunks: row.total_chunks, updatedAt: row.updated_at, ...(row.error ? { error: row.error } : {}), ...(row.result_json ? { result: JSON.parse(row.result_json) } : {}) } : undefined;
     }
-    enqueue(entryId: string, settings: RewriteSettings): ArticleRewrite {
+    enqueue(entryId: string, settings: RewriteSettings, kind: "generate" | "review" = "generate"): ArticleRewrite {
         const previous = this.get(entryId);
         if (rewritePending(previous))
             return previous!;
@@ -38,9 +39,9 @@ export class RewriteStore {
         }).count;
         if (count >= 20)
             throw new Error("改写队列已满，请等待部分文章完成后再试。");
-        this.db.prepare(`INSERT INTO article_rewrites (entry_id,job_id,status,settings_json,updated_at) VALUES (?,?,'queued',?,?)
-      ON CONFLICT(entry_id) DO UPDATE SET job_id=excluded.job_id,status='queued',settings_json=excluded.settings_json,updated_at=excluded.updated_at,error=NULL,completed_chunks=0,total_chunks=0,stage=NULL`)
-            .run(entryId, randomUUID(), JSON.stringify(settings), Date.now());
+        this.db.prepare(`INSERT INTO article_rewrites (entry_id,job_id,status,settings_json,updated_at,kind) VALUES (?,?,'queued',?,?,?)
+      ON CONFLICT(entry_id) DO UPDATE SET job_id=excluded.job_id,status='queued',settings_json=excluded.settings_json,updated_at=excluded.updated_at,error=NULL,completed_chunks=0,total_chunks=0,stage=NULL,kind=excluded.kind`)
+            .run(entryId, randomUUID(), JSON.stringify(settings), Date.now(), kind);
         return this.get(entryId)!;
     }
     next(): ArticleRewrite | undefined {
@@ -57,8 +58,17 @@ export class RewriteStore {
             .run(completed, total, stage ?? null, Date.now(), job.entryId, job.jobId);
     }
     finish(job: ArticleRewrite, result: RewriteResult): void {
-        this.db.prepare("UPDATE article_rewrites SET status='complete',result_json=?,error=NULL,updated_at=? WHERE entry_id=? AND job_id=? AND status='running'")
+        this.db.prepare("UPDATE article_rewrites SET status='complete',result_json=?,error=NULL,checkpoint_json=CASE WHEN kind='generate' THEN NULL ELSE checkpoint_json END,updated_at=? WHERE entry_id=? AND job_id=? AND status='running'")
             .run(JSON.stringify(result), Date.now(), job.entryId, job.jobId);
+    }
+    checkpoint(job: ArticleRewrite, key: string): string[] {
+        const row = this.db.prepare("SELECT checkpoint_json FROM article_rewrites WHERE entry_id=? AND job_id=?").get(job.entryId, job.jobId) as {checkpoint_json:string|null} | undefined;
+        const value = row?.checkpoint_json ? JSON.parse(row.checkpoint_json) : undefined;
+        return value?.key === key && Array.isArray(value.drafts) ? value.drafts : [];
+    }
+    saveCheckpoint(job: ArticleRewrite, key: string, drafts: string[]): void {
+        this.db.prepare("UPDATE article_rewrites SET checkpoint_json=? WHERE entry_id=? AND job_id=? AND status='running'")
+            .run(JSON.stringify({key,drafts}), job.entryId, job.jobId);
     }
     fail(job: ArticleRewrite, error: string): void {
         this.db.prepare("UPDATE article_rewrites SET status='failed',error=?,updated_at=? WHERE entry_id=? AND job_id=? AND status IN ('queued','running')").run(error, Date.now(), job.entryId, job.jobId);

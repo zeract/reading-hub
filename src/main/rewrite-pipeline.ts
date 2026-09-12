@@ -1,92 +1,79 @@
 import { throwIfAborted } from "./cancellation";
 import { RewriteContentError, splitRewriteText } from "./rewrite-content";
-import { REWRITE_STAGE_LABELS } from "../shared/rewrite";
-import type { RewriteStage, RewriteQuality } from "../shared/rewrite";
+import type { RewriteRequestStage, RewriteQuality, RewriteIssue, RewriteReview } from "../shared/rewrite";
 
-export type RewriteRunner = (stage: RewriteStage, prompt: string, signal: AbortSignal) => Promise<string>;
+export type RewriteRunner = (stage: RewriteRequestStage, prompt: string, signal: AbortSignal) => Promise<string>;
 type Block = { id: string; text: string };
 type Section = { id: string; blocks: Block[] };
-type Term = { source: string; target: string };
-type Plan = { summary: string; terms: Term[] };
-type Issue = { blockId: string; kind: string; message: string; sourceQuote: string };
+type Issue = Omit<RewriteIssue, "sectionId">;
 const ISSUE_KINDS = ["omission", "meaning", "number", "term", "cohesion"];
-const WRITE = "提纲可能节略，仅作导航，绝不能代替本节完整原文。根据全文提纲、统一术语和上下文，将本节完整改写为自然简体中文。保留全部事实、限定/否定条件、数字（沿用原始数字写法）、公式和必要代码，不添加原文没有的论断。只输出本节 Markdown，不输出内部段落 ID，不复制相邻节，不另加总结。原文本身的重复实验或重复论述仍需保留，不因相邻内容相似而删减本节。";
+const WRITE = "将本节完整改写为自然简体中文，保留所有论点、限定/否定条件、数字、公式、代码和原文链接，不添加原文没有的结论。参考已生成中文的用词，专业术语首次出现可保留英文括注，后文沿用同一译法。previousEnding 和 opening 仅用于术语与衔接，不重复输出；这是内部处理片段，允许列表跨节延续，不为每节另加开头或总结。只输出本节 Markdown，不输出内部 ID，不用摘要代替正文。原文中的重复论述也应保留。";
+type Progress = (stage: RewriteRequestStage, completed: number, total: number) => void;
 
-/** All sections share one plan. Reviews see source blocks and actual neighbouring drafts. */
+function assertDraft(text: string) {
+  if (!text.trim() || text.length > 13_000) throw new RewriteContentError("改写响应为空或超过完整保存上限；已完成分段和已有改写仍保留。");
+}
+async function request(run: RewriteRunner, stage: RewriteRequestStage, material: unknown, signal: AbortSignal) {
+  throwIfAborted(signal);
+  const prompt = JSON.stringify(material);
+  if (prompt.length > 29_000) throw new RewriteContentError("改写上下文超过安全上限，已有改写仍保留。");
+  const answer = await run(stage, prompt, signal);
+  throwIfAborted(signal);
+  if (!answer.trim() || answer.length >= 39_999) throw new RewriteContentError("模型响应不完整或超过上限，已有改写仍保留。");
+  return answer.trim();
+}
+/** One request per section; checkpoints contain derived text only. No model review gates saving. */
 export async function runRewritePipeline(text: string, title: string, run: RewriteRunner, signal: AbortSignal,
-  progress: (stage: RewriteStage, completed: number, total: number) => void = () => undefined) {
+  progress: Progress = () => undefined,
+  resume: { drafts?: string[]; save?(drafts: string[]): void } = {}) {
   const sections = makeRewriteSections(text);
-  let completed = 0;
-  let total = sections.length * 3 + 1;
+  const drafts = [...(resume.drafts || [])];
+  if (drafts.length > sections.length) throw new RewriteContentError("改写恢复记录与原文不一致。");
+  drafts.forEach(assertDraft);
   let requests = 0;
-  const call = async (stage: RewriteStage, material: unknown): Promise<string> => {
-    throwIfAborted(signal);
-    progress(stage, completed, total);
-    const prompt = JSON.stringify(material);
-    if (prompt.length > 29_000) throw new RewriteContentError("改写上下文超过安全上限，已有改写仍保留。");
-    const answer = await run(stage, prompt, signal);
-    throwIfAborted(signal);
-    if (!answer.trim() || answer.length >= 39_999) throw new RewriteContentError("改写响应不完整或超过上限，已有改写仍保留。");
-    requests++; completed++;
-    progress(stage, completed, total);
-    return answer.trim();
-  };
-  // Every structured stage uses the same bounded validation/retry contract.
-  const structured = async <T>(stage: "plan" | "outline" | "review", location: string,
-    material: Record<string, unknown>, parse: (raw: string) => T): Promise<T> => {
-    let validationFeedback = "";
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const raw = await call(stage, { ...material, validationFeedback });
-      try { return parse(raw); } catch (error) {
-        if (!(error instanceof RewriteStructureError)) throw error;
-        if (attempt === 1) throw new RewriteContentError(`${location}“${REWRITE_STAGE_LABELS[stage]}”的响应格式不完整：${error.detail}已自动重试一次，已有改写仍保留。请重新生成。`);
-        total++;
-        validationFeedback = `上次响应未通过校验：${error.detail}请依据原始材料重新返回完整 JSON，修正上述字段；不要返回说明文字或省略其他字段。`;
-      }
-    }
-    throw new Error("Unreachable structured response attempt");
-  };
-  const plans: Plan[] = [];
-  for (const section of sections) {
-    const plan = await structured("plan", `第 ${plans.length+1} 节`, { instruction: '阅读本节，提炼涵盖核心论点及限定条件的中文提纲（summary，目标300字以内，最多600字符），提取最多8个关键术语。source 最多80字符且须摘自本节，target 最多100字符，为统一中文译名（可保留英文缩写）；原文已有的中文术语直接保留，不另换称谓、不添加原文未给出的缩写。只输出 JSON：{"summary":"...","terms":[{"source":"...","target":"..."}]}', title, section }, raw => parsePlan(raw, section));
-    plans.push(plan);
-  }
-  const sourceTerms = [...new Map(plans.flatMap(p => p.terms).map(t => [`${t.source}|${t.target}`,t])).values()].slice(0,64);
-  const proposal = boundOutline(sections.map((s,i) => ({id:s.id,summary:plans[i].summary})), sourceTerms);
-  const outline = await structured("outline", "全文", { instruction: '合并全文结构和术语冲突。原文已有中文术语直接保留，不另换称谓、不添加原文未给出的缩写。同一概念的单复数、大小写及其他词形使用相同译名，不为词形差异创建冲突译名。保持所有节的原始顺序及 ID，每节 summary 目标200字以内，最多600字符。术语仅从 candidates 中选取 source，每个 source 只有一个 target，最多64项。整个 JSON 最多9000字符，source 最多80字符，target 最多100字符。只输出 JSON：{"sections":[{"id":"S1","summary":"..."}],"terms":[{"source":"...","target":"..."}]}', title,
-    sections: proposal.sections, candidates: proposal.terms }, raw => parseOutline(raw, sections, proposal.terms));
-  const drafts: string[] = [];
-  for (let i = 0; i < sections.length; i++) {
-    drafts.push(await call("write", { instruction: WRITE, title, outline, section: sections[i],
-      previousEnding: drafts[i-1]?.slice(-1000) || "", nextSummary: outline.sections[i+1]?.summary || "" }));
-    assertDraftSize(drafts[i]);
-  }
-  let repairs = 0;
-  // Forward review: a later section sees the already repaired previous ending.
-  // Revisions cannot change another section, so its source coverage stays valid.
-  for (let i = 0; i < sections.length; i++) {
-    const review = () => structured("review", `第 ${i+1} 节`, { instruction: '你是原文对照编辑，请独立审查，不要因稿件流畅而默认正确。逐个原文 block 检查论点、数字、否定/范围限定、因果、公式、引用是否保留或误解；同时检查统一术语以及本节开头与 previousEnding 的衔接；本节只是内部处理片段，跨节延续列表或章节是合法的，不把片段结尾当作整篇结束。只报告能依据本节原文在本节内修复的问题，不要求修改下一节或补入下一节内容；只报告有证据的实质问题，不把个人文风偏好、等义表达或原文本身重复的实验/论述算作错误，不要求添加原文没有的过渡结论。原文优先于提纲和术语表，若术语表有误应保留原文含义而非要求错误译名。允许首次出现时括注原词，不将此当作术语不一致。每个问题只能引用其 blockId 对应 block 的原文，不按稿件段落或观察序号推算 ID。coverage 必须逐个列出本节所有 blockId，不能漏项。covered 为 false 时，必须在 issues 中给出该 block 的具体遗漏内容和原文引文，不能只标 false 而不解释。问题 sourceQuote 必须逐字引用对应原文 block（衔接问题可为空），每个 sourceQuote 和 message 最多500字符，issues 最多24项。message 为具体修订建议。只输出 JSON：{"coverage":[{"blockId":"B1","covered":true}],"issues":[{"blockId":"B1","kind":"omission|meaning|number|term|cohesion","message":"...","sourceQuote":"..."}]}。没有问题时 issues 为 []。', title, outline, section: sections[i], draft: drafts[i],
-          previousEnding: drafts[i-1]?.slice(-1000) || "" }, raw => parseReview(raw, sections[i]));
-    let issues = await review();
-    if (issues.length) {
-      total += 2;
-      const revised = await call("revise", { instruction: "逐项修复 issues 指出的问题，使用完整原文核对。只改动相关句子、公式或链接，保留其他所有已经正确的内容，不重写风格、不复制相邻节。只输出完整修订后的本节 Markdown，随后会再次对照原文检查。", title, outline, section: sections[i], draft: drafts[i], issues,
-        previousEnding: drafts[i-1]?.slice(-1000) || "", nextSummary: outline.sections[i+1]?.summary || "" });
-      assertDraftSize(revised);
-      drafts[i] = revised; repairs++;
-      issues = await review();
-      if (issues.length) throw new RewriteContentError(`第 ${i+1} 节修订后仍有 ${issues.length} 项对照问题（${[...new Set(issues.map(issue => issueLabel(issue.kind)))].join("、")}），未替换已有改写。可更换模型后重试。`);
-    }
+  for (let i = drafts.length; i < sections.length; i++) {
+    progress("write", i, sections.length);
+    const draft = await request(run, "write", { instruction: WRITE, title, section: sections[i],
+      opening: i > 1 ? drafts[0].slice(0, 1200) : "", previousEnding: drafts[i-1]?.slice(-1500) || "" }, signal);
+    assertDraft(draft);
+    if ([...drafts, draft].join("\n\n").length > 240_000) throw new RewriteContentError("改写超过保存上限，已有改写仍保留。");
+    drafts.push(draft); requests++;
+    resume.save?.([...drafts]);
+    progress("write", i+1, sections.length);
   }
   const markdown = drafts.join("\n\n");
   if (markdown.length > 240_000) throw new RewriteContentError("改写超过保存上限，已有改写仍保留。");
-  const quality: RewriteQuality = { version: 1, reviewedSections: sections.length, reviewedBlocks: sections.reduce((n,s)=>n+s.blocks.length,0), repairedSections: repairs, requests, terms: outline.terms };
-  return { markdown, quality };
+  const quality: RewriteQuality = {version:1, reviewedSections:0, reviewedBlocks:0, repairedSections:0, requests, terms:[]};
+  return { markdown, sections: drafts, quality };
 }
 
-function assertDraftSize(text: string) {
-  if (text.length > 13_000) throw new RewriteContentError("单节改写过长，无法完整对照检查；已有改写仍保留。");
+/** Optional source comparison annotates the saved document, never changes or hides its text. */
+export async function reviewRewrite(text: string, title: string, drafts: string[], run: RewriteRunner,
+  signal: AbortSignal, progress: Progress = () => undefined): Promise<RewriteReview> {
+  const sections = makeRewriteSections(text);
+  if (sections.length !== drafts.length) throw new RewriteContentError("原文结构已变化，请重新生成改写后再检查。");
+  const issues: RewriteIssue[] = [];
+  let requests = 0;
+  for (let i=0; i<sections.length; i++) {
+    let feedback = "";
+    for (let attempt=0; attempt<2; attempt++) {
+      progress("review", i, sections.length);
+      const raw = await request(run, "review", { instruction: '对照本节完整原文和中文稿，只报告有证据的遗漏、含义、数字、术语问题及本节开头与 previousEnding 的衔接问题。不要把个人文风偏好或原文重复当作错误，不要求修改相邻节。仅输出 JSON：{"coverage":[{"blockId":"B1","covered":true}],"issues":[{"blockId":"B1","kind":"omission|meaning|number|term|cohesion","message":"具体问题","sourceQuote":"对应 block 原文引文"}]}。coverage 必须恰好覆盖每个原文 blockId；covered 为 false 必须有对应 issues。issues 最多24项，message 与 sourceQuote 最多500字符，非衔接问题须有原文引文；无问题时 issues 为 []。', title, section: sections[i], draft: drafts[i], previousEnding: drafts[i-1]?.slice(-1000) || "", validationFeedback: feedback }, signal);
+      requests++;
+      try {
+        issues.push(...parseReview(raw, sections[i]).map(issue => ({...issue, sectionId:sections[i].id})));
+        break;
+      } catch (error) {
+        if (!(error instanceof RewriteStructureError)) throw error;
+        if (attempt === 1) throw new RewriteContentError(`第 ${i+1} 节检查格式无效，检查未完成；已保存中文仍可阅读。`);
+        feedback = error.detail;
+      }
+    }
+    progress("review", i+1, sections.length);
+  }
+  return {checkedAt:Date.now(), reviewedSections:sections.length, requests, issues};
 }
+
 export function makeRewriteSections(text: string): Section[] {
   // Use the same paragraph/fence-aware splitter for both section and block identities.
   const blocks = splitRewriteText(text, 9000, true).map((text,i)=>({ id: `B${i+1}`, text }));
@@ -119,64 +106,6 @@ function sourceMatch(source: string, text: string, ignoreCase = false): string |
   return pattern ? new RegExp(pattern, ignoreCase ? "iu" : "u").exec(text)?.[0] : undefined;
 }
 function string(v: unknown, max: number): v is string { return typeof v === "string" && Boolean(v.trim()) && v.length <= max; }
-/** Glossary suggestions are advisory; unusable candidates must not abort source-based writing. */
-function terms(value: unknown, max: number): Term[] {
-  if (!Array.isArray(value)) return [];
-  const unique = new Map<string, Term>();
-  const conflicting = new Set<string>();
-  for (const term of value) {
-    if (!term || !string(term.source,80) || !string(term.target,100)) continue;
-    const source = term.source.trim().replace(/\s+/gu, " ");
-    const target = term.target.trim();
-    const key = source.toLowerCase();
-    if (conflicting.has(key)) continue;
-    if (unique.has(key) && unique.get(key)!.target !== target) {
-      unique.delete(key); conflicting.add(key); continue;
-    }
-    unique.set(key, {source, target});
-  }
-  return [...unique.values()].slice(0,max);
-}
-function parsePlan(raw: string, section: Section): Plan {
-  const value=json(raw); if(!string(value.summary,600)) return invalid("summary 须为1至600字符的字符串，请精简提纲而非截断原文。");
-  const selected=terms(value.terms,8);
-  const canonical = selected.flatMap(term => {
-    // Terminology identity is case-insensitive; persist the actual source spelling.
-    const source = section.blocks.map(block => sourceMatch(term.source, block.text, true)).find(Boolean);
-    return source ? [{ source, target: term.target }] : [];
-  });
-  return { summary:value.summary,terms:canonical };
-}
-function parseOutline(raw: string, sections: Section[], candidates: Term[]) {
-  const value=json(raw);
-  if(!Array.isArray(value.sections) || value.sections.length!==sections.length || value.sections.some((s:any,i:number)=>!s || s.id!==sections[i].id)) return invalid("sections 须完整包含原始节 ID 且顺序一致，请勿遗漏或新建节。");
-  value.sections.forEach((s:any,i:number) => {
-    if (!string(s.summary,600)) invalid(`sections.${sections[i].id}.summary 须为1至600字符的字符串，请精简此节提纲。`);
-  });
-  const selected=terms(value.terms,64).flatMap(term => {
-    const source = candidates.find(c=>c.source.toLowerCase().replace(/\s+/gu," ")===term.source.toLowerCase())?.source;
-    return source ? [{source, target:term.target}] : [];
-  });
-  return boundOutline(value.sections.map((s:any)=>({id:s.id,summary:s.summary})), selected);
-}
-/** Budget advisory context independently from complete source blocks. Never truncate source/drafts. */
-function boundOutline(sections: Array<{id:string;summary:string}>, candidates: Term[]) {
-  const selected: Term[] = [];
-  for (const term of candidates) {
-    if (JSON.stringify([...selected,term]).length <= 3000) selected.push(term);
-  }
-  const base = {sections: sections.map(section => ({id:section.id,summary:""})), terms:selected};
-  const allowance = Math.floor((8500 - JSON.stringify(base).length) / sections.length) + 2;
-  const suffix = "…（提纲节选，以完整原文为准）";
-  return {sections:sections.map(section => {
-    if (JSON.stringify(section.summary).length <= allowance) return section;
-    let end = section.summary.length;
-    while (end > 0 && JSON.stringify(section.summary.slice(0,end) + suffix).length > allowance) end--;
-    // Do not split a Unicode surrogate pair when shortening metadata.
-    if (end > 0 && /[\uD800-\uDBFF]/.test(section.summary[end-1])) end--;
-    return {id:section.id,summary:section.summary.slice(0,end) + suffix};
-  }), terms:selected};
-}
 export function parseReview(raw: string, section: Section): Issue[] {
   const value=json(raw); const ids=section.blocks.map(b=>b.id);
   if(!Array.isArray(value.coverage) || value.coverage.length!==ids.length || new Set(value.coverage.map((c:any)=>c?.blockId)).size!==ids.length
@@ -192,4 +121,3 @@ export function parseReview(raw: string, section: Section): Issue[] {
   for(const coverage of value.coverage) if(!coverage.covered && !issues.some(i=>i.blockId===coverage.blockId)) invalid(`原文段落 ${coverage.blockId} 被标为未覆盖，但 issues 未说明具体漏项。请给出明确修订建议及对应原文引文，不能仅标 false。`);
   return issues;
 }
-function issueLabel(kind: string) { return ({omission:"遗漏",meaning:"含义偏差",number:"数字",term:"术语",cohesion:"衔接"} as Record<string,string>)[kind]; }

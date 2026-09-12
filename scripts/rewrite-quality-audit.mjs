@@ -21,7 +21,7 @@ try {
  if(!samples.length)throw new Error("未找到指定评估样本。");
  for(const sample of samples) {
   const row={id:sample.id,settings};report.push(row);
-  for(const mode of ["baseline","reviewed"]) {
+  for(const mode of ["baseline","lightweight"]) {
    console.log(`${sample.id}: ${mode}`);const start=Date.now();let calls=0;const trace=[];
    try {
     let result;
@@ -33,7 +33,7 @@ try {
    await writeFile(reportPath,JSON.stringify(report,null,2));
   }
  }
- console.log(JSON.stringify(report.map(r=>({id:r.id,baseline:{calls:r.baseline?.calls,ms:r.baseline?.elapsedMs,missing:r.baseline?.missingAnchors,error:r.baseline?.error},reviewed:{calls:r.reviewed?.calls,ms:r.reviewed?.elapsedMs,missing:r.reviewed?.missingAnchors,quality:r.reviewed?.quality,error:r.reviewed?.error}}))));
+ console.log(JSON.stringify(report.map(r=>({id:r.id,baseline:{calls:r.baseline?.calls,ms:r.baseline?.elapsedMs,missing:r.baseline?.missingAnchors,error:r.baseline?.error},lightweight:{calls:r.lightweight?.calls,ms:r.lightweight?.elapsedMs,missing:r.lightweight?.missingAnchors,quality:r.lightweight?.quality,error:r.lightweight?.error}}))));
  console.log(`Report: ${reportPath}`);
 }catch(error){failed=true;console.error(error instanceof Error?error.message:"评估失败");}
 finally{await ai?.close();await rm(directory,{recursive:true,force:true});app.exit(failed?1:0);}

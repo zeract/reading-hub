@@ -15,10 +15,13 @@ export interface RewriteResult {
     sourceHash: string;
     promptVersion: number;
     quality?: RewriteQuality;
+    sections?: string[];
+    review?: RewriteReview;
 }
 export interface ArticleRewrite {
     entryId: string;
     jobId: string;
+    kind?: "generate" | "review";
     status: "queued" | "running" | "complete" | "failed" | "cancelled";
     settings: RewriteSettings;
     completedChunks: number;
@@ -37,6 +40,11 @@ export function parseRewriteSettings(value: unknown): RewriteSettings {
 }
 export function rewritePending(value?: ArticleRewrite): boolean { return value?.status === "queued" || value?.status === "running"; }
 
-export type RewriteStage = "plan" | "outline" | "write" | "review" | "revise";
+export type RewriteRequestStage = "write" | "review";
+// Legacy stage labels remain readable for interrupted tasks from older releases.
+export type RewriteStage = RewriteRequestStage | "plan" | "outline" | "revise";
 export interface RewriteQuality { version: 1; reviewedSections: number; reviewedBlocks: number; repairedSections: number; requests: number; terms: Array<{source:string;target:string}> }
 export const REWRITE_STAGE_LABELS: Record<RewriteStage,string> = {plan:"梳理原文",outline:"统一提纲与术语",write:"生成改写",review:"对照原文检查",revise:"修订问题段落"};
+
+export interface RewriteIssue { sectionId: string; blockId: string; kind: string; message: string; sourceQuote: string }
+export interface RewriteReview { provider?: AiProviderId; model?: string; checkedAt: number; reviewedSections: number; requests: number; issues: RewriteIssue[] }

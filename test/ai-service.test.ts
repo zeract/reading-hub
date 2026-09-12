@@ -290,13 +290,6 @@ it("uses a task-specific rewrite model without changing the learning model or ex
   expect(requests[2].model).toBe("learning-model");
   expect(requests[2].thinking).toBeUndefined();
   expect(requests[2].response_format).toBeUndefined();
-  for (const stage of ["plan","outline"] as const) {
-    await service.rewriteChunk({provider:"deepseek",model:"rewrite-model",effort:"default"},"JSON material",new AbortController().signal,stage);
-    expect(requests.at(-1).response_format).toEqual({type:"json_object"});
-  }
   expect((await service.listProviders()).find(p=>p.id==="deepseek")?.model).toBe("learning-model");
-  await service.rewriteChunk({provider:"deepseek",model:"rewrite-model",effort:"default"},"repair material",new AbortController().signal,"revise");
-  expect(requests.at(-1).messages[0].content).toContain("校对编辑");
-  expect(requests.at(-1).response_format).toBeUndefined();
   expect(JSON.stringify(answer)).not.toContain("test-key");await service.close();
 });

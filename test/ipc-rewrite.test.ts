@@ -9,6 +9,9 @@ it("accepts only entry identifiers and non-secret model settings for durable bac
  const generate=handlers.get(IPC_CHANNELS.rewrite.generate)!;
  expect(()=>generate({sender:{}},{url:"https://example.com"})).toThrow();
  await generate({sender:{}} ,"entry");expect(rewrites.enqueue).toHaveBeenCalledWith("entry");
+ const review=handlers.get(IPC_CHANNELS.rewrite.review)!;
+ expect(()=>review({sender:{}},{body:"never-send"})).toThrow();
+ await review({sender:{}},"entry");expect(rewrites.enqueue).toHaveBeenCalledWith("entry","review");
  const configure=handlers.get(IPC_CHANNELS.rewrite.configure)!;
  await configure({sender:{}},{provider:"deepseek",model:"future",effort:"default",apiKey:"never-store",body:"never-send"});
  expect(rewrites.configure).toHaveBeenCalledWith({provider:"deepseek",model:"future",effort:"default"});

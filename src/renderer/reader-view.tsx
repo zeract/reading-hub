@@ -80,7 +80,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   onOpenSettings: () => void;
 }) {
   const rewrite = useArticleRewrite(entry.id);
-  const rewriteVisible = rewrite.visible && Boolean(rewrite.record?.result);
+  const rewriteVisible = rewrite.visible;
   const [article, setArticle] = useState<ReaderArticle>();
   // Keep the wrapper stable too: a fresh dangerouslySetInnerHTML object makes
   // React rewrite identical HTML, losing proxied images and live DOM state.
@@ -330,8 +330,9 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
         <button type="button" className="toolbar-icon-button external-button" aria-label="在浏览器中打开原文" title="在浏览器中打开原文" onClick={() => void window.reader.openExternal(article?.url || entry.url)}>↗</button>
       </div>
     </header>
-    <RewriteControls state={rewrite} onToggle={()=>{
-      clearTextSelection();setAssistantState("closed");rewrite.setVisible(!rewriteVisible);
+    <RewriteControls state={rewrite} onSelect={(visible)=>{
+      if (visible === rewriteVisible) return;
+      clearTextSelection();setAssistantState("closed");rewrite.setVisible(visible);
       readerWorkspaceElement.current?.querySelector(".reader-scroll")?.scrollTo({top:0});
     }}/>
     <ReaderPreferenceStatus />

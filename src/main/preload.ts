@@ -43,7 +43,7 @@ const IPC_CHANNELS = {
     revision: "library:revision",
     changed: "library:changed"
   },
-  rewrite: { get: "rewrite:get", generate: "rewrite:generate", cancel: "rewrite:cancel", remove: "rewrite:remove", settings: "rewrite:settings", configure: "rewrite:configure" },
+  rewrite: { get: "rewrite:get", generate: "rewrite:generate", review: "rewrite:review", cancel: "rewrite:cancel", remove: "rewrite:remove", settings: "rewrite:settings", configure: "rewrite:configure" },
   ai: {
     listProviders: "ai:list-providers",
     listModels: "ai:list-models",
@@ -66,6 +66,7 @@ const IPC_CHANNELS = {
 
 const readerApi: ReaderApi = {
   getArticleRewrite: (id) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.get, id),
+  reviewArticleRewrite: (id) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.review, id),
   generateArticleRewrite: (id) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.generate, id),
   cancelArticleRewrite: (id) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.cancel, id),
   removeArticleRewrite: (id) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.remove, id),

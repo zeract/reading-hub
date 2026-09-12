@@ -202,6 +202,7 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
   handle(IPC_CHANNELS.entry.dismiss, (_event, id: unknown) => database.dismissEntry(requireEntityId(id)));
 
   handle(IPC_CHANNELS.rewrite.get, (_event, id: unknown) => database.rewrites.get(requireEntityId(id)));
+  handle(IPC_CHANNELS.rewrite.review, (_event, id: unknown) => services.rewrites.enqueue(requireEntityId(id), "review"));
   handle(IPC_CHANNELS.rewrite.generate, (_event, id: unknown) => services.rewrites.enqueue(requireEntityId(id)));
   handle(IPC_CHANNELS.rewrite.cancel, (_event, id: unknown) => services.rewrites.cancel(requireEntityId(id)));
   handle(IPC_CHANNELS.rewrite.remove, (_event, id: unknown) => services.rewrites.remove(requireEntityId(id)));

@@ -108,9 +108,13 @@ const channels = [
   ["rewrite:configure", (_event,settings) => { database.rewrites.configure(settings); return settings; }],
   ["rewrite:cancel", (_event,id) => { database.rewrites.cancel(id);return database.rewrites.get(id); }],
   ["rewrite:remove", (_event,id) => database.rewrites.remove(id)],
+  ["rewrite:review", (_event,id) => {
+    const job=database.rewrites.enqueue(id,database.rewrites.settings(),"review");database.rewrites.progress(job,1,1,"review");
+    database.rewrites.finish(job,{...job.result,review:{checkedAt:Date.now(),reviewedSections:1,requests:1,issues:[{sectionId:"S1",blockId:"B1",kind:"cohesion",message:"过渡可进一步自然化。",sourceQuote:""}]}});return database.rewrites.get(id);
+  }],
   ["rewrite:generate", (_event,id) => {
     const job=database.rewrites.enqueue(id,database.rewrites.settings());database.rewrites.progress(job,1,1);
-    database.rewrites.finish(job,{markdown:aiAnswer,provider:"deepseek",model:"fixture-rewrite",createdAt:Date.now(),sourceUrl:"https://example.com/success",sourceTitle:"Fixture rewrite",sourceHash:"fixture",promptVersion:2,quality:{version:1,reviewedSections:2,reviewedBlocks:6,repairedSections:1,requests:9,terms:[]}});
+    database.rewrites.finish(job,{markdown:aiAnswer,provider:"deepseek",model:"fixture-rewrite",createdAt:Date.now(),sourceUrl:"https://example.com/success",sourceTitle:"Fixture rewrite",sourceHash:"fixture",promptVersion:3,sections:[aiAnswer],quality:{version:1,reviewedSections:0,reviewedBlocks:0,repairedSections:0,requests:1,terms:[]}});
     return job;
   }],
   ["source:import-opml", () => new Promise((resolve) => {
@@ -542,16 +546,22 @@ try {
   assert(aiRequests === 3 && cancelledAiRequests.has(activeAiRequest), "Closing the assistant must cancel its unfinished request over IPC.");
   window.webContents.send("ai:stream", { requestId: activeAiRequest, type: "delta", text: "Late fixture" });
   aiMode = "complete";
+    await evaluate("Array.from(document.querySelectorAll('.reader-rewrite-actions button')).find(b=>b.textContent==='中文改写').click()");
+    await waitFor(window,"document.querySelector('.reader-rewritten')?.textContent.includes('尚未生成')");
     await evaluate("Array.from(document.querySelectorAll('.reader-rewrite-actions button')).find(b=>/生成.*改写/.test(b.textContent)).click()");
-    await waitFor(window,"Array.from(document.querySelectorAll('.reader-rewrite-actions button')).some(b=>b.textContent==='查看中文改写') && !Array.from(document.querySelectorAll('.reader-rewrite-actions button')).some(b=>b.textContent==='取消改写')");
+    await waitFor(window,"Array.from(document.querySelectorAll('.reader-rewrite-actions button')).some(b=>b.textContent==='中文改写') && !Array.from(document.querySelectorAll('.reader-rewrite-actions button')).some(b=>b.textContent==='取消改写')");
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
     await setViewport(width, height, scale);
-    await evaluate("Array.from(document.querySelectorAll('.reader-rewrite-actions button')).find(b=>b.textContent==='查看中文改写').click()");
+    await evaluate("Array.from(document.querySelectorAll('.reader-rewrite-actions button')).find(b=>b.textContent==='中文改写').click()");
     await waitFor(window,"Boolean(document.querySelector('.reader-rewritten .katex'))");
+    await evaluate("Array.from(document.querySelectorAll('.reader-rewrite-actions button')).find(b=>b.textContent==='检查改写').click()");
+    await waitFor(window,"document.querySelector('.reader-rewritten')?.textContent.includes('中文仍可正常阅读')");
     assert(await evaluate("document.querySelector('.reader-article[hidden]') !== null && document.documentElement.scrollWidth <= innerWidth + 1"), "Rewritten body must be separate from the original and fit the viewport.");
     await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    assert(await evaluate("document.querySelector('.reader-version-switch button[aria-pressed=\"true\"]')?.textContent==='中文改写'"), "Active version must match the displayed Chinese document.");
+    await evaluate("Promise.all(document.querySelector('.reader-version-switch').getAnimations({subtree:true}).map(a=>a.finished.catch(()=>undefined)))");
     await writeFile(path.join(tmpdir(), `reading-hub-rewrite-${width}.png`), (await window.capturePage()).toPNG());
-    await evaluate("Array.from(document.querySelectorAll('.reader-rewrite-actions button')).find(b=>b.textContent==='查看原文').click()");
+    await evaluate("Array.from(document.querySelectorAll('.reader-rewrite-actions button')).find(b=>b.textContent==='原文').click()");
   }
   providerListFailure = true;
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {

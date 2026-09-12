@@ -64,7 +64,7 @@ export const IPC_CHANNELS = {
     revision: "library:revision",
     changed: "library:changed"
   },
-  rewrite: { get: "rewrite:get", generate: "rewrite:generate", cancel: "rewrite:cancel", remove: "rewrite:remove", settings: "rewrite:settings", configure: "rewrite:configure" },
+  rewrite: { get: "rewrite:get", generate: "rewrite:generate", review: "rewrite:review", cancel: "rewrite:cancel", remove: "rewrite:remove", settings: "rewrite:settings", configure: "rewrite:configure" },
   ai: {
     listProviders: "ai:list-providers",
     listModels: "ai:list-models",
@@ -91,6 +91,7 @@ export type PendingPreview = Awaited<ReturnType<ReaderApi["previewSource"]>>;
 /** Renderer-safe surface exposed by preload through `window.reader`. */
 export interface ReaderApi {
   getArticleRewrite(entryId: string): Promise<ArticleRewrite | undefined>;
+  reviewArticleRewrite(entryId: string): Promise<ArticleRewrite>;
   generateArticleRewrite(entryId: string): Promise<ArticleRewrite>;
   cancelArticleRewrite(entryId: string): Promise<ArticleRewrite | undefined>;
   removeArticleRewrite(entryId: string): Promise<void>;

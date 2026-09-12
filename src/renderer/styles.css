@@ -482,6 +482,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .reader-video button[hidden] { display: none; }
 
 .reader-rewrite-controls { padding: 0 18px 8px; color: var(--ink-soft); font: var(--control-font-size)/1.6 var(--font-ui); overflow-wrap: anywhere; }
+.reader-version-switch { display: flex; gap: 2px; }
+.reader-version-switch .action-button[aria-pressed="true"] { --button-surface: var(--accent-wash); --button-ink: var(--accent-deep); --button-border: var(--accent); --button-hover: var(--accent-wash); }
 .reader-rewrite-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .reader-rewrite-controls p { margin: 6px 0 0; }
 .reader-rewritten .ai-message-content { font-size: inherit; line-height: inherit; }

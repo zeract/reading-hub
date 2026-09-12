@@ -9,7 +9,7 @@ import { ENTRY_ORDER_BY } from "./entry-order";
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 14;
+export const CURRENT_SCHEMA_VERSION = 15;
 
 type SqliteDatabase = Database.Database;
 
@@ -378,10 +378,19 @@ const MIGRATIONS: readonly SchemaMigration[] = [
       CREATE INDEX article_rewrites_status ON article_rewrites(status, updated_at, entry_id);
     `)
   },
-  {version: 14, name: "rewrite-quality-stages", up: database => database.exec("ALTER TABLE article_rewrites ADD COLUMN stage TEXT")}
+  {version: 14, name: "rewrite-quality-stages", up: database => database.exec("ALTER TABLE article_rewrites ADD COLUMN stage TEXT")},
+  {
+    version: 15,
+    name: "resume-rewrite-and-separate-review",
+    up: (database) => {
+      ensureColumn(database, "article_rewrites", "kind", "TEXT NOT NULL DEFAULT 'generate'");
+      ensureColumn(database, "article_rewrites", "checkpoint_json", "TEXT");
+    }
+  }
+
 ];
 
-function ensureColumn(database: SqliteDatabase, table: "sources" | "entries" | "entry_origins", column: string, type: string): void {
+function ensureColumn(database: SqliteDatabase, table: "sources" | "entries" | "entry_origins" | "article_rewrites", column: string, type: string): void {
   const columns = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   if (!columns.some((item) => item.name === column)) database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
