@@ -288,6 +288,7 @@ export class AiService {
       model: configuration.model,
       stream: true,
       max_tokens: DEEPSEEK_MAX_TOKENS,
+      ...(["plan", "outline", "review"].includes(rewriteStage || "") ? { response_format: { type: "json_object" } } : {}),
       // Reserve drafting output; use bounded reasoning for source-based judgment.
       ...(rewriteStage === "review" ? { thinking: { type: "enabled" }, reasoning_effort: "low" }
         : rewriteStage ? { thinking: { type: "disabled" } } : {}),

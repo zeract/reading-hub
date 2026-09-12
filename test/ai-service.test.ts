@@ -278,13 +278,20 @@ it("uses a task-specific rewrite model without changing the learning model or ex
   expect(answer.model).toBe("rewrite-model");expect(requests[0].model).toBe("rewrite-model");
   expect(requests[0].messages[0].content).toContain("中文技术编辑");
   expect(requests[0].thinking).toEqual({type:"disabled"});
+  expect(requests[0].response_format).toBeUndefined();
   await service.rewriteChunk({provider:"deepseek",model:"rewrite-model",effort:"default"},"review material",new AbortController().signal,"review");
   expect(requests[1].messages[0].content).toContain("只返回 JSON");
+  expect(requests[1].response_format).toEqual({type:"json_object"});
   expect(requests[1].thinking).toEqual({type:"enabled"});
   expect(requests[1].reasoning_effort).toBe("low");
   await ask(service,{provider:"deepseek",question:"请解释。",article});
   expect(requests[2].model).toBe("learning-model");
   expect(requests[2].thinking).toBeUndefined();
+  expect(requests[2].response_format).toBeUndefined();
+  for (const stage of ["plan","outline"] as const) {
+    await service.rewriteChunk({provider:"deepseek",model:"rewrite-model",effort:"default"},"JSON material",new AbortController().signal,stage);
+    expect(requests.at(-1).response_format).toEqual({type:"json_object"});
+  }
   expect((await service.listProviders()).find(p=>p.id==="deepseek")?.model).toBe("learning-model");
   expect(JSON.stringify(answer)).not.toContain("test-key");await service.close();
 });
