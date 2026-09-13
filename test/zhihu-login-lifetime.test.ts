@@ -45,6 +45,13 @@ vi.mock("../src/main/network", () => ({
   configureChromiumNetwork: vi.fn(async () => undefined),
   chromiumFetch: vi.fn(async () => { throw new Error("Unexpected network request in login fixture"); })
 }));
+// This suite exercises Zhihu login-window lifetime, not the host OS keychain.
+// Keep the application-service fixture independent from keytar's native Linux
+// libsecret dependency; SecretStore itself is covered by its dedicated mock.
+vi.mock("../src/main/secrets", () => ({ SecretStore: class {
+  getConnectorSecret = vi.fn(async () => null);
+  setConnectorSecret = vi.fn(async () => "fixture-account");
+} }));
 import { ZhihuFollowConnector } from "../src/main/zhihu-follow";
 import { createApplicationServices } from "../src/main/app-services";
 import { ReadingDatabase } from "../src/main/database";
