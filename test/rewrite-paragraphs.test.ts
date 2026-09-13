@@ -49,3 +49,18 @@ it('round-trips mixed scientific, list, table and media structures through parag
  const output=await rewriteArticleDocument(source,'Title',async(_s,p)=>JSON.stringify({blocks:JSON.parse(p).section.blocks}),new AbortController().signal,undefined,undefined,undefined,true);
  expect(articleDocumentHtml(output.content)).toBe(articleDocumentHtml(source));
 });
+it('describes numbered references and sends exact failure feedback on local repair',async()=>{
+ const doc=articleDocumentFromHtml('<ol><li><span>04</span><a href="https://example.com/paper">Authors. Paper.</a></li></ol>');
+ let missing='';const run=vi.fn(async(_s:string,p:string)=>{
+  const v=JSON.parse(p);const span=v.references.find((r:any)=>r.kind==='span');expect(span.parent).toBeNull();expect(span.open).toBe(`⟦${span.id}⟧`);expect(span.close).toBe(`⟦/${span.id}⟧`);
+  if(run.mock.calls.length===1){missing=span.id;return JSON.stringify({blocks:v.section.blocks.map((b:any)=>({...b,text:b.text.replace(span.open,'').replace(span.close,'')}))});}
+  expect(v.repair).toEqual({paragraph:span.paragraph,reference:missing,reason:'missing'});expect(v.section.blocks).toHaveLength(1);return JSON.stringify({blocks:v.section.blocks});
+ });
+ const r=await rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,undefined,undefined,true);
+ expect(articleDocumentHtml(r.content)).toContain('<span>04</span><a href="https://example.com/paper">Authors. Paper.</a>');expect(run).toHaveBeenCalledTimes(2);
+});
+it('never leaks model-supplied unknown identifiers in reference diagnostics',()=>{
+ const p=prepareRewriteParagraphs(articleDocumentFromHtml('<p>A <em>word</em></p>'));
+ (p.document.children[0] as any).children[0].text='⟦private-message/⟧';
+ expect(()=>p.restore(p.document)).toThrow('unknown/syntax');try{p.restore(p.document)}catch(e){expect(String(e)).not.toContain('private-message');}
+});
