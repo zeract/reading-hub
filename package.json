@@ -25,7 +25,10 @@
     "postinstall": "npm run rebuild:electron",
     "dist": "node scripts/release.mjs",
     "verify:macos-release": "node scripts/release.mjs --verify-only",
-    "audit:rewrite": "npm run build && electron scripts/rewrite-quality-audit-app"
+    "audit:rewrite": "npm run build && electron scripts/rewrite-quality-audit-app",
+    "verify": "node scripts/verify.mjs",
+    "verify:rewrite": "node scripts/verify.mjs --scope rewrite",
+    "test:workflow": "node --test scripts/verification/*.test.mjs"
   },
   "build": {
     "appId": "com.local.readinghub",

@@ -10,3 +10,5 @@ release/
 *.key
 .DS_Store
 .reading-hub-dev.lock
+
+.verification/

@@ -27,11 +27,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests
-        run: npm test
+      - name: Verify local contracts
+        run: npm run verify
 
-      - name: Build application
-        run: npm run build
-
-      - name: Verify stylesheet contract
-        run: npm run audit:style
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-${{ github.sha }}
+          path: .verification/latest.json
+          if-no-files-found: warn
