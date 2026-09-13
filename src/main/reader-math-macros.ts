@@ -300,4 +300,3 @@ export function readTeXGroup(input: string, start: number): { content: string; n
   }
   return undefined;
 }
-

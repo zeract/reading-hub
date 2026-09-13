@@ -164,4 +164,3 @@ function imageSources(element: any, pageUrl: string): string[] {
   ];
   return [...new Set(values.map((value) => safeUrl(value, pageUrl)).filter((value): value is string => Boolean(value)))];
 }
-
