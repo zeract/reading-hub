@@ -1,4 +1,5 @@
 import { BrowserWindow, session } from "electron";
+import { load } from "cheerio";
 import { assertPublicUrl } from "../shared/url";
 import type { ConnectorAdapter, RawEntry, Source, SyncContext, SyncResult } from "../shared/types";
 import { builtInManifest } from "./connector-registry";
@@ -9,10 +10,21 @@ import { configureChromiumSession } from "./network";
 import { createBackgroundWindow } from "./background-window";
 import { guardMainFrameNavigation } from "./navigation-policy";
 import { observeRenderedPage, type RenderedPageCapture, type PageRenderOptions, type RenderedPage } from "./rendered-document";
+import { zhihuAnswerContentReadiness, zhihuAnswerId } from "./zhihu-answer-identity";
 
 const FOLLOW_URL = "https://www.zhihu.com/follow";
 const PARTITION = "persist:reading-hub-zhihu-follow";
 const READING_TIMEOUT_MS = 30_000;
+const NON_ANSWER_SETTLE_MS = 900;
+const ANSWER_HYDRATION_TIMEOUT_MS = 5_000;
+const ANSWER_HYDRATION_POLL_MS = 250;
+
+class ZhihuAnswerBodyUnavailableError extends Error {
+  constructor() {
+    super("知乎回答正文仍未加载；请重试，或在浏览器中打开原文。");
+    this.name = "ZhihuAnswerBodyUnavailableError";
+  }
+}
 
 type LoginAttempt = {
   controller: AbortController;
@@ -119,13 +131,53 @@ export class ZhihuFollowConnector implements ConnectorAdapter {
     if (!isZhihuContentUrl(url)) throw new Error("这条旧记录指向知乎列表或导航页，不是文章链接；请刷新信源后打开具体文章。");
     return this.withReadingWindow(options?.signal, async (window, signal, capture) => {
       await awaitWithAbort(window.loadURL(url), signal);
-      await delayWithAbort(900, signal);
-      const page = await capture.read({ ...options, signal });
+      const page = await this.readArticleWhenReady(capture, url, { ...options, signal });
       if (!isZhihuUrl(page.url)) throw new Error("只能在知乎授权会话中打开知乎内容。");
       if (/^\/(?:signin|signup|login)(?:\/|$)/.test(new URL(page.url).pathname)) throw new Error("知乎登录已失效或当前会话未登录，请点击“重新登录知乎”后重试。");
       if (!isZhihuContentUrl(page.url)) throw new Error("知乎未返回文章页面，请在原文中确认登录与内容是否可用。");
       return page;
     });
+  }
+
+  /**
+   * A successful navigation only proves that Zhihu returned a document. The
+   * answer body is populated by hydration afterwards, so capture only when
+   * the requested answer's own authored container is non-empty. The loop is
+   * bounded by the surrounding 30-second reading request and never executes
+   * page code or follows a new URL.
+   */
+  private async readArticleWhenReady(capture: RenderedPageCapture, requestedUrl: string, options: PageRenderOptions): Promise<RenderedPage> {
+    const expectedAnswerId = zhihuAnswerId(requestedUrl);
+    // Keep the established settle window for columns and videos. Answer URLs
+    // have a stronger, target-specific readiness condition below; applying
+    // that condition to every Zhihu content type would make those pages race
+    // their own hydration.
+    if (!expectedAnswerId) {
+      await delayWithAbort(NON_ANSWER_SETTLE_MS, options.signal);
+      return capture.read(options);
+    }
+
+    let page = await capture.read(options);
+    if (zhihuAnswerId(page.url) !== expectedAnswerId) return page;
+
+    const deadline = Date.now() + ANSWER_HYDRATION_TIMEOUT_MS;
+    let sawAnswerShell = false;
+    while (true) {
+      const readiness = zhihuAnswerContentReadiness(load(page.html), requestedUrl);
+      if (readiness === "ready") return page;
+      if (readiness === "pending") sawAnswerShell = true;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        if (sawAnswerShell) throw new ZhihuAnswerBodyUnavailableError();
+        // Preserve the strict identity diagnostic from ArticleReader when no
+        // matching answer appeared at all; a loading timeout must not imply a
+        // different answer is safe to display.
+        return page;
+      }
+      await delayWithAbort(Math.min(ANSWER_HYDRATION_POLL_MS, remaining), options.signal);
+      page = await capture.read(options);
+      if (zhihuAnswerId(page.url) !== expectedAnswerId) return page;
+    }
   }
 
   /** Reading windows belong to both their caller and the current session.

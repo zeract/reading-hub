@@ -36,6 +36,7 @@ import { ConnectorRegistry } from "../src/main/connector-registry";
 import { ReadingDatabase } from "../src/main/database";
 import { SyncManager } from "../src/main/sync-manager";
 
+const FIXTURE_ARTICLE_HTML = '<article class="AnswerItem" data-answer-id="2"><div class="RichContent-inner"><p>Fixture answer body</p></div></article>';
 const read = (connector: ZhihuFollowConnector, kind: "feed" | "article") => kind === "feed"
   ? connector.fetchEntries() : connector.renderArticle("https://www.zhihu.com/question/1/answer/2");
 function barrier<T>() {
@@ -46,7 +47,7 @@ function barrier<T>() {
 beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks(); mocks.windows.length = 0; mocks.status = 200;
   mocks.configure.mockResolvedValue(undefined); mocks.navigate.mockResolvedValue(undefined);
-  mocks.evaluate.mockResolvedValue("Fixture HTML"); mocks.clear.mockResolvedValue(undefined);
+  mocks.evaluate.mockResolvedValue(FIXTURE_ARTICLE_HTML); mocks.clear.mockResolvedValue(undefined);
 });
 afterEach(() => vi.useRealTimers());
 
@@ -259,7 +260,7 @@ describe.each(["feed", "article"] as const)("Zhihu %s session lifetime", (kind) 
       expect(mocks.configure).not.toHaveBeenCalled();
       cleared.release(); await clearing;
       await vi.advanceTimersByTimeAsync(1_200);
-      expect(await reading).toEqual(kind === "feed" ? mocks.extract.mock.results[0].value : { html: "Fixture HTML", url: "https://www.zhihu.com/question/1/answer/2" });
+      expect(await reading).toEqual(kind === "feed" ? mocks.extract.mock.results[0].value : { html: FIXTURE_ARTICLE_HTML, url: "https://www.zhihu.com/question/1/answer/2" });
       expect(mocks.windows).toHaveLength(1);
       expect(mocks.windows[0].isDestroyed()).toBe(true);
     } finally { cleared.release(); await vi.advanceTimersByTimeAsync(1_200); await reading; connector.close(); }
@@ -356,6 +357,44 @@ it("records timeout backoff, permits immediate retry and deduplicates after rest
     navigated.release(); connector.close(); await pending; await manager.close(); db.close();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+it("waits for the requested Zhihu answer body to hydrate before returning a snapshot", async () => {
+  const shell = '<article class="AnswerItem" data-answer-id="2"><div class="RichContent-inner"><section class="CommentList"><article class="CommentItem"><div class="RichText"><p>这是一条不能被误判为回答正文的长评论。</p></div></article></section></div></article>';
+  const ready = '<article class="AnswerItem" data-answer-id="2"><div class="RichContent-inner"><p>Hydrated answer body</p></div></article>';
+  mocks.evaluate.mockResolvedValueOnce(shell).mockResolvedValueOnce(ready);
+  const connector = new ZhihuFollowConnector();
+  try {
+    const pending = connector.renderArticle("https://www.zhihu.com/question/1/answer/2");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.evaluate).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(250);
+    await expect(pending).resolves.toEqual({ url: "https://www.zhihu.com/question/1/answer/2", html: ready });
+    expect(mocks.evaluate).toHaveBeenCalledTimes(2);
+  } finally { connector.close(); }
+});
+
+it("reports an actionable error when a proven Zhihu answer shell never hydrates", async () => {
+  const shell = '<article class="AnswerItem" data-answer-id="2"><div class="RichContent-inner"></div></article>';
+  mocks.evaluate.mockResolvedValue(shell);
+  const connector = new ZhihuFollowConnector();
+  try {
+    const rejected = expect(connector.renderArticle("https://www.zhihu.com/question/1/answer/2")).rejects.toThrow("正文仍未加载");
+    await vi.advanceTimersByTimeAsync(5_000);
+    await rejected;
+    expect(mocks.evaluate.mock.calls.length).toBeGreaterThan(1);
+  } finally { connector.close(); }
+});
+
+it("keeps the established settle window for a non-answer Zhihu article", async () => {
+  const connector = new ZhihuFollowConnector();
+  try {
+    const pending = connector.renderArticle("https://zhuanlan.zhihu.com/p/12345");
+    await vi.advanceTimersByTimeAsync(899);
+    expect(mocks.evaluate).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toEqual({ url: "https://zhuanlan.zhihu.com/p/12345", html: FIXTURE_ARTICLE_HTML });
+  } finally { connector.close(); }
 });
 
 

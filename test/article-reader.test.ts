@@ -1411,6 +1411,36 @@ describe("article reader extraction", () => {
     expect(article.contentHtml).toContain("授权会话正文");
   });
 
+  it("renders a short answer only after its Zhihu answer identity is proven", async () => {
+    const url = "https://www.zhihu.com/question/662263639/answer/2082915784234374666";
+    const shortAnswer = "多读点历史吧：惟圣人能外内无患。自非圣人，外宁必有内忧。";
+    const otherAnswer = "这是一条更长的推荐回答，绝不能混入当前目标回答的内置阅读内容。".repeat(8);
+    const comment = "这是位于回答评论区的更长文字，不能在短回答的候选评分中胜出，更不能进入内置阅读器。".repeat(8);
+    const source: Source = {
+      id: "zhihu-source", url: "https://www.zhihu.com/follow", title: "知乎关注动态", kind: "zhihu_follow", status: "active",
+      pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1
+    };
+    const http = { getText: vi.fn() } as unknown as PublicHttpClient;
+    const reader = new ArticleReader(http, { render: async (url) => ({ html: "", url }) }, async (url) => ({
+      url,
+      html: `<article class="AnswerItem" data-answer-id="2082915784234374666"><div class="RichContent-inner"><p>${shortAnswer}</p><section class="CommentList"><article class="CommentItem"><div class="RichText"><p>${comment}</p></div></article></section><article class="AnswerItem" data-answer-id="999"><div class="RichContent-inner"><p>${otherAnswer}</p></div></article></div></article>`
+    }));
+
+    const article = await reader.read({ ...entry, url, canonicalUrl: url, title: "目标知乎回答" }, source);
+
+    expect(shortAnswer.length).toBeLessThan(40);
+    expect(article.contentHtml).toContain(shortAnswer);
+    expect(article.contentHtml).not.toContain(otherAnswer);
+    expect(article.contentHtml).not.toContain(comment);
+    expect(http.getText).not.toHaveBeenCalled();
+    expect(extractReaderArticle(`<article><p>${shortAnswer}</p></article>`, "https://example.com/short", entry)).toBeUndefined();
+    expect(extractReaderArticle(
+      '<article class="AnswerItem" data-answer-id="2082915784234374666"><div class="RichContent-inner"></div></article>',
+      url,
+      { ...entry, url, canonicalUrl: url }
+    )).toBeUndefined();
+  });
+
   it("preserves the authorized session's actionable failure when public HTTP is not used", async () => {
     const reason = new Error("知乎登录已失效或当前会话未登录，请重新登录。");
     const source = { kind: "zhihu_follow" } as Source;

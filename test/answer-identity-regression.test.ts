@@ -2,7 +2,8 @@ import { expect, it } from 'vitest';
 import { extractReaderArticle } from '../src/main/article-reader';
 import { extractGenericPage } from '../src/main/extractor';
 import { extractZhihuFollowPage } from '../src/main/zhihu-follow-parser';
-import { assertAnswerNavigation } from '../src/main/zhihu-answer-identity';
+import { answerIdFromElement, assertAnswerNavigation, zhihuAnswerContentReadiness } from '../src/main/zhihu-answer-identity';
+import { load } from 'cheerio';
 const url='https://www.zhihu.com/question/123/answer/456';
 const entry={id:'fixture',sourceId:'fixture',url,canonicalUrl:url,title:'Question',author:'Target author',contentHash:'x',read:false,favorite:false,createdAt:1};
 const answer=(id:string,text:string,count=20)=>`<div class="AnswerItem" data-zop='{"type":"answer","itemId":"${id}"}'><h2><a href="https://www.zhihu.com/question/123/answer/${id}">Question</a></h2><div class="AuthorInfo-name">Author ${id}</div><div class="RichContent-inner"><p>${text.repeat(count)}</p></div></div>`;
@@ -20,6 +21,26 @@ it('rejects a missing answer, a redirect to another answer and a bare question p
 it('does not mix nested recommendations into a proven answer',()=>{
  const html=answer('456','TARGET ').replace('</p>','</p>'+answer('999','OTHER ',100));
  expect(extractReaderArticle(html,url,entry)?.article.contentHtml).not.toContain('OTHER');
+});
+it('preserves a 19-digit answer ID from Zhihu numeric data-zop metadata',()=>{
+ const answerId='2082915784234374666';
+ const unsafeUrl=`https://www.zhihu.com/question/662263639/answer/${answerId}`;
+ const html=`<div class="AnswerItem" data-zop='{"type":"answer","itemId":${answerId}}'><div class="RichContent-inner"><p>${'TARGET '.repeat(20)}</p></div></div>`;
+ const result=extractReaderArticle(html,unsafeUrl,{...entry,url:unsafeUrl,canonicalUrl:unsafeUrl});
+ expect(result?.article.contentHtml).toContain('TARGET');
+});
+it('does not turn malformed numeric metadata into an answer identity',()=>{
+ const $=load(`<div data-zop='{"type":"answer","itemId":00123}'></div>`);
+ expect(answerIdFromElement($,$('div').get(0))).toBeUndefined();
+});
+it('waits for a numeric-ID answer shell and ignores a long discussion reply',()=>{
+ const answerId='2082915784234374666';
+ const unsafeUrl=`https://www.zhihu.com/question/662263639/answer/${answerId}`;
+ const comment='评论文字'.repeat(40);
+ const shell=`<article class="AnswerItem" data-zop='{"type":"answer","itemId":${answerId}}'><div class="RichContent-inner"><section class="CommentList"><article class="CommentItem"><div class="RichText"><p>${comment}</p></div></article></section></div></article>`;
+ const ready=shell.replace('<section class="CommentList">', '<p>目标短回答</p><section class="CommentList">');
+ expect(zhihuAnswerContentReadiness(load(shell),unsafeUrl)).toBe('pending');
+ expect(zhihuAnswerContentReadiness(load(ready),unsafeUrl)).toBe('ready');
 });
 it('rejects conflicting answer identities despite a matching document canonical',()=>{
  const html=`<link rel="canonical" href="${url}"><div class="QuestionAnswer-content"><div data-answer-id="999"><div class="RichContent-inner">${'OTHER '.repeat(100)}</div></div></div>`;

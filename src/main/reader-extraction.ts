@@ -7,7 +7,7 @@ import { mergeMathMacros, katexMacros, extractMathJaxConfigMacros, extractMacroD
 import { readerLanguageChoices } from "../shared/reader-languages";
 import { normalizeReaderLayout } from "./reader-layout";
 import { selectInlineLanguages } from "./reader-inline-languages";
-import { selectZhihuAnswer } from "./zhihu-answer-identity";
+import { selectZhihuAnswer, ZHIHU_AUTHORED_PROSE_SELECTOR } from "./zhihu-answer-identity";
 import { Readability } from "@mozilla/readability";
 import { load } from "cheerio";
 import { JSDOM, VirtualConsole } from "jsdom";
@@ -49,7 +49,7 @@ const ZHIHU_CONTENT_SELECTORS = [
   // Zhihu columns use Post-RichTextContainer, while answers commonly use
   // RichContent-inner. Both are authored prose roots and must beat the wide
   // page-level article shell (which includes recommendations and comments).
-  { selector: ".Post-RichTextContainer, .RichContent-inner, .RichText", priority: 12 },
+  { selector: ZHIHU_AUTHORED_PROSE_SELECTOR, priority: 12 },
   ...CONTENT_SELECTORS
 ];
 
@@ -137,7 +137,7 @@ const ZHIHU_ANNOTATION_CARRIER_TAGS = new Set([
   "blockquote", "dd", "div", "dt", "figcaption", "h1", "h2", "h3", "h4", "h5", "h6", "li", "p", "section"
 ]);
 
-const ZHIHU_AUTHORED_PROSE_ROOT_SELECTOR = ".Post-RichTextContainer, .RichContent-inner, .RichText";
+const ZHIHU_AUTHORED_PROSE_ROOT_SELECTOR = ZHIHU_AUTHORED_PROSE_SELECTOR;
 
 const ALLOWED_TAGS = new Set([
   "a", "abbr", "b", "blockquote", "br", "caption", "cite", "code", "dd", "del", "details", "div", "dl", "dt", "em", "figcaption", "figure",
@@ -348,7 +348,7 @@ function prepareReaderArticle(html: string, pageUrl: string, entry: Entry, inlin
   if (inlineLanguage && !inline) throw new Error("这个同页语言版本已不可用，请重新打开文章后再试。");
   const languageVariants = inline ? [...inline.variants, ...discoverReaderLanguageVariants($, pageUrl, resourceBaseUrl).filter(item => !sameCanonicalUrl(item.url, pageUrl))] : discoverReaderLanguageVariants($, pageUrl, resourceBaseUrl);
   const activeLanguage = inline?.activeLanguage || languageVariants.find((variant) => sameCanonicalUrl(variant.url, pageUrl))?.language;
-  const content = inline ? { html: inline.html, title: undefined, author: undefined, publishedAt: undefined } : answerHtml ? pickContentRoot($, renderProfile, pageUrl)
+  const content = inline ? { html: inline.html, title: undefined, author: undefined, publishedAt: undefined } : answerHtml ? pickVerifiedZhihuAnswerContent($, renderProfile, pageUrl)
     : chooseContentCandidate(pickContentRoot($, renderProfile, pageUrl), extractReadabilityContent(html, pageUrl));
   if (!content) return undefined;
   const contentDocument = load(`<article id="reader-selected-content">${content.html}</article>`);
@@ -582,20 +582,48 @@ function removeScientificSpacesChrome($: ReturnType<typeof load>, content: any, 
   }
 }
 
-function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfile, pageUrl: string): ContentCandidate | undefined {
+type ContentRootOptions = {
+  selectors?: ReadonlyArray<{ selector: string; priority: number }>;
+  minimumTextLength?: number;
+  fallbackToBody?: boolean;
+};
+
+/**
+ * A selected Zhihu answer already has an exact answer-ID proof. Its authored
+ * prose can therefore be a legitimate short answer, unlike a generic page's
+ * navigation card. Keep this explicit context local to the answer path so
+ * the 40-character generic anti-noise threshold remains unchanged elsewhere.
+ */
+function pickVerifiedZhihuAnswerContent($: ReturnType<typeof load>, profile: ReaderRenderProfile, pageUrl: string): ContentCandidate | undefined {
+  // Candidate scoring normally clones each possible root. A comment's
+  // CommentList/CommentItem ancestry would then be outside that clone and
+  // unavailable to the structural discussion classifier. Clean the already
+  // identity-proven answer tree first so scoring sees the same provenance as
+  // final sanitisation and cannot let a long discussion reply outrank a short
+  // authored answer.
+  const scoped = load($.html());
+  removeReaderNoise(scoped, scoped("body"), pageUrl, { preserveFormulaAssets: true });
+  return pickContentRoot(scoped, profile, pageUrl, {
+    selectors: [{ selector: ZHIHU_AUTHORED_PROSE_SELECTOR, priority: 12 }],
+    minimumTextLength: 1,
+    fallbackToBody: false
+  });
+}
+
+function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfile, pageUrl: string, options: ContentRootOptions = {}): ContentCandidate | undefined {
   const prefersZhihuRichContent = isZhihuContentUrl(pageUrl);
   const candidates = new Map<any, number>();
-  const selectors = profile === "scientific"
+  const selectors = options.selectors ?? (profile === "scientific"
     ? SCIENTIFIC_CONTENT_SELECTORS
     : prefersZhihuRichContent
       ? ZHIHU_CONTENT_SELECTORS
-      : CONTENT_SELECTORS;
+      : CONTENT_SELECTORS);
   for (const { selector, priority } of selectors) {
     $(selector).each((_index, node) => {
       candidates.set(node, Math.max(candidates.get(node) || 0, priority));
     });
   }
-  if (!candidates.size) candidates.set($("body").get(0), -1);
+  if (!candidates.size && options.fallbackToBody !== false) candidates.set($("body").get(0), -1);
 
   let best: { html: string; score: number; priority: number } | undefined;
   for (const [node, priority] of candidates) {
@@ -613,7 +641,7 @@ function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfil
     // clone that could reintroduce the comments used during scoring.
     removeReaderNoise($, candidate, pageUrl, { preserveFormulaAssets: true });
     const text = normalText(candidate.text());
-    if (text.length < 40) continue;
+    if (text.length < (options.minimumTextLength ?? 40)) continue;
     const paragraphCount = candidate.find("p, li, blockquote, pre").length;
     const imageCount = candidate.find("img").length;
     const linkCount = candidate.find("a[href]").length;
