@@ -25,12 +25,14 @@ flowchart TD
 | IPC | [ipc-handlers.ts](../src/main/ipc-handlers.ts)、[ipc-validation.ts](../src/main/ipc-validation.ts) | 校验不可信参数；流和取消请求归属于发起窗口；不暴露通用执行能力。 |
 | 来源预览与确认 | [source-service.ts](../src/main/source-service.ts) | 预览保存有期限、有限容量的不可变快照；确认通过明确 token 消费；取消订阅删除信源与独有内容（含收藏），共享文章保留。 |
 | 调度与连接器 | [sync-manager.ts](../src/main/sync-manager.ts)、[connector-registry.ts](../src/main/connector-registry.ts) | 同一来源协调执行；取消、重试、退避与关机有明确归属；平台差异位于连接器。 |
-| 持久化 | [database.ts](../src/main/database.ts) | 文章身份、来源关系与用户状态分别建模；写入与通知配合，迁移和维护必须可恢复。 |
+| 持久化 | [data-location-migration.ts](../src/main/data-location-migration.ts)、[database.ts](../src/main/database.ts) | 先从固定的当前/历史数据根解析与一致性备份，再打开数据库；文章身份、来源关系与用户状态分别建模，迁移和维护必须可恢复。 |
 | 网络与凭据 | [http.ts](../src/main/http.ts)、[robots.ts](../src/main/robots.ts)、[secrets.ts](../src/main/secrets.ts) | 公共地址校验、robots 和同域限速；保留明确的本机 Feed 例外；密钥不进入卡片库和日志。 |
 | 正文管线 | [article-reader.ts](../src/main/article-reader.ts) | 先恢复语义载体，再提取、净化和渲染；不把原站脚本、事件处理器或样式送入阅读器。 |
 | AI | [ai-service.ts](../src/main/ai-service.ts) | 显式发起、受限上下文、可取消流；对话不写入卡片数据库。 |
 
 库变更订阅归属于注册时的 WebContents 对象。重复读取来源不增加监听器；窗口销毁和 IPC 关闭都通过同一释放路径移除订阅与监听器。清理使用注册时保存的身份，旧窗口回调不能移除相同 id 的替换订阅；单个窗口发送失败仍不阻断其他窗口，并允许暂时失败的存活窗口在后续通知中恢复。
+
+启动服务前，持久化层只检查明确列出的历史用户资料根（早期开发版的 `Electron` 与品牌预览版的 `Reading Hub`），不扫描用户磁盘；即使位于 `Electron` 根中，也只接受能通过 Reading Hub schema 与完整性验证的 `reading-hub.sqlite`。当前库缺失或没有任何用户状态且仅有一份完整的历史库时，SQLite `backup()` 先生成包含 WAL 的不可变快照，再在暂存副本完成完整性、外键和 schema 检查并写入来源标记，最后原子安装；历史目录始终保留。来源标记、哈希化资料位置与本地迁移记录三者都匹配时，才会在下次启动承认保留的历史库，避免当前库被替换后静默隐藏资料。双含用户状态库、损坏库、未来 schema 或接管失败会阻止启动而不是创建空库或猜测合并。Keychain 凭据不参与复制；历史专属登录会话可重新登录，不能成为卡片库接管的前提。
 
 来源标识以共享 sourceIconKind 决定本地 SVG，域名识别只接受对应根域或其子域，避免相似域名误用平台标识。远端图标仍由主进程校验和读取；请求失败或浏览器无法解码时回到本地标识，不循环请求。图标响应改变时替换图片节点，旧图片错误不能清空新响应；名称变化不触发图标重读。
 

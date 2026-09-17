@@ -11,6 +11,7 @@ import { ScientificArticleVisualAuditor } from "./scientific-visual-audit";
 import { installDevelopmentSupervisorGuard } from "./dev-supervisor";
 import { MainWindowLifecycle } from "./main-window-lifecycle";
 import { createShutdownHandler } from "./shutdown";
+import { LIBRARY_FILE_NAME, resolveDataLocation } from "./data-location-migration";
 
 let tray: Tray | undefined;
 let services: ApplicationServices | undefined;
@@ -20,6 +21,11 @@ let quitting = false;
 
 const APPLICATION_NAME = "Reading Hub";
 const USER_DATA_DIRECTORY = "reading-hub";
+// The first development builds ran before the app was branded and therefore
+// used Electron's default data root. Later branded previews used this display
+// name. Only `reading-hub.sqlite` in these explicit roots is considered.
+const LEGACY_USER_DATA_DIRECTORIES = ["Reading Hub", "Electron"] as const;
+class DataLocationStartupError extends Error {}
 const readerAuditMode = process.env.READING_HUB_READER_AUDIT === "1";
 const scientificVisualAuditMode = readerAuditMode && process.env.READING_HUB_AUDIT_SCIENTIFIC_VISUAL === "1";
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -205,6 +211,10 @@ function createTray(): void {
 }
 
 async function bootstrap(): Promise<void> {
+  // This must finish before BrowserWindow, Electron's persistent sessions,
+  // service construction, maintenance or scheduling can touch the library.
+  // Otherwise a historical directory can be mistaken for a fresh empty app.
+  const databasePath = await resolveStartupDatabasePath();
   // Establish a non-activating native window before any disk/network work.
   // Showing it only after the awaited service boot can move macOS back to the
   // original Space even without an explicit BrowserWindow.focus() call.
@@ -214,7 +224,7 @@ async function bootstrap(): Promise<void> {
 
   const icon = applicationIcon();
   if (process.platform === "darwin" && !icon.isEmpty()) app.dock?.setIcon(icon);
-  servicesStartup = createApplicationServices(path.join(app.getPath("userData"), "reading-hub.sqlite"));
+  servicesStartup = createApplicationServices(databasePath);
   services = await servicesStartup;
   if (quitting) return;
   drainIpc = registerIpcHandlers(services);
@@ -222,6 +232,28 @@ async function bootstrap(): Promise<void> {
   loadMainRenderer(startupWindow);
   createTray();
   services.sync.start();
+}
+
+async function resolveStartupDatabasePath(): Promise<string> {
+  let resolution: Awaited<ReturnType<typeof resolveDataLocation>>;
+  try {
+    resolution = await resolveDataLocation({
+      canonicalDirectory: persistentUserDataPath,
+      legacyDirectories: LEGACY_USER_DATA_DIRECTORIES.map((directory) => path.join(app.getPath("appData"), directory)),
+      libraryFileName: LIBRARY_FILE_NAME
+    });
+  } catch {
+    throw new DataLocationStartupError("无法安全检查或备份本地资料库；应用未继续启动。请保留现有资料目录并检查磁盘空间与文件权限后重试。");
+  }
+  if (resolution.kind === "blocked" || resolution.kind === "ambiguous") {
+    throw new DataLocationStartupError(`${resolution.message}\n\n当前资料目录：${resolution.canonicalDirectory}\n请保留当前与历史目录，勿删除、覆盖或重新订阅后再重试。`);
+  }
+  if (resolution.kind === "migrated") {
+    console.info("Reading Hub 已安全接管历史本地资料库；原目录和升级前备份已保留。");
+  } else if (resolution.kind === "canonical" && resolution.migrationBackupPath) {
+    console.info("Reading Hub 已在升级数据库结构前创建本地备份。");
+  }
+  return resolution.databasePath;
 }
 
 async function runReaderAudit(): Promise<void> {
@@ -307,7 +339,8 @@ if (!ownsReaderInstance) {
       // audit-mode finalizer close the process after the diagnostic has flushed.
       return;
     }
-    dialog.showErrorBox("Reading Hub 无法启动", `${message}\n\n请运行 npm run rebuild:electron 后重试。`);
+    const support = error instanceof DataLocationStartupError ? "" : "\n\n请运行 npm run rebuild:electron 后重试。";
+    dialog.showErrorBox("Reading Hub 无法启动", `${message}${support}`);
     app.exit(1);
   }).finally(() => {
     if (readerAuditMode) app.quit();

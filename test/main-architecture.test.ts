@@ -26,6 +26,17 @@ describe("main-process boundaries", () => {
     expect(handlers).toContain("parseAiStreamRequest");
   });
 
+  it("resolves a historical local library before any window or application service can touch it", () => {
+    const index = mainFile("index.ts");
+    const bootstrap = index.match(/async function bootstrap\(\): Promise<void> \{([\s\S]*?)\n\}/)?.[1] ?? "";
+
+    expect(index).toContain('resolveDataLocation');
+    expect(index).toContain('const LEGACY_USER_DATA_DIRECTORIES = ["Reading Hub", "Electron"] as const;');
+    expect(bootstrap.indexOf("resolveStartupDatabasePath()")).toBeGreaterThanOrEqual(0);
+    expect(bootstrap.indexOf("resolveStartupDatabasePath()")).toBeLessThan(bootstrap.indexOf("showStartupWindow()"));
+    expect(bootstrap.indexOf("resolveStartupDatabasePath()")).toBeLessThan(bootstrap.indexOf("createApplicationServices(databasePath)"));
+  });
+
   it("keeps services alive through the renderer shutdown drain before closing SQLite", () => {
     const index = mainFile("index.ts");
 

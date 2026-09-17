@@ -23,7 +23,7 @@ const APP_SERVER_MAX_CONCURRENT_TURNS = 2;
 const MAX_PROTOCOL_LINE_BYTES = 1_000_000;
 const MAX_STDERR_LENGTH = 4_000;
 const DESKTOP_CODEX_COMMAND = "/Applications/ChatGPT.app/Contents/Resources/codex";
-const APP_SERVER_CLIENT_INFO = { name: "reading-hub", title: "Reading Hub", version: "0.1.0" };
+const APP_SERVER_CLIENT_INFO = { name: "reading-hub", title: "Reading Hub", version: "0.1.1" };
 /**
  * Provider settings and concurrent AI requests can ask for CLI status several
  * times in quick succession.  Keep command discovery short-lived: it avoids

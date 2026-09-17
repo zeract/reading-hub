@@ -9,7 +9,7 @@ import { ENTRY_ORDER_BY } from "./entry-order";
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 16;
+export const CURRENT_SCHEMA_VERSION = 17;
 
 type SqliteDatabase = Database.Database;
 
@@ -392,7 +392,20 @@ const MIGRATIONS: readonly SchemaMigration[] = [
       entry_id TEXT PRIMARY KEY REFERENCES article_rewrites(entry_id) ON DELETE CASCADE,
       result_json TEXT NOT NULL
     );
-  `)}
+  `)},
+  {
+    version: 17,
+    name: "record-data-location-migration-origin",
+    up: (database) => database.exec(`
+      CREATE TABLE data_location_migrations (
+        migration_id TEXT PRIMARY KEY,
+        source_fingerprint TEXT NOT NULL CHECK(length(source_fingerprint) = 64),
+        source_locator_hash TEXT NOT NULL CHECK(length(source_locator_hash) = 64),
+        source_schema_version INTEGER NOT NULL CHECK(source_schema_version >= 0),
+        migrated_at INTEGER NOT NULL
+      );
+    `)
+  }
 
 ];
 
