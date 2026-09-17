@@ -42,6 +42,12 @@ it('waits for a numeric-ID answer shell and ignores a long discussion reply',()=
  expect(zhihuAnswerContentReadiness(load(shell),unsafeUrl)).toBe('pending');
  expect(zhihuAnswerContentReadiness(load(ready),unsafeUrl)).toBe('ready');
 });
+it('uses the reader\'s CommentItem boundary while deciding whether a Zhihu answer has hydrated',()=>{
+ const shell=`<article class="AnswerItem" data-answer-id="456"><div class="RichContent-inner"><article class="CommentItem"><p>无列表的真实评论不能让空回答提前就绪。</p></article></div></article>`;
+ const annotation=shell.replace('<article class="CommentItem">','<div class="CommentItem">').replace('</article></div></article>','</div></div></article>');
+ expect(zhihuAnswerContentReadiness(load(shell),url)).toBe('pending');
+ expect(zhihuAnswerContentReadiness(load(annotation),url)).toBe('ready');
+});
 it('rejects conflicting answer identities despite a matching document canonical',()=>{
  const html=`<link rel="canonical" href="${url}"><div class="QuestionAnswer-content"><div data-answer-id="999"><div class="RichContent-inner">${'OTHER '.repeat(100)}</div></div></div>`;
  expect(()=>extractReaderArticle(html,url,entry)).toThrow('身份');

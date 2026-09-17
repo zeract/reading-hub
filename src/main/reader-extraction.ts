@@ -7,7 +7,12 @@ import { mergeMathMacros, katexMacros, extractMathJaxConfigMacros, extractMacroD
 import { readerLanguageChoices } from "../shared/reader-languages";
 import { normalizeReaderLayout } from "./reader-layout";
 import { selectInlineLanguages } from "./reader-inline-languages";
-import { selectZhihuAnswer, ZHIHU_AUTHORED_PROSE_SELECTOR } from "./zhihu-answer-identity";
+import {
+  hasZhihuAnnotationMarker,
+  isZhihuDiscussionItem,
+  selectZhihuAnswer,
+  ZHIHU_AUTHORED_PROSE_SELECTOR
+} from "./zhihu-answer-identity";
 import { Readability } from "@mozilla/readability";
 import { load } from "cheerio";
 import { JSDOM, VirtualConsole } from "jsdom";
@@ -136,8 +141,6 @@ const ZHIHU_ANNOTATION_CARRIER_TAGS = new Set([
   ...INLINE_COMMENT_CARRIER_TAGS,
   "blockquote", "dd", "div", "dt", "figcaption", "h1", "h2", "h3", "h4", "h5", "h6", "li", "p", "section"
 ]);
-
-const ZHIHU_AUTHORED_PROSE_ROOT_SELECTOR = ZHIHU_AUTHORED_PROSE_SELECTOR;
 
 const ALLOWED_TAGS = new Set([
   "a", "abbr", "b", "blockquote", "br", "caption", "cite", "code", "dd", "del", "details", "div", "dl", "dt", "em", "figcaption", "figure",
@@ -671,33 +674,21 @@ function isZhihuContentUrl(rawUrl: string): boolean {
   }
 }
 
-function isCommentThreadElement(element: any, content?: any, pageUrl?: string, annotationNodes?: Set<any>): boolean {
+function isCommentThreadElement(element: any, content?: any, pageUrl?: string): boolean {
   if (!element.is(COMMENT_THREAD_CONTAINER_SELECTOR) && !element.is(COMMENT_THREAD_ITEM_SELECTOR)) return false;
   if (element.is(COMMENT_THREAD_CONTAINER_SELECTOR)) return true;
   // A discussion item can appear inside the selected RichContent shell on
   // older page layouts. Its explicit discussion-root ancestor always wins
   // over the local annotation exception below.
   if (element.parents(COMMENT_THREAD_CONTAINER_SELECTOR).length) return true;
+  // Use the same structural distinction as the hydration poll. A bare
+  // `CommentItem` in an authored RichContent root can be a line-comment
+  // wrapper, while an article/list or explicit comment record remains a
+  // discussion item even when it happens to carry a highlight class.
+  if (isZhihuContentUrl(pageUrl || "")) return isZhihuDiscussionItem(element, content);
   const tagName = element.get(0)?.tagName?.toLowerCase();
   if (!tagName || INLINE_COMMENT_CARRIER_TAGS.has(tagName)) return false;
-  // A block CommentItem nested inside an already-recognised annotation is
-  // part of the author's selected passage, not a new discussion record. This
-  // matters for the current DOM where `RichContent-commented` wraps a child
-  // `CommentItem`; removing the parent class first used to make that child
-  // indistinguishable from a thread item.
-  if (hasZhihuAnnotationAncestor(element, annotationNodes)) return false;
-  // A few variants attach the annotation marker directly to a block wrapper.
-  return !isZhihuBlockAnnotationCarrier(element, content, pageUrl);
-}
-
-function isZhihuBlockAnnotationCarrier(element: any, content: any, pageUrl?: string): boolean {
-  if (!content?.length || !pageUrl || !isZhihuContentUrl(pageUrl)) return false;
-  const hasExplicitAnnotationMarker = (element.attr("class") || "")
-    .split(/\s+/)
-    .some((className: string) => /(?:^|[-_])(?:commented|commenthighlight|annotation|highlight)(?:$|[-_])/i.test(className));
-  return hasExplicitAnnotationMarker && (content.is(ZHIHU_AUTHORED_PROSE_ROOT_SELECTOR)
-    || element.parents(ZHIHU_AUTHORED_PROSE_ROOT_SELECTOR).length > 0
-    || /^reader-(?:selected-)?content$/.test(content.attr("id") || ""));
+  return true;
 }
 
 function hasZhihuAnnotationAncestor(element: any, annotationNodes?: Set<any>): boolean {
@@ -708,9 +699,9 @@ function hasZhihuAnnotationAncestor(element: any, annotationNodes?: Set<any>): b
   return false;
 }
 
-function hasCommentThreadAncestor(element: any, content?: any, pageUrl?: string, annotationNodes?: Set<any>): boolean {
+function hasCommentThreadAncestor(element: any, content?: any, pageUrl?: string): boolean {
   for (let parent = element.parent(); parent.length; parent = parent.parent()) {
-    if (isCommentThreadElement(parent, content, pageUrl, annotationNodes)) return true;
+    if (isCommentThreadElement(parent, content, pageUrl)) return true;
   }
   return false;
 }
@@ -741,8 +732,8 @@ function preserveZhihuInlineAnnotations($: ReturnType<typeof load>, content: any
     const tagName = element.get(0)?.tagName?.toLowerCase();
     const className = element.attr("class") || "";
     if (!tagName || !ZHIHU_ANNOTATION_CARRIER_TAGS.has(tagName)) continue;
-    if (isCommentThreadElement(element, content, pageUrl, annotationNodes)
-      || hasCommentThreadAncestor(element, content, pageUrl, annotationNodes)) continue;
+    if (isCommentThreadElement(element, content, pageUrl)
+      || hasCommentThreadAncestor(element, content, pageUrl)) continue;
 
     const isCommentControl = element.is(COMMENT_CONTROL_SELECTOR);
     // Do not tie authored prose to a particular Zhihu experiment class such
@@ -750,7 +741,7 @@ function preserveZhihuInlineAnnotations($: ReturnType<typeof load>, content: any
     // comment/annotation marker inside the selected RichContent root can be
     // author text. Actual thread containers were excluded above, and a
     // standalone control label is filtered below.
-    const carriesLineCommentMarker = /(?:comment|annotation)/i.test(className);
+    const carriesLineCommentMarker = hasZhihuAnnotationMarker(className) || /(?:comment|annotation)/i.test(className);
     // The selected reader root can itself be `.RichContent-inner` or
     // `.Post-RichTextContainer`; at that point its class is intentionally
     // not retained in the cloned fragment. Rely on the already-selected

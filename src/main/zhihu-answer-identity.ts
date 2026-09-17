@@ -10,8 +10,68 @@ export const ZHIHU_AUTHORED_PROSE_SELECTOR = ".Post-RichTextContainer, .RichCont
 
 // These are unambiguous discussion roots. `CommentItem` alone cannot be used
 // here because Zhihu also applies it to annotations around an author's own
-// text; the reader's fuller structural cleanup handles that distinction.
-const ZHIHU_DISCUSSION_ROOT_SELECTOR = "#comment, #comments, #comment-list, #commentlist, [class*='CommentList'], [class*='CommentsV2']";
+// text. Keep this boundary shared with the reader so hydration readiness and
+// final extraction cannot disagree about the same answer tree.
+export const ZHIHU_DISCUSSION_ROOT_SELECTOR = "#comment, #comments, #comment-list, #commentlist, [class*='CommentList'], [class*='CommentsV2']";
+export const ZHIHU_COMMENT_ITEM_SELECTOR = "[class*='CommentItem']";
+
+const ZHIHU_AUTHORED_COMMENT_ITEM_TAGS = new Set([
+  "blockquote", "dd", "div", "dt", "figcaption", "p", "section"
+]);
+
+const ZHIHU_ANNOTATION_MARKER = /(?:^|[-_])(?:commented|commenthighlight|annotation|highlight(?:ed)?)(?:$|[-_])/i;
+
+/**
+ * Zhihu has shipped several names for a reader's line-comment highlight. The
+ * token boundary intentionally keeps an unrelated class such as
+ * `unhighlighted` from becoming author-content evidence.
+ */
+export function hasZhihuAnnotationMarker(className: string): boolean {
+  return className.split(/\s+/).some((className) => ZHIHU_ANNOTATION_MARKER.test(className));
+}
+
+function isInZhihuAuthoredProse(element: any, content?: any): boolean {
+  if (element.is(ZHIHU_AUTHORED_PROSE_SELECTOR) || element.parents(ZHIHU_AUTHORED_PROSE_SELECTOR).length) return true;
+  if (!content?.length) return false;
+  if (content.is(ZHIHU_AUTHORED_PROSE_SELECTOR)) return true;
+  // Reader extraction wraps an already-selected authored fragment in this
+  // generated element for its later cleanup passes. It is not remote markup,
+  // so it is safe to retain the trusted provenance across those passes.
+  return /^reader-(?:selected-)?content$/.test(content.attr("id") || "");
+}
+
+/**
+ * A bare block `CommentItem` in a confirmed RichContent root is not by itself
+ * proof of a discussion reply: Zhihu also uses it for a line-comment wrapper
+ * around the author's own paragraph. Explicit comment-list ancestry, comment
+ * record semantics and article/list items remain discussion records. This is
+ * deliberately structural rather than a growing class-name allowlist.
+ */
+export function isZhihuAuthoredCommentItem(element: any, content?: any): boolean {
+  if (!element.is(ZHIHU_COMMENT_ITEM_SELECTOR)) return false;
+  if (element.is(ZHIHU_DISCUSSION_ROOT_SELECTOR) || element.parents(ZHIHU_DISCUSSION_ROOT_SELECTOR).length) return false;
+  const tagName = element.get(0)?.tagName?.toLowerCase();
+  if (!tagName) return false;
+  if (tagName === "article" || tagName === "li") return false;
+  const role = (element.attr("role") || "").toLowerCase();
+  if (role === "article" || role === "comment" || role === "listitem") return false;
+  if (element.is("[data-comment-id], [data-commentid], [itemprop='comment']")) return false;
+  if (!isInZhihuAuthoredProse(element, content)) return false;
+  // Known prose wrappers are allowed without an experiment marker. For an
+  // unusual element type require the marker itself, so a semantic record tag
+  // cannot become author prose merely because it happens to be in RichContent.
+  return ZHIHU_AUTHORED_COMMENT_ITEM_TAGS.has(tagName)
+    || hasZhihuAnnotationMarker(element.attr("class") || "");
+}
+
+export function isZhihuDiscussionItem(element: any, content?: any): boolean {
+  if (!element.is(ZHIHU_COMMENT_ITEM_SELECTOR)) return false;
+  if (element.is(ZHIHU_DISCUSSION_ROOT_SELECTOR) || element.parents(ZHIHU_DISCUSSION_ROOT_SELECTOR).length) return true;
+  const tagName = element.get(0)?.tagName?.toLowerCase();
+  if (!tagName) return false;
+  if (["a", "abbr", "b", "button", "cite", "code", "del", "em", "i", "ins", "kbd", "mark", "s", "small", "span", "strong", "sub", "sup", "u"].includes(tagName)) return false;
+  return !isZhihuAuthoredCommentItem(element, content);
+}
 
 export function zhihuAnswerId(value: string): string | undefined {
   try {
@@ -92,6 +152,9 @@ export function zhihuAnswerContentReadiness($: CheerioAPI, pageUrl: string): Zhi
   return authoredProse.toArray().some((node) => {
     const prose = $(node).clone();
     prose.find(ZHIHU_DISCUSSION_ROOT_SELECTOR).remove();
+    prose.find(ZHIHU_COMMENT_ITEM_SELECTOR).each((_index, comment) => {
+      if (isZhihuDiscussionItem($(comment), prose)) $(comment).remove();
+    });
     return prose.text().replace(/\s+/g, "").length > 0;
   })
     ? "ready"

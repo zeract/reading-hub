@@ -1560,6 +1560,33 @@ describe("article reader extraction", () => {
     expect(content).not.toMatch(/CommentItem|RichContent-commented/);
   });
 
+  it("preserves ambiguous Zhihu block CommentItem annotations without admitting discussion records", () => {
+    const result = extractReaderArticle(
+      `<article class="QuestionAnswer-content" data-answer-id="456">
+        <div class="RichContent-inner">
+          <div class="CommentItem"><p>没有额外类名的被评论作者段落仍然属于回答正文。</p></div>
+          <div class="CommentItem"><p><span class="RichContent-commented-inline">批注标记位于 CommentItem 后代时作者文字也必须保留。</span></p></div>
+          <div class="RichContent-highlighted"><div class="CommentItem"><p>highlighted 包装的作者文字不能在后续净化中丢失。</p></div></div>
+          <article class="CommentItem RichContent-commented"><p>没有评论列表包装的真实评论记录仍然不能进入正文。</p></article>
+          <div class="CommentItem" data-comment-id="comment-1"><p>带明确评论身份的记录绝不能进入正文。</p></div>
+          <section class="CommentList"><div class="CommentItem"><p>评论列表中的文字绝不能进入正文。</p></div></section>
+        </div>
+      </article>`,
+      "https://www.zhihu.com/question/123/answer/456",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(result).toBeDefined();
+    expect(content).toContain("没有额外类名的被评论作者段落仍然属于回答正文");
+    expect(content).toContain("批注标记位于 CommentItem 后代时作者文字也必须保留");
+    expect(content).toContain("highlighted 包装的作者文字不能在后续净化中丢失");
+    expect(content).not.toContain("没有评论列表包装的真实评论记录");
+    expect(content).not.toContain("带明确评论身份的记录绝不能进入正文");
+    expect(content).not.toContain("评论列表中的文字绝不能进入正文");
+    expect(load(content)("[class*='CommentItem'], [class*='CommentList'], [class*='RichContent-highlighted']")).toHaveLength(0);
+  });
+
   it("preserves a nested block CommentItem when an authored Zhihu annotation owns the subtree", () => {
     const result = extractReaderArticle(
       `<article class="QuestionAnswer-content" data-answer-id="456">
