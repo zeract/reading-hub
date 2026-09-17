@@ -416,11 +416,12 @@ export interface ReaderArticle {
   /** Rendering mode is chosen locally from the URL and document structure. */
   renderProfile: ReaderRenderProfile;
   /**
-   * A feed may provide an explicit body or a safe local summary even when the
-   * original article cannot be read because its robots policy forbids
-   * automated access.
+   * A subscription may provide an explicit body or a safe local summary even
+   * when the original article cannot be read. `source_summary` is distinct
+   * from a Feed summary: it is card metadata already collected from an
+   * authorised provider session, never a substitute for the original body.
    */
-  contentMode?: "article" | "feed_body" | "feed_summary";
+  contentMode?: ReaderContentMode;
   /** Safe count-only telemetry used by the local reader audit. */
   formulaDiagnostics?: ReaderFormulaDiagnostics;
   /** Publisher-declared versions available for this article, including this page. */
@@ -428,6 +429,19 @@ export interface ReaderArticle {
   /** Primary language tag for the version currently rendered in this reader. */
   activeLanguage?: string;
   contentHtml: string;
+}
+
+export type ReaderContentMode = "article" | "feed_body" | "feed_summary" | "source_summary";
+
+/** Summary-only documents must never be treated as a full article by AI flows. */
+export function isReaderSummaryContent(mode: ReaderContentMode | undefined): boolean {
+  return mode === "feed_summary" || mode === "source_summary";
+}
+
+export function readerSummaryUnavailableMessage(mode: ReaderContentMode | undefined): string {
+  return mode === "source_summary"
+    ? "当前只有已收集的内容摘要，无法生成完整改写。请先在原文中确认正文可用。"
+    : "当前只有订阅摘要，无法生成完整改写。请先在原文中确认正文可用。";
 }
 
 export type ReaderRenderProfile = "standard" | "scientific";

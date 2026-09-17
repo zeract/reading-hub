@@ -32,7 +32,7 @@ export type ReaderAuditResult = {
   formulaDiagnostics?: string[];
   rawTeXDiagnostics?: string[];
   renderedMathDiagnostics?: string[];
-  mode?: "article" | "feed_body" | "feed_summary" | "embedded";
+  mode?: "article" | "feed_body" | "feed_summary" | "source_summary" | "embedded";
   sample?: ReaderAuditSampleKind;
   status?: "passed" | "issues" | "skipped" | "failed" | "timed_out";
   durationMs?: number;

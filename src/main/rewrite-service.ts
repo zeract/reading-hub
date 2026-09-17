@@ -9,6 +9,7 @@ import { throwIfAborted } from "./cancellation";
 import { parseRewriteSettings, type ArticleRewrite, type RewriteSettings } from "../shared/rewrite";
 import { runRewritePipeline, reviewRewrite } from "./rewrite-pipeline";
 import { rewriteText, RewriteContentError } from "./rewrite-content";
+import { isReaderSummaryContent, readerSummaryUnavailableMessage } from "../shared/types";
 /** Durable user-requested jobs, independent of reader windows and source synchronization. */
 export class RewriteService {
     private closing = false;
@@ -103,7 +104,7 @@ export class RewriteService {
         const article = withArticleDocument(await this.articles.read(entry, this.database.getSource(entry.sourceId), { signal }));
         throwIfAborted(signal);
         const plain=articleDocumentText(article.document!);
-        if(article.contentMode==="feed_summary")throw new RewriteContentError("当前只有订阅摘要，无法生成完整改写。");
+        if(isReaderSummaryContent(article.contentMode))throw new RewriteContentError(readerSummaryUnavailableMessage(article.contentMode));
         if(plain.length<80 || plain.length>180000)throw new RewriteContentError("可读取的正文长度超出改写范围（80 至 18 万字符）。");
         const legacy=this.database.rewrites.hasLegacyCheckpoint(job) || job.kind==="review" && (this.database.rewrites.get(job.entryId)?.result?.promptVersion || 0)<11;
         const text = legacy ? rewriteText({...article,contentHtml:article.importHtml ?? article.contentHtml}) : "";

@@ -27,6 +27,14 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 
 describe("successful reading lifecycle", () => {
+  it("labels a saved Zhihu summary without presenting it as Feed content", async () => {
+    read.mockResolvedValue({ kind: "article", article: { ...article, contentMode: "source_summary", contentHtml: "<p>知乎动态摘要</p>" } });
+    await render();
+    const notice = container.querySelector(".reader-content-notice");
+    expect(notice?.textContent).toContain("知乎关注动态中已收集的内容摘要");
+    expect(notice?.textContent).not.toContain("Feed 提供");
+  });
+
   it("cancels pending extraction when another entry replaces the view", async () => {
     read.mockImplementationOnce(() => new Promise(() => undefined));
     await render(); await render({ ...card, id: "two" });

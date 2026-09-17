@@ -9,6 +9,7 @@ import type { PageRenderer } from "../src/main/page-renderer";
 import type { Entry } from "../src/shared/types";
 import type { Source } from "../src/shared/types";
 import { RobotsDisallowedError } from "../src/main/robots";
+import { RenderedPageHttpError } from "../src/main/rendered-document";
 
 const entry: Entry = {
   id: "entry-1",
@@ -1448,6 +1449,42 @@ describe("article reader extraction", () => {
     const reader = new ArticleReader(http as never, { render: vi.fn() }, async () => { throw reason; });
     await expect(reader.read(entry, source)).rejects.toBe(reason);
     expect(http.getText).not.toHaveBeenCalled();
+  });
+
+  it("shows only the saved Zhihu Follow summary when the authorized answer document returns 403", async () => {
+    const source: Source = {
+      id: "zhihu-source", url: "https://www.zhihu.com/follow", title: "知乎关注动态", kind: "zhihu_follow", status: "active",
+      pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1
+    };
+    const summary = "这是知乎关注动态已收集的摘要，在原页拒绝应用内读取时只能作为有限阅读提示显示。<img src=x onerror=alert(1)>";
+    const http = { getText: vi.fn() } as unknown as PublicHttpClient;
+    const renderer = { render: vi.fn() } as unknown as PageRenderer;
+    const failure = new RenderedPageHttpError(403);
+    const reader = new ArticleReader(http, renderer, async () => { throw failure; });
+
+    const article = await reader.read({ ...entry, summary }, source);
+
+    expect(article.contentMode).toBe("source_summary");
+    expect(article.contentHtml).toContain("知乎关注动态已收集的摘要");
+    expect(article.contentHtml).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(article.contentHtml).not.toContain("<img");
+    expect(http.getText).not.toHaveBeenCalled();
+    expect(renderer.render).not.toHaveBeenCalled();
+  });
+
+  it.each([401, 429])("keeps the Zhihu session failure for HTTP %s instead of treating its summary as a body", async (status) => {
+    const source = { kind: "zhihu_follow" } as Source;
+    const failure = new RenderedPageHttpError(status);
+    const reader = new ArticleReader({ getText: vi.fn() } as unknown as PublicHttpClient, { render: vi.fn() } as unknown as PageRenderer, async () => { throw failure; });
+
+    await expect(reader.read({ ...entry, summary: "这是一段足够长、但不能代替正文的知乎关注动态摘要。" }, source)).rejects.toBe(failure);
+  });
+
+  it("keeps the 403 when the saved Zhihu Follow summary is too short", async () => {
+    const failure = new RenderedPageHttpError(403);
+    const reader = new ArticleReader({ getText: vi.fn() } as unknown as PublicHttpClient, { render: vi.fn() } as unknown as PageRenderer, async () => { throw failure; });
+
+    await expect(reader.read({ ...entry, summary: "过短摘要" }, { kind: "zhihu_follow" } as Source)).rejects.toBe(failure);
   });
 
   it("keeps annotated Zhihu RichContent text while excluding its page-level discussion thread", () => {

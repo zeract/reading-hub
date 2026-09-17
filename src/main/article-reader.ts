@@ -156,6 +156,8 @@ export class ArticleReader {
       if (failure) throw failure;
       throw new ArticleContentUnavailableError();
     }
+    const sourceSummary = createSourceSummaryArticle(entry, source, failure);
+    if (sourceSummary) return this.rememberLanguageVariants(entry.id, sourceSummary, knownLanguageVariants, options?.signal);
     const feedBody = await awaitWithAbort(this.readTransientFeedBody(entry, source, options), options?.signal).catch(() => {
       if (options?.signal?.aborted) throw abortError(options.signal);
       return undefined;
@@ -284,6 +286,23 @@ function readerHttpOptions(base: Omit<PublicRequestOptions, "signal"> | undefine
 function createFeedSummaryArticle(entry: Entry, source?: Source): ReaderArticle | undefined {
   const rawSummary = entry.summary;
   if ((source?.kind !== "rss" && source?.kind !== "x") || !rawSummary) return undefined;
+  return createSummaryArticle(entry, rawSummary, "feed_summary");
+}
+
+/**
+ * Zhihu's authorisation session may successfully collect a Follow card yet be
+ * denied access to the linked answer document.  A 403 is an access boundary:
+ * do not retry around it or inspect the error page.  The card's pre-existing
+ * summary is still safe local metadata, so it can be shown as an explicitly
+ * limited fallback without making another network request.
+ */
+function createSourceSummaryArticle(entry: Entry, source: Source | undefined, failure: unknown): ReaderArticle | undefined {
+  if (source?.kind !== "zhihu_follow" || !(failure instanceof RenderedPageHttpError) || failure.status !== 403) return undefined;
+  return createSummaryArticle(entry, entry.summary, "source_summary");
+}
+
+function createSummaryArticle(entry: Entry, rawSummary: string | undefined, contentMode: "feed_summary" | "source_summary"): ReaderArticle | undefined {
+  if (!rawSummary) return undefined;
   const summary = compactText(rawSummary, 500) || "";
   if (summary.length < 24) return undefined;
   return {
@@ -294,7 +313,7 @@ function createFeedSummaryArticle(entry: Entry, source?: Source): ReaderArticle 
     publishedAt: entry.publishedAt,
     coverImageUrl: entry.imageUrl,
     renderProfile: "standard",
-    contentMode: "feed_summary",
+    contentMode,
     contentHtml: `<p>${escapeHtml(summary)}</p>`
   };
 }

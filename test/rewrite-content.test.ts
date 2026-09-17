@@ -9,6 +9,7 @@ it("retains one source TeX expression, code and links without rendered duplicate
  expect(text.match(/x_1\^2/g)).toHaveLength(1);expect(text).toContain('a < b');expect(text).toContain('https://example.com/ref');expect(text).not.toContain('<span');
 });
 it("does not rewrite a feed summary as if it were the full article",()=>{expect(()=>rewriteText({...article(""),contentMode:"feed_summary"})).toThrow("摘要");});
+it("does not rewrite a provider-collected summary as if it were the full article",()=>{expect(()=>rewriteText({...article(""),contentMode:"source_summary"})).toThrow("摘要");});
 it("preserves code and display-math blocks while splitting long text without dropping content",()=>{
  const blocks=["a".repeat(60),"```\ncode\n\nsecond line\n```","$$\nx+y\n\n=z\n$$","b".repeat(60)];
  const chunks=splitRewriteText(blocks.join("\n\n"),100);expect(chunks.length).toBeGreaterThan(1);expect(chunks.join("\n\n")).toBe(blocks.join("\n\n"));

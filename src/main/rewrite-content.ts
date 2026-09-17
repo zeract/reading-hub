@@ -4,7 +4,7 @@ import TurndownService from "turndown";
 import { gfm } from "turndown-plugin-gfm";
 import { normalizeRewriteCards } from "./rewrite-cards";
 import { load } from "cheerio";
-import type { ReaderArticle } from "../shared/types";
+import { isReaderSummaryContent, readerSummaryUnavailableMessage, type ReaderArticle } from "../shared/types";
 export const REWRITE_PROMPT_VERSION = 12;
 const markdownLabel = (value:string) => value.replace(/[\\\[\]]/g, "\\$&").replace(/\s+/g," ");
 const markdownDestination = (value:string) => value.replace(/[<>\s]/g,c=>encodeURIComponent(c));
@@ -25,8 +25,8 @@ export class RewriteContentError extends Error {
 }
 /** Use semantic source TeX once, not both rendered and accessibility copies. No network media. */
 export function rewriteText(article: ReaderArticle, validate = true): string {
-    if (article.contentMode === "feed_summary")
-        throw new RewriteContentError("当前只有订阅摘要，无法生成完整改写。请先在原文中确认正文可用。");
+    if (isReaderSummaryContent(article.contentMode))
+        throw new RewriteContentError(readerSummaryUnavailableMessage(article.contentMode));
     const $ = load(`<main>${article.contentHtml}</main>`);
     normalizeRewriteCards($);
     const frozen: string[] = [];

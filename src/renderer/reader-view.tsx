@@ -352,6 +352,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
           <header><p className="eyebrow">{source?.title || "已保存内容"}</p><h1>{article.title}</h1>{(article.author || date) && <p className="reader-byline">{article.author}{article.author && date ? " · " : ""}{date}</p>}</header>
           {article.contentMode === "feed_body" && <aside className="reader-content-notice" role="note">正在显示订阅 Feed 提供的正文。该原页未被自动读取；请使用右上角 ↗ 查看完整原文。</aside>}
           {article.contentMode === "feed_summary" && <aside className="reader-content-notice" role="note">正在显示订阅 Feed 提供的内容摘要。该原页不允许自动读取；请使用右上角 ↗ 查看完整原文。</aside>}
+          {article.contentMode === "source_summary" && <aside className="reader-content-notice" role="note">正在显示知乎关注动态中已收集的内容摘要。该原页当前拒绝应用内读取；请使用右上角 ↗ 查看完整原文。</aside>}
           <div>
               {article.coverImageUrl && !article.document?.cover && <button type="button" className="reader-cover-button" onClick={(event) => {
                 const image = event.currentTarget.querySelector("img");
