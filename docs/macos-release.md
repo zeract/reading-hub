@@ -16,13 +16,26 @@ Reading Hub 的应用包和用户资料是分开的。DMG / `Reading Hub.app` �
 | --- | --- | --- |
 | 日常开发、界面调试 | `npm run dev` | 否 |
 | 编译/离线回归 | `npm run build`、`npm run verify` | 否 |
-| 给其他人安装或测试升级 | `npm run dist` | 是，位于 `release/` |
+| 本机安装和调试 | `npm run dist` | 是，但无签名时仅位于 `release/local/`，不可分发 |
+| 给其他人安装或测试升级 | `npm run dist:release` | 是，位于 `release/`，必须完成签名和公证 |
 
-`npm run dev` 会启动真实应用，默认会使用当前 macOS 用户的正式资料目录；它不是隔离沙盒。调试不受信任的改动时，请使用单独的 macOS 测试账户，或先完整退出应用并在 Finder 中备份 `~/Library/Application Support/reading-hub/`。不要为了本地试用而关闭签名、公证或 Gatekeeper 校验。
+`npm run dev` 会启动真实应用，默认会使用当前 macOS 用户的正式资料目录；它不是隔离沙盒。调试不受信任的改动时，请使用单独的 macOS 测试账户，或先完整退出应用并在 Finder 中备份 `~/Library/Application Support/reading-hub/`。
 
-仓库刻意不支持“临时绕过签名”的 DMG 发布路径：`npm run dist` 必须同时具备 Developer ID 签名和 Apple 公证。这样生成的文件才能作为可升级、可分发的安装包；缺少任一项时构建会在产物生成前失败，而不是产出可能被 Gatekeeper 标为“已损坏”的 DMG。
+`npm run dist` 会自动选择安全路径：只有同时检测到 **Developer ID Application** 身份和完整 Apple 公证凭证时，才构建签名并公证的正式 DMG；否则会明确提示并在 `release/local/<时间戳>/` 生成带 `-local-unsigned.dmg` 后缀、卷名为 “Reading Hub (Local Unsigned)” 的本机测试包。该路径显式关闭签名身份发现、代码签名和公证，即使机器后来安装了证书也不会产生状态不明的半签名包。
 
-## 一次性发布准备
+本机测试包可由构建者在自己的 Mac 上检查安装流程，但不能上传、分享、用于覆盖升级，或宣称能通过 Gatekeeper。macOS 可能拒绝打开未签名 App；这不是应用损坏，正式分发必须改用 `npm run dist:release`。`npm run verify:macos-release` 始终只验证正式签名发布物，不会把 `release/local/` 中的测试包当成合格产物。
+
+## 直接生成本机测试 DMG
+
+尚未申请证书时，可以直接运行：
+
+```sh
+npm run dist
+```
+
+构建完成后终端会输出本次唯一的 `release/local/<时间戳>/` 路径。只在本机构建目录中使用该 DMG；不要移除 macOS 安全隔离属性、不要使用它测试对外升级、也不要发送给其他人。
+
+## 一次性正式发布准备
 
 1. 加入 Apple Developer Program，并在 Apple Developer 后台创建并导入 **Developer ID Application** 证书到此 Mac 的登录钥匙串。下面命令应能列出该身份：
 
@@ -49,7 +62,7 @@ Reading Hub 的应用包和用户资料是分开的。DMG / `Reading Hub.app` �
 
    CI 也可使用 `APPLE_API_KEY`、`APPLE_API_KEY_ID`、`APPLE_API_ISSUER`，或通过受保护密钥管理提供 `CSC_LINK` 的 `.p12` 证书。不要提交 `.p12`、`.p8`、密码、Cookie 或环境文件。
 
-## 生成新的升级 DMG
+## 生成新的可升级 DMG
 
 发布前先确认版本号已经按发布流程更新，并从干净、已验证的工作树构建。至少执行：
 
@@ -57,11 +70,11 @@ Reading Hub 的应用包和用户资料是分开的。DMG / `Reading Hub.app` �
 npm ci
 npm run verify
 export APPLE_KEYCHAIN_PROFILE="reading-hub-notary"
-npm run dist
+npm run dist:release
 npm run verify:macos-release
 ```
 
-`npm run dist` 会依次执行构建、Developer ID 签名、hardened runtime、公证、staple 以及签名、Gatekeeper、staple 和 DMG 完整性校验。公证通常需要数分钟；任何步骤失败时都不要发布 `release/` 中的新文件。
+`npm run dist:release` 会依次执行构建、Developer ID 签名、hardened runtime、公证、staple 以及签名、Gatekeeper、staple 和 DMG 完整性校验。公证通常需要数分钟；任何步骤失败时都不要发布 `release/` 中的新文件。
 
 只发布本次构建产生的 `release/*.dmg`，不要发布旧的 `dist/*.dmg`。DMG 必须在目标架构的 macOS 上实际安装、启动一次后再对外发送；当前构建配置按构建机器的架构产出，若要覆盖 Apple Silicon 与 Intel 用户，应分别在对应架构上构建和验收，或在发布流程中显式配置并验证通用包。
 
