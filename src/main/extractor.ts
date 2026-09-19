@@ -3,7 +3,7 @@ import { load } from "cheerio";
 import { htmlDocumentBaseUrl, publicDocumentUrl } from "./html-document-url";
 import { isManualExtractionRule } from "./extraction-rule";
 import { compactText, parsePublishedAt } from "../shared/text";
-import { isTaxonomyUrl } from "../shared/url";
+import { canonicalizeContentUrl, isTaxonomyUrl } from "../shared/url";
 import type { CalibrationCandidate, ExtractionRule, RawEntry } from "../shared/types";
 
 type ExtractionUrls = { pageUrl: string; baseUrl: string };
@@ -30,7 +30,7 @@ export function extractGenericPage(html: string, pageUrl: string, existingRule?:
     const entries = extractUsingRule($, urls, existingRule);
     if (manual) return { title: pageTitle, entries, rule: withAutomaticRuleRevision(existingRule), confidence: entries.length ? 0.88 : 0, fallback: !entries.length };
     const detected = detectRepeatedItems($, urls);
-    if (shouldReplaceAutomaticRule(existingRule, entries, detected)) {
+    if (shouldReplaceAutomaticRule($, urls, existingRule, entries, detected)) {
       const result = extractionResultFromDetected(pageTitle, detected);
       if (existingRule.rendererRequired && result.rule) result.rule = { ...result.rule, rendererRequired: true };
       return result;
@@ -55,7 +55,7 @@ export function extractGenericPage(html: string, pageUrl: string, existingRule?:
  * intended archive. Confirmed rules retain ownership even without field
  * selectors. Legacy rules retain the conservative ownership fallback.
  */
-export const AUTOMATIC_RULE_REVISION = 7;
+export const AUTOMATIC_RULE_REVISION = 8;
 /**
  * Bump this only when the page-level publish-date parser gains a new safe
  * capability. Generic sources then make one unconditional request so entries
@@ -73,6 +73,8 @@ export function withPublicationDateRevision(rule?: ExtractionRule): ExtractionRu
 }
 
 function shouldReplaceAutomaticRule(
+  $: ReturnType<typeof load>,
+  urls: ExtractionUrls,
   rule: ExtractionRule,
   current: RawEntry[],
   detected: DetectedItems
@@ -83,6 +85,17 @@ function shouldReplaceAutomaticRule(
   // collect a bibliography from a personal homepage.  A named Blog Posts
   // section is a more specific replacement even while it has one post.
   if (detected.semanticSection === "blog") return true;
+  // A title link and a "read more" / "details" control commonly point at
+  // the same article. A saved selector that treats each anchor as an item is
+  // not a card rule: persistence can otherwise see the CTA after the title
+  // and overwrite useful metadata. Only repair it when a non-anchor card
+  // candidate covers the same targets and is demonstrably richer. Valid
+  // whole-card anchors do not have this conflicting-target shape.
+  if (hasRepeatedCallToActionTarget($, urls, $(rule.itemRootSelector!).toArray())) {
+    return isCardContainerRule($, detected.rule)
+      && coversSameTargets(current, detected.entries)
+      && entriesQuality(detected.entries) > entriesQuality(current) + 0.15;
+  }
   if (detected.entries.length < 2) return false;
   if (!current.length) return true;
   return detected.entries.length >= Math.max(current.length + 10, current.length * 2);
@@ -410,12 +423,24 @@ function collectCandidateGroups($: ReturnType<typeof load>, urls: ExtractionUrls
     });
   }
 
+  // Some component libraries deliberately use visual utility classes instead
+  // of semantic `article`/`post-card` names. When a title link and CTA point
+  // to the same target, their nearest shared, stable ancestor is strong
+  // structural evidence of a card without relying on any site-specific class.
+  for (const [selector, nodes] of repeatedAnchorCardGroups($, urls)) {
+    for (const node of nodes) add(selector, "重复链接文章卡片", node);
+  }
+
   const linkGroups = new Map<string, { label: string; nodes: any[] }>();
   $("a[href]").each((_, element) => {
     if (isTaxonomyOrNavigation($, element)) return;
     const href = $(element).attr("href");
     const absolute = publicDocumentUrl(href, urls.baseUrl);
     const text = compactText($(element).text(), 240);
+    // Keep the conservative title length guard for page-wide link discovery:
+    // a short genuine title is still handled by a surrounding card candidate
+    // (including the title/CTA structural path above), while short nav labels
+    // cannot become a new automatic anchor-only subscription rule.
     if (!absolute || isTaxonomyUrl(absolute) || !text || text.length < 18) return;
     try {
       const url = new URL(absolute);
@@ -442,6 +467,10 @@ function collectCandidateGroups($: ReturnType<typeof load>, urls: ExtractionUrls
     // dated posts. The former 100-item ceiling silently discarded exactly
     // those pages (for example Accela's complete archive).
     if (group.nodes.length < minimumEntries || group.nodes.length > 500) continue;
+    // Do not auto-save an anchor-only rule when it selects both article
+    // titles and per-card CTA controls for the same URLs. A surrounding card
+    // candidate can preserve the card fields; an anchor candidate cannot.
+    if (hasRepeatedCallToActionTarget($, urls, group.nodes)) continue;
     const rule: ExtractionRule = { version: 1, selection: "automatic", autoRepairRevision: AUTOMATIC_RULE_REVISION, itemRootSelector: selector };
     const entries = uniqueEntries(
       group.nodes
@@ -469,12 +498,195 @@ function collectCandidateGroups($: ReturnType<typeof load>, urls: ExtractionUrls
 }
 
 function uniqueEntries(entries: RawEntry[]): RawEntry[] {
-  const seen = new Set<string>();
-  return entries.filter((entry) => {
-    if (seen.has(entry.url)) return false;
-    seen.add(entry.url);
-    return true;
+  const selected = new Map<string, RawEntry>();
+  for (const entry of entries) {
+    const key = entryTargetKey(entry.url);
+    const existing = selected.get(key);
+    if (!existing || compareEntryQuality(entry, existing) > 0) selected.set(key, entry);
+  }
+  return [...selected.values()];
+}
+
+/**
+ * Candidate groups are allowed to expose the same target more than once: a
+ * card can contain an image link, a heading link, and a CTA. Keep one target
+ * before handing it to persistence, and choose the record with the most
+ * article-like metadata rather than depending on DOM order.
+ */
+function entryTargetKey(url: string): string {
+  try {
+    return canonicalizeContentUrl(url);
+  } catch {
+    return url;
+  }
+}
+
+function compareEntryQuality(left: RawEntry, right: RawEntry): number {
+  return entryQuality(left) - entryQuality(right);
+}
+
+function entryQuality(entry: RawEntry): number {
+  const title = compactText(entry.title, 240) || "";
+  const summary = compactText(entry.summary, 500) || "";
+  let score = title ? 1 + Math.min(title.length, 120) / 120 : -2;
+  // A valid article title may be short. Only penalise an explicit action
+  // label, never titles merely because they have few characters.
+  if (isCallToActionText(title)) score -= 3;
+  if (summary) score += 0.6 + Math.min(summary.length, 300) / 600;
+  if (entry.publishedAt !== undefined) score += 0.55;
+  if (compactText(entry.author, 120)) score += 0.2;
+  if (entry.imageUrl) score += 0.15;
+  return score;
+}
+
+function entriesQuality(entries: RawEntry[]): number {
+  if (!entries.length) return Number.NEGATIVE_INFINITY;
+  return entries.reduce((total, entry) => total + entryQuality(entry), 0) / entries.length;
+}
+
+/** A CTA-rule repair must preserve exactly the existing content target set.
+ * Both sets use the same URL identity as duplicate merging. */
+function coversSameTargets(current: RawEntry[], detected: RawEntry[]): boolean {
+  if (!current.length || !detected.length) return false;
+  const currentTargets = new Set(current.map((entry) => entryTargetKey(entry.url)));
+  const detectedTargets = new Set(detected.map((entry) => entryTargetKey(entry.url)));
+  return currentTargets.size === detectedTargets.size
+    && [...currentTargets].every((target) => detectedTargets.has(target));
+}
+
+function isCardContainerRule($: ReturnType<typeof load>, rule: ExtractionRule): boolean {
+  const selector = rule.itemRootSelector;
+  if (!selector) return false;
+  const nodes = $(selector).toArray();
+  return nodes.length > 0 && nodes.every((node) => !$(node).is("a"));
+}
+
+type RepeatedCallToActionAnchor = { node: any; action: boolean };
+type RepeatedCallToActionTarget = { key: string; anchors: RepeatedCallToActionAnchor[] };
+
+/**
+ * An anchor list is a valid card layout when every anchor represents a
+ * distinct entry. It becomes unsafe only when the same URL has both an
+ * explicit action control and a non-action title link. That distinction keeps
+ * simple whole-card anchor sources on the fast automatic path.
+ */
+function hasRepeatedCallToActionTarget($: ReturnType<typeof load>, urls: ExtractionUrls, nodes: any[]): boolean {
+  return repeatedCallToActionTargets($, urls, nodes).length > 0;
+}
+
+function repeatedCallToActionTargets($: ReturnType<typeof load>, urls: ExtractionUrls, nodes: any[]): RepeatedCallToActionTarget[] {
+  if (nodes.length < 2 || !nodes.every((node) => $(node).is("a[href]"))) return [];
+  const targets = new Map<string, RepeatedCallToActionAnchor[]>();
+  for (const node of nodes) {
+    const anchor = $(node);
+    const url = publicDocumentUrl(anchor.attr("href"), urls.baseUrl);
+    const text = compactText(anchor.text(), 240);
+    if (!url || !text) continue;
+    const key = entryTargetKey(url);
+    const candidates = targets.get(key) ?? [];
+    candidates.push({ node, action: isCallToActionAnchor(anchor, text) });
+    targets.set(key, candidates);
+  }
+  return [...targets.entries()]
+    .filter(([, anchors]) => anchors.length > 1 && anchors.some((anchor) => anchor.action) && anchors.some((anchor) => !anchor.action))
+    .map(([key, anchors]) => ({ key, anchors }));
+}
+
+/**
+ * Utility-first sites often have no semantic `article` or `post-card` class.
+ * A repeated title/CTA target is still enough to identify a card: use a
+ * title/CTA pair's nearest bounded common ancestor, then retain it only if
+ * its CSS selector matches exactly those discovered roots. Other appearances
+ * of the same target in a sidebar do not invalidate the card pair. This is
+ * structural evidence, not a provider-specific selector or a recursive
+ * archive traversal.
+ */
+function repeatedAnchorCardGroups($: ReturnType<typeof load>, urls: ExtractionUrls): Array<[string, any[]]> {
+  const groups = new Map<string, any[]>();
+  for (const target of repeatedCallToActionTargets($, urls, $("a[href]").toArray())) {
+    const actions = target.anchors.filter((anchor) => anchor.action);
+    const titleLinks = target.anchors.filter((anchor) => !anchor.action);
+    for (const action of actions) {
+      for (const titleLink of titleLinks) {
+        const root = nearestRepeatedAnchorCardRoot($, urls, target.key, titleLink.node, action.node);
+        if (!root) continue;
+        for (const selector of boundedCardSelectors($, root)) {
+          const nodes = groups.get(selector) ?? [];
+          if (!nodes.includes(root)) nodes.push(root);
+          groups.set(selector, nodes);
+        }
+      }
+    }
+  }
+  return [...groups]
+    .filter(([selector, nodes]) => nodes.length >= 2 && selectorMatchesExactly($, selector, nodes))
+    .map(([selector, nodes]): [string, any[]] => [selector, nodes]);
+}
+
+function nearestRepeatedAnchorCardRoot(
+  $: ReturnType<typeof load>,
+  urls: ExtractionUrls,
+  target: string,
+  titleLink: any,
+  action: any
+): any | undefined {
+  let current = $(titleLink).parent();
+  for (let depth = 0; current.length && depth < 8; depth += 1, current = current.parent()) {
+    const node = current.get(0);
+    const tag = String(node?.tagName || node?.name || "").toLowerCase();
+    if (!node || ["html", "body", "main", "nav", "aside", "footer"].includes(tag)) break;
+    const anchors = current.find("a[href]").toArray();
+    if (!anchors.includes(titleLink) || !anchors.includes(action)) continue;
+    if (isTaxonomyOrNavigation($, node) || isRecruitmentContext($, node)) continue;
+    if (!cardContainsOnlyTarget($, urls, node, target)) continue;
+    if (scoreItem($, node) < 2.05) continue;
+    if (stableSelector($, node)) return node;
+  }
+  return undefined;
+}
+
+function cardContainsOnlyTarget($: ReturnType<typeof load>, urls: ExtractionUrls, root: any, expected: string): boolean {
+  const pageOrigin = new URL(urls.pageUrl).origin;
+  const targets = new Set<string>();
+  $(root).find("a[href]").each((_index, anchor) => {
+    const url = publicDocumentUrl($(anchor).attr("href"), urls.baseUrl);
+    if (!url || isTaxonomyUrl(url) || isRecruitmentUrl(url)) return;
+    try {
+      if (new URL(url).origin !== pageOrigin) return;
+      targets.add(entryTargetKey(url));
+    } catch {
+      // Invalid targets are excluded by entry extraction as well.
+    }
   });
+  return targets.size === 1 && targets.has(expected);
+}
+
+function boundedCardSelectors($: ReturnType<typeof load>, root: any): string[] {
+  const rootSelector = stableSelector($, root);
+  if (!rootSelector) return [];
+  const parent = $(root).parent().get(0);
+  const parentSelector = parent ? stableSelector($, parent) : undefined;
+  return parentSelector ? [`${parentSelector} > ${rootSelector}`, rootSelector] : [rootSelector];
+}
+
+function selectorMatchesExactly($: ReturnType<typeof load>, selector: string, nodes: any[]): boolean {
+  const selected = $(selector).toArray();
+  return selected.length === nodes.length && selected.every((node) => nodes.includes(node));
+}
+
+function isCallToActionAnchor(anchor: any, text: string): boolean {
+  if (isCallToActionText(text)) return true;
+  const identity = `${anchor.attr("class") || ""} ${anchor.attr("role") || ""} ${anchor.attr("aria-label") || ""} ${anchor.attr("title") || ""}`
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[^a-zA-Z0-9\u4e00-\u9fff]+/g, " ")
+    .toLowerCase();
+  return /(?:^|\s)(?:cta|action|read|more|detail(?:s)?|continue|view)(?:$|\s)/.test(identity)
+    || /(?:全文|原文|详情|更多|阅读)/.test(identity);
+}
+
+function isCallToActionText(value: string): boolean {
+  const text = value.trim().replace(/\s+/g, " ").toLowerCase();
+  return /^(?:read(?: more| article| post| full article)?|learn more|view(?: more| article| post| details?)?|article details?|details?|more|continue reading|阅读全文|阅读(?:全文|更多)?|查看(?:全文|原文|详情|更多)?|文章详情|继续阅读|原文|详情|更多)$/.test(text);
 }
 
 function stableSelector($: ReturnType<typeof load>, element: any): string | undefined {
@@ -504,11 +716,13 @@ function scoreItem($: ReturnType<typeof load>, element: any): number {
 }
 
 function extractUsingRule($: ReturnType<typeof load>, urls: ExtractionUrls, rule: ExtractionRule): RawEntry[] {
-  return $(rule.itemRootSelector!)
-    .toArray()
-    .slice(0, 500)
-    .map((element) => entryFromElement($, element, urls, rule))
-    .filter((item): item is RawEntry => Boolean(item));
+  return uniqueEntries(
+    $(rule.itemRootSelector!)
+      .toArray()
+      .slice(0, 500)
+      .map((element) => entryFromElement($, element, urls, rule))
+      .filter((item): item is RawEntry => Boolean(item))
+  );
 }
 
 function entryFromElement($: ReturnType<typeof load>, element: any, urls: ExtractionUrls, rule: ExtractionRule): RawEntry | undefined {

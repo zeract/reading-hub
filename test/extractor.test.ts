@@ -84,6 +84,118 @@ describe("generic-page extractor", () => {
     });
   });
 
+  it("repairs an automatic title-and-CTA anchor rule with a bounded card container", () => {
+    const html = `<main>
+      <div class="w-full"><section class="shadow">
+        <h2><a href="/article/one">短标题一</a></h2>
+        <time datetime="2026-09-01">2026-09-01</time>
+        <p class="excerpt">第一篇文章的摘要足够长，应该从同一张卡片中保留，而不是被操作链接覆盖。</p>
+        <a class="read-more" href="/article/one?utm_source=card">文章详情</a>
+      </section></div>
+      <div class="w-full"><section class="shadow">
+        <h2><a href="/article/two">短标题二</a></h2>
+        <time datetime="2026-09-02">2026-09-02</time>
+        <p class="excerpt">第二篇文章的摘要同样足够长，用来验证通用卡片提取不会依赖站点名称或专有类名。</p>
+        <a class="read-more" href="/article/two?utm_source=card">文章详情</a>
+      </section></div>
+      <aside class="related"><a href="/article/one">短标题一</a></aside>
+    </main>`;
+    const legacyAutomatic = extractGenericPage(html, "https://example.com/", {
+      version: 1,
+      selection: "automatic",
+      autoRepairRevision: AUTOMATIC_RULE_REVISION - 1,
+      itemRootSelector: 'a[href*="/article/"]'
+    });
+    const freshAutomatic = extractGenericPage(html, "https://example.com/");
+    const manual = extractGenericPage(html, "https://example.com/", {
+      version: 1,
+      selection: "manual",
+      itemRootSelector: 'a[href*="/article/"]'
+    });
+
+    expect(legacyAutomatic).toMatchObject({
+      fallback: false,
+      rule: {
+        itemRootSelector: "div.w-full > section.shadow",
+        selection: "automatic",
+        autoRepairRevision: AUTOMATIC_RULE_REVISION
+      },
+      entries: [
+        {
+          title: "短标题一",
+          url: "https://example.com/article/one",
+          publishedAt: Date.UTC(2026, 8, 1),
+          summary: "第一篇文章的摘要足够长，应该从同一张卡片中保留，而不是被操作链接覆盖。"
+        },
+        {
+          title: "短标题二",
+          url: "https://example.com/article/two",
+          publishedAt: Date.UTC(2026, 8, 2),
+          summary: "第二篇文章的摘要同样足够长，用来验证通用卡片提取不会依赖站点名称或专有类名。"
+        }
+      ]
+    });
+    expect(freshAutomatic.rule?.itemRootSelector).toBe("div.w-full > section.shadow");
+    // A user-confirmed selector retains ownership, but duplicate URL merging
+    // still prevents its CTA from overwriting the genuine short title.
+    expect(manual).toMatchObject({
+      rule: { itemRootSelector: 'a[href*="/article/"]', selection: "manual" },
+      entries: [
+        { title: "短标题一", url: "https://example.com/article/one" },
+        { title: "短标题二", url: "https://example.com/article/two" }
+      ]
+    });
+    expect(manual.entries).toHaveLength(2);
+  });
+
+  it("retains an automatic whole-card anchor rule when each target is distinct", () => {
+    const html = `<main>
+      <a class="research-link" href="/articles/one"><time datetime="2026-09-01">Sep 1, 2026</time><h2>Short one</h2><p>A substantial summary keeps this whole-card anchor identifiable as an article.</p></a>
+      <a class="research-link" href="/articles/two"><time datetime="2026-09-02">Sep 2, 2026</time><h2>Short two</h2><p>A second substantial summary confirms that these are two independent article cards.</p></a>
+    </main>`;
+    const result = extractGenericPage(html, "https://example.com/", {
+      version: 1,
+      selection: "automatic",
+      itemRootSelector: "a.research-link"
+    });
+
+    expect(result).toMatchObject({
+      fallback: false,
+      rule: { itemRootSelector: "a.research-link", selection: "automatic" },
+      entries: [
+        { title: "Short one", url: "https://example.com/articles/one" },
+        { title: "Short two", url: "https://example.com/articles/two" }
+      ]
+    });
+  });
+
+  it("does not widen a repaired bare-anchor rule into a different card target set", () => {
+    const card = (path: string, title: string, date: string) => `<div class="w-full"><section class="shadow">
+      <h2><a href="${path}">${title}</a></h2><time datetime="${date}">${date}</time>
+      <p class="excerpt">这是足够长的摘要，用来表明它具有文章卡片的结构证据。</p>
+      <a class="read-more" href="${path}?utm_source=card">文章详情</a>
+    </section></div>`;
+    const html = `<main>
+      ${card("/article/one", "短标题一", "2026-09-01")}
+      ${card("/article/two", "短标题二", "2026-09-02")}
+      <section class="related">${card("/related/three", "相关短标题", "2026-09-03")}</section>
+    </main>`;
+    const result = extractGenericPage(html, "https://example.com/", {
+      version: 1,
+      selection: "automatic",
+      itemRootSelector: 'a[href*="/article/"]'
+    });
+
+    expect(result).toMatchObject({
+      rule: { itemRootSelector: 'a[href*="/article/"]', selection: "automatic" },
+      entries: [
+        { url: "https://example.com/article/one", title: "短标题一" },
+        { url: "https://example.com/article/two", title: "短标题二" }
+      ]
+    });
+    expect(result.entries.map((entry) => entry.url)).not.toContain("https://example.com/related/three");
+  });
+
   it("uses h5 headlines and substantial excerpts inside a whole-card link", () => {
     const result = extractGenericPage(
       `<main>
