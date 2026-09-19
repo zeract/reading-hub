@@ -132,7 +132,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
       const result = await window.reader.readEntry(entry.id, request.id);
       if (!request.isCurrent()) return;
       if (result.kind === "article") { loadedEntryId.current = entry.id; setArticle(result.article); }
-      else setEmbedded(true);
+      else if (result.kind === "embedded") setEmbedded(true);
     } catch (reason) {
       if (request.isCurrent()) setError(errorMessage(reason));
     } finally {
@@ -277,8 +277,9 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
     try {
       const next = await window.reader.readEntryLanguageVariant(entry.id, url, request.id, inlineLanguage);
       if (!request.isCurrent()) return;
+      if (next.kind === "cancelled") return;
       window.getSelection()?.removeAllRanges();
-      setArticle(next);
+      setArticle(next.article);
       setEmbedded(false);
       setImagePreview(undefined);
       setTextSelection(undefined);

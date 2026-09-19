@@ -1,4 +1,4 @@
-import { throwIfAborted } from "./cancellation";
+import { RequestAbortedError, throwIfAborted } from "./cancellation";
 
 /** The event surface needed from a WebContents; no Electron dependency in the scope. */
 export interface RequestOwner {
@@ -7,6 +7,18 @@ export interface RequestOwner {
   removeListener(event: "destroyed", listener: () => void): unknown;
 }
 type OwnerRequests = { controllers: Set<AbortController>; named: Map<string, AbortController>; onDestroyed(): void };
+
+/**
+ * A cancellation initiated by a renderer lifecycle, rather than an operation
+ * timeout or an ordinary failure. IPC endpoints can safely turn only this
+ * distinguished outcome into a successful, typed cancellation response.
+ */
+export class WindowRequestCancelledError extends RequestAbortedError {
+  constructor(message = "请求已取消。") {
+    super(message);
+    this.name = "WindowRequestCancelledError";
+  }
+}
 
 /**
  * Cancel foreground work with its owning window or the IPC shutdown drain.
@@ -18,23 +30,31 @@ export class WindowRequestScope {
   private closing = false;
 
   async run<T>(owner: RequestOwner, operation: (signal: AbortSignal) => Promise<T>, requestId?: string): Promise<T> {
-    if (this.closing) throw new Error("应用正在退出，操作已取消。");
-    if (owner.isDestroyed()) throw new Error("发起请求的窗口已关闭，操作已取消。");
+    if (this.closing) throw new WindowRequestCancelledError("应用正在退出，操作已取消。");
+    if (owner.isDestroyed()) throw new WindowRequestCancelledError("发起请求的窗口已关闭，操作已取消。");
     const controller = new AbortController();
     let group = this.owners.get(owner);
     if (requestId !== undefined && group?.named.has(requestId)) throw new Error("请求标识已在使用，请重新发起请求。");
     if (!group) {
-      group = { controllers: new Set([controller]), named: new Map(), onDestroyed: () => this.cancelOwner(owner, new Error("发起请求的窗口已关闭，操作已取消。")) };
+      group = { controllers: new Set([controller]), named: new Map(), onDestroyed: () => this.cancelOwner(owner, new WindowRequestCancelledError("发起请求的窗口已关闭，操作已取消。")) };
       this.owners.set(owner, group);
       owner.once("destroyed", group.onDestroyed);
     } else group.controllers.add(controller);
     if (requestId !== undefined) group.named.set(requestId, controller);
     try {
-      if (owner.isDestroyed()) this.cancelOwner(owner, new Error("发起请求的窗口已关闭，操作已取消。"));
+      if (owner.isDestroyed()) this.cancelOwner(owner, new WindowRequestCancelledError("发起请求的窗口已关闭，操作已取消。"));
       throwIfAborted(controller.signal);
       const result = await operation(controller.signal);
       throwIfAborted(controller.signal);
       return result;
+    } catch (error) {
+      // A fetch may reject with its own AbortError after this scope cancels it.
+      // The lifecycle reason wins so reader IPC can classify it without hiding
+      // genuine network or extraction failures from a still-live request.
+      if (controller.signal.aborted && controller.signal.reason instanceof WindowRequestCancelledError) {
+        throw controller.signal.reason;
+      }
+      throw error;
     } finally {
       group.controllers.delete(controller);
       if (requestId !== undefined && group.named.get(requestId) === controller) group.named.delete(requestId);
@@ -48,12 +68,12 @@ export class WindowRequestScope {
     const controller = group?.named.get(requestId);
     if (!controller) return;
     group!.named.delete(requestId);
-    controller.abort(new Error("请求已取消。"));
+    controller.abort(new WindowRequestCancelledError());
   }
 
   close(): void {
     this.closing = true;
-    for (const owner of this.owners.keys()) this.cancelOwner(owner, new Error("应用正在退出，操作已取消。"));
+    for (const owner of this.owners.keys()) this.cancelOwner(owner, new WindowRequestCancelledError("应用正在退出，操作已取消。"));
   }
 
   private cancelOwner(owner: RequestOwner, reason: Error): void {

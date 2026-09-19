@@ -4,9 +4,9 @@ import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { awaitWithAbort, combineAbortSignals, throwIfAborted } from "./cancellation";
 import { readOpmlFile } from "./opml-file";
-import { WindowRequestScope } from "./window-request-scope";
+import { WindowRequestCancelledError, WindowRequestScope } from "./window-request-scope";
 import { assertPublicUrl } from "../shared/url";
-import type { AiStreamEvent, AiStreamRequest, OpmlImportResult } from "../shared/types";
+import type { AiStreamEvent, AiStreamRequest, OpmlImportResult, ReaderReadCancelledResult } from "../shared/types";
 import { sourceFaviconCandidate } from "../shared/source-icon";
 import type { ApplicationServices } from "./app-services";
 import {
@@ -150,7 +150,7 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
   handle(IPC_CHANNELS.entry.readContent, (event, entryId: unknown, rawRequestId: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));
     const requestId = requireText(rawRequestId, "正文请求标识无效。", 160);
-    return foregroundRequests.run(event.sender, async (signal) => {
+    return readerRequestResult(foregroundRequests.run(event.sender, async (signal) => {
       try {
         return { kind: "article" as const, article: await articles.read(entry, database.getSource(entry.sourceId), { signal }) };
       } catch (error) {
@@ -159,15 +159,18 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
         await inAppArticleViewer.open(entry.url, entry.title, signal);
         return { kind: "embedded" as const };
       }
-    }, `read:${requestId}`);
+    }, `read:${requestId}`));
   });
   handle(IPC_CHANNELS.entry.readLanguageVariant, (event, entryId: unknown, rawUrl: unknown, rawRequestId: unknown, rawInlineLanguage: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));
     const url = requireText(rawUrl, "语言版本地址无效，请重新打开文章后再试。", 2_000);
     const requestId = requireText(rawRequestId, "正文请求标识无效。", 160);
-    return foregroundRequests.run(event.sender, (signal) => articles.readLanguageVariant(
-      entry, database.getSource(entry.sourceId), url, { signal, ...(rawInlineLanguage === undefined ? {} : { inlineLanguage: requireText(rawInlineLanguage, "语言版本标识无效。", 32) }) }
-    ), `read:${requestId}`);
+    return readerRequestResult(foregroundRequests.run(event.sender, async (signal) => ({
+      kind: "article" as const,
+      article: await articles.readLanguageVariant(
+        entry, database.getSource(entry.sourceId), url, { signal, ...(rawInlineLanguage === undefined ? {} : { inlineLanguage: requireText(rawInlineLanguage, "语言版本标识无效。", 32) }) }
+      )
+    }), `read:${requestId}`));
   });
   handle(IPC_CHANNELS.entry.cancelRead, (event, rawRequestId: unknown) => {
     const requestId = requireText(rawRequestId, "正文请求标识无效。", 160);
@@ -308,6 +311,20 @@ function findEntry(database: ApplicationServices["database"], id: string) {
   const entry = database.getEntry(id);
   if (!entry) throw new Error("这篇内容已不存在。请刷新列表后重试。");
   return entry;
+}
+
+/**
+ * Electron logs every rejected ipcMain.handle promise. A reader lifecycle
+ * cancellation is expected during navigation, StrictMode cleanup, and dev
+ * process restarts, so expose it as a narrow successful result instead.
+ */
+async function readerRequestResult<T>(operation: Promise<T>): Promise<T | ReaderReadCancelledResult> {
+  try {
+    return await operation;
+  } catch (error) {
+    if (error instanceof WindowRequestCancelledError) return { kind: "cancelled" };
+    throw error;
+  }
 }
 
 async function startAiStream(

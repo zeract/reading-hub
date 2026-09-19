@@ -80,6 +80,15 @@ describe("successful reading lifecycle", () => {
     await render(); await render({ ...card, id: "two" });
     expect(container.textContent).not.toContain("cancel bridge closing");
   });
+  it("does not show an error, restricted-view fallback, or reading state for a current cancelled read", async () => {
+    read.mockResolvedValue({ kind: "cancelled" });
+    await render();
+    expect(container.querySelector(".reader-loading")).toBeNull();
+    expect(container.querySelector(".reader-article")).toBeNull();
+    expect(container.querySelector(".reader-failure")).toBeNull();
+    expect(container.querySelector(".reader-embedded")).toBeNull();
+    expect(update).not.toHaveBeenCalled();
+  });
   it.each(["failure", "embedded"])("leaves %s attempts unread", async (mode) => {
     if (mode === "failure") read.mockRejectedValue(new Error("offline"));
     else read.mockResolvedValue({ kind: "embedded" });
@@ -107,11 +116,27 @@ describe("successful reading lifecycle", () => {
   });
 });
 
+it("does not replace the current language or show an error when its read is cancelled", async () => {
+  const variants = [
+    { language: "en", label: "English", url: card.url },
+    { language: "zh", label: "中文", url: "https://example.com/zh" }
+  ];
+  read.mockResolvedValue({ kind: "article", article: { ...article, languageVariants: variants } });
+  const language = vi.fn(async () => ({ kind: "cancelled" }));
+  window.reader.readEntryLanguageVariant = language;
+  await render();
+  const readsBeforeSwitch = update.mock.calls.length;
+  await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>(".reader-language-switcher button")).find((button) => button.textContent === "中文")!.click());
+  expect(container.textContent).toContain("Loaded article content");
+  expect(container.querySelector(".reader-language-error")).toBeNull();
+  expect(update).toHaveBeenCalledTimes(readsBeforeSwitch);
+});
+
 
 it("switches between same-URL bodies with only the selected language pressed", async () => {
   const versions = ["zh", "en"].map(language => ({ url: card.url, language, inlineLanguage: language, label: language === "zh" ? "中文" : "English" }));
   read.mockResolvedValue({ kind: "article", article: { ...article, activeLanguage: "zh", languageVariants: versions } });
-  const language = vi.fn(async (_id, _url, _request, inlineLanguage) => ({ ...article, activeLanguage: inlineLanguage, languageVariants: versions, contentHtml: "<p>Switched translation</p>" }));
+  const language = vi.fn(async (_id, _url, _request, inlineLanguage) => ({ kind: "article" as const, article: { ...article, activeLanguage: inlineLanguage, languageVariants: versions, contentHtml: "<p>Switched translation</p>" } }));
   window.reader.readEntryLanguageVariant = language;
   await render();
   const buttons = () => [...container.querySelectorAll<HTMLButtonElement>(".reader-language-switcher button")];
@@ -130,7 +155,7 @@ it("shows a sole English alternative while hiding all other languages", async ()
     { url: "https://example.com/en", language: "en", label: "English" },
     { url: "https://example.com/ja", language: "ja", label: "日本語" }
   ] } });
-  const language = vi.fn(async () => ({ ...article, url: "https://example.com/en", activeLanguage: "en" }));
+  const language = vi.fn(async () => ({ kind: "article" as const, article: { ...article, url: "https://example.com/en", activeLanguage: "en" } }));
   window.reader.readEntryLanguageVariant = language;
   await render();
   const buttons = container.querySelectorAll<HTMLButtonElement>(".reader-language-switcher button");

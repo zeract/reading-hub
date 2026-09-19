@@ -8,6 +8,7 @@ vi.mock("electron", () => electron);
 const network = vi.hoisted(() => ({ fetch: vi.fn() }));
 vi.mock("../src/main/network", () => ({ chromiumFetch: network.fetch }));
 import { ArticleReader } from "../src/main/article-reader";
+import { RequestAbortedError } from "../src/main/cancellation";
 import { PublicHttpClient } from "../src/main/http";
 import { registerIpcHandlers } from "../src/main/ipc-handlers";
 import { IPC_CHANNELS } from "../src/shared/ipc";
@@ -35,17 +36,17 @@ function fixture(read: (...args: any[]) => Promise<unknown>) {
 }
 beforeEach(() => { electron.handlers.clear(); network.fetch.mockReset(); });
 describe("reader request lifetime", () => {
-  it("propagates explicit cancellation through the actual reader and HTTP header wait", async () => {
+  it("returns an explicit cancellation result through the actual reader and HTTP header wait", async () => {
     const http = new PublicHttpClient({ assertAllowed: vi.fn().mockResolvedValue(undefined) } as never);
     const reader = new ArticleReader(http, { render: vi.fn() });
     const run = fixture((entry, source, options) => reader.read(entry, source, options));
     let finish!: (response: Response) => void;
     network.fetch.mockImplementation(() => new Promise<Response>((resolve) => { finish = resolve; }));
-    const outcome = run.invoke(IPC_CHANNELS.entry.readContent).catch((error) => error);
+    const outcome = run.invoke(IPC_CHANNELS.entry.readContent);
     try {
       await vi.waitFor(() => expect(network.fetch).toHaveBeenCalledTimes(1));
       await electron.handlers.get(IPC_CHANNELS.entry.cancelRead)!({ sender: run.sender }, "fixture-read-request");
-      expect((await outcome).message).toContain("已取消");
+      expect(await outcome).toEqual({ kind: "cancelled" });
       expect(network.fetch.mock.calls[0][1].signal.aborted).toBe(true);
       const cancel = vi.fn();
       finish(new Response(new ReadableStream({ cancel }, { highWaterMark: 0 })));
@@ -57,10 +58,10 @@ describe("reader request lifetime", () => {
   it("does not open a late robots fallback after an explicit read cancellation", async () => {
     let fail!: (error: Error) => void;
     const run = fixture(() => new Promise((_resolve, reject) => { fail = reject; }));
-    const outcome = run.invoke(IPC_CHANNELS.entry.readContent).catch((error) => error);
+    const outcome = run.invoke(IPC_CHANNELS.entry.readContent);
     await electron.handlers.get(IPC_CHANNELS.entry.cancelRead)!({ sender: run.sender }, "fixture-read-request");
     fail(new RobotsDisallowedError());
-    expect((await outcome).message).toContain("已取消");
+    expect(await outcome).toEqual({ kind: "cancelled" });
     expect(run.viewer.open).not.toHaveBeenCalled();
     await run.drain();
   });
@@ -73,10 +74,10 @@ describe("reader request lifetime", () => {
     });
     const other = new Sender(); other.id = 2;
     const args = channel === IPC_CHANNELS.entry.readContent ? ["entry", "same"] : ["entry", "https://example.com/alternate", "same"];
-    const first = electron.handlers.get(channel)!({ sender: run.sender }, ...args).catch((error) => error);
+    const first = electron.handlers.get(channel)!({ sender: run.sender }, ...args);
     const second = electron.handlers.get(channel)!({ sender: other }, ...args).catch((error) => error);
     await electron.handlers.get(IPC_CHANNELS.entry.cancelRead)!({ sender: run.sender }, "same");
-    expect((await first).message).toContain("已取消");
+    expect(await first).toEqual({ kind: "cancelled" });
     expect(signals.map((signal) => signal.aborted)).toEqual([true, false]);
     await run.drain(); await second;
   });
@@ -93,13 +94,12 @@ describe("reader request lifetime", () => {
     await run.drain(); await pending;
   });
 
-  it("does not open a late robots fallback after its window is destroyed", async () => {
+  it("returns cancellation instead of opening a late robots fallback after its window is destroyed", async () => {
     let finish!: () => void;
     const run = fixture(async () => new Promise((_resolve, reject) => { finish = () => reject(new RobotsDisallowedError()); }));
-    const pending = run.invoke(IPC_CHANNELS.entry.readContent);
-    const outcome = pending.catch((error) => error);
+    const outcome = run.invoke(IPC_CHANNELS.entry.readContent);
     run.sender.destroy(); finish();
-    expect((await outcome).message).toContain("窗口已关闭");
+    expect(await outcome).toEqual({ kind: "cancelled" });
     expect(run.viewer.open).not.toHaveBeenCalled();
     await run.drain();
   });
@@ -111,7 +111,20 @@ describe("reader request lifetime", () => {
     finally { await run.drain(); }
   });
 
-  it.each([IPC_CHANNELS.entry.readContent, IPC_CHANNELS.entry.readLanguageVariant, IPC_CHANNELS.entry.loadImage, IPC_CHANNELS.source.loadIcon])("aborts pending %s work when IPC shuts down", async (channel) => {
+  it.each([IPC_CHANNELS.entry.readContent, IPC_CHANNELS.entry.readLanguageVariant])("returns cancellation for pending %s work when IPC shuts down", async (channel) => {
+    let signal!: AbortSignal;
+    const run = fixture(async (...args) => {
+      signal = args.at(-1).signal;
+      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    });
+    const outcome = run.invoke(channel);
+    await run.drain();
+    expect(signal.aborted).toBe(true);
+    expect(await outcome).toEqual({ kind: "cancelled" });
+    expect(run.sender.listenerCount("destroyed")).toBe(0);
+  });
+
+  it.each([IPC_CHANNELS.entry.loadImage, IPC_CHANNELS.source.loadIcon])("continues to reject pending %s work when IPC shuts down", async (channel) => {
     let signal!: AbortSignal;
     const run = fixture(async (...args) => {
       signal = args.at(-1).signal;
@@ -124,13 +137,13 @@ describe("reader request lifetime", () => {
     expect(run.sender.listenerCount("destroyed")).toBe(0);
   });
 
-  it("rejects a late successful read after the owner closes", async () => {
+  it("returns cancellation for a late successful read after the owner closes", async () => {
     let finish!: (value: unknown) => void;
     const run = fixture(async () => new Promise((resolve) => { finish = resolve; }));
-    const outcome = run.invoke(IPC_CHANNELS.entry.readContent).catch((error) => error);
+    const outcome = run.invoke(IPC_CHANNELS.entry.readContent);
     run.sender.destroy();
     finish({ title: "Late article" });
-    expect((await outcome).message).toContain("窗口已关闭");
+    expect(await outcome).toEqual({ kind: "cancelled" });
     await run.drain();
   });
 
@@ -140,6 +153,18 @@ describe("reader request lifetime", () => {
     expect(await run.invoke(IPC_CHANNELS.entry.readContent)).toEqual({ kind: "embedded" });
     expect(run.viewer.open).toHaveBeenCalledWith("https://example.com/post", "Fixture", signal);
     expect(signal.aborted).toBe(false);
+    await run.drain();
+  });
+
+  it.each([IPC_CHANNELS.entry.readContent, IPC_CHANNELS.entry.readLanguageVariant])("keeps a genuine %s failure as a rejection", async (channel) => {
+    const run = fixture(async () => { throw new Error("fixture reader failure"); });
+    await expect(run.invoke(channel)).rejects.toThrow("fixture reader failure");
+    await run.drain();
+  });
+
+  it.each([IPC_CHANNELS.entry.readContent, IPC_CHANNELS.entry.readLanguageVariant])("does not hide an unscoped timeout-shaped %s failure as cancellation", async (channel) => {
+    const run = fixture(async () => { throw new RequestAbortedError("fixture reader timeout"); });
+    await expect(run.invoke(channel)).rejects.toThrow("fixture reader timeout");
     await run.drain();
   });
 
@@ -161,10 +186,11 @@ describe("reader request lifetime", () => {
 });
 
 
-it("validates inline language input and forwards it with a scoped cancellation signal", async () => {
-  const run = fixture(async () => ({}));
+it("validates inline language input, forwards it with a scoped cancellation signal, and wraps a completed article", async () => {
+  const article = { entryId: "entry", title: "中文版本", url: "https://example.com/post", renderProfile: "standard" as const };
+  const run = fixture(async () => article);
   const handler = electron.handlers.get(IPC_CHANNELS.entry.readLanguageVariant)!;
-  await handler({ sender: run.sender }, "entry", "https://example.com/post", "inline-request", "en");
+  expect(await handler({ sender: run.sender }, "entry", "https://example.com/post", "inline-request", "en")).toEqual({ kind: "article", article });
   expect(run.articles.readLanguageVariant).toHaveBeenCalledWith(expect.anything(), expect.anything(), "https://example.com/post", expect.objectContaining({ inlineLanguage: "en", signal: expect.any(AbortSignal) }));
   for (const invalid of [{ selector: "body" }, 12, "x".repeat(33)]) {
     await expect(handler({ sender: run.sender }, "entry", "https://example.com/post", "invalid-inline", invalid)).rejects.toThrow("语言版本标识无效");

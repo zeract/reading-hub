@@ -537,10 +537,17 @@ export type AiStreamEvent =
   | { type: "complete"; requestId: string; answer: AiAnswer }
   | { type: "error"; requestId: string; message: string };
 
+/** A fully sanitised article returned by the local reader. */
+export type ReaderArticleResult = { kind: "article"; article: ReaderArticle };
+
+/** A reader lifecycle, window shutdown, or entry replacement cancelled the request before it settled. */
+export type ReaderReadCancelledResult = { kind: "cancelled" };
+
 /** Result of opening an entry in the app. Some sites forbid automated extraction. */
-export type ArticleReadResult =
-  | { kind: "article"; article: ReaderArticle }
-  | { kind: "embedded" };
+export type ArticleReadResult = ReaderArticleResult | ReaderReadCancelledResult | { kind: "embedded" };
+
+/** Language switches may return an article or be superseded, but never open an embedded view. */
+export type ReaderLanguageReadResult = ReaderArticleResult | ReaderReadCancelledResult;
 
 export interface ProbeResult {
   kind: SourceKind;

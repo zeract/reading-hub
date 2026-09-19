@@ -95,7 +95,7 @@ describe("reader image lifetime", () => {
       { language: "en", label: "English", url: card.url }, { language: "zh", label: "中文", url: "https://example.com/zh" }
     ] };
     vi.mocked(window.reader.readEntry).mockResolvedValue({ kind: "article", article: first });
-    window.reader.readEntryLanguageVariant = vi.fn(async () => ({ ...first, url: "https://example.com/zh" }));
+    window.reader.readEntryLanguageVariant = vi.fn(async () => ({ kind: "article", article: { ...first, url: "https://example.com/zh" } }));
     load.mockImplementation(() => new Promise<string>(() => undefined));
     await render(); const old = await failImage(".article-body img");
     await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>(".reader-language-switcher button")).find((button) => button.textContent === "中文")!.click());
