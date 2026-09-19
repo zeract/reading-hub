@@ -101,7 +101,18 @@ function removeDuplicateImagesIn($: ReturnType<typeof load>, container: any, pag
  * Preserve the body and only supplement image-free articles after sanitization.
  */
 export function selectReaderCover(contentHtml: string, candidate?: string): string | undefined {
-  return candidate && !load(contentHtml)("img, video").length ? candidate : undefined;
+  return candidate && !isPlaceholderCover(candidate) && !load(contentHtml)("img, video").length ? candidate : undefined;
+}
+
+/** Notion uses plain colour assets as a social-card fallback, not as artwork. */
+function isPlaceholderCover(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.hostname === "notion.so" || url.hostname.endsWith(".notion.so"))
+      && /\/images\/page-cover\/solid_[a-z0-9_-]+\.(?:png|jpe?g|webp)$/i.test(url.pathname);
+  } catch {
+    return false;
+  }
 }
 
 function imageUrlKey(value: string | undefined): string | undefined {

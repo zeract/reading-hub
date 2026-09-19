@@ -1,4 +1,5 @@
 import {normalizeKeyValueGrids} from "./reader-key-values";
+import { removeLeadingPagePropertyPanels } from "./reader-page-properties";
 import {normalizePreformattedCode} from "./reader-code";
 import {articleDocumentFromHtml} from "./article-document";
 import { hydrateLazyImages, imageSource, selectReaderCover } from "./reader-media";
@@ -341,6 +342,11 @@ function prepareReaderArticle(html: string, pageUrl: string, entry: Entry, inlin
   let $ = load(html);
   normalizePreformattedCode($);
   normalizeKeyValueGrids($);
+  // Reader View serialises selected nodes into a fresh fragment and can drop
+  // the class/attribute evidence that distinguishes a CMS property panel from
+  // prose. Remove a proven leading panel while the original document still
+  // carries that evidence, then keep the same guard in the final sanitizer.
+  removeLeadingPagePropertyPanels($, $("article, [itemprop='articleBody'], .article-content, .article-body, .entry-content, .post-content, .post-body, main"));
   html = $.html();
   const resourceBaseUrl = htmlDocumentBaseUrl($, pageUrl);
   const globalMathMacros = collectGlobalMathMacros($);
@@ -501,6 +507,7 @@ function removeReaderNoise(
   pageUrl: string,
   options: { preserveFormulaAssets?: boolean } = {}
 ): void {
+  removeLeadingPagePropertyPanels($, content);
   normalizeReaderLayout($, content, pageUrl);
   preserveZhihuInlineAnnotations($, content, pageUrl);
   content.find(BASE_NOISE_SELECTOR).each((_index: number, node: any) => {

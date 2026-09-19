@@ -1073,6 +1073,16 @@ describe("article reader extraction", () => {
     expect(load(result?.article.contentHtml || "")("img")).toHaveLength(0);
   });
 
+  it("does not use a Notion plain-colour social fallback as a reader cover", () => {
+    const result = extractReaderArticle(
+      `<html><head><meta property="og:image" content="https://www.notion.so/images/page-cover/solid_beige.png"></head><body><article><p>${"Synthetic article text. ".repeat(35)}</p></article></body></html>`,
+      entry.url,
+      entry
+    );
+
+    expect(result?.article.coverImageUrl).toBeUndefined();
+  });
+
   it("keeps the highest-resolution WordPress image when noscript and lazy variants coexist", () => {
     const image = "https://developer-blogs.nvidia.com/wp-content/uploads/2020/11/Figure1-625x125.png";
     const originalImage = "https://developer-blogs.nvidia.com/wp-content/uploads/2020/11/Figure1.png";
@@ -1730,5 +1740,44 @@ describe("article reader extraction", () => {
     expect(result?.article.title).toBe("重复的标题");
     expect(result?.article.contentHtml).not.toContain("重复的标题");
     expect(result?.article.contentHtml).not.toContain("6246位读者");
+  });
+
+  it("removes a leading CMS page-property panel instead of turning its fields into reader paragraphs", () => {
+    const prose = "作者正文必须从第一个真实内容块开始保留，并且完整段落不能因页面属性面板而被删除。 ".repeat(28);
+    const result = extractReaderArticle(
+      `<article id="article-wrapper"><main class="cms-page">
+        <div class="cms-page-metadata"><div class="cms-collection-row">
+          <div class="cms-row-property"><div class="cms-column-title-body">type</div><div class="cms-row-value">Post</div></div>
+          <div class="cms-row-property"><div class="cms-column-title-body">status</div><div class="cms-row-value">Published</div></div>
+          <div class="cms-row-property"><div class="cms-column-title-body">slug</div><div class="cms-row-value">rec-tech-taste</div></div>
+          <div class="cms-row-property"><div class="cms-column-title-body">summary</div><div class="cms-row-value">页面摘要副本，不是正文块。</div></div>
+        </div></div>
+        <div class="cms-text">${prose}</div>
+      </main></article>`,
+      "https://example.com/article/rec-tech-taste",
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(content).toContain("作者正文必须从第一个真实内容块开始保留");
+    expect(content).not.toContain(">type<");
+    expect(content).not.toContain(">Post<");
+    expect(content).not.toContain(">status<");
+    expect(content).not.toContain(">Published<");
+    expect(content).not.toContain("rec-tech-taste");
+    expect(content).not.toContain("页面摘要副本");
+  });
+
+  it("keeps an author-defined key-value grid that lacks page-property evidence", () => {
+    const result = extractReaderArticle(
+      `<article><div class="project-metadata"><div style="display:grid;grid-template-columns: 8em 1fr"><strong>数据集</strong><div>公开基准</div></div><div style="display:grid;grid-template-columns: 8em 1fr"><strong>代码</strong><div>可复现实验</div></div></div><p>${"正文内容 ".repeat(80)}</p></article>`,
+      entry.url,
+      entry
+    );
+
+    const content = result?.article.contentHtml || "";
+    expect(content).toContain("<table>");
+    expect(content).toContain("公开基准");
+    expect(content).toContain("可复现实验");
   });
 });
