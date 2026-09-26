@@ -69,6 +69,15 @@ const SCIENTIFIC_CONTENT_SELECTORS = [
   ...CONTENT_SELECTORS
 ];
 
+// Hugging Face places the article heading, byline, vote controls and author
+// cards inside `.blog-content`, ahead of a final div containing the authored
+// Markdown. The generic named-body selector is therefore still too wide.
+const HUGGING_FACE_CONTENT_SELECTORS = [
+  { selector: ".blog-content > div:last-child", priority: 11 },
+  { selector: ".blog-content", priority: 9 },
+  ...CONTENT_SELECTORS
+];
+
 const BASE_NOISE_SELECTOR = [
   "script",
   "style",
@@ -358,7 +367,7 @@ function prepareReaderArticle(html: string, pageUrl: string, entry: Entry, inlin
   const languageVariants = inline ? [...inline.variants, ...discoverReaderLanguageVariants($, pageUrl, resourceBaseUrl).filter(item => !sameCanonicalUrl(item.url, pageUrl))] : discoverReaderLanguageVariants($, pageUrl, resourceBaseUrl);
   const activeLanguage = inline?.activeLanguage || languageVariants.find((variant) => sameCanonicalUrl(variant.url, pageUrl))?.language;
   const content = inline ? { html: inline.html, title: undefined, author: undefined, publishedAt: undefined } : answerHtml ? pickVerifiedZhihuAnswerContent($, renderProfile, pageUrl)
-    : chooseContentCandidate(pickContentRoot($, renderProfile, pageUrl), extractReadabilityContent(html, pageUrl));
+    : chooseContentCandidate(pickContentRoot($, renderProfile, pageUrl), extractReadabilityContent(html, pageUrl), isHuggingFaceBlogUrl(pageUrl));
   if (!content) return undefined;
   const contentDocument = load(`<article id="reader-selected-content">${content.html}</article>`);
   const selectedContent = contentDocument("#reader-selected-content");
@@ -622,12 +631,15 @@ function pickVerifiedZhihuAnswerContent($: ReturnType<typeof load>, profile: Rea
 
 function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfile, pageUrl: string, options: ContentRootOptions = {}): ContentCandidate | undefined {
   const prefersZhihuRichContent = isZhihuContentUrl(pageUrl);
+  const prefersHuggingFaceBlogBody = isHuggingFaceBlogUrl(pageUrl);
   const candidates = new Map<any, number>();
   const selectors = options.selectors ?? (profile === "scientific"
     ? SCIENTIFIC_CONTENT_SELECTORS
     : prefersZhihuRichContent
       ? ZHIHU_CONTENT_SELECTORS
-      : CONTENT_SELECTORS);
+      : prefersHuggingFaceBlogBody
+        ? HUGGING_FACE_CONTENT_SELECTORS
+        : CONTENT_SELECTORS);
   for (const { selector, priority } of selectors) {
     $(selector).each((_index, node) => {
       candidates.set(node, Math.max(candidates.get(node) || 0, priority));
@@ -676,6 +688,15 @@ function isZhihuContentUrl(rawUrl: string): boolean {
   try {
     const host = new URL(rawUrl).hostname.toLowerCase();
     return host === "zhihu.com" || host.endsWith(".zhihu.com");
+  } catch {
+    return false;
+  }
+}
+
+function isHuggingFaceBlogUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    return url.hostname.toLowerCase() === "huggingface.co" && url.pathname.startsWith("/blog/");
   } catch {
     return false;
   }
@@ -824,9 +845,13 @@ function extractReadabilityContent(html: string, pageUrl: string): ContentCandid
   }
 }
 
-function chooseContentCandidate(semantic: ContentCandidate | undefined, readable: ContentCandidate | undefined): ContentCandidate | undefined {
+function chooseContentCandidate(semantic: ContentCandidate | undefined, readable: ContentCandidate | undefined, preferVerifiedInnerBody = false): ContentCandidate | undefined {
   if (!semantic) return readable;
   if (!readable) return semantic;
+  // A verified inner body is a stronger boundary than Reader View's broader
+  // text-density guess. The latter can reintroduce bylines and related cards
+  // even when a source's authored-prose container was found successfully.
+  if (preferVerifiedInnerBody && semantic.priority >= 11) return semantic;
   // Explicit article containers tend to preserve the author's Markdown and
   // code structure. For loose main/content shells, prefer Reader View when
   // it improves the text/link-density quality materially.

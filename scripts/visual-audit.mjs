@@ -58,6 +58,7 @@ function page(mathJaxSvg) {
         ${wideFormula}
         ${mathJaxFormula}
         <div class="reader-video"><video controls preload="none"></video><button class="action-button">加载视频</button><span class="reader-video-status">视频无法加载，请在原文中观看。</span><a href="https://example.com">在原文中观看视频</a></div>
+        <figure id="embedded-chart-fallback"><p>Tokenizer benchmark charts</p><figcaption><a href="https://example.com/article">在原文中查看</a></figcaption></figure>
         <img id="fixture-image" src="${largeImage}" alt="large fixture" />
         <table><thead><tr><th>来源</th><th>状态</th></tr></thead><tbody><tr><td>OpenAlex</td><td>正常</td></tr></tbody></table>
       </div></article></div><div class="reader-selection-underlines" aria-hidden="true"><span id="selection-underline" style="left: 58vw; top: 302px; width: 124px"></span></div><section class="reader-selection-toolbar" id="selection-toolbar" style="left: 58vw; top: 308px"><button>翻译</button><button>解释</button><button>提问</button><button>×</button></section><aside class="selection-assistant-card" id="selection-card" data-placement="below" style="left: 56vw; top: 356px; width: min(330px,calc(100vw - 32px)); max-height: 250px"><header><div><p>解释所选文字</p><strong>本机 Codex</strong></div><button>×</button></header><blockquote>“这段选中的文章文字会保留在就地回答旁边。”</blockquote><div class="selection-assistant-answer"><p>这是一个和正文紧邻的流式回答卡片，长内容将在卡片内滚动。</p><pre class="ai-code-block" id="selection-card-code"><code>selection_answer_must_not_expand_the_reading_workspace_0123456789</code></pre></div></aside><aside class="reader-ai-panel" id="assistant-panel"><header><div><strong>AI 学习助手</strong><p>提问时才会发送文章摘录。</p></div><div class="assistant-header-actions"><button class="panel-icon-button">−</button><button class="panel-icon-button">×</button></div></header><div class="ai-messages"><div class="ai-message" id="assistant-markdown"><strong>AI</strong><div class="ai-message-content ai-markdown"><h2 class="ai-markdown-heading">推导摘要</h2><p class="ai-markdown-paragraph">这是一段 <strong>Markdown</strong> 回答。</p><ul class="ai-markdown-list"><li>列表项</li><li><code class="ai-inline-code">inline_code</code></li></ul><pre class="ai-code-block" id="assistant-code"><code>very_long_identifier_that_must_scroll_instead_of_overflowing_the_assistant_sidebar_0123456789</code></pre><div class="ai-table-wrap"><table><thead><tr><th>方法</th><th>复杂度</th></tr></thead><tbody><tr><td>线性</td><td>O(n)</td></tr></tbody></table></div></div></div></div><form class="ai-question"><label>向文章提问</label><textarea>这个公式表达什么？</textarea><button class="primary">发送问题</button></form></aside></div>
@@ -126,6 +127,7 @@ async function auditViewport(window, viewport, mathJaxSvg) {
     };
     const image = document.querySelector('#fixture-image');
     const article = document.querySelector('.reader-article');
+    const embeddedChart = document.querySelector('#embedded-chart-fallback');
     return {
       viewport: { width: window.innerWidth, height: window.innerHeight },
       pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
@@ -133,6 +135,12 @@ async function auditViewport(window, viewport, mathJaxSvg) {
       wide: formula('#formula-wide'),
       mathJax: formula('#formula-mathjax'),
       image: image && article ? { width: image.getBoundingClientRect().width, height: image.getBoundingClientRect().height, articleWidth: article.getBoundingClientRect().width } : undefined,
+      embeddedChart: embeddedChart && article ? {
+        width: embeddedChart.getBoundingClientRect().width,
+        articleWidth: article.getBoundingClientRect().width,
+        labelHeight: embeddedChart.querySelector('p')?.getBoundingClientRect().height,
+        linkHeight: embeddedChart.querySelector('a')?.getBoundingClientRect().height
+      } : undefined,
       feedSummaryNotice: (() => {
         const notice = document.querySelector('#feed-summary-notice');
         const article = document.querySelector('.reader-article');
@@ -399,6 +407,7 @@ async function auditViewport(window, viewport, mathJaxSvg) {
   if (!geometry.wide || geometry.wide.viewport.scrollWidth <= geometry.wide.viewport.clientWidth) failures.push("超宽公式没有落入自身可滚动容器");
   if (!geometry.mathJax || geometry.mathJax.viewport.scrollWidth <= geometry.mathJax.viewport.clientWidth) failures.push("科学空间 MathJax/SVG 公式没有落入自身可滚动容器");
   if (!geometry.image || geometry.image.width > geometry.image.articleWidth + 1 || geometry.image.height > Math.min(360, viewport.height * 0.45) + 2) failures.push("图片尺寸没有受正文列约束");
+  if (!geometry.embeddedChart || geometry.embeddedChart.width > geometry.embeddedChart.articleWidth + 1 || !geometry.embeddedChart.labelHeight || !geometry.embeddedChart.linkHeight) failures.push("嵌入图表的安全回退没有保持在正文列内");
   if (!geometry.feedSummaryNotice || geometry.feedSummaryNotice.left < -1 || geometry.feedSummaryNotice.right > geometry.feedSummaryNotice.articleWidth + geometry.feedSummaryNotice.left + 1 || geometry.feedSummaryNotice.width > geometry.feedSummaryNotice.articleWidth + 1 || geometry.feedSummaryNotice.height < 20) failures.push("订阅摘要提示没有受正文列约束");
   if (!geometry.typography || geometry.typography.titleFontSize > geometry.typography.bodyFontSize * 2.1 || geometry.typography.titleFontSize < geometry.typography.bodyFontSize * 1.6) failures.push("阅读器标题与正文字号比例失衡");
   if (!geometry.timelineSummary || geometry.timelineSummary.right > geometry.timelineSummary.copyRight + 1 || geometry.timelineSummary.height > 36 || geometry.timelineSummary.scrollHeight <= geometry.timelineSummary.clientHeight) {

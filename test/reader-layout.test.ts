@@ -21,6 +21,38 @@ it("replaces a declared CSS diagram and its controls with its description withou
 it("preserves real images in labelled graphic containers", () => {
   expect(load(extract('<div role="img" aria-label="Diagram"><img src="/diagram.png"></div>').contentHtml)("img")).toHaveLength(1);
 });
+it("keeps a safe reading fallback for Hugging Face-style embedded benchmark charts", () => {
+  const articleUrl = "https://huggingface.co/blog/tokenizers-v1";
+  const article = extractReaderArticle(`<article><h1>tokenizers v1</h1>${prose}<h2>Results</h2><iframe src="https://charts.static.hf.space/" width="100%" height="2615" title="Tokenizer benchmark charts"></iframe><p>What V1 Is</p></article>`, articleUrl, { id: "hf", url: articleUrl, title: "tokenizers v1" } as Entry)!.article;
+  const $ = load(article.contentHtml);
+  expect($("iframe,script")).toHaveLength(0);
+  expect($("figure p").text()).toContain("Tokenizer benchmark charts");
+  expect($("figure figcaption a").attr("href")).toBe(articleUrl);
+  expect($("body").text()).toContain("What V1 Is");
+});
+it("reuses an existing figure around an embedded chart instead of nesting a second figure", () => {
+  const $ = load(extract(`<figure class="image text-center"><iframe src="https://charts.static.hf.space/" width="100%" height="352"></iframe><figcaption>Encoding results</figcaption></figure>`).contentHtml);
+  expect($("figure")).toHaveLength(1);
+  expect($("figure p")).toHaveLength(1);
+  expect($("figure figcaption").text()).toContain("Encoding results");
+  expect($("figure figcaption a").attr("href")).toBe(url);
+});
+it("selects the authored blog body instead of the surrounding Hugging Face-style page shell", () => {
+  const articleUrl = "https://huggingface.co/blog/example";
+  const article = extractReaderArticle(`<main><div class="container"><div class="blog-content prose"><div class="mb-4"><a href="/blog">Back to Articles</a></div><h1>Example</h1><div>Published September 24, 2026</div><div class="not-prose">Upvote 20</div><div class="not-prose">Author avatars and follow controls</div><div class="relative overflow-clip">${prose}<h2>Results</h2><p>Benchmark details remain in the article.</p></div></div><section><h2>Models mentioned in this article</h2><article><p>Model recommendation card</p></article></section></div></main>`, articleUrl, { id: "hf-body", url: articleUrl, title: "Example" } as Entry)!.article;
+  const text = load(article.contentHtml)("body").text();
+  expect(text).toContain("Benchmark details remain in the article.");
+  expect(text).not.toContain("Back to Articles");
+  expect(text).not.toContain("Author avatars");
+  expect(text).not.toContain("Upvote 20");
+  expect(text).not.toContain("Models mentioned in this article");
+  expect(text).not.toContain("Model recommendation card");
+});
+it("does not turn hidden, tiny or unsafe frames into reader content", () => {
+  const $ = load(extract(`<iframe src="https://tracker.example/pixel" height="1" width="1"></iframe><iframe src="javascript:alert(1)" height="500"></iframe><iframe src="https://charts.example/view" height="300" hidden></iframe><iframe src="https://charts.example/hidden" height="300" style="display:none!important"></iframe><p>After frames.</p>`).contentHtml);
+  expect($("figure,iframe")).toHaveLength(0);
+  expect($("body").text()).toContain("After frames.");
+});
 it("moves checkbox-backed marginalia into numbered notes, preserving links and math", () => {
   const a = extract('<p>Before <span><input type="checkbox" id="note"><label for="note">1</label><span class="sidenote"><span class="sidenote-number-copy"></span>Note <a href="/reference">reference</a> $x^2$</span></span> after.</p>');
   const $ = load(a.contentHtml);

@@ -1,8 +1,38 @@
 import type { load } from "cheerio";
+import { publicDocumentUrl } from "./html-document-url";
 type Document = ReturnType<typeof load>;
 
 /** Linearize declared visual widgets and marginalia before removing origin CSS. */
 export function normalizeReaderLayout($: Document, root: any, pageUrl: string): void {
+  // Interactive charts are often an authored part of a technical article.
+  // They cannot run inside the reader, but silently dropping a visible frame
+  // leaves an unexplained gap in the argument. Keep only an inert reference to
+  // the article; hidden/small frames (including trackers) remain noise.
+  root.find("iframe[src]").each((_i: number, node: any) => {
+    const frame = $(node);
+    const height = Number.parseInt(frame.attr("height") || "", 10);
+    const hidden = frame.is("[hidden], [aria-hidden='true']")
+      || frame.parents("[hidden], [aria-hidden='true']").length > 0
+      || /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\b/i.test(frame.attr("style") || "");
+    const source = publicDocumentUrl(frame.attr("src"), pageUrl);
+    const articleUrl = publicDocumentUrl(pageUrl, pageUrl);
+    if (hidden || !source?.startsWith("https:") || !articleUrl?.startsWith("https:") || !Number.isFinite(height) || height < 120) return;
+    const label = (frame.attr("title") || frame.attr("aria-label") || "交互图表或嵌入内容").trim().slice(0, 200);
+    const originalFigure = frame.parent().is("figure") ? frame.parent() : undefined;
+    if (originalFigure) {
+      frame.replaceWith($("<p>").text(label || "交互图表或嵌入内容"));
+      const existingCaption = originalFigure.children("figcaption").first();
+      const link = $("<a>").attr("href", articleUrl).text("在原文中查看");
+      if (existingCaption.length) existingCaption.append(" ", link);
+      else originalFigure.append($("<figcaption>").append(link));
+      return;
+    }
+    const figure = $("<figure>");
+    figure.append($("<p>").text(label || "交互图表或嵌入内容"));
+    figure.append($("<figcaption>").append($("<a>").attr("href", articleUrl).text("在原文中查看")));
+    frame.replaceWith(figure);
+  });
+
   // A block labelled as one graphic is not a sequence of prose fragments.
   // Preserve actual images/videos and mathematical markup on their own paths.
   root.find("div[role='img'][aria-label], figure[role='img'][aria-label]").each((_i: number, node: any) => {
