@@ -1229,6 +1229,22 @@ export class ReadingDatabase {
     });
   }
 
+  /** Older builds stored the same robots message for 429 and 5xx. Give each
+   * legacy failure one bounded recheck, without moving an earlier deadline or
+   * repeatedly resetting it on application restart. New 429s use a distinct
+   * message and retain their longer cooldown. */
+  rescheduleLegacyRobotsFailure(message: string, now = Date.now()): number {
+    const deadline = now + 5 * 60_000;
+    return this.writeTransaction(() => {
+      const result = this.db.prepare(`UPDATE sources SET next_check_at = ?, updated_at = ?
+        WHERE status = 'error' AND polling_enabled = 1 AND last_error = ?
+          AND next_check_at > ?
+          AND EXISTS (SELECT 1 FROM subscriptions WHERE source_id = sources.id AND subscribed = 1)`)
+        .run(deadline, now, message, deadline);
+      return result.changes;
+    });
+  }
+
   updateRule(sourceId: string, rule: Source["extractionRule"]): void {
     this.db.transaction(() => {
       this.db

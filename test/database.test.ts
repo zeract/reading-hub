@@ -73,6 +73,26 @@ describe("ReadingDatabase", () => {
     } finally { db.close(); }
   });
 
+  it("schedules one bounded legacy robots recheck without touching newer rate limits", () => {
+    vi.useFakeTimers();
+    const db = new ReadingDatabase(":memory:");
+    try {
+      const old = db.createSource({ url: "https://example.com/old", title: "Old", kind: "rss", pollingEnabled: true });
+      const limited = db.createSource({ url: "https://example.org/limited", title: "Limited", kind: "rss", pollingEnabled: true });
+      const message = "暂时无法确认该站点的 robots.txt 规则，已停止自动读取，请稍后重试。";
+      const oldFailure = db.markFailure(old, message, 60 * 60_000);
+      const limitedFailure = db.markFailure(limited, "该站点暂时限制 robots.txt 请求，已停止自动读取；稍后会按限流间隔重试。", 60 * 60_000);
+      expect(db.rescheduleLegacyRobotsFailure(message)).toBe(1);
+      const deadline = db.getSource(old.id)?.nextCheckAt;
+      expect(deadline).toBe(Date.now() + 5 * 60_000);
+      vi.advanceTimersByTime(60_000);
+      expect(db.rescheduleLegacyRobotsFailure(message)).toBe(0);
+      expect(db.getSource(old.id)?.nextCheckAt).toBe(deadline);
+      expect(db.getSource(limited.id)?.nextCheckAt).toBe(limitedFailure.nextCheckAt);
+      expect(oldFailure.nextCheckAt).toBeGreaterThan(deadline!);
+    } finally { db.close(); vi.useRealTimers(); }
+  });
+
   it("pages a large source without a 200-entry ceiling, skips, or duplicate timestamp ties", () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });

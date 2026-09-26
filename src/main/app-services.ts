@@ -93,10 +93,11 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
   registry.register(xiaohongshu);
   registry.register(academic);
   const maintenance = new ContentMaintenance(database);
+  database.rescheduleLegacyRobotsFailure(new RobotsUnreachableError().message);
   const sync = new SyncManager(database, registry, maintenance, {
     isOnline: () => net.isOnline(),
     onRestored: () => {
-      robots.forgetNetworkFailures();
+      robots.forgetTransientFailures();
       database.expediteNetworkFailures([
         RobotsNetworkUnavailableError.messageText,
         // Earlier versions persisted this generic message even for offline failures.

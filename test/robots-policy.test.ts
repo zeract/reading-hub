@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const network = vi.hoisted(() => ({ fetch: vi.fn() }));
 vi.mock("../src/main/network", () => ({ chromiumFetch: network.fetch }));
-import { RobotsDisallowedError, RobotsNetworkUnavailableError, RobotsPolicy } from "../src/main/robots";
+import { RobotsDisallowedError, RobotsNetworkUnavailableError, RobotsPolicy, RobotsRateLimitedError } from "../src/main/robots";
 import { PublicHttpClient } from "../src/main/http";
 
 beforeEach(() => { network.fetch.mockReset(); });
@@ -47,7 +47,7 @@ describe("robots access decisions", () => {
     const policy = new RobotsPolicy();
     network.fetch.mockRejectedValueOnce(new Error("offline"));
     await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsNetworkUnavailableError);
-    policy.forgetNetworkFailures();
+    policy.forgetTransientFailures();
     network.fetch.mockResolvedValueOnce(new Response("User-agent: *\nDisallow: /post"));
     await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsDisallowedError);
     expect(network.fetch).toHaveBeenCalledTimes(2);
@@ -64,13 +64,14 @@ describe("robots access decisions", () => {
     expect(network.fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps a server-side 503 backoff after a local reconnection signal", async () => {
+  it("rechecks a transient 503 after a real reconnection signal without bypassing robots", async () => {
     const policy = new RobotsPolicy();
     network.fetch.mockResolvedValueOnce(new Response("", { status: 503 }));
     await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsDisallowedError);
-    policy.forgetNetworkFailures();
+    policy.forgetTransientFailures();
+    network.fetch.mockResolvedValueOnce(new Response("User-agent: *\nDisallow: /post"));
     await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsDisallowedError);
-    expect(network.fetch).toHaveBeenCalledTimes(1);
+    expect(network.fetch).toHaveBeenCalledTimes(2);
   });
 
   it.each([429, 500, 503])("blocks HTTP %i without fetching the page, then retries successfully after backoff", async (status) => {
@@ -78,9 +79,11 @@ describe("robots access decisions", () => {
     network.fetch.mockResolvedValueOnce(new Response("fixture sensitive body", { status }));
     const client = new PublicHttpClient(new RobotsPolicy());
     await expect(client.getText("https://example.com/post")).rejects.toMatchObject({
-      name: "RobotsUnreachableError", message: "暂时无法确认该站点的 robots.txt 规则，已停止自动读取，请稍后重试。"
+      name: status === 429 ? "RobotsRateLimitedError" : "RobotsUnreachableError",
+      message: status === 429 ? RobotsRateLimitedError.messageText
+        : "暂时无法确认该站点的 robots.txt 规则，已停止自动读取，请稍后重试。"
     });
-    await vi.advanceTimersByTimeAsync(60 * 60_000 - 1);
+    await vi.advanceTimersByTimeAsync((status === 429 ? 60 : 5) * 60_000 - 1);
     await expect(client.getText("https://example.com/post")).rejects.toBeInstanceOf(RobotsDisallowedError);
     expect(network.fetch).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
@@ -90,6 +93,15 @@ describe("robots access decisions", () => {
     expect(network.fetch.mock.calls.map(([url]) => url)).toEqual([
       "https://example.com/robots.txt", "https://example.com/robots.txt", "https://example.com/post"
     ]);
+  });
+
+  it("retains a full rate-limit cooldown without treating it as a network recovery", async () => {
+    const policy = new RobotsPolicy();
+    network.fetch.mockResolvedValueOnce(new Response("", { status: 429 }));
+    await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsRateLimitedError);
+    policy.forgetTransientFailures();
+    await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsRateLimitedError);
+    expect(network.fetch).toHaveBeenCalledTimes(1);
   });
 
   it("allows the robots resource itself without a recursive policy fetch", async () => {

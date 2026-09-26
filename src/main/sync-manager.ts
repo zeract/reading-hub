@@ -9,7 +9,7 @@ import { ContentMaintenance } from "./content-maintenance";
 import { ReadingDatabase } from "./database";
 import { ConnectorRegistry } from "./connector-registry";
 import { KeyedTaskQueue } from "./keyed-task-queue";
-import { RobotsNetworkUnavailableError } from "./robots";
+import { RobotsRateLimitedError, RobotsUnreachableError } from "./robots";
 import { NetworkRequestError } from "./http";
 
 const BACKGROUND_SYNC_CONCURRENCY = 2;
@@ -182,8 +182,10 @@ export class SyncManager {
         this.assertOpen();
         // Success and failure must obey the same stale-result boundary.
         const currentSource = currentSourceForSync(this.db, source, subscription);
-        const updated = this.db.markFailure(currentSource, userSafeError(error),
-          error instanceof RobotsNetworkUnavailableError || error instanceof NetworkRequestError ? 5 * 60_000 : undefined);
+        const retryAfterMs = error instanceof RobotsRateLimitedError ? 60 * 60_000
+          : error instanceof RobotsUnreachableError || error instanceof NetworkRequestError ? 5 * 60_000
+            : undefined;
+        const updated = this.db.markFailure(currentSource, userSafeError(error), retryAfterMs);
         throw new SyncFailure(updated.lastError || "同步失败");
       }
     }, signal);

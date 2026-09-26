@@ -6,7 +6,7 @@ import { ConnectorRegistry } from "../src/main/connector-registry";
 import { ContentMaintenance } from "../src/main/content-maintenance";
 import { ReadingDatabase } from "../src/main/database";
 import { SyncCancelledError, SyncManager } from "../src/main/sync-manager";
-import { RobotsNetworkUnavailableError } from "../src/main/robots";
+import { RobotsNetworkUnavailableError, RobotsRateLimitedError, RobotsUnreachableError } from "../src/main/robots";
 import { NetworkRequestError } from "../src/main/http";
 import type { ConnectorAdapter, Entry, RawEntry, Source } from "../src/shared/types";
 
@@ -35,6 +35,29 @@ describe("SyncManager", () => {
     } finally { await manager.close(); db.close(); vi.useRealTimers(); }
   });
 
+  it("recovers a transient robots server failure without relying on an online-state edge", async () => {
+    vi.useFakeTimers();
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+    const registry = new ConnectorRegistry();
+    const sync = vi.fn().mockRejectedValueOnce(new RobotsUnreachableError())
+      .mockResolvedValue({ entries: [{ url: "https://example.com/post", title: "Recovered" }] });
+    registry.register({ ...replayAdapter(), sync });
+    const restored = vi.fn();
+    const manager = new SyncManager(db, registry, undefined, { isOnline: () => true, onRestored: restored });
+    try {
+      manager.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sync).toHaveBeenCalledTimes(1);
+      expect(db.getSource(source.id)?.lastError).toContain("robots.txt");
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(restored).not.toHaveBeenCalled();
+      expect(sync).toHaveBeenCalledTimes(2);
+      expect(db.getSource(source.id)).toMatchObject({ status: "active", failureCount: 0 });
+      expect(db.listEntries(source.id)).toHaveLength(1);
+    } finally { await manager.close(); db.close(); vi.useRealTimers(); }
+  });
+
   it("caps repeated robots network failures at five minutes", async () => {
     const db = new ReadingDatabase(":memory:");
     const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
@@ -48,6 +71,22 @@ describe("SyncManager", () => {
         expect(current.failureCount).toBe(failure);
         expect(current.nextCheckAt! - Date.now()).toBeLessThanOrEqual(5 * 60_000);
       }
+    } finally { await manager.close(); db.close(); }
+  });
+
+  it("retries transient robots server failures within five minutes but preserves rate limits", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+    const registry = new ConnectorRegistry();
+    let rateLimited = false;
+    registry.register({ ...replayAdapter(), sync: async () => { throw rateLimited ? new RobotsRateLimitedError() : new RobotsUnreachableError(); } });
+    const manager = new SyncManager(db, registry);
+    try {
+      await expect(manager.syncSource(source.id)).rejects.toThrow("robots.txt");
+      expect(db.getSource(source.id)?.nextCheckAt! - Date.now()).toBeLessThanOrEqual(5 * 60_000);
+      rateLimited = true;
+      await expect(manager.syncSource(source.id)).rejects.toThrow("robots.txt");
+      expect(db.getSource(source.id)?.nextCheckAt! - Date.now()).toBeGreaterThanOrEqual(60 * 60_000 - 1_000);
     } finally { await manager.close(); db.close(); }
   });
 
