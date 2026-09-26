@@ -1,6 +1,8 @@
 import {createHash} from "node:crypto";
 import {rewriteText} from "../src/main/rewrite-content";
 import { REWRITE_PROMPT_VERSION } from "../src/main/rewrite-content";
+import {withArticleDocument} from "../src/main/article-document";
+import {rewriteArticleDocument,structuredSourceHash} from "../src/main/document-rewrite";
 import { rewriteModelResponse } from "./support/rewrite-model";
 import { afterEach, expect, it, vi } from "vitest";
 import { ReadingDatabase } from "../src/main/database";
@@ -84,6 +86,27 @@ it("resumes completed sections after a failed request without resending them",as
  expect(JSON.parse(f.rewriteChunk.mock.calls[0][1]).section.id).toBe("S2");
  f.rewriteChunk.mockClear();f.service.enqueue("entry");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("complete"));
  expect(JSON.parse(f.rewriteChunk.mock.calls[0][1]).section.id).toBe("S1");
+});
+it("continues a version 12 paragraph checkpoint with its original instruction",async()=>{
+ const f=fixture();f.article.contentHtml=Array.from({length:18},()=>`<p>${text}</p>`).join("");
+ const document=withArticleDocument(f.article).document!;
+ let checkpoint:import('../src/main/document-rewrite').DocumentCheckpoint|undefined;
+ let calls=0;
+ await expect(rewriteArticleDocument(document,f.article.title,async(_stage,prompt)=>{
+  if(++calls===2)throw new Error('interrupted');
+  return JSON.stringify({blocks:JSON.parse(prompt).section.blocks});
+ },new AbortController().signal,undefined,undefined,value=>checkpoint=value,true,12)).rejects.toThrow('interrupted');
+ expect(checkpoint?.patches).toHaveLength(1);
+ const job=f.service.enqueue('entry');
+ const key=createHash('sha256').update(JSON.stringify({sourceHash:structuredSourceHash(document),title:f.article.title,url:f.article.url,settings:job.settings,version:12})).digest('hex');
+ f.db.rewrites.progress(job,1,2);
+ f.db.rewrites.saveStructuredCheckpoint(job,key,checkpoint!);
+ (f.db as any).db.prepare("UPDATE article_rewrites SET status='queued' WHERE entry_id='entry'").run();
+ f.service.start();await vi.waitFor(()=>expect(f.db.rewrites.get('entry')?.status).toBe('complete'));
+ const first=JSON.parse(f.rewriteChunk.mock.calls[0][1]);
+ expect(first.section.id).toBe('S2');
+ expect(first.instruction).not.toContain('不以翻成中文为目标');
+ expect(f.db.rewrites.get('entry')?.result?.promptVersion).toBe(12);
 });
 it("invalidates saved sections when source or configured model changes",async()=>{
  for(const change of ["source","model"]){

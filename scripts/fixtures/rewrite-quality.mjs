@@ -8,3 +8,9 @@ export const rewriteQualityCases = [
  `In a later configuration, capacity was reduced to 64 jobs. This change limited waiting time but increased rejections in the recorded workload. The author does not recommend it as a universal default: capacity must be chosen together with the caller's retry policy and the worker's actual throughput.`].join("\n\n")},
  {id:"science",title:"成功比例与结论边界",anchors:["80","100","0.8","20"],text:`我们在一次固定条件的实验中执行了 100 次请求，其中 80 次成功、20 次失败。成功比例是描述这批记录的统计量，并不等于未来每次请求都会以相同比例成功。\n\n$$\np=\\frac{80}{100}=0.8\n$$\n\n这里的分母包含失败请求，不能把分母改成成功请求数。我们没有建立独立同分布假设，也没有给出置信区间，因此不能仅凭这个结果声称两个模型有显著差异。\n\n\`\`\`python\nsuccess_rate = 80 / 100\n\`\`\`\n\n代码只是计算已观察到的比例，没有模拟新的实验，也没有自动检验因果关系。中文改写需要保留这些限制条件，不能将“本次实验观察到”扩大为“已经证明普遍成立”。`}
 ];
+
+// Fixed public-domain sample for the current structured paragraph protocol.
+export const rewriteParagraphQualityCase = {
+ id:"terms-links",title:"KV cache and request latency",
+ html:'<p>A KV cache avoids recomputing attention for earlier tokens during autoregressive decoding. The team measured a cache hit at 80 ms and a cache miss at 100 ms in one staging environment, but did not measure production tail latency. Read <a href="https://example.com/kv-cache-guide">the KV cache guide</a> for the experimental setup.</p>'
+};

@@ -12,7 +12,7 @@ it('normalizes explicitly styled code before losing CSS without guessing JSON pr
 it('allows Chinese word order while preserving links, code and nested formatting',async()=>{
  const source=articleDocumentFromHtml('<p>Use <a href="https://example.com"><strong>this guide</strong></a> to configure <code>agent</code>.</p>');
  const result=await rewriteArticleDocument(source,'Original title',async(_s,p)=>{
-  const input=JSON.parse(p);expect(input.instruction).toContain('不预设');const blocks=input.section.blocks.map((b:any)=>{
+  const input=JSON.parse(p);expect(input.instruction).toContain('通行性优先于中文化');const blocks=input.section.blocks.map((b:any)=>{
    if(b.id==='rewrite-title.text')return {...b,text:'中文标题'};
    const ref=b.text.match(/⟦([^/⟧]+)⟧⟦([^/⟧]+)⟧this guide⟦\/[^⟧]+⟧⟦\/[^⟧]+⟧/)!,code=b.text.match(/⟦[^⟧]+\/⟧/)![0];
    return {...b,text:`配置 ${code} 时，请参阅 ⟦${ref[1]}⟧⟦${ref[2]}⟧本指南⟦/${ref[2]}⟧⟦/${ref[1]}⟧。`};
@@ -20,6 +20,47 @@ it('allows Chinese word order while preserving links, code and nested formatting
  },new AbortController().signal,undefined,undefined,undefined,true);
  expect(result.rewrittenTitle).toBe('中文标题');expect(validArticleDocument(result.content)).toBe(true);
  expect(articleDocumentHtml(result.content)).toContain('配置 <code>agent</code> 时，请参阅 <a href="https://example.com"><strong>本指南</strong></a>。');
+});
+it('removes only a model-echoed adjacent link label, keeping its link and authored repetition',()=>{
+ const rewrite=(html:string,change:(text:string,link:string)=>string)=>{
+  const prepared=prepareRewriteParagraphs(articleDocumentFromHtml(html));
+  const paragraph=(prepared.document.children[0] as any).children[0];
+  const link=paragraph.text.match(/⟦[^/⟧]+⟧本指南⟦\/[^⟧]+⟧/)?.[0];
+  expect(link).toBeDefined();
+  paragraph.text=change(paragraph.text,link!);
+  return articleDocumentHtml(prepared.restore(prepared.document));
+ };
+ const source='<p>请阅读<a href="https://example.com/guide">本指南</a>。</p>';
+ expect(rewrite(source,(text,link)=>text.replace(link,`本指南${link}`))).toBe('<p>请阅读<a href="https://example.com/guide">本指南</a>。</p>');
+ expect(rewrite(source,(text,link)=>text.replace(link,`${link}本指南`))).toBe('<p>请阅读<a href="https://example.com/guide">本指南</a>。</p>');
+ expect(rewrite('<p>本指南<a href="https://example.com/guide">本指南</a>。</p>',text=>text)).toBe('<p>本指南<a href="https://example.com/guide">本指南</a>。</p>');
+ expect(rewrite(source,(text,link)=>text.replace(link,`本指南；${link}`))).toContain('本指南；<a href="https://example.com/guide">本指南</a>');
+ const nested=prepareRewriteParagraphs(articleDocumentFromHtml('<p>See <a href="https://example.com/kv"><strong>KV cache</strong></a>.</p>'));
+ const paragraph=(nested.document.children[0] as any).children[0];
+ paragraph.text=paragraph.text.replace('See ', 'See KV cache ');
+ expect(articleDocumentHtml(nested.restore(nested.document))).toBe('<p>See <a href="https://example.com/kv"><strong>KV cache</strong></a>.</p>');
+ const footnote=prepareRewriteParagraphs(articleDocumentFromHtml('<p>Equation <a href="https://example.com/note">1</a>.</p>'));
+ const note=(footnote.document.children[0] as any).children[0];
+ note.text=note.text.replace('Equation ', 'Equation 1 ');
+ expect(articleDocumentHtml(footnote.restore(footnote.document))).toBe('<p>Equation 1 <a href="https://example.com/note">1</a>.</p>');
+ const compound=prepareRewriteParagraphs(articleDocumentFromHtml('<p>Open<a href="https://example.com/ai">AI</a></p>'));
+ const compoundText=(compound.document.children[0] as any).children[0];
+ compoundText.text=compoundText.text.replace('Open', 'OpenAI');
+ expect(articleDocumentHtml(compound.restore(compound.document))).toBe('<p>OpenAI<a href="https://example.com/ai">AI</a></p>');
+});
+it('keeps technical terms in English when they are clearer and isolates the new prompt from version 12',async()=>{
+ const source=articleDocumentFromHtml('<p>KV cache uses <a href="https://example.com/guide">the guide</a>.</p>');
+ const instructions:string[]=[];
+ const run=async(_stage:string,prompt:string)=>{
+  const input=JSON.parse(prompt);instructions.push(input.instruction);
+  return JSON.stringify({blocks:input.section.blocks.map((block:any)=>({...block,text:block.id==='rewrite-title.text'?'技术文章':block.text.replace('the guide','指南')}))});
+ };
+ await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined,true,13);
+ expect(instructions[0]).toContain('直接保留英文');
+ expect(instructions[0]).not.toContain('选择准确、通行且前后一致的中文表达');
+ instructions.length=0;
+ await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined,true,12);
+ expect(instructions[0]).not.toContain('不以翻成中文为目标');
 });
 it('rejects missing references, foreign references and nesting changes',()=>{
  const doc=articleDocumentFromHtml('<p>See <a href="https://example.com"><strong>guide</strong></a> <code>x</code></p>');

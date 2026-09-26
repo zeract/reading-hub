@@ -8,7 +8,7 @@ import { AiServiceError, type AiService } from "./ai-service";
 import { throwIfAborted } from "./cancellation";
 import { parseRewriteSettings, type ArticleRewrite, type RewriteSettings } from "../shared/rewrite";
 import { runRewritePipeline, reviewRewrite } from "./rewrite-pipeline";
-import { rewriteText, RewriteContentError } from "./rewrite-content";
+import { rewriteText, RewriteContentError, REWRITE_PROMPT_VERSION } from "./rewrite-content";
 import { isReaderSummaryContent, readerSummaryUnavailableMessage } from "../shared/types";
 /** Durable user-requested jobs, independent of reader windows and source synchronization. */
 export class RewriteService {
@@ -137,9 +137,10 @@ export class RewriteService {
             const canonicalHash=structuredSourceHash(article.document!);
             const canonicalKey=(version:number)=>createHash("sha256").update(JSON.stringify({sourceHash:canonicalHash,title:article.title,url:article.url,settings:job.settings,version})).digest("hex");
             const oldCheckpoint=this.database.rewrites.structuredCheckpoint(job,canonicalKey(11));
-            const version=oldCheckpoint?.patches.length?11:12;
+            const paragraphCheckpoint=this.database.rewrites.structuredCheckpoint(job,canonicalKey(12));
+            const version=oldCheckpoint?.patches.length?11:paragraphCheckpoint?.patches.length?12:REWRITE_PROMPT_VERSION;
             const key=canonicalKey(version);
-            const result=await rewriteArticleDocument(article.document!,article.title,run,signal,(done,total)=>progress("write",done,total),this.database.rewrites.structuredCheckpoint(job,key),checkpoint=>this.database.rewrites.saveStructuredCheckpoint(job,key,checkpoint),version===12);
+            const result=await rewriteArticleDocument(article.document!,article.title,run,signal,(done,total)=>progress("write",done,total),this.database.rewrites.structuredCheckpoint(job,key),checkpoint=>this.database.rewrites.saveStructuredCheckpoint(job,key,checkpoint),version>=12,version);
             throwIfAborted(signal);
             this.database.rewrites.finish(job,{...result,schemaVersion:2,markdown:articleDocumentMarkdown(result.content),provider:job.settings.provider,model:usedModel,createdAt:Date.now(),sourceUrl:article.url,sourceTitle:article.title,sourceHash:canonicalHash,promptVersion:version});return;
         }

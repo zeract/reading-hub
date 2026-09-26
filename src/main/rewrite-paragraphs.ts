@@ -5,11 +5,58 @@ export class ParagraphReferenceError extends RewriteContentError {
 }
 const inlineTags=new Set(['a','strong','b','em','i','span','sup','sub','s','del','u','br','small','mark']);
 const inline=(n:ArticleNode):boolean=>n.type==='text'||n.type==='asset'&&!n.display&&n.kind!=='image'&&n.kind!=='video'&&n.element.tag!=='pre'||n.type==='element'&&inlineTags.has(n.tag)&&n.children.every(inline);
+const visible=(node:ArticleNode)=>articleDocumentText({version:1,provenance:'source',children:[node]}).trim();
+const joinWithoutDoubleSpace=(left:string,right:string)=>left.endsWith(' ')&&right.startsWith(' ')?left+right.replace(/^[ \t]+/,''):left+right;
+/** The model owns prose, not link identity. An exact adjacent echo of a link
+ * label is redundant only when the authored source did not repeat it there. */
+function removeEchoedLinkLabels(nodes:ArticleNode[],sourceNodes:ArticleNode[]):void {
+ const sourceRepeats=new Map<string,{before:boolean;after:boolean}>();
+ const index=(siblings:ArticleNode[])=>{
+  siblings.forEach((node,i)=>{
+   if(node.type!=='element')return;
+   if(node.tag==='a'){
+    const label=visible(node);
+    const previous=siblings[i-1],following=siblings[i+1];
+    sourceRepeats.set(node.id,{
+     before:previous?.type==='text' && previous.text.trimEnd().endsWith(label),
+     after:following?.type==='text' && following.text.trimStart().startsWith(label)
+    });
+   }
+   index(node.children);
+  });
+ };
+ index(sourceNodes);
+ const clean=(siblings:ArticleNode[])=>{
+  siblings.forEach((node,i)=>{
+   if(node.type!=='element')return;
+   if(node.tag==='a'){
+    const label=visible(node),original=sourceRepeats.get(node.id);
+    // Numeric/one-character anchors often identify footnotes or equations;
+    // adjacent equal prose may be a separate reference, not a model echo.
+    if(label.length>=2 && !/^\d+$/.test(label) && original){
+     const before=siblings[i-1],after=siblings[i+1];
+     if(!original.before && before?.type==='text'){
+      const end=before.text.trimEnd().length;
+      const prefix=before.text.slice(0,end-label.length);
+      if(before.text.slice(0,end).endsWith(label) && (!/^[\x00-\x7f]+$/.test(label)||!/[A-Za-z0-9]$/.test(prefix)))before.text=joinWithoutDoubleSpace(prefix,before.text.slice(end));
+     }
+     if(!original.after && after?.type==='text'){
+      const start=after.text.length-after.text.trimStart().length;
+      const suffix=after.text.slice(start+label.length);
+      if(after.text.slice(start).startsWith(label) && (!/^[\x00-\x7f]+$/.test(label)||!/[A-Za-z0-9]/.test(suffix[0]||'')))after.text=joinWithoutDoubleSpace(after.text.slice(0,start),suffix);
+     }
+    }
+   }
+   clean(node.children);
+  });
+ };
+ clean(nodes);
+}
 /** A paragraph is editable language; source-owned inline references remain typed
  * objects. Reference order may change only inside that paragraph. */
 export function prepareRewriteParagraphs(source:ArticleDocument) {
  const document=structuredClone(source);
- const groups=new Map<string,{refs:Map<string,ArticleNode>;parents:Map<string,string|undefined>}>();
+ const groups=new Map<string,{refs:Map<string,ArticleNode>;parents:Map<string,string|undefined>;source:ArticleNode[]}>();
  const group=(children:ArticleNode[],owner:string):ArticleNode[]=>{
   if(!documentTextNodes({version:1,provenance:'source',children}).length || !children.every(inline))return children;
   const refs=new Map<string,ArticleNode>(),parents=new Map<string,string|undefined>();
@@ -19,7 +66,7 @@ export function prepareRewriteParagraphs(source:ArticleDocument) {
    return n.type==='element'&&n.tag!=='br'?`⟦${n.id}⟧${n.children.map(c=>encode(c,n.id)).join('')}⟦/${n.id}⟧`:`⟦${n.id}/⟧`;
   };
   const text=children.map(n=>encode(n)).join('');const id=`${owner}.text`;
-  groups.set(id,{refs,parents});return [{type:'text',id,text}];
+  groups.set(id,{refs,parents,source:children});return [{type:'text',id,text}];
  };
  const visit=(n:ArticleNode)=>{
   if(n.type==='card'){n.title=group(n.title,n.id);return;}
@@ -32,7 +79,7 @@ export function prepareRewriteParagraphs(source:ArticleDocument) {
   const result=structuredClone(draft);
   const expand=(n:ArticleNode):ArticleNode[]=>{
    if(n.type==='text'&&groups.has(n.id)){
-    const {refs,parents}=groups.get(n.id)!;const seen=new Set<string>();let next=0;
+    const {refs,parents,source:original}=groups.get(n.id)!;const seen=new Set<string>();let next=0;
     const root:ArticleNode[]=[];const stack:Array<{id?:string;children:ArticleNode[]}>= [{children:root}];
     const fail=(id='paragraph',reason:ParagraphReferenceError['reason']='syntax')=>{throw new ParagraphReferenceError(n.id,id,reason);};
     const append=(text:string)=>{if(text)stack.at(-1)!.children.push({type:'text',id:`${n.id}.${++next}`,text});};
@@ -54,6 +101,7 @@ export function prepareRewriteParagraphs(source:ArticleDocument) {
     for(const id of refs.keys())if(!seen.has(id))fail(id,'missing');
     if(n.text.replace(/⟦[^⟦⟧]*⟧/g,'').includes('⟦'))fail();
     const check=(node:ArticleNode)=>{if(node.type==='element'){if(node.tag==='a'&&!articleDocumentText({version:1,provenance:'rewrite',children:[node]}).trim())fail(node.id,'empty');node.children.forEach(check);}};root.forEach(check);
+    removeEchoedLinkLabels(root,original);
     if(!articleDocumentText({version:1,provenance:'rewrite',children:root}).trim())fail('paragraph','empty');return root;
    }
    if(n.type==='element')n.children=n.children.flatMap(expand);else if(n.type==='card')n.title=n.title.flatMap(expand);return [n];

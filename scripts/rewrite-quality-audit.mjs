@@ -6,8 +6,11 @@ import {AiService} from "../dist/main/main/ai-service.js";
 import {SecretStore} from "../dist/main/main/secrets.js";
 import {configureChromiumNetwork} from "../dist/main/main/network.js";
 import {runRewritePipeline} from "../dist/main/main/rewrite-pipeline.js";
-import {splitRewriteText} from "../dist/main/main/rewrite-content.js";
-import {rewriteQualityCases} from "./fixtures/rewrite-quality.mjs";
+import {splitRewriteText,REWRITE_PROMPT_VERSION} from "../dist/main/main/rewrite-content.js";
+import {articleDocumentFromHtml} from "../dist/main/main/article-document.js";
+import {rewriteArticleDocument} from "../dist/main/main/document-rewrite.js";
+import {articleDocumentHtml} from "../dist/main/shared/article-document.js";
+import {rewriteQualityCases,rewriteParagraphQualityCase} from "./fixtures/rewrite-quality.mjs";
 const directory=await mkdtemp(path.join(tmpdir(),"reading-hub-rewrite-eval-"));app.setPath("userData",directory);
 const reportPath=process.env.READING_HUB_REWRITE_REPORT || path.join(tmpdir(),"reading-hub-rewrite-quality.json");
 let ai;const report=[];let failed=false;
@@ -17,6 +20,19 @@ try {
  if(!provider)throw new Error("评估所选服务未配置。");
  const settings={provider:provider.id,model:process.env.READING_HUB_REWRITE_MODEL||provider.model,effort:provider.effort||"default"};
  const signal=AbortSignal.timeout(1_200_000);
+ if(process.env.READING_HUB_REWRITE_MODE==="paragraph") {
+  const sample=rewriteParagraphQualityCase,start=Date.now();let calls=0;
+  const output=await rewriteArticleDocument(articleDocumentFromHtml(sample.html),sample.title,async(stage,prompt,requestSignal)=>{
+   calls++;return (await ai.rewriteChunk(settings,prompt,requestSignal,stage)).text;
+  },signal,undefined,undefined,undefined,true,REWRITE_PROMPT_VERSION);
+  const html=articleDocumentHtml(output.content);
+  const linkCount=(html.match(/href="https:\/\/example\.com\/kv-cache-guide"/g)||[]).length;
+  const row={id:sample.id,settings,calls,elapsedMs:Date.now()-start,linkCount,html,rewrittenTitle:output.rewrittenTitle};
+  report.push(row);await writeFile(reportPath,JSON.stringify(report,null,2));
+  if(linkCount!==1)failed=true;
+  console.log(JSON.stringify({id:row.id,calls,elapsedMs:row.elapsedMs,linkCount,reportPath}));
+  if(failed)throw new Error('段落改写链接数量不正确。');
+ } else {
  const samples=rewriteQualityCases.filter(s=>!process.env.READING_HUB_REWRITE_CASE||s.id===process.env.READING_HUB_REWRITE_CASE);
  if(!samples.length)throw new Error("未找到指定评估样本。");
  for(const sample of samples) {
@@ -35,5 +51,6 @@ try {
  }
  console.log(JSON.stringify(report.map(r=>({id:r.id,baseline:{calls:r.baseline?.calls,ms:r.baseline?.elapsedMs,missing:r.baseline?.missingAnchors,error:r.baseline?.error},lightweight:{calls:r.lightweight?.calls,ms:r.lightweight?.elapsedMs,missing:r.lightweight?.missingAnchors,quality:r.lightweight?.quality,error:r.lightweight?.error}}))));
  console.log(`Report: ${reportPath}`);
+ }
 }catch(error){failed=true;console.error(error instanceof Error?error.message:"评估失败");}
 finally{await ai?.close();await rm(directory,{recursive:true,force:true});app.exit(failed?1:0);}

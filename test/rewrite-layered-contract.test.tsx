@@ -33,7 +33,7 @@ it('independently checks source semantics before translating, storing and mounti
   const result = await rewriteArticleDocument(source, 'Workflow', async (_stage, prompt) => {
     const input = JSON.parse(prompt);
     return JSON.stringify({ blocks: input.section.blocks.map((block: { id: string; text: string }) => ({
-      ...block, text: block.id === 'rewrite-title.text' ? '工作流程' : block.text.replace('Prerequisites', '前置条件').replace('the guide', '这份指南')
+      ...block, text: block.id === 'rewrite-title.text' ? '工作流程' : block.text.replace('Prerequisites', '前置条件').replace('Read ', '阅读这份指南').replace('the guide', '这份指南')
     })) });
   }, new AbortController().signal, undefined, undefined, undefined, true);
   const saved = decodeRewriteResult(JSON.stringify({ ...result, schemaVersion: 2, provider: 'fixture', model: 'simulated',
@@ -48,6 +48,7 @@ it('independently checks source semantics before translating, storing and mounti
     expect(container.querySelectorAll('table tr')).toHaveLength(2);
     expect(container.querySelector('th')?.textContent).toBe('前置条件');
     expect(container.querySelector('td a')?.textContent).toBe('这份指南');
+    expect(container.querySelector('td')?.textContent).toBe('阅读这份指南.');
     expect(container.querySelector('td a')?.getAttribute('href')).toBe('https://example.com/guide');
     expect(container.querySelector('pre code')?.textContent).toBe('{\n  "allow": ["Read(*)"]\n}');
     expect(container.querySelectorAll('img')).toHaveLength(1);
