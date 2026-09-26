@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const network = vi.hoisted(() => ({ fetch: vi.fn() }));
 vi.mock("../src/main/network", () => ({ chromiumFetch: network.fetch }));
-import { RobotsDisallowedError, RobotsPolicy } from "../src/main/robots";
+import { RobotsDisallowedError, RobotsNetworkUnavailableError, RobotsPolicy } from "../src/main/robots";
 import { PublicHttpClient } from "../src/main/http";
 
 beforeEach(() => { network.fetch.mockReset(); });
@@ -40,7 +40,37 @@ describe("robots access decisions", () => {
 
   it("does not grant access when the policy cannot be reached", async () => {
     network.fetch.mockRejectedValue(new Error("fixture private network detail"));
-    await expect(new RobotsPolicy().assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsDisallowedError);
+    await expect(new RobotsPolicy().assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsNetworkUnavailableError);
+  });
+
+  it("rechecks a formerly offline policy after reconnection and still enforces its rules", async () => {
+    const policy = new RobotsPolicy();
+    network.fetch.mockRejectedValueOnce(new Error("offline"));
+    await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsNetworkUnavailableError);
+    policy.forgetNetworkFailures();
+    network.fetch.mockResolvedValueOnce(new Response("User-agent: *\nDisallow: /post"));
+    await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsDisallowedError);
+    expect(network.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("rechecks an offline policy after a bounded minute even when no connectivity event arrives", async () => {
+    vi.useFakeTimers();
+    const policy = new RobotsPolicy();
+    network.fetch.mockRejectedValueOnce(new Error("offline"));
+    await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsNetworkUnavailableError);
+    await vi.advanceTimersByTimeAsync(60_000);
+    network.fetch.mockResolvedValueOnce(new Response("User-agent: *\nAllow: /post"));
+    await expect(policy.assertAllowed("https://example.com/post")).resolves.toBeUndefined();
+    expect(network.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a server-side 503 backoff after a local reconnection signal", async () => {
+    const policy = new RobotsPolicy();
+    network.fetch.mockResolvedValueOnce(new Response("", { status: 503 }));
+    await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsDisallowedError);
+    policy.forgetNetworkFailures();
+    await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsDisallowedError);
+    expect(network.fetch).toHaveBeenCalledTimes(1);
   });
 
   it.each([429, 500, 503])("blocks HTTP %i without fetching the page, then retries successfully after backoff", async (status) => {

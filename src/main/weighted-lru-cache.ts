@@ -65,4 +65,8 @@ export class WeightedLruCache<K, V> {
     // Deleting/replacing the earliest entry may leave an earlier check time.
     // That costs at most one future sweep and cannot retain an expired value.
   }
+
+  deleteWhere(predicate: (key: K, value: V) => boolean): void {
+    for (const [key, entry] of this.entries) if (predicate(key, entry.value)) this.delete(key);
+  }
 }

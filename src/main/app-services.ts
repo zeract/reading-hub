@@ -7,10 +7,11 @@ import { ConnectorRegistry } from "./connector-registry";
 import { GenericConnector, ManualConnector, RssConnector } from "./connectors";
 import { ReadingDatabase } from "./database";
 import { InAppArticleViewer } from "./in-app-article-viewer";
-import { PublicHttpClient } from "./http";
+import { NETWORK_REQUEST_MESSAGES, PublicHttpClient } from "./http";
 import { configureChromiumNetwork } from "./network";
 import { IsolatedPageRenderer } from "./page-renderer";
-import { RobotsPolicy } from "./robots";
+import { RobotsNetworkUnavailableError, RobotsPolicy, RobotsUnreachableError } from "./robots";
+import { net } from "electron";
 import { SecretStore } from "./secrets";
 import { SourceProbe } from "./source-probe";
 import { SourceService } from "./source-service";
@@ -92,7 +93,18 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
   registry.register(xiaohongshu);
   registry.register(academic);
   const maintenance = new ContentMaintenance(database);
-  const sync = new SyncManager(database, registry, maintenance);
+  const sync = new SyncManager(database, registry, maintenance, {
+    isOnline: () => net.isOnline(),
+    onRestored: () => {
+      robots.forgetNetworkFailures();
+      database.expediteNetworkFailures([
+        RobotsNetworkUnavailableError.messageText,
+        // Earlier versions persisted this generic message even for offline failures.
+        new RobotsUnreachableError().message,
+        ...Object.values(NETWORK_REQUEST_MESSAGES)
+      ]);
+    }
+  });
   const sources = new SourceService(database, probe, sync, zhihuFollow, registry);
   const articles = new ArticleReader(http, renderer, (url, options) => zhihuFollow.renderArticle(url, options));
   const inAppArticleViewer = new InAppArticleViewer();

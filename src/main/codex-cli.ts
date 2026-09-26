@@ -10,6 +10,7 @@ import { ChildProcessScope } from "./child-process-scope";
 import { Utf8LineDecoder } from "./utf8-line-decoder";
 import { parseModelPage } from "./ai-model-catalog";
 import { TaskPool } from "./task-pool";
+import { trustedCodexExecutable } from "./codex-command-integrity";
 
 const CODEX_TIMEOUT_MS = 90_000;
 const CODEX_EXTENDED_TIMEOUT_MS = 180_000;
@@ -22,7 +23,7 @@ const APP_SERVER_MAX_CONCURRENT_TURNS = 2;
 /** Wire frames include JSON escaping and metadata beyond the visible answer. */
 const MAX_PROTOCOL_LINE_BYTES = 1_000_000;
 const MAX_STDERR_LENGTH = 4_000;
-const DESKTOP_CODEX_COMMAND = "/Applications/ChatGPT.app/Contents/Resources/codex";
+const DESKTOP_CODEX_COMMAND = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex";
 const APP_SERVER_CLIENT_INFO = { name: "reading-hub", title: "Reading Hub", version: "0.1.1" };
 /**
  * Provider settings and concurrent AI requests can ask for CLI status several
@@ -32,15 +33,17 @@ const APP_SERVER_CLIENT_INFO = { name: "reading-hub", title: "Reading Hub", vers
  */
 export const CODEX_COMMAND_DISCOVERY_TTL_MS = 5_000;
 
-type CachedCodexCommand = { command: string | undefined; expiresAt: number };
+type CodexCommandDiscovery = { command?: string; rejectedUnsafeCandidate: boolean };
+type CachedCodexCommand = CodexCommandDiscovery & { expiresAt: number };
 
 let cachedCodexCommand: CachedCodexCommand | undefined;
-let pendingCodexCommandDiscovery: Promise<string | undefined> | undefined;
+let pendingCodexCommandDiscovery: Promise<CodexCommandDiscovery> | undefined;
 let codexCommandDiscoveryGeneration = 0;
 
 export interface CodexCliStatus {
   available: boolean;
   command?: string;
+  issue?: "integrity";
 }
 
 export interface CodexCliOptions {
@@ -73,8 +76,8 @@ export class LocalCodexCli implements CodexCliRunner {
   private readonly shutdown = new AbortController();
 
   async status(): Promise<CodexCliStatus> {
-    const command = await findCodexCommand();
-    return command ? { available: true, command } : { available: false };
+    const { command, rejectedUnsafeCandidate } = await findCodexCommand();
+    return command ? { available: true, command } : { available: false, ...(rejectedUnsafeCandidate ? { issue: "integrity" as const } : {}) };
   }
 
   async listModels(signal?: AbortSignal): Promise<AiModelOption[]> {
@@ -83,7 +86,7 @@ export class LocalCodexCli implements CodexCliRunner {
       throwIfCodexCancelled(request.signal);
       const { command } = await awaitWithAbort(this.status(), request.signal);
       throwIfCodexCancelled(request.signal);
-      if (!command) throw new CodexCliError("未检测到本机 Codex。");
+      if (!command) throw new CodexCliError("没有可安全启动的本机 Codex。请重新安装官方版本后重试。");
       return await this.getAppServer(command).listModels(request.signal);
     } finally { request.dispose(); }
   }
@@ -101,9 +104,11 @@ export class LocalCodexCli implements CodexCliRunner {
 
   private async runRequest(instruction: string, articleContext: string, options: CodexCliOptions, onDelta: CodexCliDeltaListener, signal?: AbortSignal): Promise<string> {
     throwIfCodexCancelled(signal);
-    const { command } = await awaitWithAbort(this.status(), signal);
+    const { command, issue } = await awaitWithAbort(this.status(), signal);
     throwIfCodexCancelled(signal);
-    if (!command) throw new CodexCliError("未检测到本机 Codex。请安装官方 Codex，并在终端运行 codex 完成登录后重试。");
+    if (!command) throw new CodexCliError(issue === "integrity"
+      ? "本机 Codex 签名校验未通过，已阻止启动。请从官方渠道重新安装 Codex 后重试。"
+      : "未检测到本机 Codex。请安装官方 Codex，并在终端运行 codex 完成登录后重试。");
     const server = this.getAppServer(command);
     try {
       return await server.ask(instruction, articleContext, options, onDelta, signal);
@@ -173,19 +178,19 @@ class CodexAppServerTransportError extends Error {
  * Negative results are cached too, otherwise a missing executable makes each
  * render frame scan the entire PATH. Failures themselves are never cached.
  */
-export async function findCodexCommand(): Promise<string | undefined> {
+export async function findCodexCommand(): Promise<CodexCommandDiscovery> {
   const now = Date.now();
-  if (cachedCodexCommand && cachedCodexCommand.expiresAt > now) return cachedCodexCommand.command;
+  if (cachedCodexCommand && cachedCodexCommand.expiresAt > now) return cachedCodexCommand;
   if (pendingCodexCommandDiscovery) return pendingCodexCommandDiscovery;
 
   const generation = codexCommandDiscoveryGeneration;
-  const discovery = findCodexCommandUncached().then((command) => {
+  const discovery = findCodexCommandUncached().then((result) => {
     // A caller may explicitly invalidate discovery while an old filesystem
     // scan is in flight. Do not let that older result revive a stale command.
     if (generation === codexCommandDiscoveryGeneration) {
-      cachedCodexCommand = { command, expiresAt: Date.now() + CODEX_COMMAND_DISCOVERY_TTL_MS };
+      cachedCodexCommand = { ...result, expiresAt: Date.now() + CODEX_COMMAND_DISCOVERY_TTL_MS };
     }
-    return command;
+    return result;
   });
   pendingCodexCommandDiscovery = discovery;
   void discovery.then(
@@ -206,11 +211,12 @@ export function invalidateCodexCommandDiscovery(): void {
   pendingCodexCommandDiscovery = undefined;
 }
 
-async function findCodexCommandUncached(): Promise<string | undefined> {
+async function findCodexCommandUncached(): Promise<CodexCommandDiscovery> {
+  let rejectedUnsafeCandidate = false;
   const namedCandidates = process.platform === "win32"
     ? ["codex.exe", "codex.cmd"]
     : ["codex"];
-  // The desktop app ships a signed Codex executable. Prefer it on macOS so a
+  // The desktop app ships a Codex launcher. Prefer its verified native payload on macOS so a
   // user's existing Codex session works without invoking an old npm binary
   // whose certificate may have been revoked by Gatekeeper.
   const desktopCandidates = process.platform === "darwin" ? [DESKTOP_CODEX_COMMAND] : [];
@@ -220,16 +226,24 @@ async function findCodexCommandUncached(): Promise<string | undefined> {
   const userCandidates = process.platform === "darwin" ? [join(homedir(), ".local", "bin", "codex")] : [];
   const fixedCandidates = process.platform === "darwin" ? ["/opt/homebrew/bin/codex", "/usr/local/bin/codex"] : [];
   for (const candidate of [...desktopCandidates, ...userCandidates, ...fixedCandidates]) {
-    if (await executable(candidate)) return candidate;
+    if (await executable(candidate)) {
+      const trusted = await trustedCodexExecutable(candidate);
+      if (trusted) return { command: trusted, rejectedUnsafeCandidate };
+      rejectedUnsafeCandidate = true;
+    }
   }
   for (const directory of (process.env.PATH || "").split(delimiter)) {
     if (!directory) continue;
     for (const name of namedCandidates) {
       const candidate = join(directory, name);
-      if (await executable(candidate)) return candidate;
+      if (await executable(candidate)) {
+        const trusted = await trustedCodexExecutable(candidate);
+        if (trusted) return { command: trusted, rejectedUnsafeCandidate };
+        rejectedUnsafeCandidate = true;
+      }
     }
   }
-  return undefined;
+  return { rejectedUnsafeCandidate };
 }
 
 async function executable(command: string): Promise<boolean> {

@@ -96,7 +96,9 @@ export class AiService {
           requiresApiKey: false,
           availabilityMessage: status.available
             ? "已检测到本机 Codex App Server。它使用你现有的 Codex/ChatGPT 登录，不需要 API Key。"
-            : "未检测到本机 Codex。请安装 Codex 并在终端完成登录后重试。"
+            : status.issue === "integrity"
+              ? "本机 Codex 签名校验未通过，已阻止启动。请从官方渠道重新安装后重试。"
+              : "未检测到本机 Codex。请安装 Codex 并在终端完成登录后重试。"
         };
       }
       const stored = await this.getStoredConfiguration(id);
@@ -158,7 +160,8 @@ export class AiService {
         effort: configuration.effort,
         configured: status.available,
         requiresApiKey: false,
-        availabilityMessage: status.available ? "本机 Codex App Server 使用自己的登录会话；模型与推理强度只会传给本机 Codex。" : "未检测到本机 Codex。"
+        availabilityMessage: status.available ? "本机 Codex App Server 使用自己的登录会话；模型与推理强度只会传给本机 Codex。"
+          : status.issue === "integrity" ? "本机 Codex 签名校验未通过，已阻止启动。请从官方渠道重新安装后重试。" : "未检测到本机 Codex。"
       };
     }
     const previous = await this.readStoredConfiguration(input.provider);

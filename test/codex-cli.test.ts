@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const access = vi.hoisted(() => vi.fn());
+const integrity = vi.hoisted(() => vi.fn(async (_candidate: string): Promise<string | undefined> => undefined));
 
 vi.mock("node:fs/promises", () => ({ access }));
+vi.mock("../src/main/codex-command-integrity", () => ({ trustedCodexExecutable: integrity }));
 
 import {
   CODEX_COMMAND_DISCOVERY_TTL_MS,
@@ -21,6 +23,7 @@ afterEach(() => {
   invalidateCodexCommandDiscovery();
   vi.useRealTimers();
   vi.clearAllMocks();
+  integrity.mockImplementation(async (candidate: string) => candidate);
 });
 
 describe("local Codex CLI invocation", () => {
@@ -68,6 +71,13 @@ describe("local Codex CLI invocation", () => {
     vi.advanceTimersByTime(CODEX_COMMAND_DISCOVERY_TTL_MS + 1);
     await expect(cli.status()).resolves.toEqual({ available: false });
     expect(access.mock.calls.length).toBeGreaterThan(firstScanAttempts);
+  });
+
+  it("never reports a command whose native payload failed integrity verification", async () => {
+    access.mockResolvedValue(undefined);
+    integrity.mockResolvedValue(undefined);
+    await expect(new LocalCodexCli().status()).resolves.toEqual({ available: false, issue: "integrity" });
+    expect(integrity).toHaveBeenCalled();
   });
 
   it("uses an explicit model and bounded effort in ephemeral, read-only mode", () => {

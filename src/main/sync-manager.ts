@@ -9,6 +9,8 @@ import { ContentMaintenance } from "./content-maintenance";
 import { ReadingDatabase } from "./database";
 import { ConnectorRegistry } from "./connector-registry";
 import { KeyedTaskQueue } from "./keyed-task-queue";
+import { RobotsNetworkUnavailableError } from "./robots";
+import { NetworkRequestError } from "./http";
 
 const BACKGROUND_SYNC_CONCURRENCY = 2;
 type SourceSyncResult = { inserted: number; source: Source };
@@ -22,17 +24,28 @@ export class SyncManager {
   private readonly controllers = new Map<string, AbortController>();
   private closing = false;
   private closePromise?: Promise<void>;
+  private wasOnline = true;
 
   constructor(
     private readonly db: ReadingDatabase,
     private readonly registry: ConnectorRegistry,
-    private readonly maintenance?: ContentMaintenance
+    private readonly maintenance?: ContentMaintenance,
+    private readonly connectivity?: { isOnline(): boolean; onRestored(): void }
   ) {}
 
   start(): void {
     if (this.timer || this.closing) return;
-    this.timer = setInterval(() => this.requestDueRun(), 60_000);
-    this.requestDueRun();
+    this.wasOnline = this.connectivity?.isOnline() ?? true;
+    this.timer = setInterval(() => this.tick(), 60_000);
+    if (this.wasOnline) this.requestDueRun();
+  }
+
+  private tick(): void {
+    if (this.closing) return;
+    const online = this.connectivity?.isOnline() ?? true;
+    if (online && !this.wasOnline) this.connectivity?.onRestored();
+    this.wasOnline = online;
+    if (online) this.requestDueRun();
   }
 
   stop(): void {
@@ -169,7 +182,8 @@ export class SyncManager {
         this.assertOpen();
         // Success and failure must obey the same stale-result boundary.
         const currentSource = currentSourceForSync(this.db, source, subscription);
-        const updated = this.db.markFailure(currentSource, userSafeError(error));
+        const updated = this.db.markFailure(currentSource, userSafeError(error),
+          error instanceof RobotsNetworkUnavailableError || error instanceof NetworkRequestError ? 5 * 60_000 : undefined);
         throw new SyncFailure(updated.lastError || "同步失败");
       }
     }, signal);

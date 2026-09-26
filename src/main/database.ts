@@ -1201,7 +1201,7 @@ export class ReadingDatabase {
     return this.getSource(sourceId)!;
   }
 
-  markFailure(source: Source, message: string): Source {
+  markFailure(source: Source, message: string, retryAfterMs?: number): Source {
     const now = Date.now();
     const failures = source.failureCount + 1;
     return this.writeTransaction(() => {
@@ -1210,9 +1210,22 @@ export class ReadingDatabase {
           next_check_at = ?, updated_at = ? WHERE id = ?`)
         // Network/parser failures remain retryable indefinitely. `paused` is
         // reserved for an explicit user or compliance stop through pauseSource.
-        .run("error", failures, message.slice(0, 300), now, now + retryDelay(failures), now, source.id);
+        .run("error", failures, message.slice(0, 300), now, now + (retryAfterMs ?? retryDelay(failures)), now, source.id);
       this.recordSyncEvent(source.id, "failure", 0, 0, message);
       return this.getSource(source.id)!;
+    });
+  }
+
+  /** Only automatic, still-subscribed network failures may wake early on reconnection. */
+  expediteNetworkFailures(messages: readonly string[], now = Date.now()): number {
+    if (!messages.length) return 0;
+    return this.writeTransaction(() => {
+      const placeholders = messages.map(() => "?").join(", ");
+      const result = this.db.prepare(`UPDATE sources SET next_check_at = ?, updated_at = ?
+        WHERE status = 'error' AND polling_enabled = 1 AND last_error IN (${placeholders})
+          AND EXISTS (SELECT 1 FROM subscriptions WHERE source_id = sources.id AND subscribed = 1)`)
+        .run(now, now, ...messages);
+      return result.changes;
     });
   }
 

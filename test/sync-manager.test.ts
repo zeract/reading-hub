@@ -6,9 +6,65 @@ import { ConnectorRegistry } from "../src/main/connector-registry";
 import { ContentMaintenance } from "../src/main/content-maintenance";
 import { ReadingDatabase } from "../src/main/database";
 import { SyncCancelledError, SyncManager } from "../src/main/sync-manager";
+import { RobotsNetworkUnavailableError } from "../src/main/robots";
+import { NetworkRequestError } from "../src/main/http";
 import type { ConnectorAdapter, Entry, RawEntry, Source } from "../src/shared/types";
 
 describe("SyncManager", () => {
+  it("automatically retries a persisted robots network failure after connectivity returns", async () => {
+    vi.useFakeTimers();
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+    db.markFailure(source, RobotsNetworkUnavailableError.messageText);
+    const registry = new ConnectorRegistry();
+    const sync = vi.fn(async () => ({ entries: [{ url: "https://example.com/post", title: "Recovered" }] }));
+    registry.register({ ...replayAdapter(), sync });
+    let online = false;
+    const restored = vi.fn(() => db.expediteNetworkFailures([RobotsNetworkUnavailableError.messageText]));
+    const manager = new SyncManager(db, registry, undefined, { isOnline: () => online, onRestored: restored });
+    try {
+      manager.start();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(sync).not.toHaveBeenCalled();
+      online = true;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(restored).toHaveBeenCalledTimes(1);
+      expect(sync).toHaveBeenCalledTimes(1);
+      expect(db.getSource(source.id)).toMatchObject({ status: "active", failureCount: 0 });
+      expect(db.listEntries(source.id)).toHaveLength(1);
+    } finally { await manager.close(); db.close(); vi.useRealTimers(); }
+  });
+
+  it("caps repeated robots network failures at five minutes", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+    const registry = new ConnectorRegistry();
+    registry.register({ ...replayAdapter(), sync: async () => { throw new RobotsNetworkUnavailableError(); } });
+    const manager = new SyncManager(db, registry);
+    try {
+      for (let failure = 1; failure <= 3; failure += 1) {
+        await expect(manager.syncSource(source.id)).rejects.toThrow("robots.txt");
+        const current = db.getSource(source.id)!;
+        expect(current.failureCount).toBe(failure);
+        expect(current.nextCheckAt! - Date.now()).toBeLessThanOrEqual(5 * 60_000);
+      }
+    } finally { await manager.close(); db.close(); }
+  });
+
+  it("also caps ordinary source transport failures for recovery without weakening unrelated errors", async () => {
+    const db = new ReadingDatabase(":memory:");
+    const source = db.createSource({ url: "https://example.com/feed", title: "Example", kind: "rss", pollingEnabled: true });
+    const registry = new ConnectorRegistry();
+    registry.register({ ...replayAdapter(), sync: async () => { throw new NetworkRequestError(new Error("offline")); } });
+    const manager = new SyncManager(db, registry);
+    try {
+      for (let failure = 1; failure <= 3; failure += 1) {
+        await expect(manager.syncSource(source.id)).rejects.toThrow("无法连接");
+        expect(db.getSource(source.id)?.nextCheckAt! - Date.now()).toBeLessThanOrEqual(5 * 60_000);
+      }
+    } finally { await manager.close(); db.close(); }
+  });
+
   it("cancels a queued source before another source on the same host finishes", async () => {
     const db = new ReadingDatabase(":memory:");
     const first = db.createSource({ url: "https://example.com/one", title: "One", kind: "rss", pollingEnabled: true });

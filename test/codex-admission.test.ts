@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), access: vi.fn(async () => undefined) }));
 vi.mock("node:child_process", () => ({ spawn: mocks.spawn }));
 vi.mock("node:fs/promises", () => ({ access: mocks.access }));
+vi.mock("../src/main/codex-command-integrity", () => ({ trustedCodexExecutable: vi.fn(async (candidate: string) => candidate) }));
 import { LocalCodexCli, invalidateCodexCommandDiscovery } from "../src/main/codex-cli";
 
 const clients: LocalCodexCli[] = [];
