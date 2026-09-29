@@ -1,4 +1,4 @@
-import { GenericConnector } from "../src/main/connectors";
+import { GenericConnector, ManualConnector, RssConnector } from "../src/main/connectors";
 import { ConnectorRegistry } from "../src/main/connector-registry";
 import { SyncManager } from "../src/main/sync-manager";
 import { expect, it, vi } from "vitest";
@@ -66,4 +66,28 @@ it('keeps preview ingestion qualified and repeated sync deduplicated with real p
     expect(db.getSource(source.id)?.extractionRule?.selection).toBe('automatic');
     expect(getText.mock.calls.every(([url])=>url===page)).toBe(true);
   } finally {await sync.close();db.close();}
+});
+
+it('applies the same article-link policy to a direct RSS subscription but not an explicit saved link', async () => {
+  const db = new ReadingDatabase(':memory:');
+  const feedUrl = 'https://example.com/feed.xml';
+  const articleUrl = 'https://example.com/blog/real-article';
+  const feed = `<?xml version="1.0"?><rss version="2.0"><channel><title>Fixture</title>
+    <item><title>Research role</title><link>${job}</link></item>
+    <item><title>Article about careers</title><link>${articleUrl}</link></item>
+  </channel></rss>`;
+  const http = { getText: vi.fn(async (url: string) => ({ url, status: 200, contentType: 'application/rss+xml', text: feed })) };
+  const registry = new ConnectorRegistry();
+  registry.register(new RssConnector(http as never));
+  registry.register(new ManualConnector(http as never));
+  const manager = new SyncManager(db, registry);
+  const rss = db.createSource({ url: feedUrl, title: 'Feed', kind: 'rss', pollingEnabled: true });
+  const manual = db.createSource({ url: job, title: 'Saved link', kind: 'manual', pollingEnabled: false });
+  try {
+    expect((await manager.syncSource(rss.id)).inserted).toBe(1);
+    expect(db.listEntries(rss.id).map((entry) => entry.url)).toEqual([articleUrl]);
+    expect(manager.savePreview(manual, [{ url: job, title: 'Research role' }])).toBe(1);
+    expect(db.listEntries(manual.id).map((entry) => entry.url)).toEqual([job]);
+    expect((await manager.syncSource(rss.id)).inserted).toBe(0);
+  } finally { await manager.close(); db.close(); }
 });

@@ -1,4 +1,5 @@
 import { throwIfAborted } from "./cancellation";
+import { isRecruitmentUrl } from "./content-eligibility";
 import { extractCalibrationCandidates, extractGenericPage } from "./extractor";
 import { discoverFeedUrls, parseFeed, looksLikeFeed } from "./feed";
 import { discoverPublicArchiveUrl, findPublicArchiveUrls } from "./archive-backfill";
@@ -30,7 +31,7 @@ export class SourceProbe {
         title: feed.title,
         url: page.url,
         confidence: 1,
-        preview: feed.entries.slice(0, 10),
+        preview: feed.entries.filter((entry) => !isRecruitmentUrl(entry.url)).slice(0, 10),
         historicalArchiveUrl: archiveUrl,
         requiresReview: false,
         message: localFeed
@@ -60,7 +61,7 @@ export class SourceProbe {
           title: feed.title,
           url: feedResponse.url,
           confidence: 0.98,
-          preview: feed.entries.slice(0, 10),
+          preview: feed.entries.filter((entry) => !isRecruitmentUrl(entry.url)).slice(0, 10),
           historicalArchiveUrl: archiveUrl,
           requiresReview: false,
           message: archiveUrl ? archiveDiscoveryMessage() : undefined

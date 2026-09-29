@@ -173,6 +173,11 @@ function originIdentity(origin: Pick<OriginRow, "entry_id" | "source_id" | "prov
   return `${origin.entry_id}\u0000${origin.source_id}\u0000${origin.provider_id}\u0000${origin.external_id}`;
 }
 
+/** Only an explicit, non-URL provider key may bridge different reading URLs. */
+function isStableContentIdentity(identity: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:.+/i.test(identity) && !/^(?:https?|url):/i.test(identity);
+}
+
 function chunked<T>(items: readonly T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let index = 0; index < items.length; index += size) chunks.push(items.slice(index, index + size));
@@ -1086,7 +1091,8 @@ export class ReadingDatabase {
       provider_label = COALESCE(excluded.provider_label, entries.provider_label),
       external_id = COALESCE(excluded.external_id, entries.external_id),
       canonical_identity = COALESCE(excluded.canonical_identity, entries.canonical_identity)`);
-    const exists = this.db.prepare("SELECT id, canonical_identity FROM entries WHERE canonical_url = ?");
+    const exists = this.db.prepare("SELECT id, canonical_url, canonical_identity FROM entries WHERE canonical_url = ?");
+    const matchingStableIdentity = this.db.prepare("SELECT id, canonical_url, canonical_identity FROM entries WHERE canonical_identity = ? LIMIT 2");
     const isDismissed = this.db.prepare("SELECT 1 FROM dismissed_contents WHERE canonical_identity = ?");
     const upsertOrigin = this.db.prepare(`INSERT INTO entry_origins (entry_id, source_id, provider_id, provider_label, external_id, original_url, observed_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1101,8 +1107,16 @@ export class ReadingDatabase {
     const transaction = this.db.transaction((records: Entry[]) => {
       for (const entry of records) {
         const identity = entry.canonicalIdentity ?? entry.canonicalUrl;
-        const existing = exists.get(entry.canonicalUrl) as { id: string; canonical_identity: string | null } | undefined;
-        const previousIdentity = existing?.canonical_identity ?? entry.canonicalUrl;
+        type ExistingEntry = { id: string; canonical_url: string; canonical_identity: string | null };
+        const byUrl = exists.get(entry.canonicalUrl) as ExistingEntry | undefined;
+        // A provider-declared opaque ID can bridge changed reading URLs. A URL
+        // identity cannot: it may be an unverified canonical or homepage hint.
+        // Never choose an arbitrary winner if legacy rows already share an ID.
+        const identityMatches = !byUrl && isStableContentIdentity(identity)
+          ? matchingStableIdentity.all(identity) as ExistingEntry[]
+          : [];
+        const existing = byUrl ?? (identityMatches.length === 1 ? identityMatches[0] : undefined);
+        const previousIdentity = existing?.canonical_identity ?? existing?.canonical_url ?? entry.canonicalUrl;
         // A canonical match normally has the same identity. Its first lookup
         // already checked the tombstone; only a distinct stored identity needs
         // a second check to prevent a provider rekey from reviving deletion.
@@ -1113,6 +1127,7 @@ export class ReadingDatabase {
         const observedAt = entry.observedAt ?? entry.createdAt;
         insert.run({
           ...entry,
+          canonicalUrl: existing?.canonical_url ?? entry.canonicalUrl,
           author: entry.author ?? null,
           publishedAt: entry.publishedAt ?? null,
           summary: entry.summary ?? null,

@@ -58,7 +58,7 @@ describe("connector platform", () => {
   it("only accepts explicitly built-in adapters", () => {
     const registry = new ConnectorRegistry();
     expect(() => registry.register({
-      manifest: { ...builtInManifest("academic", "Test", [], []), builtIn: false },
+      manifest: { ...builtInManifest("academic", "Test", []), builtIn: false },
       sync: async () => ({ entries: [] }),
       normalize: () => { throw new Error("unused"); }
     } as any)).toThrow("只允许注册内置连接器");

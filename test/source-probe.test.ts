@@ -3,6 +3,15 @@ import { ResponseTooLargeError } from "../src/main/http";
 import { SourceProbe } from "../src/main/source-probe";
 
 describe("SourceProbe platform boundaries", () => {
+  it("does not offer proven recruitment destinations in a direct Feed preview", async () => {
+    const feedUrl = "https://example.com/feed.xml";
+    const http = { getText: vi.fn(async (url: string) => ({
+      url, status: 200, contentType: "application/rss+xml",
+      text: `<?xml version="1.0"?><rss version="2.0"><channel><title>Fixture</title><item><title>Job</title><link>https://jobs.ashbyhq.com/example/8fe61c73-0daf-4432-a47d-44714c1ef764</link></item><item><title>Post</title><link>https://example.com/post</link></item></channel></rss>`
+    })) };
+    const result = await new SourceProbe(http as any).probe(feedUrl);
+    expect(result.preview.map((item) => item.title)).toEqual(["Post"]);
+  });
   it.each(["direct", "alternate"])("omits raw Feed HTML from the %s subscription preview", async (mode) => {
     const feedUrl = "https://example.com/feed.json";
     const http = { getText: vi.fn(async (url: string) => ({

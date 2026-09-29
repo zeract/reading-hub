@@ -115,7 +115,7 @@ describe("ContentMaintenance", () => {
 
 function emptyGenericAdapter(): ConnectorAdapter {
   return {
-    manifest: { id: "generic", version: 1, displayName: "Generic", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+    manifest: { id: "generic", version: 1, displayName: "Generic", builtIn: true, capabilities: ["public-http"] },
     async sync() {
       return { entries: [], emptyIsHealthy: true };
     },

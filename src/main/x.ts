@@ -54,7 +54,7 @@ export class XApiError extends Error {
  * cookies or calls private web endpoints.
  */
 export class XConnector implements ConnectorAdapter {
-  readonly manifest = builtInManifest("x", "X", ["oauth"], ["api.x.com", "x.com"]);
+  readonly manifest = builtInManifest("x", "X", ["oauth"]);
   private readonly credentials = new KeyedTaskQueue();
 
   constructor(

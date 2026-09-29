@@ -74,7 +74,7 @@ describe("replaying a changed collection selection", () => {
       entries: context.checkpoint ? [] : [a, b].map((facet) => ({ url: `https://example.com/${facet.key}`, title: facet.label, facets: [facet] })),
       checkpoint: { cursor: "consumed", sinceId: "newest", data: { page: "complete" } }, emptyIsHealthy: true
     }));
-    registry.register({ manifest: { id: "rss", version: 1, displayName: "Fixture", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+    registry.register({ manifest: { id: "rss", version: 1, displayName: "Fixture", builtIn: true, capabilities: ["public-http"] },
       sync: fetch, normalize: (entry, source) => contentNormalizer.normalize(entry, source) });
     const sync = new SyncManager(db, registry);
     const service = new SourceService(db, {} as never, sync, {} as never);

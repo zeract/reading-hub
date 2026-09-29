@@ -39,7 +39,7 @@ type LoginAttempt = {
  * and never sees a password; Zhihu renders its own user-facing login page.
  */
 export class ZhihuFollowConnector implements ConnectorAdapter {
-  readonly manifest = builtInManifest("zhihu_follow", "知乎关注动态", ["oauth"], ["www.zhihu.com"]);
+  readonly manifest = builtInManifest("zhihu_follow", "知乎关注动态", ["oauth"]);
 
   private login?: LoginAttempt;
   private onAuthenticated?: () => Promise<void>;

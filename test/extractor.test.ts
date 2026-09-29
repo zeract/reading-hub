@@ -403,6 +403,15 @@ describe("canonical URL", () => {
       .toBe("https://scour.ing/r/rss/https%3A%2F%2Fexample.com%2Fpost");
   });
 
+  it("keeps potentially semantic query parameters and hash routes without retaining ordinary anchors", () => {
+    expect(canonicalizeContentUrl("https://example.com/posts?ref=main&source=archive&utm_campaign=news#section"))
+      .toBe("https://example.com/posts?ref=main&source=archive");
+    expect(canonicalizeContentUrl("https://example.com/app/#/posts/one"))
+      .not.toBe(canonicalizeContentUrl("https://example.com/app/#/posts/two"));
+    expect(canonicalizeContentUrl("https://example.com/app/#!/posts/one"))
+      .toBe("https://example.com/app#!/posts/one");
+  });
+
   it("accepts public HTTP pages while still rejecting private network targets", () => {
     expect(assertPublicUrl("http://heavensheep.xyz/").protocol).toBe("http:");
     expect(() => assertPublicUrl("http://127.0.0.1:3000")).toThrow("不能添加本机或私有网络地址");

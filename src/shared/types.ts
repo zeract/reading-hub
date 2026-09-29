@@ -291,7 +291,8 @@ export interface ConnectorManifest {
   builtIn: true;
   capabilities: Array<"public-http" | "oauth" | "author-search">;
   requiresAccount?: boolean;
-  allowedHosts: string[];
+  /** Host-enforced collection policy; a connector cannot bypass this at commit time. */
+  entryPolicy?: "article-links" | "all";
 }
 
 export interface AuthorizationContext {

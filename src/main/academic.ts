@@ -25,8 +25,7 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
   readonly manifest = builtInManifest(
     "academic",
     "学术作者更新",
-    ["public-http", "author-search"],
-    ["api.openalex.org", "api.semanticscholar.org", "pub.orcid.org"]
+    ["public-http", "author-search"]
   );
 
   constructor(private readonly fetchJson: AcademicFetch = chromiumFetch) {}

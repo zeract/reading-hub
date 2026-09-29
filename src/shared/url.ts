@@ -1,4 +1,6 @@
-const TRACKING_PARAMS = ["fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"];
+// `ref` and `source` are not universally tracking parameters: some sites use
+// them to select a branch, record, or view. Only discard unambiguous trackers.
+const TRACKING_PARAMS = ["fbclid", "gclid", "mc_cid", "mc_eid"];
 
 export function assertPublicUrl(rawUrl: string): URL {
   const url = parseHttpUrl(rawUrl);
@@ -108,7 +110,11 @@ export function canonicalizeUrl(rawUrl: string): string {
  * parameters appended to that wrapper are per-delivery redirect state.
  */
 export function canonicalizeContentUrl(rawUrl: string): string {
+  const original = new URL(rawUrl);
   const url = new URL(canonicalizeUrl(rawUrl));
+  // A fragment beginning with `/` (or `!/`) is a client-side route, not an
+  // in-article anchor. Losing it can merge distinct posts on hash-router sites.
+  if (/^#!?\//.test(original.hash)) url.hash = original.hash;
   if (isScourRssRedirectUrl(url)) url.search = "";
   return url.toString();
 }

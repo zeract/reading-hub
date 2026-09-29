@@ -17,7 +17,7 @@ it("prepares one collection scope for a large sync batch", async () => {
     Object.defineProperty(subscription.scope, "facetSelections", { get() { scopeReads++; return selections; } });
     const readSubscription = vi.spyOn(db, "getSubscriptionForSource").mockReturnValueOnce(subscription);
     registry.register({
-      manifest: { id: "rss", version: 1, displayName: "Fixture", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      manifest: { id: "rss", version: 1, displayName: "Fixture", builtIn: true, capabilities: ["public-http"] },
       async sync() {
         return { entries: Array.from({ length: 5_000 }, (_, index) => ({
           url: `https://example.com/${index}`, title: `Fixture ${index}`,

@@ -15,7 +15,7 @@ class ZhihuRequestError extends Error {
 
 /** Official, current-user-only API client. It intentionally has no user-id parameter. */
 export class ZhihuConnector implements ConnectorAdapter {
-  readonly manifest = builtInManifest("zhihu", "知乎（官方数据）", ["oauth"], ["developer.zhihu.com"]);
+  readonly manifest = builtInManifest("zhihu", "知乎（官方数据）", ["oauth"]);
 
   constructor(private readonly getAccessSecret: () => Promise<string | null>) {}
 

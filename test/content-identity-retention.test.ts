@@ -12,6 +12,59 @@ function card(sourceId: string, id: string, url: string, extra: Partial<Entry> =
 }
 
 describe("content identity retention", () => {
+  it("attaches a second reading URL to one unambiguous stable content identity without losing user state", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reading-hub-stable-identity-"));
+    const path = join(dir, "library.sqlite");
+    let db = new ReadingDatabase(path);
+    try {
+      const first = db.createSource({ url: "https://example.com/feed", title: "First", kind: "rss", pollingEnabled: true });
+      const second = db.createSource({ url: "https://elsewhere.example/feed", title: "Second", kind: "rss", pollingEnabled: true });
+      const identity = "doi:10.1000/shared";
+      const original = card(first.id, "retained", "https://publisher.example/paper", { canonicalIdentity: identity });
+      expect(db.saveEntries([original])).toBe(1);
+      db.markRead(original.id, true);
+      db.markFavorite(original.id, true);
+      expect(db.saveEntries([card(second.id, "incoming", "https://archive.example/paper", { canonicalIdentity: identity, title: "Updated metadata" })])).toBe(0);
+      const retained = db.getEntry(original.id)!;
+      expect(retained).toMatchObject({ id: original.id, canonicalUrl: original.canonicalUrl, title: "Updated metadata", read: true, favorite: true });
+      expect(retained.origins?.map((origin) => origin.sourceId).sort()).toEqual([first.id, second.id].sort());
+      expect(db.listEntries(second.id).map((entry) => entry.id)).toEqual([original.id]);
+      db.close();
+      db = new ReadingDatabase(path);
+      expect(db.getEntry(original.id)).toMatchObject({ read: true, favorite: true });
+      expect(db.listEntries(second.id).map((entry) => entry.id)).toEqual([original.id]);
+      db.dismissEntry(original.id);
+      expect(db.saveEntries([card(second.id, "third", "https://third.example/paper", { canonicalIdentity: identity })])).toBe(0);
+      expect(db.listEntries()).toEqual([]);
+    } finally { db.close(); rmSync(dir, { recursive: true }); }
+  });
+
+  it("does not choose an arbitrary row when legacy content already has a conflicting stable ID", () => {
+    const db = new ReadingDatabase(":memory:");
+    try {
+      const source = db.createSource({ url: "https://example.com/feed", title: "Feed", kind: "rss", pollingEnabled: true });
+      db.saveEntries([
+        card(source.id, "first", "https://example.com/one", { canonicalIdentity: "doi:10.1000/shared" }),
+        card(source.id, "second", "https://example.com/two", { canonicalIdentity: "doi:10.1000/other" })
+      ]);
+      const raw = (db as unknown as { db: Sqlite.Database }).db;
+      raw.prepare("UPDATE entries SET canonical_identity = ? WHERE id = ?").run("doi:10.1000/shared", "second");
+      expect(db.saveEntries([card(source.id, "incoming", "https://example.com/three", { canonicalIdentity: "doi:10.1000/shared" })])).toBe(1);
+      expect(db.listEntries().map((entry) => entry.id).sort()).toEqual(["first", "incoming", "second"]);
+    } finally { db.close(); }
+  });
+
+  it("does not merge different URLs merely because their displayed metadata match", () => {
+    const db = new ReadingDatabase(":memory:");
+    try {
+      const source = db.createSource({ url: "https://example.com/feed", title: "Feed", kind: "rss", pollingEnabled: true });
+      expect(db.saveEntries([
+        card(source.id, "one", "https://example.com/one", { title: "Same title" }),
+        card(source.id, "two", "https://example.com/two", { title: "Same title" })
+      ])).toBe(2);
+    } finally { db.close(); }
+  });
+
   it("does not revive a dismissed URL when a provider supplies a different content identity", () => {
     const db = new ReadingDatabase(":memory:");
     try {

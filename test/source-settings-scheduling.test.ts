@@ -47,7 +47,7 @@ it("still admits an already-due source after its title changes", async () => {
   const db = new ReadingDatabase(":memory:");
   const registry = new ConnectorRegistry();
   const connectorSync = vi.fn(async (_context: { source: Source }) => ({ entries: [], emptyIsHealthy: true }));
-  registry.register({ manifest: { id: "rss", version: 1, displayName: "Fixture", builtIn: true, capabilities: ["public-http"], allowedHosts: [] }, sync: connectorSync, normalize: () => { throw new Error("No entries expected"); } });
+  registry.register({ manifest: { id: "rss", version: 1, displayName: "Fixture", builtIn: true, capabilities: ["public-http"] }, sync: connectorSync, normalize: () => { throw new Error("No entries expected"); } });
   const manager = new SyncManager(db, registry);
   try {
     const source = db.createSource({ url: "https://example.com/feed", title: "Fixture", kind: "rss", pollingEnabled: true });

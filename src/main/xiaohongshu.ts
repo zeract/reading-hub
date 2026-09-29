@@ -18,8 +18,7 @@ export class XiaohongshuConnector implements ConnectorAdapter {
   readonly manifest = builtInManifest(
     "xiaohongshu",
     "小红书公开博主",
-    ["public-http"],
-    ["xiaohongshu.com", "www.xiaohongshu.com"]
+    ["public-http"]
   );
 
   constructor(private readonly http: PublicHttpClient) {}

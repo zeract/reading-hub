@@ -39,8 +39,7 @@ export function builtInManifest(
   id: ConnectorId,
   displayName: string,
   capabilities: ConnectorManifest["capabilities"],
-  allowedHosts: string[],
   requiresAccount = false
 ): ConnectorManifest {
-  return { id, version: 1, displayName, builtIn: true, capabilities, allowedHosts, requiresAccount };
+  return { id, version: 1, displayName, builtIn: true, capabilities, requiresAccount };
 }

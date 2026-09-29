@@ -141,7 +141,7 @@ describe("SyncManager", () => {
     const gate = deferred();
     let calls = 0;
     registry.register({
-      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"] },
       async sync() {
         calls += 1;
         if (calls === 1) { gate.started(); await gate.wait; }
@@ -195,7 +195,7 @@ describe("SyncManager", () => {
     let active = 0;
     let peak = 0;
     registry.register({
-      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"] },
       async sync() {
         active += 1;
         peak = Math.max(peak, active);
@@ -230,7 +230,7 @@ describe("SyncManager", () => {
     });
     const registry = new ConnectorRegistry();
     registry.register({
-      manifest: { id: "provider-test", version: 1, displayName: "Provider", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      manifest: { id: "provider-test", version: 1, displayName: "Provider", builtIn: true, capabilities: ["public-http"] },
       async sync() { return { entries: [], emptyIsHealthy: false }; },
       normalize(item: RawEntry, currentSource: Source): Entry { return readerEntry(currentSource, item); }
     });
@@ -251,7 +251,7 @@ describe("SyncManager", () => {
     db.updateSubscriptionScope(source.id, { facetSelections: [selected], history: { mode: "none" } });
     const registry = new ConnectorRegistry();
     registry.register({
-      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"] },
       async sync() {
         return {
           entries: [
@@ -280,7 +280,7 @@ describe("SyncManager", () => {
     const registry = new ConnectorRegistry();
     const gate = deferred();
     registry.register({
-      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"] },
       async sync() {
         gate.started();
         await gate.wait;
@@ -305,7 +305,7 @@ describe("SyncManager", () => {
     const registry = new ConnectorRegistry();
     const gate = deferred();
     registry.register({
-      manifest: { id: "generic", version: 1, displayName: "Web", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      manifest: { id: "generic", version: 1, displayName: "Web", builtIn: true, capabilities: ["public-http"] },
       async sync() {
         gate.started();
         await gate.wait;
@@ -334,7 +334,7 @@ describe("SyncManager", () => {
     const registry = new ConnectorRegistry();
     const gate = deferred();
     registry.register({
-      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"] },
       async sync() {
         gate.started();
         await gate.wait;
@@ -362,7 +362,7 @@ describe("SyncManager", () => {
     const registry = new ConnectorRegistry();
     const gate = deferred();
     registry.register({
-      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+      manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"] },
       async sync() {
         gate.started();
         await gate.wait;
@@ -586,7 +586,7 @@ describe("SyncManager", () => {
 
 function replayAdapter(): ConnectorAdapter {
   return {
-    manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"], allowedHosts: [] },
+    manifest: { id: "rss", version: 1, displayName: "RSS", builtIn: true, capabilities: ["public-http"] },
     async sync() {
       return {
         entries: [{ url: "https://example.com/post", title: "Dated post", publishedAt: Date.UTC(2024, 1, 4) }],

@@ -198,7 +198,9 @@ export class SyncManager {
 
   private saveRawEntries(source: Source, entries: RawEntry[], subscription?: Subscription): { inserted: number; accepted: number } {
     const connector = this.registry.get(source.connectorId ?? source.kind);
-    const eligible = (source.connectorId ?? source.kind) === "generic" ? entries.filter((entry) => !isRecruitmentUrl(entry.url)) : entries;
+    const eligible = connector.manifest.entryPolicy === "article-links"
+      ? entries.filter((entry) => !isRecruitmentUrl(entry.url))
+      : entries;
     const normalized = eligible.map((entry) => connector.normalize(entry, source));
     const accepted = subscription
       ? normalized.filter(createSubscriptionScopeMatcher(subscription.scope))

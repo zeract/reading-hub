@@ -1,7 +1,6 @@
-import { isRecruitmentUrl } from "./content-eligibility";
 import { throwIfAborted } from "./cancellation";
 import { load } from "cheerio";
-import type { ConnectorAdapter, DiscoveryContext, Entry, ExtractionRule, RawEntry, Source, Subscription, SyncCheckpoint, SyncContext, SyncResult } from "../shared/types";
+import type { ConnectorAdapter, ConnectorManifest, DiscoveryContext, Entry, ExtractionRule, RawEntry, Source, Subscription, SyncCheckpoint, SyncContext, SyncResult } from "../shared/types";
 import { assertPublicUrl, canonicalizeContentUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 import { inspectPublicArchiveFacets, type ArchiveFacetCatalog } from "./archive-backfill";
 import { contentNormalizer } from "./content-normalizer";
@@ -29,7 +28,7 @@ abstract class BaseConnector {
 }
 
 export class RssConnector extends BaseConnector implements ConnectorAdapter {
-  readonly manifest = builtInManifest("rss", "RSS / Atom / JSON Feed", ["public-http"], []);
+  readonly manifest: ConnectorManifest = { ...builtInManifest("rss", "RSS / Atom / JSON Feed", ["public-http"]), entryPolicy: "article-links" };
 
   sync(context: SyncContext): Promise<SyncResult> {
     return this.fetchWithMetadata(context.source, context.checkpoint, context.subscription, context.signal);
@@ -91,7 +90,7 @@ function archiveUrlFromConfig(value: unknown): ArchiveCatalogConfig | undefined 
 }
 
 export class GenericConnector extends BaseConnector implements ConnectorAdapter {
-  readonly manifest = builtInManifest("generic", "公开网页", ["public-http"], []);
+  readonly manifest: ConnectorManifest = { ...builtInManifest("generic", "公开网页", ["public-http"]), entryPolicy: "article-links" };
 
   constructor(http: PublicHttpClient, private readonly renderer?: PageRenderer) {
     super(http);
@@ -151,7 +150,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
         const feed = await parseFeed(feedResponse.text, feedResponse.url);
         if (!feed.entries.length) continue;
         return {
-          entries: feed.entries.filter((entry) => !isRecruitmentUrl(entry.url)),
+          entries: feed.entries,
           notModified: false,
           emptyIsHealthy: true,
           ...responseValidators(feedResponse),
@@ -228,7 +227,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
     if (!looksLikeFeed(response.contentType, response.text)) throw new Error("来源声明的 Feed 已不再是有效订阅，请重新校准该来源。");
     const feed = await parseFeed(response.text, response.url);
     return {
-      entries: feed.entries.filter((entry) => !isRecruitmentUrl(entry.url)),
+      entries: feed.entries,
       notModified: false,
       emptyIsHealthy: true,
       ...responseValidators(response),
@@ -251,5 +250,5 @@ function withRendererRequirement(rule: ExtractionRule | undefined, required: boo
 
 /** Manual sources are fetched only when first saved or when the user explicitly refreshes. */
 export class ManualConnector extends GenericConnector {
-  override readonly manifest = builtInManifest("manual", "分享链接", ["public-http"], []);
+  override readonly manifest = builtInManifest("manual", "分享链接", ["public-http"]);
 }
