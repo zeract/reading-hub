@@ -12,7 +12,7 @@ function fixture(kind: "rss" | "generic" = "rss") {
   const calls: Array<{ context: SyncContext; resolve(value: SyncResult): void; reject(reason: Error): void }> = [];
   const registry = new ConnectorRegistry();
   for (const id of ["rss", "generic"] as const) registry.register({
-    manifest: { id, version: 1, displayName: "Fixture", builtIn: true, capabilities: ["public-http"] },
+    manifest: { id, version: 1, displayName: "Fixture", builtIn: true },
     sync: (context) => new Promise<SyncResult>((resolve, reject) => { calls.push({ context, resolve, reject }); }),
     normalize: (entry, source) => contentNormalizer.normalize(entry, source)
   });

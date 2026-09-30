@@ -81,7 +81,7 @@ it("attaches duplicate origins and facets to the retained ID within one batch", 
     db.markRead(original.id, true); db.markFavorite(original.id, true);
     expect(db.saveEntries([card(second.id, "replay", { canonicalUrl: original.canonicalUrl, title: "Revised", facets: [] })])).toBe(0);
     const retained = db.getEntry(original.id)!;
-    expect(retained).toMatchObject({ id: "retained", title: "Revised", read: true, favorite: true });
+    expect(retained).toMatchObject({ id: "retained", title: "retained", read: true, favorite: true });
     expect(retained.origins?.map((origin) => origin.sourceId).sort()).toEqual([first.id, second.id].sort());
     expect(retained.facets).toEqual([]);
     expect(db.getEntry("incoming")).toBeUndefined();

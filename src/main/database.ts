@@ -5,6 +5,7 @@ import type {
   Account,
   AccountStatus,
   ConnectorId,
+  ContentIdentityNamespace,
   ContentOrigin,
   Entry,
   EntryPage,
@@ -26,6 +27,7 @@ import type {
   SyncResult
 } from "../shared/types";
 import { assertPublicUrl } from "../shared/url";
+import { isAuthorizedContentIdentity, isIdentityForCanonicalUrl, isRegisteredContentIdentity, isUrlDerivedContentIdentity } from "./content-identity";
 import { defaultSubscriptionScope, facetIdentity, normaliseFacetReference, normaliseFacets, normaliseSubscriptionScope, sameFacetSelections } from "../shared/subscription-scope";
 import {
   deletePromotedZhihuFollowEntries,
@@ -171,11 +173,6 @@ function boundedPageSize(value: number | undefined): number {
 
 function originIdentity(origin: Pick<OriginRow, "entry_id" | "source_id" | "provider_id" | "external_id">): string {
   return `${origin.entry_id}\u0000${origin.source_id}\u0000${origin.provider_id}\u0000${origin.external_id}`;
-}
-
-/** Only an explicit, non-URL provider key may bridge different reading URLs. */
-function isStableContentIdentity(identity: string): boolean {
-  return /^[a-z][a-z0-9+.-]*:.+/i.test(identity) && !/^(?:https?|url):/i.test(identity);
 }
 
 function chunked<T>(items: readonly T[], size: number): T[][] {
@@ -1074,25 +1071,33 @@ export class ReadingDatabase {
     return removeEntriesForSourceOrigins(this.db, source.id, doomed);
   }
 
-  saveEntries(entries: Entry[], options?: { initialCollection?: boolean }): number {
+  saveEntries(entries: Entry[], options?: { initialCollection?: boolean; identityNamespaces?: readonly ContentIdentityNamespace[] }): number {
+    return this.saveEntriesWithReport(entries, options).inserted;
+  }
+
+  saveEntriesWithReport(
+    entries: Entry[],
+    options?: { initialCollection?: boolean; identityNamespaces?: readonly ContentIdentityNamespace[] }
+  ): { inserted: number; identityConflicts: number } {
     const insert = this.db.prepare(`INSERT INTO entries (
       id, source_id, canonical_url, original_url, title, author, published_at, summary, image_url,
       content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity, ingestion_kind, initial_collection
     ) VALUES (@id, @sourceId, @canonicalUrl, @url, @title, @author, @publishedAt, @summary, @imageUrl,
       @contentHash, 0, 0, @createdAt, @observedAt, @providerId, @providerLabel, @externalId, @canonicalIdentity, @ingestionKind, @initialCollection)
     ON CONFLICT(canonical_url) DO UPDATE SET
-      title = excluded.title,
-      author = COALESCE(excluded.author, entries.author),
-      published_at = COALESCE(excluded.published_at, entries.published_at),
-      summary = COALESCE(excluded.summary, entries.summary),
-      image_url = COALESCE(excluded.image_url, entries.image_url),
-      content_hash = excluded.content_hash,
-      provider_id = COALESCE(excluded.provider_id, entries.provider_id),
-      provider_label = COALESCE(excluded.provider_label, entries.provider_label),
-      external_id = COALESCE(excluded.external_id, entries.external_id),
-      canonical_identity = COALESCE(excluded.canonical_identity, entries.canonical_identity)`);
-    const exists = this.db.prepare("SELECT id, canonical_url, canonical_identity FROM entries WHERE canonical_url = ?");
-    const matchingStableIdentity = this.db.prepare("SELECT id, canonical_url, canonical_identity FROM entries WHERE canonical_identity = ? LIMIT 2");
+      title = CASE WHEN @updatePrimary = 1 THEN excluded.title ELSE entries.title END,
+      author = CASE WHEN @updatePrimary = 1 THEN COALESCE(excluded.author, entries.author) ELSE entries.author END,
+      published_at = CASE WHEN @updatePrimary = 1 THEN COALESCE(excluded.published_at, entries.published_at) ELSE entries.published_at END,
+      summary = CASE WHEN @updatePrimary = 1 THEN COALESCE(excluded.summary, entries.summary) ELSE entries.summary END,
+      image_url = CASE WHEN @updatePrimary = 1 THEN COALESCE(excluded.image_url, entries.image_url) ELSE entries.image_url END,
+      content_hash = CASE WHEN @updatePrimary = 1 THEN excluded.content_hash ELSE entries.content_hash END,
+      provider_id = CASE WHEN @updatePrimary = 1 THEN COALESCE(excluded.provider_id, entries.provider_id) ELSE entries.provider_id END,
+      provider_label = CASE WHEN @updatePrimary = 1 THEN COALESCE(excluded.provider_label, entries.provider_label) ELSE entries.provider_label END,
+      external_id = CASE WHEN @updatePrimary = 1 THEN COALESCE(excluded.external_id, entries.external_id) ELSE entries.external_id END,
+      canonical_identity = CASE WHEN @promoteIdentity = 1 THEN excluded.canonical_identity ELSE entries.canonical_identity END`);
+    type ExistingEntry = { id: string; source_id: string; canonical_url: string; canonical_identity: string | null };
+    const exists = this.db.prepare("SELECT id, source_id, canonical_url, canonical_identity FROM entries WHERE canonical_url = ?");
+    const matchingStableIdentity = this.db.prepare("SELECT id, source_id, canonical_url, canonical_identity FROM entries WHERE canonical_identity = ? LIMIT 2");
     const isDismissed = this.db.prepare("SELECT 1 FROM dismissed_contents WHERE canonical_identity = ?");
     const upsertOrigin = this.db.prepare(`INSERT INTO entry_origins (entry_id, source_id, provider_id, provider_label, external_id, original_url, observed_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1104,19 +1109,38 @@ export class ReadingDatabase {
     const upsertOriginFacet = this.db.prepare(`INSERT OR IGNORE INTO entry_origin_facets
       (entry_id, source_id, provider_id, external_id, facet_id) VALUES (?, ?, ?, ?, ?)`);
     let inserted = 0;
+    let identityConflicts = 0;
     const transaction = this.db.transaction((records: Entry[]) => {
       for (const entry of records) {
-        const identity = entry.canonicalIdentity ?? entry.canonicalUrl;
-        type ExistingEntry = { id: string; canonical_url: string; canonical_identity: string | null };
+        const proposedIdentity = entry.canonicalIdentity ?? entry.canonicalUrl;
+        const authorized = isAuthorizedContentIdentity(proposedIdentity, options?.identityNamespaces);
+        // A connector with a declaration may emit an unrecognised key, but
+        // that key has no authority over other cards or their tombstones.
+        const identity = options?.identityNamespaces !== undefined && !authorized && !isUrlDerivedContentIdentity(proposedIdentity)
+          ? entry.canonicalUrl
+          : proposedIdentity;
         const byUrl = exists.get(entry.canonicalUrl) as ExistingEntry | undefined;
-        // A provider-declared opaque ID can bridge changed reading URLs. A URL
-        // identity cannot: it may be an unverified canonical or homepage hint.
-        // Never choose an arbitrary winner if legacy rows already share an ID.
-        const identityMatches = !byUrl && isStableContentIdentity(identity)
+        // Check even when the URL exists: a different row may already own the
+        // declared identity. Never rekey one old row into a second old row.
+        const identityMatches = authorized
           ? matchingStableIdentity.all(identity) as ExistingEntry[]
           : [];
+        if (identityMatches.length > 1 || (byUrl && identityMatches.length === 1 && identityMatches[0].id !== byUrl.id)) {
+          identityConflicts += 1;
+          continue;
+        }
         const existing = byUrl ?? (identityMatches.length === 1 ? identityMatches[0] : undefined);
         const previousIdentity = existing?.canonical_identity ?? existing?.canonical_url ?? entry.canonicalUrl;
+        const sameIdentity = !existing || previousIdentity === identity;
+        const incomingUrlIdentity = Boolean(byUrl && isIdentityForCanonicalUrl(identity, byUrl.canonical_url));
+        const previousUrlIdentity = Boolean(byUrl && isIdentityForCanonicalUrl(previousIdentity, byUrl.canonical_url));
+        const sameUrlIdentity = incomingUrlIdentity && previousUrlIdentity;
+        const urlAliasOfStableIdentity = incomingUrlIdentity && isRegisteredContentIdentity(previousIdentity);
+        const promoteUrlIdentity = previousUrlIdentity && authorized && identityMatches.length === 0;
+        if (!sameIdentity && !sameUrlIdentity && !urlAliasOfStableIdentity && !promoteUrlIdentity) {
+          identityConflicts += 1;
+          continue;
+        }
         // A canonical match normally has the same identity. Its first lookup
         // already checked the tombstone; only a distinct stored identity needs
         // a second check to prevent a provider rekey from reviving deletion.
@@ -1128,6 +1152,8 @@ export class ReadingDatabase {
         insert.run({
           ...entry,
           canonicalUrl: existing?.canonical_url ?? entry.canonicalUrl,
+          updatePrimary: Number(!existing || existing.source_id === entry.sourceId),
+          promoteIdentity: Number(promoteUrlIdentity),
           author: entry.author ?? null,
           publishedAt: entry.publishedAt ?? null,
           summary: entry.summary ?? null,
@@ -1138,7 +1164,7 @@ export class ReadingDatabase {
           externalId: entry.externalId ?? null,
           ingestionKind: entry.ingestionKind ?? "current",
           initialCollection: Number(options?.initialCollection === true),
-          canonicalIdentity: identity
+          canonicalIdentity: !existing || promoteUrlIdentity ? identity : previousIdentity
         });
         // The upsert retains an existing ID or inserts the supplied ID. Both
         // are known in this transaction; no second canonical lookup is needed.
@@ -1165,7 +1191,7 @@ export class ReadingDatabase {
       }
     });
     transaction(entries);
-    return inserted;
+    return { inserted, identityConflicts };
   }
 
   markRead(entryId: string, read: boolean): void {

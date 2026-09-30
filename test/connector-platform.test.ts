@@ -58,10 +58,28 @@ describe("connector platform", () => {
   it("only accepts explicitly built-in adapters", () => {
     const registry = new ConnectorRegistry();
     expect(() => registry.register({
-      manifest: { ...builtInManifest("academic", "Test", []), builtIn: false },
+      manifest: { ...builtInManifest("academic", "Test"), builtIn: false },
       sync: async () => ({ entries: [] }),
       normalize: () => { throw new Error("unused"); }
     } as any)).toThrow("只允许注册内置连接器");
+  });
+
+  it("rejects unknown identity authorities instead of treating a prefix as a contract", () => {
+    const registry = new ConnectorRegistry();
+    expect(() => registry.register({
+      manifest: { ...builtInManifest("academic", "Test"), identityNamespaces: ["email"] },
+      sync: async () => ({ entries: [] }),
+      normalize: () => { throw new Error("unused"); }
+    } as any)).toThrow("未知的内容身份命名空间");
+  });
+
+  it("does not let another built-in adapter claim a provider-owned identity", () => {
+    const registry = new ConnectorRegistry();
+    expect(() => registry.register({
+      manifest: { ...builtInManifest("x-mirror", "Mirror"), identityNamespaces: ["x"] },
+      sync: async () => ({ entries: [] }),
+      normalize: () => { throw new Error("unused"); }
+    } as any)).toThrow("其他提供方拥有的内容身份命名空间");
   });
 
   it("normalizes academic DOI records to stable cross-provider content identity", () => {

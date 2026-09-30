@@ -25,7 +25,7 @@ export class AcademicAuthorConnector implements ConnectorAdapter {
   readonly manifest = builtInManifest(
     "academic",
     "学术作者更新",
-    ["public-http", "author-search"]
+    { identityNamespaces: ["doi", "arxiv", "openalex", "semantic", "orcid"] }
   );
 
   constructor(private readonly fetchJson: AcademicFetch = chromiumFetch) {}
@@ -219,7 +219,7 @@ const ACADEMIC_CONTENT_NORMALIZATION = {
   // historic connector intentionally retained that exact URL for non-DOI
   // papers, so avoid generic URL rewriting here.
   canonicalizeUrl: (url: string) => url,
-  canonicalIdentity: (item: RawEntry) => item.canonicalIdentity || academicContentIdentity(item.url, item.externalId),
+  canonicalIdentity: (item: RawEntry) => item.canonicalIdentity || academicContentIdentity(item.url),
   // DOI URLs are stable canonical URLs. For non-DOI works this remains the
   // provider landing page; origin rows retain every provider attribution.
   canonicalUrl: (item: RawEntry, identity: string) => stableCanonicalUrl(identity, item.url),
@@ -313,9 +313,9 @@ function parseOrcidDate(value: any): number | undefined {
   return parseDate(`${year}-${month}-${day}`);
 }
 
-function academicContentIdentity(url: string, externalId?: string): string {
+function academicContentIdentity(url: string): string {
   const doi = normalDoi(url);
-  return doi ? `doi:${doi}` : externalId ? `academic:${externalId}` : `url:${url}`;
+  return doi ? `doi:${doi}` : `url:${url}`;
 }
 
 function stableCanonicalUrl(identity: string, fallback: string): string {

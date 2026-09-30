@@ -21,7 +21,7 @@ const healthy = { entries: [], emptyIsHealthy: true };
 function fixture(operation: (context: SyncContext) => Promise<SyncResult>, path = ":memory:") {
   const db = new ReadingDatabase(path);
   const registry = new ConnectorRegistry();
-  registry.register({ manifest: { id: "rss", version: 1, displayName: "Fixture", builtIn: true, capabilities: ["public-http"] },
+  registry.register({ manifest: { id: "rss", version: 1, displayName: "Fixture", builtIn: true },
     sync: operation, normalize: (entry, source) => contentNormalizer.normalize(entry, source) });
   const sync = new SyncManager(db, registry);
   return { db, sync, service: new SourceService(db, {} as never, sync, {} as never) };

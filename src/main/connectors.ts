@@ -28,7 +28,7 @@ abstract class BaseConnector {
 }
 
 export class RssConnector extends BaseConnector implements ConnectorAdapter {
-  readonly manifest: ConnectorManifest = { ...builtInManifest("rss", "RSS / Atom / JSON Feed", ["public-http"]), entryPolicy: "article-links" };
+  readonly manifest: ConnectorManifest = builtInManifest("rss", "RSS / Atom / JSON Feed", { entryPolicy: "article-links" });
 
   sync(context: SyncContext): Promise<SyncResult> {
     return this.fetchWithMetadata(context.source, context.checkpoint, context.subscription, context.signal);
@@ -90,7 +90,7 @@ function archiveUrlFromConfig(value: unknown): ArchiveCatalogConfig | undefined 
 }
 
 export class GenericConnector extends BaseConnector implements ConnectorAdapter {
-  readonly manifest: ConnectorManifest = { ...builtInManifest("generic", "公开网页", ["public-http"]), entryPolicy: "article-links" };
+  readonly manifest: ConnectorManifest = builtInManifest("generic", "公开网页", { entryPolicy: "article-links" });
 
   constructor(http: PublicHttpClient, private readonly renderer?: PageRenderer) {
     super(http);
@@ -250,5 +250,5 @@ function withRendererRequirement(rule: ExtractionRule | undefined, required: boo
 
 /** Manual sources are fetched only when first saved or when the user explicitly refreshes. */
 export class ManualConnector extends GenericConnector {
-  override readonly manifest = builtInManifest("manual", "分享链接", ["public-http"]);
+  override readonly manifest = builtInManifest("manual", "分享链接");
 }

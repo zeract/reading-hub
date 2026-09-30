@@ -151,7 +151,7 @@ export class SyncManager {
           // host owns collection policy so category filters cannot slowly drift
           // across RSS, web, platform, or future adapters.
           const saved = outcome.notModified
-            ? { inserted: 0, accepted: 0 }
+            ? { inserted: 0, accepted: 0, identityConflicts: 0 }
             : this.saveRawEntries(effectiveSource, outcome.entries, subscription);
           const inserted = saved.inserted;
           if (connectorId === "generic" && !isManualExtractionRule(effectiveSource.extractionRule) && saved.accepted >= 2) {
@@ -168,12 +168,13 @@ export class SyncManager {
             validatorUrl: outcome.validatorUrl,
             empty: !outcome.emptyIsHealthy && !outcome.notModified && outcome.entries.length === 0
           });
-          const eventMessage = updated.status === "needs_review"
-            ? "来源需要复核提取规则"
-            : outcome.entries.length > 0 && saved.accepted === 0 && subscription.scope.facetSelections.length > 0
-              ? "本次内容不在已选分类内；已正常推进同步状态"
-              : undefined;
-          this.db.recordSyncEvent(source.id, updated.status === "needs_review" ? "warning" : "success", outcome.entries.length, inserted, eventMessage);
+          const eventMessage = [
+            updated.status === "needs_review" ? "来源需要复核提取规则" : undefined,
+            saved.identityConflicts > 0 ? `已跳过 ${saved.identityConflicts} 条身份冲突内容，请检查来源` : undefined,
+            outcome.entries.length > 0 && saved.accepted === 0 && subscription.scope.facetSelections.length > 0
+              ? "本次内容不在已选分类内；已正常推进同步状态" : undefined
+          ].filter(Boolean).join("；") || undefined;
+          this.db.recordSyncEvent(source.id, updated.status === "needs_review" || saved.identityConflicts > 0 ? "warning" : "success", outcome.entries.length, inserted, eventMessage);
           return { inserted, source: updated };
         });
       } catch (error) {
@@ -193,10 +194,14 @@ export class SyncManager {
 
   savePreview(source: Source, entries: RawEntry[]): number {
     this.assertOpen();
-    return this.saveRawEntries(source, entries).inserted;
+    const saved = this.saveRawEntries(source, entries);
+    if (saved.identityConflicts > 0) {
+      this.db.recordSyncEvent(source.id, "warning", entries.length, saved.inserted, `预览已跳过 ${saved.identityConflicts} 条身份冲突内容`);
+    }
+    return saved.inserted;
   }
 
-  private saveRawEntries(source: Source, entries: RawEntry[], subscription?: Subscription): { inserted: number; accepted: number } {
+  private saveRawEntries(source: Source, entries: RawEntry[], subscription?: Subscription): { inserted: number; accepted: number; identityConflicts: number } {
     const connector = this.registry.get(source.connectorId ?? source.kind);
     const eligible = connector.manifest.entryPolicy === "article-links"
       ? entries.filter((entry) => !isRecruitmentUrl(entry.url))
@@ -205,7 +210,11 @@ export class SyncManager {
     const accepted = subscription
       ? normalized.filter(createSubscriptionScopeMatcher(subscription.scope))
       : normalized;
-    return { inserted: this.db.saveEntries(accepted, { initialCollection: source.lastSuccessfulAt === undefined }), accepted: accepted.length };
+    const saved = this.db.saveEntriesWithReport(accepted, {
+      initialCollection: source.lastSuccessfulAt === undefined,
+      identityNamespaces: connector.manifest.identityNamespaces ?? []
+    });
+    return { ...saved, accepted: accepted.length };
   }
 
   private assertOpen(): void {

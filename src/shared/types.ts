@@ -284,15 +284,20 @@ export interface SyncCheckpoint {
   updatedAt: number;
 }
 
+/** Built-in authorities that may identify one content item across reading URLs. */
+export const CONTENT_IDENTITY_NAMESPACES = ["doi", "arxiv", "openalex", "semantic", "orcid", "x", "xiaohongshu"] as const;
+export type ContentIdentityNamespace = typeof CONTENT_IDENTITY_NAMESPACES[number];
+
 export interface ConnectorManifest {
   id: ConnectorId;
   version: 1;
   displayName: string;
   builtIn: true;
-  capabilities: Array<"public-http" | "oauth" | "author-search">;
   requiresAccount?: boolean;
   /** Host-enforced collection policy; a connector cannot bypass this at commit time. */
   entryPolicy?: "article-links" | "all";
+  /** Only these known, connector-declared authorities may bridge different URLs. */
+  identityNamespaces?: readonly ContentIdentityNamespace[];
 }
 
 export interface AuthorizationContext {

@@ -21,20 +21,21 @@ describe("content identity retention", () => {
       const second = db.createSource({ url: "https://elsewhere.example/feed", title: "Second", kind: "rss", pollingEnabled: true });
       const identity = "doi:10.1000/shared";
       const original = card(first.id, "retained", "https://publisher.example/paper", { canonicalIdentity: identity });
-      expect(db.saveEntries([original])).toBe(1);
+      expect(db.saveEntries([original], { identityNamespaces: ["doi"] })).toBe(1);
       db.markRead(original.id, true);
       db.markFavorite(original.id, true);
-      expect(db.saveEntries([card(second.id, "incoming", "https://archive.example/paper", { canonicalIdentity: identity, title: "Updated metadata" })])).toBe(0);
+      expect(db.saveEntries([card(second.id, "incoming", "https://archive.example/paper", { canonicalIdentity: identity, title: "Other source title" })], { identityNamespaces: ["doi"] })).toBe(0);
       const retained = db.getEntry(original.id)!;
-      expect(retained).toMatchObject({ id: original.id, canonicalUrl: original.canonicalUrl, title: "Updated metadata", read: true, favorite: true });
+      expect(retained).toMatchObject({ id: original.id, canonicalUrl: original.canonicalUrl, url: original.url, title: "retained", read: true, favorite: true });
       expect(retained.origins?.map((origin) => origin.sourceId).sort()).toEqual([first.id, second.id].sort());
+      expect(retained.origins?.find((origin) => origin.sourceId === second.id)?.originalUrl).toBe("https://archive.example/paper");
       expect(db.listEntries(second.id).map((entry) => entry.id)).toEqual([original.id]);
       db.close();
       db = new ReadingDatabase(path);
       expect(db.getEntry(original.id)).toMatchObject({ read: true, favorite: true });
       expect(db.listEntries(second.id).map((entry) => entry.id)).toEqual([original.id]);
       db.dismissEntry(original.id);
-      expect(db.saveEntries([card(second.id, "third", "https://third.example/paper", { canonicalIdentity: identity })])).toBe(0);
+      expect(db.saveEntries([card(second.id, "third", "https://third.example/paper", { canonicalIdentity: identity })], { identityNamespaces: ["doi"] })).toBe(0);
       expect(db.listEntries()).toEqual([]);
     } finally { db.close(); rmSync(dir, { recursive: true }); }
   });
@@ -49,8 +50,77 @@ describe("content identity retention", () => {
       ]);
       const raw = (db as unknown as { db: Sqlite.Database }).db;
       raw.prepare("UPDATE entries SET canonical_identity = ? WHERE id = ?").run("doi:10.1000/shared", "second");
-      expect(db.saveEntries([card(source.id, "incoming", "https://example.com/three", { canonicalIdentity: "doi:10.1000/shared" })])).toBe(1);
-      expect(db.listEntries().map((entry) => entry.id).sort()).toEqual(["first", "incoming", "second"]);
+      const report = db.saveEntriesWithReport([
+        card(source.id, "incoming", "https://example.com/three", { canonicalIdentity: "doi:10.1000/shared" }),
+        card(source.id, "safe", "https://example.com/four", { canonicalIdentity: "doi:10.1000/safe" })
+      ], { identityNamespaces: ["doi"] });
+      expect(report).toEqual({ inserted: 1, identityConflicts: 1 });
+      expect(db.listEntries().map((entry) => entry.id).sort()).toEqual(["first", "safe", "second"]);
+      expect(db.saveEntriesWithReport([card(source.id, "replay", "https://example.com/one", { canonicalIdentity: "doi:10.1000/shared", title: "Should not overwrite" })], { identityNamespaces: ["doi"] }))
+        .toEqual({ inserted: 0, identityConflicts: 1 });
+      expect(db.getEntry("first")?.title).toBe("first");
+    } finally { db.close(); }
+  });
+
+  it("does not rekey a URL-matched card when a different stable identity arrives", () => {
+    const db = new ReadingDatabase(":memory:");
+    try {
+      const first = db.createSource({ url: "https://example.com/feed-a", title: "First", kind: "rss", pollingEnabled: true });
+      const second = db.createSource({ url: "https://example.com/feed-b", title: "Second", kind: "rss", pollingEnabled: true });
+      const url = "https://example.com/shared";
+      db.saveEntries([card(first.id, "first", url, { canonicalIdentity: "doi:10.1000/one" })], { identityNamespaces: ["doi"] });
+      expect(db.saveEntriesWithReport([card(second.id, "second", url, { canonicalIdentity: "doi:10.1000/two" })], { identityNamespaces: ["doi"] }))
+        .toEqual({ inserted: 0, identityConflicts: 1 });
+      expect(db.getEntry("first")).toMatchObject({ canonicalIdentity: "doi:10.1000/one", title: "first" });
+      expect(db.getEntry("first")?.origins).toHaveLength(1);
+    } finally { db.close(); }
+  });
+
+  it("does not bridge an undeclared prefix or a platform ID from an undeclared connector", () => {
+    const db = new ReadingDatabase(":memory:");
+    try {
+      const source = db.createSource({ url: "https://example.com/feed", title: "Feed", kind: "rss", pollingEnabled: true });
+      const records = [
+        card(source.id, "one", "https://example.com/one", { canonicalIdentity: "email:same" }),
+        card(source.id, "two", "https://example.com/two", { canonicalIdentity: "email:same" }),
+        card(source.id, "three", "https://example.com/three", { canonicalIdentity: "x:42" }),
+        card(source.id, "four", "https://example.com/four", { canonicalIdentity: "x:42" })
+      ];
+      expect(db.saveEntriesWithReport(records, { identityNamespaces: [] })).toEqual({ inserted: 4, identityConflicts: 0 });
+      expect(db.listEntries().map((entry) => entry.canonicalIdentity).sort()).toEqual(records.map((entry) => entry.canonicalUrl).sort());
+    } finally { db.close(); }
+  });
+
+  it("promotes an unambiguous URL identity to a declared DOI and keeps later URL-only origins", () => {
+    const db = new ReadingDatabase(":memory:");
+    try {
+      const rss = db.createSource({ url: "https://example.com/feed", title: "Feed", kind: "rss", pollingEnabled: true });
+      const academic = db.createSource({ url: "https://example.com/author", title: "Academic", kind: "academic", pollingEnabled: true });
+      const url = "https://doi.org/10.1000/shared";
+      db.saveEntries([card(rss.id, "retained", url)]);
+      expect(db.saveEntriesWithReport([card(academic.id, "doi", url, { canonicalIdentity: "doi:10.1000/shared" })], { identityNamespaces: ["doi"] }))
+        .toEqual({ inserted: 0, identityConflicts: 0 });
+      expect(db.getEntry("retained")).toMatchObject({ canonicalIdentity: "doi:10.1000/shared", title: "retained" });
+      expect(db.saveEntriesWithReport([card(rss.id, "url-only", url)], { identityNamespaces: [] }))
+        .toEqual({ inserted: 0, identityConflicts: 0 });
+      expect(db.getEntry("retained")?.canonicalIdentity).toBe("doi:10.1000/shared");
+      expect(db.getEntry("retained")?.origins?.map((origin) => origin.sourceId).sort()).toEqual([academic.id, rss.id].sort());
+    } finally { db.close(); }
+  });
+
+  it("treats the historic url: form as the same URL identity before promotion", () => {
+    const db = new ReadingDatabase(":memory:");
+    try {
+      const rss = db.createSource({ url: "https://example.com/feed", title: "Feed", kind: "rss", pollingEnabled: true });
+      const academic = db.createSource({ url: "https://example.com/author", title: "Academic", kind: "academic", pollingEnabled: true });
+      const url = "https://example.com/paper";
+      db.saveEntries([card(academic.id, "old", url, { canonicalIdentity: `url:${url}` })]);
+      expect(db.saveEntriesWithReport([card(rss.id, "rss", url)], { identityNamespaces: [] }))
+        .toEqual({ inserted: 0, identityConflicts: 0 });
+      expect(db.saveEntriesWithReport([card(academic.id, "doi", url, { canonicalIdentity: "doi:10.1000/paper" })], { identityNamespaces: ["doi"] }))
+        .toEqual({ inserted: 0, identityConflicts: 0 });
+      expect(db.getEntry("old")?.canonicalIdentity).toBe("doi:10.1000/paper");
+      expect(db.getEntry("old")?.origins?.map((origin) => origin.sourceId).sort()).toEqual([academic.id, rss.id].sort());
     } finally { db.close(); }
   });
 

@@ -17,8 +17,8 @@
 
 仍有两项值得分阶段治理的结构问题：
 
-1. **内容身份的职责仍不完整**：`canonical_url` 是数据库唯一键；明确、非 URL 的稳定 `canonical_identity` 现也能在唯一匹配时合并新的不同阅读 URL，但仍缺历史别名迁移与冲突裁决。`content_hash` 是卡片元数据指纹而非正文哈希，尚未参与变化判断。
-2. **扩展声明与宿主行为不一致**：`sourceCapabilities`、若干资格与阅读降级分支仍依赖来源类型。原 `allowedHosts` 只是声明而非实际网络白名单，现已移除；宿主应继续掌握安全、调度和持久化决策，连接器可提供由宿主校验的策略数据。
+1. **内容身份的职责仍不完整**：`canonical_url` 仍是数据库唯一键；新采集只在连接器声明已知身份命名空间、且库中唯一匹配时跨阅读 URL 合并。冲突项被跳过并留下固定类别告警，不猜测修复历史行；多身份别名迁移仍待设计。`content_hash` 是卡片元数据指纹而非正文哈希，尚未参与变化判断。
+2. **扩展声明与宿主行为不一致**：`sourceCapabilities`、调度与阅读降级仍有来源类型分支。未产生行为的 `allowedHosts` 与 `capabilities` 已移除；`entryPolicy`、`identityNamespaces` 由同步宿主执行，`requiresAccount` 由宿主校验。宿主继续掌握安全、调度和持久化决策。
 
 泛化性结论：RSS/普通网页的主路径合理；加入新平台仍会碰到 UI、能力与平台配置的显式接线，但「约 8 个宿主模块」只是一次静态观察，不能作为所有连接器的必然成本。当前是编译内置适配器架构，不以第三方即插即用为验收目标。
 
@@ -33,10 +33,10 @@
 
 ### P2-1 `content_hash` 尚无业务用途（待决策）
 
-**现象**：`content_hash` 被计算、写入，并在每次 URL 冲突时无条件覆盖，但**从库中读取它的代码不存在**。
+**现象**：`content_hash` 被计算、写入，同一主归属来源的元数据更新会覆盖它，但**从库中读取它做业务判断的代码不存在**。
 
 **证据**：
-- 写入与覆盖：`src/main/database.ts:1084`（`content_hash = excluded.content_hash`）
+- 写入与覆盖：`src/main/database.ts` 的 `saveEntriesWithReport`；其他来源增加归属时不再覆盖主卡片指纹。
 - 生成：`src/main/content-normalizer.ts:64`、`src/main/content-hash.ts:8`、`src/main/content-hash.ts:20`
 - schema 定义：`src/main/persistence/schema.ts:89`
 - 读取：仅出现在 `SELECT` 列清单与行映射中（`src/main/database.ts:745`、`:775`、`:881`、`:232`），**没有任何比较、过滤或业务判断读取它**；全仓库除 `content-hash.ts` 与上述位置外无其他 `contentHash` 使用点。
@@ -56,13 +56,13 @@
 
 ### P2-2 内容身份与跨来源归属未完全统一（待复现及迁移设计）
 
-**现象与修复状态**：修复前 `canonical_url` 是唯一入库冲突键，`canonical_identity` 主要用于墓碑匹配。现已在最终入库事务中增加「唯一匹配的显式非 URL 稳定身份」查找，以合并后续来自不同 URL 的同一内容；数据库唯一约束仍是 `canonical_url`，历史冲突与别名关系尚未迁移。
+**现象与修复状态**：修复前 `canonical_url` 是唯一入库冲突键，`canonical_identity` 主要用于墓碑匹配。现已由内置连接器显式声明允许使用的身份命名空间，在最终入库事务中查找唯一权威身份，以合并不同阅读 URL 的同一内容；提供方对象 ID 只允许所属连接器声明，DOI/arXiv 可跨提供方声明。数据库唯一约束仍是 `canonical_url`，历史冲突与别名关系尚未迁移。
 
 **证据**：
 - 唯一约束与 upsert 冲突键：`src/main/persistence/schema.ts:82`（`canonical_url TEXT NOT NULL UNIQUE`）、`src/main/database.ts:1078`（`ON CONFLICT(canonical_url) DO UPDATE`）
-- 修复前 `canonical_identity` 主要用于墓碑匹配；现在 `saveEntries` 还会在无 URL 命中时，按显式稳定身份查找唯一现存内容。它仍不是数据库唯一键，也没有历史别名表。
+- 修复前 `canonical_identity` 主要用于墓碑匹配；现在 `saveEntriesWithReport` 按连接器声明查找唯一现存内容，即使 URL 已命中也检查是否有另一行拥有该身份。它仍不是数据库唯一键，也没有历史别名表。
 - 类型注释声称身份用于"cross-provider grouping"：`src/shared/types.ts:141`
-- 修复前 `saveEntries` 只用 `canonical_url` 查找。现新增 `canonical_identity` 的精确查找；仅在唯一匹配、且身份不是 URL 变体时复用现存行和来源归属。历史中同 ID 多行时不猜赢家。
+- 修复前 `saveEntries` 只用 `canonical_url` 查找。现新增 `canonical_identity` 的精确查找；仅在声明授权、唯一匹配且无 URL/身份交叉冲突时复用现存行和来源归属。历史中同 ID 多行，或同 URL 与另一身份行冲突时跳过该条，并记录不含原始 URL/身份的固定类别告警；同批其他条目继续写入。
 
 **后果（均可由代码推出）**：
 
@@ -76,10 +76,10 @@
    X：`x:{id}` + `hashMode:"identity"`（`src/main/x.ts:509`、`:527`）
    小红书：`xiaohongshu:{noteId}`（`src/main/xiaohongshu.ts:163`）
    学术：`doi: / arxiv: / openalex: / semantic: / orcid:`（`src/main/academic.ts:132`、`:158`、`:183`）
-   `ContentNormalizationOptions`（`src/main/content-normalizer.ts:13-30`）允许平台表达固有身份，但缺少统一的别名注册、冲突裁决和来源归属校验。
+   `ContentNormalizationOptions`（`src/main/content-normalizer.ts:13-30`）允许平台表达固有身份；`ConnectorManifest.identityNamespaces` 现在约束跨 URL 桥接。仍缺少多个身份别名之间的关系和旧冲突裁决。
 
 **修复方向**：
-- **已修复新采集的确定性部分**：相同显式 DOI、不同阅读 URL 的条目复用原卡片与来源归属；相同标题但无共同身份的条目不合并；旧库若已有同身份多行，不随机选择赢家。
+- **已修复新采集的确定性部分**：相同显式 DOI、不同阅读 URL 的条目复用原卡片与来源归属；未声明的形似身份不桥接；同 URL 异权威身份、旧库同身份多行都跳过而不写坏原卡片；后来来源只增加归属，不覆盖主归属来源的标题、摘要、哈希或阅读地址。同一主归属来源仍可更新其元数据。
 - 共享 DOI/arXiv 等经证实的内容标识应跨提供方可组合，提供方对象 ID 应作为有命名空间的别名，不应排在 DOI 前面把同一论文拆开。
 - 设计内容行、阅读 URL 与多个经证实的身份别名的关系；仅在一对一且无冲突时合并。保留来源归属、收藏/已读、首次收集时间、改写与删除记录；未知关系不猜测。
 - 独立设计迁移和回滚验证，再决定是否更换唯一键。不能仅把现有 `canonical_identity` 升为唯一键。
@@ -119,17 +119,17 @@
 
 ---
 
-### P2-4 能力模型仍依赖 `SourceKind`；无效的主机声明已移除
+### P2-4 能力模型仍依赖 `SourceKind`；无效声明已移除
 
-**现象**：能力是 `kind` 的硬编码真值表，与 `ConnectorManifest` 无推导关系；原 `allowedHosts` 没有进入网络执行路径，容易被误解为安全白名单，现已从契约删除。
+**现象**：用户操作能力是 `kind` 的硬编码真值表，与 `ConnectorManifest` 无推导关系；原 `allowedHosts` 没有进入网络执行路径，原 `capabilities` 也未参与任何操作判断。这两个陈列字段现已从契约删除。
 
 **证据**：
 - `src/shared/source-capabilities.ts:8-19`：`sourceCapabilities()` 逐个 `kind` 判断 `canPoll` / `canCalibrate` / `canReconnect` / `canChangeKind`。
-- `src/shared/types.ts:292`：`capabilities` 是只有三个值的陈列性 union（`"public-http" | "oauth" | "author-search"`）。
+- 修复前 `capabilities` 只有三个陈列性值（`"public-http" | "oauth" | "author-search"`），没有读取点；现已删除。`identityNamespaces` 不是类似陈列字段：注册时校验归属，同步入库时执行。
 - 修复前 `allowedHosts` 无任何读取点；现已删除该字段与构造参数。公开 URL、robots 与各平台已有的请求目标校验不因删除该陈列字段而放松，但它们不是统一的 manifest 主机白名单。
 - 渲染器仍显式列举平台：`src/renderer/source-dialogs.tsx:18-25`（`SOURCE_METHODS` 五项）、`:485-497`（`SOURCE_KIND_LABELS`）；每种来源有相应的授权/输入流程。
 
-**结论**：当前是编译内置连接器，不是第三方插件平台；现有声明与实际操作能力的关系仍应明确。已移除无执行力的 `allowedHosts`，不再把它描述成安全白名单。
+**结论**：当前是编译内置连接器，不是第三方插件平台；现有声明与实际操作能力的关系仍应明确。已移除无执行力的 `allowedHosts` 和 `capabilities`，不再把它们描述成安全或操作能力契约。
 
 **修复方向**：下一阶段定义 manifest 的展示能力、授权方式和用户操作能力，宿主依来源当前状态计算最终可用动作；旧 `SourceKind` 只作兼容和展示。若未来需要统一平台网络白名单，必须另行覆盖实际请求及重定向，不能重新加一个不执行的字段。UI 入口可由能力列表配置，但授权表单仍需要明确的产品流程。
 
@@ -214,8 +214,8 @@
 ## 3. 建议的修复顺序（最小闭环）
 
 1. **确定性正确性修复（已落地）**：收窄全局 URL 参数删除，保护 hash 路由；RSS/generic 通过宿主声明式资格策略统一入库，保留跨站文章与人工保存。见任务记录 `docs/tasks/aggregator-contract-review.md`。
-2. **能力与安全契约（部分完成，下一阶段）**：无效的 `allowedHosts` 已删除。仍需核实每个连接器实际请求路径，再统一展示能力与宿主操作校验，避免仅改 UI 真值表；如需新的平台网络限制，必须是真正可执行的宿主策略。
-3. **内容身份原型与迁移设计（部分完成，独立高风险阶段）**：新采集的共同稳定 ID 合并及冲突保守处理已覆盖；接下来设计多身份别名、旧库冲突裁决和迁移回滚，先验证快照及用户状态，再考虑唯一键迁移。
+2. **能力与安全契约（部分完成，下一阶段）**：无效的 `allowedHosts` 和 `capabilities` 已删除。仍需核实每个连接器实际请求路径，再统一展示能力与宿主操作校验，避免仅改 UI 真值表；如需新的平台网络限制，必须是真正可执行的宿主策略。
+3. **内容身份原型与迁移设计（部分完成，独立高风险阶段）**：新采集的声明式身份桥接、归属元数据保护与冲突跳过已覆盖；接下来设计多身份别名、旧库冲突裁决和迁移回滚，先验证快照及用户状态，再考虑唯一键迁移。
 4. **按需求补齐调度/阅读策略**：账号级预算由宿主执行，阅读降级保持受限；只在有新增连接器反例时扩展 manifest。历史修复保持宿主版本化事务。
 5. **可观察性而非永久隔离**：RSS 空结果风险先用合法空/骤空夹具分辨；维持网络恢复重试与删除记录持久性。
 
@@ -235,7 +235,7 @@
 ## 5. 待验证事项（动手前先复现）
 
 - P2-1：确认产品是否需要卡片元数据变化记录；现有哈希不代表正文变化。
-- P2-2：共同 DOI、不同 URL 的新采集及旧库同身份冲突夹具已覆盖；仍需验证多个 ID 指向同一作品时的别名关系和旧库迁移影响。
+- P2-2：共同 DOI、不同 URL、同 URL 异身份、旧库同身份多行、来源间元数据归属和冲突告警的确定性夹具已覆盖；仍需验证多个 ID 指向同一作品时的别名关系和旧库迁移影响。
 - P1-7：`#/...` / `#!/...`、`ref`/`source` 的确定性用例已覆盖；其他站点自定义身份参数仍待具体证据。
 - P3-8：构造「曾非空、连续成功解析为空」与合法空 Feed 对照夹具，验证诊断方案不会停掉正常来源。
 

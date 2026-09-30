@@ -17,7 +17,7 @@ function fixture(urls: string[], operation: (context: SyncContext) => Promise<Sy
   // An explicit deadline order makes this independent of clock resolution.
   vi.spyOn(db, "listDueSources").mockImplementation(() => sources);
   const registry = new ConnectorRegistry();
-  registry.register({ manifest: { id: "rss", version: 1, displayName: "Fixture", builtIn: true, capabilities: ["public-http"] },
+  registry.register({ manifest: { id: "rss", version: 1, displayName: "Fixture", builtIn: true },
     sync: operation, normalize: (entry, source) => contentNormalizer.normalize(entry, source) });
   return { db, sources, manager: new SyncManager(db, registry) };
 }
