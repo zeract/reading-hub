@@ -3,7 +3,7 @@
  * existing UI. New integrations are selected through `connectorId`, rather
  * than adding more special cases to the scheduler.
  */
-export type SourceKind = "rss" | "generic" | "manual" | "zhihu" | "zhihu_follow" | "x" | "xiaohongshu" | "academic";
+export type SourceKind = "rss" | "generic" | "manual" | "zhihu" | "zhihu_follow" | "academic";
 export type SourceStatus = "active" | "needs_review" | "paused" | "error";
 /**
  * Connector IDs are host-owned opaque keys. `SourceKind` remains the compact
@@ -285,7 +285,7 @@ export interface SyncCheckpoint {
 }
 
 /** Built-in authorities that may identify one content item across reading URLs. */
-export const CONTENT_IDENTITY_NAMESPACES = ["doi", "arxiv", "openalex", "semantic", "orcid", "x", "xiaohongshu"] as const;
+export const CONTENT_IDENTITY_NAMESPACES = ["doi", "arxiv", "openalex", "semantic", "orcid"] as const;
 export type ContentIdentityNamespace = typeof CONTENT_IDENTITY_NAMESPACES[number];
 
 export interface ConnectorManifest {
@@ -606,13 +606,6 @@ export interface OpmlImportResult {
   imported: number;
   existing: number;
   skipped: number;
-}
-
-/** A direct, user-supplied platform profile URL. */
-export interface ProfileSubscriptionInput {
-  url: string;
-  /** Local-only display name. */
-  title?: string;
 }
 
 /** User-editable metadata for an existing source. Secrets and connector accounts stay out of this surface. */

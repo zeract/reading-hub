@@ -13,7 +13,6 @@ import type {
   LibraryCounts,
   OpmlImportResult,
   ProbeResult,
-  ProfileSubscriptionInput,
   ReaderLanguageReadResult,
   Source,
   SourceCollectionSettings,
@@ -80,8 +79,6 @@ export const IPC_CHANNELS = {
   },
   app: { openExternal: "app:open-external" },
   zhihu: { connect: "zhihu:connect", followLogin: "zhihu:follow-login" },
-  x: { connect: "x:connect" },
-  xiaohongshu: { subscribeProfile: "xiaohongshu:subscribe-profile" },
   academic: { search: "academic:search", subscribe: "academic:subscribe" }
 } as const;
 
@@ -113,7 +110,6 @@ export interface ReaderApi {
   inspectSourceCollectionFacets(id: string): Promise<SourceFacet[]>;
   updateRule(id: string, rule: Source["extractionRule"]): Promise<void>;
   calibrateSource(id: string): Promise<CalibrationResult>;
-  subscribeXiaohongshuProfile(input: ProfileSubscriptionInput): Promise<Source>;
   listEntryPage(query?: EntryPageQuery): Promise<EntryPage>;
   getLibraryCounts(): Promise<LibraryCounts>;
   readEntry(id: string, requestId: string): Promise<ArticleReadResult>;
@@ -142,7 +138,6 @@ export interface ReaderApi {
   openExternal(url: string): Promise<void>;
   connectZhihu(accessSecret: string): Promise<SourceSyncResult>;
   connectZhihuFollow(): Promise<void>;
-  connectX(clientId: string): Promise<SourceSyncResult>;
   searchAcademicAuthors(query: string): Promise<SubscriptionDraft[]>;
   subscribeAcademicAuthor(draft: SubscriptionDraft): Promise<SourceSyncResult>;
 }

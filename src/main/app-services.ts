@@ -16,8 +16,6 @@ import { SecretStore } from "./secrets";
 import { SourceProbe } from "./source-probe";
 import { SourceService } from "./source-service";
 import { SyncManager } from "./sync-manager";
-import { XConnector } from "./x";
-import { XiaohongshuConnector } from "./xiaohongshu";
 import { ZhihuConnector } from "./zhihu";
 import { ZhihuFollowConnector } from "./zhihu-follow";
 
@@ -29,7 +27,6 @@ export interface ApplicationServices {
   sources: SourceService;
   sync: SyncManager;
   maintenance: ContentMaintenance;
-  x: XConnector;
   academic: AcademicAuthorConnector;
   learningAssistant: AiService;
   rewrites: RewriteService;
@@ -51,7 +48,10 @@ export async function createApplicationServices(databasePath: string): Promise<A
   try {
     services = assembleApplicationServices(database);
     await services.sources.removeUnsubscribedSources();
-    if (!process.env.READING_HUB_READER_AUDIT) services.rewrites.start();
+    if (!process.env.READING_HUB_READER_AUDIT) {
+      await removeRetiredPlatformAccounts(database, services.secrets);
+      services.rewrites.start();
+    }
     return services;
   } catch (error) {
     // Until assembly returns, no caller owns a service capable of closing
@@ -78,19 +78,7 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
   const zhihu = new ZhihuConnector(() => secrets.getZhihuAccessSecret());
   const zhihuFollow = new ZhihuFollowConnector();
   const registry = createConnectorRegistry(rss, generic, manual, zhihu, zhihuFollow);
-  const x = new XConnector({
-    getAccount: database.getAccount.bind(database),
-    findAccount: database.findAccount.bind(database),
-    saveAccount: database.saveAccount.bind(database),
-    updateAccountStatus: database.updateAccountStatus.bind(database)
-  }, {
-    getConnectorSecret: secrets.getConnectorSecret.bind(secrets),
-    setConnectorSecret: secrets.setConnectorSecret.bind(secrets)
-  });
-  const xiaohongshu = new XiaohongshuConnector(http);
   const academic = new AcademicAuthorConnector();
-  registry.register(x);
-  registry.register(xiaohongshu);
   registry.register(academic);
   const maintenance = new ContentMaintenance(database);
   database.rescheduleLegacyRobotsFailure(new RobotsUnreachableError().message);
@@ -111,7 +99,6 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
   const inAppArticleViewer = new InAppArticleViewer();
   const rewrites = new RewriteService(database, articles, learningAssistant);
 
-  sources.retireUnsupportedXPublicProfileSources();
   if (resumedAutomaticSources) {
     // Count only: never log source URLs, titles or remote error payloads.
     console.info(`Reading Hub 已恢复 ${resumedAutomaticSources} 个因旧版临时失败而停滞的自动来源。`);
@@ -149,7 +136,6 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
     sources,
     sync,
     maintenance,
-    x,
     academic,
     learningAssistant,
     rewrites,
@@ -162,6 +148,28 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
       return closePromise;
     }
   };
+}
+
+/** Schema migration detaches retired sources first. Keep a failed cleanup's
+ * Keychain reference for a later launch, without blocking unrelated services.
+ * Never run this against an audit copy of the user's database. */
+async function removeRetiredPlatformAccounts(database: ReadingDatabase, secrets: SecretStore): Promise<void> {
+  let failures = 0;
+  for (const connectorId of ["x", "xiaohongshu"]) {
+    for (const account of database.listAccounts(connectorId)) {
+      try {
+        // A damaged legacy record must not target another provider's secret.
+        if (account.keychainAccount && !account.keychainAccount.startsWith(`${connectorId}:`)) {
+          throw new Error("旧授权引用不属于已移除的连接器。");
+        }
+        await secrets.clearConnectorSecret(account.keychainAccount);
+        database.deleteAccount(account.id);
+      } catch {
+        failures += 1;
+      }
+    }
+  }
+  if (failures) console.warn(`Reading Hub 未完成 ${failures} 项旧授权清理；将在下次启动时重试。`);
 }
 
 function createConnectorRegistry(rss: RssConnector, generic: GenericConnector, manual: ManualConnector, zhihu: ZhihuConnector, zhihuFollow: ZhihuFollowConnector): ConnectorRegistry {

@@ -2,8 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AcademicAuthorConnector } from "../src/main/academic";
 import { builtInManifest, ConnectorRegistry } from "../src/main/connector-registry";
 import { identityContentHash } from "../src/main/content-hash";
-import { ReadingDatabase } from "../src/main/database";
-import { XConnector } from "../src/main/x";
 import type { Source } from "../src/shared/types";
 
 const academicSource: Source = {
@@ -13,47 +11,6 @@ const academicSource: Source = {
 
 describe("connector platform", () => {
   afterEach(() => vi.unstubAllGlobals());
-  it("marks missing X credentials expired without making a network request", async () => {
-    const database = new ReadingDatabase(":memory:");
-    try {
-      const account = database.saveAccount({ connectorId: "x", displayName: "X", subjectId: "owner",
-        keychainAccount: "x:test", scopes: [], status: "active" });
-      const source = database.createSource({ url: "https://api.x.com/2/users/owner/following", title: "X",
-        kind: "x", connectorId: "x", accountId: account.id, pollingEnabled: true });
-      const fetchX = vi.fn();
-      const connector = new XConnector(database, { getConnectorSecret: async () => null } as any, async () => undefined, fetchX);
-      await expect(connector.sync({ source, subscription: database.getSubscriptionForSource(source.id)!, account })).rejects.toThrow("X 授权已失效");
-      expect(database.getAccount(account.id)?.status).toBe("expired");
-      expect(fetchX).not.toHaveBeenCalled();
-    } finally { database.close(); }
-  });
-  it.each([401, 403])("handles asynchronous X HTTP %s without misclassifying account state", async (status) => {
-    const database = new ReadingDatabase(":memory:");
-    try {
-      const account = database.saveAccount({ connectorId: "x", displayName: "X", subjectId: "owner", keychainAccount: "x:test", scopes: [], status: "active" });
-      const source = database.createSource({ url: "https://api.x.com/2/users/owner/following", title: "X", kind: "x", accountId: account.id, pollingEnabled: true });
-      const secrets = { getConnectorSecret: async () => JSON.stringify({ accessToken: "fixture-only", expiresAt: Date.now() + 3_600_000 }) };
-      const connector = new XConnector(database, secrets as never, async () => undefined, async () => new Response("{}", { status }));
-      await expect(connector.sync({ source, subscription: database.getSubscriptionForSource(source.id)!, account })).rejects.toThrow();
-      expect(database.getAccount(account.id)?.status).toBe(status === 401 ? "expired" : "active");
-    } finally { database.close(); }
-  });
-
-  it("cancels X pagination without expiring the account or starting another page", async () => {
-    const database = new ReadingDatabase(":memory:");
-    try {
-      const account = database.saveAccount({ connectorId: "x", displayName: "X", subjectId: "owner", keychainAccount: "x:test", scopes: [], status: "active" });
-      const source = database.createSource({ url: "https://api.x.com/2/users/owner/following", title: "X", kind: "x", accountId: account.id, pollingEnabled: true });
-      const controller = new AbortController();
-      const secrets = { getConnectorSecret: async () => JSON.stringify({ accessToken: "fixture-only", expiresAt: Date.now() + 3_600_000 }) };
-      const fetch = vi.fn(async () => { controller.abort(new Error("cancel sync")); return new Response(JSON.stringify({ data: [], meta: { next_token: "next" } })); });
-      const connector = new XConnector(database, secrets as never, async () => undefined, fetch);
-      await expect(connector.sync({ source, subscription: database.getSubscriptionForSource(source.id)!, account, signal: controller.signal })).rejects.toThrow("cancel sync");
-      expect(fetch).toHaveBeenCalledTimes(1);
-      expect(database.getAccount(account.id)?.status).toBe("active");
-      expect(database.getCheckpoint(source.id)).toBeUndefined();
-    } finally { database.close(); }
-  });
 
   it("only accepts explicitly built-in adapters", () => {
     const registry = new ConnectorRegistry();
@@ -76,7 +33,7 @@ describe("connector platform", () => {
   it("does not let another built-in adapter claim a provider-owned identity", () => {
     const registry = new ConnectorRegistry();
     expect(() => registry.register({
-      manifest: { ...builtInManifest("x-mirror", "Mirror"), identityNamespaces: ["x"] },
+      manifest: { ...builtInManifest("mirror", "Mirror"), identityNamespaces: ["openalex"] },
       sync: async () => ({ entries: [] }),
       normalize: () => { throw new Error("unused"); }
     } as any)).toThrow("其他提供方拥有的内容身份命名空间");
@@ -109,106 +66,6 @@ describe("connector platform", () => {
       providerId: "academic"
     });
     expect(doiFallback.contentHash).toBe(identityContentHash("doi:10.1000/example", { title: "Paper" }));
-  });
-
-  it("keeps X status URLs as the reader target and stores a provider identity", () => {
-    const connector = new XConnector({} as any, {} as any, async () => undefined);
-    const entry = connector.normalize({
-      url: "https://x.com/example/status/42",
-      title: "A post",
-      externalId: "42",
-      canonicalIdentity: "x:42",
-      providerId: "x"
-    }, { ...academicSource, id: "x-source", kind: "x", connectorId: "x" });
-    expect(entry).toMatchObject({ canonicalUrl: "https://x.com/example/status/42", canonicalIdentity: "x:42", providerId: "x", providerLabel: "X" });
-
-    const fallback = connector.normalize({
-      url: "https://x.com/example/status/43",
-      title: "A second post",
-      externalId: "43"
-    }, { ...academicSource, id: "x-source", kind: "x", connectorId: "x" });
-    expect(fallback).toMatchObject({
-      canonicalUrl: "https://x.com/example/status/43",
-      canonicalIdentity: "x:43",
-      providerId: "x",
-      providerLabel: "X"
-    });
-    expect(fallback.contentHash).toBe(identityContentHash("x:43", { title: "A second post" }));
-  });
-
-  it("syncs followed users incrementally while excluding replies and reposts", async () => {
-    const database = new ReadingDatabase(":memory:");
-    const account = database.saveAccount({
-      connectorId: "x", displayName: "X", subjectId: "owner", keychainAccount: "x:account", scopes: ["tweet.read"], status: "active", config: { clientId: "client" }
-    });
-    const source = database.createSource({ url: "https://api.x.com/2/users/owner/following", title: "X", kind: "x", connectorId: "x", accountId: account.id, pollingEnabled: true });
-    const secretStore = { getConnectorSecret: async () => JSON.stringify({ accessToken: "local-only", expiresAt: Date.now() + 3_600_000 }) };
-    const fetchMock = vi.fn(async (input: URL | string) => {
-      const url = String(input);
-      if (url.includes("/following")) return new Response(JSON.stringify({ data: [{ id: "followed", name: "Followed", username: "followed" }] }), { status: 200 });
-      return new Response(JSON.stringify({ data: [
-        { id: "100", text: "An original post", created_at: "2026-08-15T00:00:00Z" },
-        { id: "101", text: "A reply", in_reply_to_user_id: "other" },
-        { id: "102", text: "A repost", referenced_tweets: [{ type: "retweeted", id: "10" }] }
-      ] }), { status: 200 });
-    });
-    const connector = new XConnector(database, secretStore as any, async () => undefined, fetchMock);
-    const subscription = database.getSubscriptionForSource(source.id)!;
-    const result = await connector.sync({ source, subscription, account });
-    expect(result.entries).toHaveLength(1);
-    expect(result.entries[0]).toMatchObject({ externalId: "100", providerLabel: "X", url: "https://x.com/followed/status/100" });
-    expect(result.checkpoint?.data).toMatchObject({ sinceByUser: { followed: "102" } });
-    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual(expect.arrayContaining([
-      expect.stringContaining("https://api.x.com/2/users/owner/following"),
-      expect.stringContaining("https://api.x.com/2/users/followed/tweets")
-    ]));
-    database.close();
-  });
-
-  it("syncs a single X author URL through the official lookup and posts endpoints", async () => {
-    const database = new ReadingDatabase(":memory:");
-    const account = database.saveAccount({
-      connectorId: "x", displayName: "X", subjectId: "owner", keychainAccount: "x:account", scopes: ["tweet.read"], status: "active", config: { clientId: "client" }
-    });
-    const source = database.createSource({
-      url: "https://x.com/example", title: "Example", kind: "x", connectorId: "x", accountId: account.id,
-      config: { mode: "profile", username: "example" }, pollingEnabled: true
-    });
-    const secretStore = { getConnectorSecret: async () => JSON.stringify({ accessToken: "local-only", expiresAt: Date.now() + 3_600_000 }) };
-    const fetchMock = vi.fn(async (input: URL | string) => {
-      const url = String(input);
-      if (url.includes("/by/username/example")) return new Response(JSON.stringify({ data: { id: "author", name: "Example", username: "example" } }), { status: 200 });
-      if (url.includes("/users/author/tweets")) return new Response(JSON.stringify({ data: [{ id: "200", text: "A direct profile post", created_at: "2026-08-19T00:00:00Z" }] }), { status: 200 });
-      throw new Error(`unexpected URL: ${url}`);
-    });
-    const connector = new XConnector(database, secretStore as any, async () => undefined, fetchMock);
-    const result = await connector.sync({ source, subscription: database.getSubscriptionForSource(source.id)!, account });
-    expect(result.entries).toMatchObject([{ url: "https://x.com/example/status/200", externalId: "200" }]);
-    expect(result.checkpoint).toMatchObject({ sinceId: "200", data: { username: "example", userId: "author" } });
-    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual(expect.arrayContaining([
-      expect.stringContaining("https://api.x.com/2/users/by/username/example"),
-      expect.stringContaining("https://api.x.com/2/users/author/tweets")
-    ]));
-    expect(fetchMock.mock.calls.map(([url]) => String(url)).join("\n")).not.toContain("/following");
-    database.close();
-  });
-
-  it("reports a safe, actionable error when the X token service cannot be reached", async () => {
-    const connector = new XConnector({} as any, {} as any, async () => undefined, async () => {
-      throw new TypeError("fetch failed with request credentials");
-    });
-    await expect((connector as any).exchangeToken(new URLSearchParams({ grant_type: "authorization_code" }))).rejects.toMatchObject({
-      name: "XApiError",
-      message: "无法连接到 X OAuth 令牌服务。请检查系统代理、VPN、DNS 或网络访问后重试。"
-    });
-  });
-
-  it("explains that a 402 response requires X API billing access without exposing the token", async () => {
-    const connector = new XConnector({} as any, {} as any, async () => undefined, async () => new Response("{}", { status: 402 }));
-    await expect((connector as any).requestJson("/users/me", "user-token-must-not-appear")).rejects.toMatchObject({
-      name: "XApiError",
-      message: "读取当前 X 账号需要 X API 的可用计费访问（HTTP 402）。请在 X Developer Console 的 Billing / Usage 中为该项目启用 API 额度后重新连接。"
-    });
   });
 
   it("queries academic providers through their documented API roots", async () => {

@@ -13,7 +13,7 @@ function defaultGroup(source: Source): { id: string; title: string } {
   // Keep pre-existing RSSHub feeds in their former local folder. New platform
   // subscriptions use first-party connectors and no longer create this flag.
   if (source.config?.sourceProvider === "rsshub") return DEFAULT_GROUPS[1];
-  if (source.kind === "zhihu" || source.kind === "zhihu_follow" || source.kind === "x" || source.kind === "xiaohongshu") return DEFAULT_GROUPS[1];
+  if (source.kind === "zhihu" || source.kind === "zhihu_follow") return DEFAULT_GROUPS[1];
   return DEFAULT_GROUPS[0];
 }
 

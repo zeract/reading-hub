@@ -17,7 +17,6 @@ import {
   parseAiProviderId,
   parseEntryPageQuery,
   parseExtractionRule,
-  parseProfileSubscriptionInput,
   parseSubscriptionScope,
   parseSourceSettings,
   requireBoolean,
@@ -39,7 +38,6 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     secrets,
     sources,
     sync,
-    x,
     academic,
     learningAssistant,
     articles,
@@ -264,18 +262,6 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
   });
   handle(IPC_CHANNELS.zhihu.followLogin, (event) =>
     foregroundRequests.run(event.sender, (signal) => sources.beginZhihuFollowLogin(signal)));
-  handle(IPC_CHANNELS.x.connect, (event, rawClientId: unknown) => {
-    const clientId = requireText(rawClientId, "X Client ID 无效。", 500);
-    return foregroundRequests.run(event.sender, async (signal) => {
-      const account = await x.authorizeWithClientId(clientId, signal);
-      throwIfAborted(signal);
-      return sync.syncSource(sources.ensureXSource(account).id);
-    });
-  });
-  handle(IPC_CHANNELS.xiaohongshu.subscribeProfile, async (_event, input: unknown) => {
-    const source = sources.createXiaohongshuProfileSource(parseProfileSubscriptionInput(input));
-    return (await sync.syncSource(source.id)).source;
-  });
   handle(IPC_CHANNELS.academic.search, (event, query: unknown) => {
     const text = requireText(query, "学术作者搜索词无效。", 500);
     return foregroundRequests.run(event.sender, (signal) => academic.discover(text, { signal }));

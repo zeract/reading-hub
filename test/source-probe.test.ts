@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ResponseTooLargeError } from "../src/main/http";
 import { SourceProbe } from "../src/main/source-probe";
+import { RobotsDisallowedError } from "../src/main/robots";
 
 describe("SourceProbe platform boundaries", () => {
   it("does not offer proven recruitment destinations in a direct Feed preview", async () => {
@@ -24,13 +25,13 @@ describe("SourceProbe platform boundaries", () => {
     expect(result.preview[0]).not.toHaveProperty("feedContentHtml");
     expect(result.preview[0].title).toBe("One");
   });
-  it("rejects X profile URLs before the generic web probe reads a robots-blocked page", async () => {
-    const http = { getText: vi.fn() };
+  it("uses the shared robots boundary for platform URLs without a dedicated collector", async () => {
+    const blocked = new RobotsDisallowedError();
+    const http = { getText: vi.fn().mockRejectedValue(blocked) };
     const probe = new SourceProbe(http as any);
-
-    await expect(probe.probe("https://x.com/archiexzzz")).rejects.toThrow("不能通过“网页 / Feed”自动探测");
-    await expect(probe.calibrate("https://twitter.com/archiexzzz")).rejects.toThrow("robots.txt 禁止自动读取");
-    expect(http.getText).not.toHaveBeenCalled();
+    await expect(probe.probe("https://x.com/archiexzzz")).rejects.toBe(blocked);
+    await expect(probe.calibrate("https://twitter.com/archiexzzz")).rejects.toBe(blocked);
+    expect(http.getText).toHaveBeenCalledTimes(2);
   });
 
   it("prefers a verified footer RSS link when a site omits rel=alternate", async () => {

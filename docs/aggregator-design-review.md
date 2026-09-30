@@ -73,8 +73,7 @@
    同一显式稳定身份的 URL 变化现可命中旧墓碑；没有这种身份的 URL 变化仍可能产生新卡片。同一 URL 的身份改变已有双向墓碑检查，已知 Scour 和首页历史修复也会迁移删除记录，不能概括为「身份前缀一变就永久失配」。
 
 3. **没有稳定 URL 的来源必须自造身份协议。**
-   X：`x:{id}` + `hashMode:"identity"`（`src/main/x.ts:509`、`:527`）
-   小红书：`xiaohongshu:{noteId}`（`src/main/xiaohongshu.ts:163`）
+   X 与小红书专用连接器已于 2026-09-30 删除，对应命名空间不再允许新适配器声明；旧卡片身份仍按原值保留，不猜测重写。
    学术：`doi: / arxiv: / openalex: / semantic: / orcid:`（`src/main/academic.ts:132`、`:158`、`:183`）
    `ContentNormalizationOptions`（`src/main/content-normalizer.ts:13-30`）允许平台表达固有身份；`ConnectorManifest.identityNamespaces` 现在约束跨 URL 桥接。仍缺少多个身份别名之间的关系和旧冲突裁决。
 

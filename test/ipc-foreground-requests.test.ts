@@ -17,12 +17,12 @@ class Sender extends EventEmitter {
   destroy() { this.destroyed = true; this.emit("destroyed"); }
 }
 function setup(authorize: (client: string, signal: AbortSignal) => Promise<unknown>, discover = async (_query: string, _context: { signal: AbortSignal }): Promise<unknown[]> => [], sourceOverrides: Partial<Pick<SourceService, "preview" | "calibrate" | "inspectCollectionFacets">> = {}) {
-  const x = { authorizeWithClientId: vi.fn(authorize) };
-  const sources = { ensureXSource: vi.fn(() => ({ id: "fixture-source" })), ...sourceOverrides };
+  const login = vi.fn(async (signal: AbortSignal) => { await authorize("fixture-client", signal); return { started: true }; });
+  const sources = { beginZhihuFollowLogin: login, ...sourceOverrides };
   const sync = { syncSource: vi.fn(async () => ({ inserted: 0 })) };
-  const drain = registerIpcHandlers({ x, sources, sync, academic: { discover } } as unknown as ApplicationServices);
-  const connect = (sender: Sender) => electron.handlers.get(IPC_CHANNELS.x.connect)!({ sender }, "fixture-client");
-  return { x, sources, sync, drain, connect };
+  const drain = registerIpcHandlers({ sources, sync, academic: { discover } } as unknown as ApplicationServices);
+  const connect = (sender: Sender) => electron.handlers.get(IPC_CHANNELS.zhihu.followLogin)!({ sender });
+  return { login, sources, sync, drain, connect };
 }
 beforeEach(() => electron.handlers.clear());
 describe("IPC foreground request lifetime", () => {
@@ -65,7 +65,7 @@ describe("IPC foreground request lifetime", () => {
     const rejected = expect(pending).rejects.toThrow("应用正在退出");
     await run.drain();
     await rejected;
-    expect(run.sources.ensureXSource).not.toHaveBeenCalled();
+    expect(run.sync.syncSource).not.toHaveBeenCalled();
     expect(sender.listenerCount("destroyed")).toBe(0);
   });
 
@@ -78,8 +78,8 @@ describe("IPC foreground request lifetime", () => {
     sender.destroy();
     finish();
     await rejected;
-    expect(run.x.authorizeWithClientId.mock.calls[0][1].aborted).toBe(true);
-    expect(run.sources.ensureXSource).not.toHaveBeenCalled();
+    expect(run.login.mock.calls[0][0].aborted).toBe(true);
+    expect(run.sync.syncSource).not.toHaveBeenCalled();
     await run.drain();
   });
 
@@ -91,7 +91,7 @@ describe("IPC foreground request lifetime", () => {
     const secondPending = run.connect(second).catch((error) => error);
     first.destroy();
     expect((await firstPending).message).toContain("窗口已关闭");
-    expect(run.x.authorizeWithClientId.mock.calls[1][1].aborted).toBe(false);
+    expect(run.login.mock.calls[1][0].aborted).toBe(false);
     await run.drain();
     expect((await secondPending).message).toContain("应用正在退出");
   });
@@ -100,20 +100,20 @@ describe("IPC foreground request lifetime", () => {
     const run = setup(async () => ({ id: "fixture-account" }));
     const sender = new Sender(); sender.destroy();
     await expect(run.connect(sender)).rejects.toThrow("窗口已关闭");
-    expect(run.x.authorizeWithClientId).not.toHaveBeenCalled();
+    expect(run.login).not.toHaveBeenCalled();
     expect(sender.listenerCount("destroyed")).toBe(0);
     await run.drain();
   });
 
-  it("detaches the lifetime hook after a successful authorization and sync", async () => {
+  it("detaches the lifetime hook after a successful login preparation", async () => {
     const run = setup(async () => ({ id: "fixture-account" }));
     const sender = new Sender();
-    await expect(run.connect(sender)).resolves.toEqual({ inserted: 0 });
-    const signal = run.x.authorizeWithClientId.mock.calls[0][1];
+    await expect(run.connect(sender)).resolves.toEqual({ started: true });
+    const signal = run.login.mock.calls[0][0];
     sender.destroy();
     await run.drain();
     expect(signal.aborted).toBe(false);
-    expect(run.sources.ensureXSource).toHaveBeenCalledTimes(1);
+    expect(run.login).toHaveBeenCalledTimes(1);
     expect(sender.listenerCount("destroyed")).toBe(0);
   });
 

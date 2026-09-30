@@ -26,9 +26,9 @@ describe("source icons", () => {
 
   it("uses local branded fallbacks for platform and manual sources", () => {
     expect(sourceIconKind(source({ kind: "zhihu_follow", url: "https://www.zhihu.com/follow" }))).toBe("zhihu-follow");
-    expect(sourceIconKind(source({ kind: "x", url: "https://x.com/example" }))).toBe("x");
+    expect(sourceIconKind(source({ kind: "rss", url: "https://x.com/example" }))).toBe("x");
     expect(sourceIconKind(source({ kind: "rss", config: { sourceProvider: "rsshub", rsshubPlatform: "xiaohongshu" } }))).toBe("xiaohongshu");
-    expect(sourceFaviconCandidate(source({ kind: "x", url: "https://x.com/example" }))).toBeUndefined();
+    expect(sourceFaviconCandidate(source({ kind: "rss", url: "https://x.com/example" }))).toBeUndefined();
   });
 
   it("never turns a local or private icon URL into a renderer request", () => {

@@ -1,19 +1,13 @@
 import type { Source } from "./types";
 
 /** Shared presentation of source lifecycle and available user operations. */
-export function isRetiredXPublicProfile(source: Source | undefined): boolean {
-  return source?.kind === "x" && source.connectorId === "x" && source.config?.mode === "public-profile";
-}
-
 export function sourceCapabilities(source: Source) {
-  const retired = isRetiredXPublicProfile(source);
-  const canPoll = source.subscribed !== false && source.kind !== "manual" && !retired;
+  const canPoll = source.subscribed !== false && source.kind !== "manual";
   return {
     canPoll,
     canRefresh: canPoll && source.pollingEnabled && source.status !== "paused",
     canCalibrate: source.subscribed !== false && source.kind === "generic",
     canReconnect: source.subscribed !== false && source.kind === "zhihu_follow",
-    canSubscribe: !retired,
     canChangeKind: ["rss", "generic", "manual"].includes(source.kind) && source.config?.sourceProvider !== "rsshub"
   };
 }

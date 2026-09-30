@@ -4,7 +4,6 @@ import { AcademicAuthorConnector } from "../src/main/academic";
 import { ReadingDatabase } from "../src/main/database";
 import { ConnectorRegistry } from "../src/main/connector-registry";
 import { SyncManager } from "../src/main/sync-manager";
-import { XConnector } from "../src/main/x";
 import { ZhihuConnector } from "../src/main/zhihu";
 import { chromiumFetch } from "../src/main/network";
 vi.mock("../src/main/network", () => ({ chromiumFetch: vi.fn() }));
@@ -16,18 +15,15 @@ describe("JSON response contract", () => {
     await expect(requestJsonWithTimeout(async () => new Response(body), "https://example.com/api", {}, undefined, 1000)).rejects.toThrow();
   });
 
-  it.each([["academic", "malformed"], ["x", "malformed"], ["academic", "oversized"], ["x", "oversized"], ["academic", "redirect"], ["x", "redirect"]] as const)("does not commit %s success or checkpoint on an %s response", async (kind, problem) => {
+  it.each(["malformed", "oversized", "redirect"] as const)("does not commit academic success or checkpoint on an %s response", async (problem) => {
     const database = new ReadingDatabase(":memory:");
     const fetcher = vi.fn(async () => new Response("<html>fixture gateway error</html>", problem === "redirect" ? { status: 307, headers: { location: "https://other.example/fixture-private-response-marker" } } : problem === "oversized" ? { headers: { "content-length": "8000001" } } : undefined));
-    const account = database.saveAccount({ connectorId: "x", displayName: "Fixture", subjectId: "owner", keychainAccount: "x:fixture", scopes: [], status: "active" });
-    const source = database.createSource({ url: "https://example.com/api", title: "Fixture", kind, accountId: kind === "x" ? account.id : undefined, config: { authorName: "Fixture", openAlexId: "A1" }, pollingEnabled: true });
+    const source = database.createSource({ url: "https://example.com/api", title: "Fixture", kind: "academic", config: { authorName: "Fixture", openAlexId: "A1" }, pollingEnabled: true });
     const subscription = database.getSubscriptionForSource(source.id)!;
     database.saveCheckpoint(subscription.id, { sinceId: "100", data: { retained: true } });
     const before = database.getCheckpoint(subscription.id);
     const registry = new ConnectorRegistry();
-    registry.register(kind === "academic" ? new AcademicAuthorConnector(fetcher) : new XConnector(database, {
-      getConnectorSecret: async () => JSON.stringify({ accessToken: "fixture-only" }), setConnectorSecret: async () => "x:fixture"
-    }, async () => undefined, fetcher));
+    registry.register(new AcademicAuthorConnector(fetcher));
     const manager = new SyncManager(database, registry);
     try {
       await expect(manager.syncSource(source.id)).rejects.toThrow();
@@ -35,32 +31,8 @@ describe("JSON response contract", () => {
       expect(database.getSource(source.id)).toMatchObject({ status: "error", failureCount: 1 });
       expect(database.getSource(source.id)?.lastSuccessfulAt).toBeUndefined();
       expect(database.listEntries()).toEqual([]);
-      expect(database.getAccount(account.id)?.status).toBe("active");
       expect(fetcher).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(database.listSyncEvents())).not.toMatch(/fixture-private-response-marker|fixture-only/);
-    } finally { await manager.close(); database.close(); }
-  });
-
-  it.each([401, 403, 429])("keeps X HTTP %i authorization semantics when its body is oversized", async (status) => {
-    const database = new ReadingDatabase(":memory:");
-    const account = database.saveAccount({ connectorId: "x", displayName: "Fixture", subjectId: "owner", keychainAccount: "x:fixture", scopes: [], status: "active" });
-    const source = database.createSource({ url: "https://example.com/api", title: "Fixture", kind: "x", accountId: account.id, pollingEnabled: true });
-    const subscription = database.getSubscriptionForSource(source.id)!;
-    database.saveCheckpoint(subscription.id, { sinceId: "100", data: { retained: true } });
-    const before = database.getCheckpoint(subscription.id);
-    const writeSecret = vi.fn();
-    const registry = new ConnectorRegistry();
-    registry.register(new XConnector(database, {
-      getConnectorSecret: async () => JSON.stringify({ accessToken: "fixture-token-only" }), setConnectorSecret: writeSecret
-    }, async () => undefined, async () => new Response("fixture-private-response-marker", { status, headers: { "content-length": "8000001" } })));
-    const manager = new SyncManager(database, registry);
-    try {
-      await expect(manager.syncSource(source.id)).rejects.toThrow();
-      expect(database.getAccount(account.id)?.status).toBe(status === 401 ? "expired" : "active");
-      expect(database.getCheckpoint(subscription.id)).toEqual(before);
-      expect(database.listEntries()).toEqual([]);
-      expect(writeSecret).not.toHaveBeenCalled();
-      expect(JSON.stringify(database.listSyncEvents())).not.toMatch(/fixture-private-response-marker|fixture-token-only/);
     } finally { await manager.close(); database.close(); }
   });
 

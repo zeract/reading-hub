@@ -11,9 +11,7 @@ import type {
 const PROVIDER_IDENTITY_OWNERS: Partial<Record<ContentIdentityNamespace, ConnectorId>> = {
   openalex: "academic",
   semantic: "academic",
-  orcid: "academic",
-  x: "x",
-  xiaohongshu: "xiaohongshu"
+  orcid: "academic"
 };
 
 /**

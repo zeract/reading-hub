@@ -718,10 +718,10 @@ describe("ReadingDatabase", () => {
 
   it("creates a compatibility subscription and persists checkpoints separately from source metadata", () => {
     const db = new ReadingDatabase(":memory:");
-    const account = db.saveAccount({ connectorId: "x", displayName: "X", scopes: [], status: "active" });
-    const source = db.createSource({ url: "https://api.x.com/2/users/me/following", title: "X", kind: "x", connectorId: "x", accountId: account.id, pollingEnabled: true });
+    const account = db.saveAccount({ connectorId: "academic", displayName: "Fixture", scopes: [], status: "active" });
+    const source = db.createSource({ url: "https://academic.local/author/fixture", title: "Fixture", kind: "academic", connectorId: "academic", accountId: account.id, pollingEnabled: true });
     const subscription = db.getSubscriptionForSource(source.id);
-    expect(subscription).toMatchObject({ sourceId: source.id, connectorId: "x", accountId: account.id });
+    expect(subscription).toMatchObject({ sourceId: source.id, connectorId: "academic", accountId: account.id });
     db.saveCheckpoint(subscription!.id, { sinceId: "123", data: { sinceByUser: { user: "123" } } });
     expect(db.getCheckpoint(subscription!.id)).toMatchObject({ sinceId: "123", data: { sinceByUser: { user: "123" } } });
     db.close();

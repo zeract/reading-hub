@@ -1,14 +1,12 @@
 import { WeightedLruCache } from "./weighted-lru-cache";
 import { throwIfAborted } from "./cancellation";
-import { isRetiredXPublicProfile, sourceCapabilities } from "../shared/source-capabilities";
+import { sourceCapabilities } from "../shared/source-capabilities";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
-  Account,
   CalibrationResult,
   FacetCatalog,
   ProbeResult,
-  ProfileSubscriptionInput,
   Source,
   SourceCollectionSettings,
   SourceFacet,
@@ -20,10 +18,9 @@ import type {
 import { facetIdentity, sameSubscriptionScope } from "../shared/subscription-scope";
 import { ReadingDatabase } from "./database";
 import type { ConnectorRegistry } from "./connector-registry";
-import { isXiaohongshuUrl, manualProbe, SourceProbe } from "./source-probe";
+import { SourceProbe } from "./source-probe";
 import { SyncManager } from "./sync-manager";
 import { ZhihuFollowConnector } from "./zhihu-follow";
-import { parseXiaohongshuProfileUrl } from "./platform-profile-url";
 import { parseOpml } from "./opml";
 import { assertFeedSubscriptionUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 
@@ -48,9 +45,8 @@ export class SourceService {
 
   async preview(url: string, signal?: AbortSignal): Promise<{ token: string; probe: ProbeResult }> {
     throwIfAborted(signal);
-    const detected = await this.probeService.probe(url, signal);
+    const probe = await this.probeService.probe(url, signal);
     throwIfAborted(signal);
-    const probe = isXiaohongshuUrl(detected.url) ? manualProbe(detected.url, detected.preview, detected.title) : detected;
     const token = randomUUID();
     // Immutable metadata snapshot: callers cannot mutate a pending confirmation
     // or invalidate cache accounting through the returned preview object.
@@ -170,35 +166,6 @@ export class SourceService {
     });
   }
 
-  ensureXSource(account: Account): Source {
-    const existing = this.db.listSources().find((source) => source.connectorId === "x" && source.accountId === account.id && source.config?.mode !== "profile");
-    if (existing) return existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
-    return this.db.createSource({
-      url: `https://api.x.com/2/users/${encodeURIComponent(account.subjectId || account.id)}/following`,
-      title: "X 关注动态（原创帖与长文链接）",
-      kind: "x",
-      connectorId: "x",
-      accountId: account.id,
-      config: { maxFollowees: 200 },
-      pollingEnabled: true
-    });
-  }
-
-  createXiaohongshuProfileSource(input: ProfileSubscriptionInput): Source {
-    const profile = parseXiaohongshuProfileUrl(input.url);
-    const existing = this.db.getSourceByUrl(profile.url);
-    if (existing) return existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
-    return this.db.createSource({
-      url: profile.url,
-      title: normalizedOptionalTitle(input.title) || `小红书 · ${profile.profileId}`,
-      category: "平台动态",
-      kind: "xiaohongshu",
-      connectorId: "xiaohongshu",
-      config: { mode: "profile", profileId: profile.profileId },
-      pollingEnabled: true
-    });
-  }
-
   createAcademicSource(draft: SubscriptionDraft): Source {
     const config = draft.config ?? {};
     const target = draft.targetId || JSON.stringify(config);
@@ -258,7 +225,6 @@ export class SourceService {
     const publicKinds = new Set<Source["kind"]>(["rss", "generic", "manual"]);
     const sourceIsPublic = publicKinds.has(source.kind);
     const sourceUsesLegacyRssHub = source.config?.sourceProvider === "rsshub";
-    const unsupportedXPublicProfile = isRetiredXPublicProfile(source);
     if (!sourceIsPublic && settings.kind !== source.kind) throw new Error("授权平台的信源类型由连接器决定，不能在此更改。");
     if (sourceUsesLegacyRssHub && settings.kind !== source.kind) throw new Error("已保存的 RSSHub Feed 固定使用 RSS 连接器，不能在此更改。");
     if (sourceIsPublic && !publicKinds.has(settings.kind)) throw new Error("只能将公开来源设置为 RSS、公开网页或分享链接。");
@@ -266,7 +232,7 @@ export class SourceService {
     if (settings.pollingEnabled && interval !== undefined && ![30, 60, 120, 240, 720, 1440].includes(interval)) {
       throw new Error("刷新间隔必须是预设的安全时间。");
     }
-    const pollingEnabled = source.subscribed === false || settings.kind === "manual" || unsupportedXPublicProfile ? false : settings.pollingEnabled;
+    const pollingEnabled = source.subscribed === false || settings.kind === "manual" ? false : settings.pollingEnabled;
     const updated = this.db.updateSourceSettings(sourceId, { ...settings, title, category, pollingEnabled, refreshIntervalMinutes: pollingEnabled ? interval : undefined });
     if (updated.kind !== source.kind || updated.pollingEnabled !== source.pollingEnabled) this.sync.cancelSource(sourceId);
     return updated;
@@ -367,7 +333,6 @@ export class SourceService {
   private changeSubscription(sourceId: string, subscribed: boolean): Source {
     const source = this.db.getSource(sourceId);
     if (!source) throw new Error("来源不存在。");
-    if (subscribed && isRetiredXPublicProfile(source)) throw new Error("此旧来源不支持恢复，请通过官方账号连接。");
     const updated = this.db.setSubscribed(sourceId, subscribed);
     if ((source.subscribed !== false) !== (updated.subscribed !== false)) this.sync.cancelSource(sourceId);
     return updated;
@@ -395,20 +360,6 @@ export class SourceService {
     }
   }
 
-  /**
-   * Older builds offered an unauthenticated X embed transport. X's robots
-   * policy now rejects that endpoint, so retain any already collected cards
-   * but stop the legacy source before the scheduler can retry it again.
-   */
-  retireUnsupportedXPublicProfileSources(): number {
-    const legacySources = this.db.listSources().filter((source) => source.kind === "x"
-      && source.connectorId === "x" && source.config?.mode === "public-profile"
-      && (source.status !== "paused" || source.pollingEnabled));
-    for (const source of legacySources) {
-      this.db.pauseSource(source.id, "X 不提供可由 Reading Hub 自动读取的公开订阅通道；此旧来源已停止刷新。可保留已有卡片，或删除来源后改用官方 API。");
-    }
-    return legacySources.length;
-  }
 }
 
 function normalizedOptionalTitle(value: string | undefined): string | undefined {

@@ -59,8 +59,6 @@ const IPC_CHANNELS = {
   },
   app: { openExternal: "app:open-external" },
   zhihu: { connect: "zhihu:connect", followLogin: "zhihu:follow-login" },
-  x: { connect: "x:connect" },
-  xiaohongshu: { subscribeProfile: "xiaohongshu:subscribe-profile" },
   academic: { search: "academic:search", subscribe: "academic:subscribe" }
 } as const satisfies typeof SharedIpcChannels;
 
@@ -94,7 +92,6 @@ const readerApi: ReaderApi = {
   inspectSourceCollectionFacets: (id) => ipcRenderer.invoke(IPC_CHANNELS.source.inspectCollectionFacets, id),
   updateRule: (id, rule) => ipcRenderer.invoke(IPC_CHANNELS.source.updateRule, id, rule),
   calibrateSource: (id) => ipcRenderer.invoke(IPC_CHANNELS.source.calibration, id),
-  subscribeXiaohongshuProfile: (input) => ipcRenderer.invoke(IPC_CHANNELS.xiaohongshu.subscribeProfile, input),
   listEntryPage: (query) => ipcRenderer.invoke(IPC_CHANNELS.entry.listPage, query),
   getLibraryCounts: () => ipcRenderer.invoke(IPC_CHANNELS.entry.counts),
   readEntry: (id, requestId) => ipcRenderer.invoke(IPC_CHANNELS.entry.readContent, id, requestId),
@@ -131,7 +128,6 @@ const readerApi: ReaderApi = {
   openExternal: (url) => ipcRenderer.invoke(IPC_CHANNELS.app.openExternal, url),
   connectZhihu: (accessSecret) => ipcRenderer.invoke(IPC_CHANNELS.zhihu.connect, accessSecret),
   connectZhihuFollow: () => ipcRenderer.invoke(IPC_CHANNELS.zhihu.followLogin),
-  connectX: (clientId) => ipcRenderer.invoke(IPC_CHANNELS.x.connect, clientId),
   searchAcademicAuthors: (query) => ipcRenderer.invoke(IPC_CHANNELS.academic.search, query),
   subscribeAcademicAuthor: (draft) => ipcRenderer.invoke(IPC_CHANNELS.academic.subscribe, draft)
 };

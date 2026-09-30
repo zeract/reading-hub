@@ -1,5 +1,5 @@
 import { facetIdentity, sameSubscriptionScope } from "../shared/subscription-scope";
-import { isRetiredXPublicProfile, sourceCapabilities, sourceHealthLabel } from "../shared/source-capabilities";
+import { sourceCapabilities, sourceHealthLabel } from "../shared/source-capabilities";
 import { type FormEvent, type KeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { ModalSurface } from "./modal-surface";
 import { useAsyncAction } from "./use-async-action";
@@ -15,12 +15,10 @@ import type {
   SubscriptionScope
 } from "../shared/types";
 
-type AddSourceMethod = "public" | "zhihu" | "x" | "xiaohongshu" | "academic";
+type AddSourceMethod = "public" | "zhihu" | "academic";
 const SOURCE_METHODS: ReadonlyArray<{ id: AddSourceMethod; label: string; description: string }> = [
   { id: "public", label: "网页 / Feed", description: "RSS、公开文章列表页或分享链接" },
   { id: "zhihu", label: "知乎动态", description: "授权账号的关注页公开动态" },
-  { id: "x", label: "X 动态", description: "官方 API 授权后的关注动态" },
-  { id: "xiaohongshu", label: "小红书", description: "公开博主主页中的结构化笔记卡片" },
   { id: "academic", label: "学术作者", description: "公开学术索引中的新论文" }
 ];
 
@@ -30,7 +28,7 @@ export function PreviewDialog({ pending, onCancel, onConfirm }: { pending: Pendi
 
   return <Dialog title="确认来源" onClose={onCancel} className="dialog--preview">
     <div className="preview-dialog__body">
-      <p className="dialog-intro"><strong className="preview-source-title" title={probe.title}>{probe.title}</strong><br />{probe.kind === "rss" ? "已发现 Feed，将自动更新。" : probe.kind === "manual" ? "小红书分享链接将作为一次性卡片保存。" : probe.requiresReview ? "结构识别置信度较低，保存后需要校正规则。" : "已识别公开页面结构，将自动更新。"}</p>
+      <p className="dialog-intro"><strong className="preview-source-title" title={probe.title}>{probe.title}</strong><br />{probe.kind === "rss" ? "已发现 Feed，将自动更新。" : probe.kind === "manual" ? "该链接将作为一次性卡片保存。" : probe.requiresReview ? "结构识别置信度较低，保存后需要校正规则。" : "已识别公开页面结构，将自动更新。"}</p>
       <div className="preview-list preview-list--source" role="list" aria-label="识别到的文章">
         {probe.preview.slice(0, 4).map((entry) => {
           const title = entry.title.trim() || "未命名文章";
@@ -45,13 +43,11 @@ export function PreviewDialog({ pending, onCancel, onConfirm }: { pending: Pendi
   </Dialog>;
 }
 
-export function AddSourceDialog({ onClose, onPreview, onImportOpml, onZhihuStarted, onXStarted, onXiaohongshuSaved, onAcademicSaved }: {
+export function AddSourceDialog({ onClose, onPreview, onImportOpml, onZhihuStarted, onAcademicSaved }: {
   onClose: () => void;
   onPreview: (preview: PendingPreview) => void;
   onImportOpml: () => Promise<OpmlImportResult>;
   onZhihuStarted: () => Promise<void>;
-  onXStarted: () => Promise<void>;
-  onXiaohongshuSaved: () => Promise<void>;
   onAcademicSaved: () => Promise<void>;
 }) {
   const [method, setMethod] = useState<AddSourceMethod>("public");
@@ -84,8 +80,6 @@ export function AddSourceDialog({ onClose, onPreview, onImportOpml, onZhihuStart
         <p className="source-method-description">{item.description}</p>
         {item.id === "public" && <PublicSourcePane onPreview={onPreview} onImportOpml={onImportOpml} />}
         {item.id === "zhihu" && <ZhihuSourcePane onStarted={onZhihuStarted} />}
-        {item.id === "x" && <XSourcePane onStarted={onXStarted} />}
-        {item.id === "xiaohongshu" && <XiaohongshuSourcePane onSaved={onXiaohongshuSaved} />}
         {item.id === "academic" && <AcademicSourcePane onSaved={onAcademicSaved} />}
       </>}
     </div>)}
@@ -133,7 +127,7 @@ function PublicSourcePane({ onPreview, onImportOpml }: { onPreview: (preview: Pe
   return <form className="connector-form" onSubmit={(event) => void submit(event)}>
     <label htmlFor="source-url">网址</label>
     <input id="source-url" value={url} onChange={(event) => editUrl(event.target.value)} placeholder="https://… 或 http://…" type="url" required />
-    <p className="dialog-intro">优先识别 RSS、Atom、JSON Feed；没有 Feed 时会从公开页面提取文章卡片。也可导入 OPML。明确添加的本机地址仅接受 RSS/Atom/JSON Feed，不能用于网页提取。X 主页请在“X 动态”中使用官方 API。</p>
+    <p className="dialog-intro">优先识别 RSS、Atom、JSON Feed；没有 Feed 时会从公开页面提取文章卡片。也可导入 OPML。明确添加的本机地址仅接受 RSS/Atom/JSON Feed，不能用于网页提取。</p>
     <SourceActionFeedback error={error} status={busy ? operation.current === "import" ? "正在选择或导入 OPML…" : "正在探测来源…" : error ? undefined : imported} />
     <div className="dialog-actions"><button type="button" onClick={() => void importFile()} disabled={busy}>{busy && operation.current === "import" ? "正在导入 OPML…" : "导入 OPML…"}</button><button className="primary" disabled={busy}>{busy && operation.current === "preview" ? "正在探测…" : "探测来源"}</button></div>
   </form>;
@@ -153,50 +147,6 @@ function ZhihuSourcePane({ onStarted }: { onStarted: () => Promise<void> }) {
     <p className="dialog-intro">已有的“知乎（本人官方数据）”来源不会自动改写；不再需要时可在左侧单独删除。</p>
     <SourceActionFeedback error={error} status={busy ? "正在连接知乎，请在登录窗口完成操作。" : undefined} />
     <div className="dialog-actions"><button type="button" className="primary" onClick={() => void submit()} disabled={busy}>打开知乎登录</button></div>
-  </section>;
-}
-
-function XSourcePane({ onStarted }: { onStarted: () => Promise<void> }) {
-  const [clientId, setClientId] = useState("");
-  const { busy, error, run } = useAsyncAction();
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    await run(async () => {
-      await window.reader.connectX(clientId);
-      await onStarted();
-    });
-  }
-  return <section className="source-method-pane">
-    <p className="dialog-intro">X 当前未提供可由 Reading Hub 在免 API 模式下自动读取的公开博主时间线，因此“公开博主”订阅已下线。应用不会使用 Cookie、登录态或私有 Web API 绕过此限制。</p>
-    <p className="dialog-intro">此功能使用官方 X API，不读取浏览器 Cookie。请在 X Developer Console 为你的应用配置回调地址 <code>http://127.0.0.1:43119/x/callback</code>，并填写该应用的 Client ID。</p>
-    <p className="dialog-intro">授权后默认每 30–60 分钟收集关注账号的原创帖和文章型外链，过滤回复与转推。访问令牌仅保存在本机 Keychain；X 当前的 API 额度和计费资格由你的开发者项目决定。</p>
-    <form className="connector-form" onSubmit={(event) => void submit(event)}><label htmlFor="x-client-id">X Client ID</label><input id="x-client-id" value={clientId} onChange={(event) => setClientId(event.target.value)} placeholder="Developer App Client ID" autoComplete="off" required /><SourceActionFeedback error={error} status={busy ? "正在授权 X，请在浏览器中完成操作。" : undefined} /><div className="dialog-actions"><button className="primary" disabled={busy}>{busy ? "等待授权…" : "在浏览器中授权 X"}</button></div></form>
-  </section>;
-}
-
-function XiaohongshuSourcePane({ onSaved }: { onSaved: () => Promise<void> }) {
-  const [url, setUrl] = useState("");
-  const [title, setTitle] = useState("");
-  const { busy, error, run } = useAsyncAction();
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    if (!url.trim()) return;
-    await run(async () => {
-      await window.reader.subscribeXiaohongshuProfile({ url: url.trim(), title: title.trim() || undefined });
-      await onSaved();
-    });
-  }
-  return <section className="source-method-pane profile-source-pane">
-    <p className="dialog-intro">输入小红书公开博主主页，例如 <code>https://www.xiaohongshu.com/user/profile/用户ID</code>。Reading Hub 直接读取 robots 允许的公开页面中已有的结构化笔记卡片，不需要本地或远程 RSSHub。</p>
-    <p className="dialog-intro">如果页面要求登录、Cookie、验证码或没有公开笔记结构，应用会停止并说明原因；不会绕过访问限制。单篇内容仍可在“网页 / Feed”中粘贴分享链接保存。</p>
-    <form className="connector-form" onSubmit={(event) => void submit(event)}>
-      <label htmlFor="xiaohongshu-profile-url">小红书博主主页</label>
-      <input id="xiaohongshu-profile-url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.xiaohongshu.com/user/profile/用户ID" type="url" required />
-      <label htmlFor="xiaohongshu-profile-title">显示名称（可选）</label>
-      <input id="xiaohongshu-profile-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="小红书 · 某位博主" maxLength={120} />
-      <SourceActionFeedback error={error} status={busy ? "正在读取公开主页并添加来源…" : undefined} />
-      <div className="dialog-actions"><button className="primary" disabled={busy}>{busy ? "正在读取公开主页…" : "添加小红书博主"}</button></div>
-    </form>
   </section>;
 }
 
@@ -293,8 +243,6 @@ const REFRESH_OPTIONS: Array<{ value: "default" | "30" | "60" | "120" | "240" | 
   { value: "1440", label: "约每天一次" }
 ];
 
-export { isRetiredXPublicProfile } from "../shared/source-capabilities";
-
 export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCalibrate, onDelete, onReconnectZhihu }: {
   source: Source;
   onClose: () => void;
@@ -314,7 +262,6 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
   const refreshPending = useRef(false);
   const { busy, error, run } = useAsyncAction();
   const { busy: collectionLoading, error: collectionError, run: readCollection, invalidate: invalidateCollection } = useAsyncAction();
-  const retiredXPublicProfile = isRetiredXPublicProfile(source);
   const capabilities = sourceCapabilities(source);
   const manual = kind === "manual";
 
@@ -383,7 +330,7 @@ export function SourceSettingsDialog({ source, onClose, onSaved, onRefresh, onCa
         <p className="source-settings-note">来源文件夹仅保存在本机，用于将来源整理为可折叠的分组；它不会过滤文章。</p>
         <p className="source-settings-note">信源类型：{sourceKindLabel(source.kind)}</p>
         <label className="source-settings-toggle"><input type="checkbox" checked={!manual && pollingEnabled} onChange={(event) => setPollingEnabled(event.target.checked)} disabled={manual || !capabilities.canPoll || busy} />自动刷新</label>
-        <label>刷新时间<select value={refresh} onChange={(event) => setRefresh(event.target.value as typeof refresh)} disabled={manual || retiredXPublicProfile || !pollingEnabled || busy}>{REFRESH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        <label>刷新时间<select value={refresh} onChange={(event) => setRefresh(event.target.value as typeof refresh)} disabled={manual || !pollingEnabled || busy}>{REFRESH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
         {manual && <p className="source-settings-note">分享链接是一次性阅读卡片，不会自动轮询。</p>}
         <label>来源地址<input value={source.url} readOnly aria-readonly="true" /></label>
         {!collection && <fieldset className="source-collection-scope source-collection-load" aria-busy={collectionLoading}>
@@ -488,8 +435,6 @@ const SOURCE_KIND_LABELS = {
   manual: "分享链接",
   zhihu: "知乎官方数据",
   zhihu_follow: "知乎关注动态",
-  x: "X 关注动态",
-  xiaohongshu: "小红书公开博主",
   academic: "学术作者更新"
 } satisfies Record<SourceKind, string>;
 

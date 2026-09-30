@@ -7,7 +7,6 @@ vi.mock("../src/main/network", () => ({ chromiumFetch: network.fetch }));
 import { PublicHttpClient } from "../src/main/http";
 import { ReadingDatabase } from "../src/main/database";
 import { GenericConnector, RssConnector } from "../src/main/connectors";
-import { XiaohongshuConnector } from "../src/main/xiaohongshu";
 import { ConnectorRegistry } from "../src/main/connector-registry";
 import { SyncManager } from "../src/main/sync-manager";
 
@@ -15,27 +14,26 @@ const oldHeaders = { etag: '"fixture"', "last-modified": "Sun, 01 Feb 2026 00:00
 const newDate = "Mon, 02 Feb 2026 00:00:00 GMT";
 const feed = '<rss version="2.0"><channel><title>Fixture</title><item><title>Current</title><link>https://example.com/current</link><pubDate>Sun, 01 Feb 2026 00:00:00 GMT</pubDate></item></channel></rss>';
 const html = '<article><h2><a href="https://example.com/current">Current</a></h2><time datetime="2026-02-01">2026-02-01</time></article>';
-const profile = '<script type="application/json" id="SSR_DATA">{"notes":[{"noteId":"note_12345678","title":"Current","user":{"nickname":"Fixture author"}}]}</script>';
-type Mode = "rss" | "html" | "declared-feed" | "xiaohongshu";
+type Mode = "rss" | "html" | "declared-feed";
 function fixture(mode: Mode, path = ":memory:") {
   const db = new ReadingDatabase(path);
   const http = new PublicHttpClient({ assertAllowed: vi.fn().mockResolvedValue(undefined) } as never);
   const registry = new ConnectorRegistry();
-  registry.register(mode === "rss" ? new RssConnector(http) : mode === "xiaohongshu" ? new XiaohongshuConnector(http) : new GenericConnector(http));
+  registry.register(mode === "rss" ? new RssConnector(http) : new GenericConnector(http));
   const sync = new SyncManager(db, registry);
-  const source = db.createSource({ url: mode === "xiaohongshu" ? "https://www.xiaohongshu.com/user/profile/fixture_1234" : "https://example.com/source", title: "Fixture", kind: mode === "rss" || mode === "xiaohongshu" ? mode : "generic", pollingEnabled: true,
+  const source = db.createSource({ url: "https://example.com/source", title: "Fixture", kind: mode === "rss" ? mode : "generic", pollingEnabled: true,
     extractionRule: mode === "declared-feed" ? { version: 1, feedUrl: "https://example.com/feed" } : undefined,
     config: { archiveCatalog: { url: "https://example.com/archive" } }
   });
-  const full = (headers: Record<string, string> = oldHeaders) => new Response(mode === "html" ? html : mode === "xiaohongshu" ? profile : feed, {
-    headers: { "content-type": mode === "html" || mode === "xiaohongshu" ? "text/html" : "application/rss+xml", ...headers }
+  const full = (headers: Record<string, string> = oldHeaders) => new Response(mode === "html" ? html : feed, {
+    headers: { "content-type": mode === "html" ? "text/html" : "application/rss+xml", ...headers }
   });
   return { db, sync, source, full, close: async () => { await sync.close(); db.close(); } };
 }
 beforeEach(() => { network.fetch.mockReset(); });
 
 describe("HTTP response validator persistence", () => {
-  it.each(["rss", "html", "declared-feed", "xiaohongshu"] as const)("replaces missing validators after a complete %s response", async (mode) => {
+  it.each(["rss", "html", "declared-feed"] as const)("replaces missing validators after a complete %s response", async (mode) => {
     const f = fixture(mode);
     try {
       network.fetch.mockResolvedValueOnce(f.full()); await f.sync.syncSource(f.source.id);
@@ -51,7 +49,7 @@ describe("HTTP response validator persistence", () => {
     } finally { await f.close(); }
   });
 
-  it.each(["rss", "html", "declared-feed", "xiaohongshu"] as const)("merges provided 304 metadata and preserves omitted %s validators", async (mode) => {
+  it.each(["rss", "html", "declared-feed"] as const)("merges provided 304 metadata and preserves omitted %s validators", async (mode) => {
     const f = fixture(mode);
     try {
       network.fetch.mockResolvedValueOnce(f.full()); await f.sync.syncSource(f.source.id);

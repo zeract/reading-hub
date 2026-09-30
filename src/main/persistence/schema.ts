@@ -9,7 +9,7 @@ import { ENTRY_ORDER_BY } from "./entry-order";
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 17;
+export const CURRENT_SCHEMA_VERSION = 18;
 
 type SqliteDatabase = Database.Database;
 
@@ -405,8 +405,37 @@ const MIGRATIONS: readonly SchemaMigration[] = [
         migrated_at INTEGER NOT NULL
       );
     `)
+  },
+  {
+    version: 18,
+    name: "retire-unused-platform-connectors",
+    up: (database) => {
+      // Dedicated platform collectors were removed. Retain the library and
+      // source attribution as non-polling saved links, not broken adapters.
+      // Ordinary RSS/RSSHub subscriptions are deliberately not targeted.
+      const retired = database.prepare(`SELECT id FROM sources
+        WHERE kind IN ('x', 'xiaohongshu') OR connector_id IN ('x', 'xiaohongshu')
+          OR id IN (SELECT source_id FROM subscriptions WHERE connector_id IN ('x', 'xiaohongshu'))`).all() as Array<{ id: string }>;
+      // Retain the row so the separate historical-library migration can still
+      // verify row-count preservation, but discard obsolete platform progress.
+      const clearCheckpoint = database.prepare("UPDATE sync_checkpoints SET cursor = NULL, since_id = NULL, data_json = NULL WHERE subscription_id IN (SELECT id FROM subscriptions WHERE source_id = ?)");
+      const retireSource = database.prepare(`
+        UPDATE sources SET kind = 'manual', connector_id = 'manual', account_id = NULL,
+          config_json = NULL, extraction_rule = NULL, polling_enabled = 0, status = 'paused',
+          next_check_at = NULL, refresh_interval_minutes = NULL,
+          etag = NULL, last_modified = NULL, validator_url = NULL,
+          failure_count = 0, consecutive_empty = 0, last_error = NULL
+        WHERE id = ?`);
+      const retireSubscription = database.prepare("UPDATE subscriptions SET connector_id = 'manual', account_id = NULL, target_id = NULL, config_json = NULL WHERE source_id = ?");
+      for (const { id } of retired) {
+        clearCheckpoint.run(id);
+        retireSubscription.run(id);
+        retireSource.run(id);
+      }
+      // Account records keep only the reference needed for startup Keychain
+      // cleanup. Remove each record only after its credential is cleared.
+    }
   }
-
 ];
 
 function ensureColumn(database: SqliteDatabase, table: "sources" | "entries" | "entry_origins" | "article_rewrites", column: string, type: string): void {

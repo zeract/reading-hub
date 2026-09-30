@@ -11,7 +11,6 @@ import type {
   EntryListQuery,
   ExtractionRule,
   SubscriptionScope,
-  ProfileSubscriptionInput,
   SourceKind,
   SourceSettings,
   SubscriptionDraft
@@ -27,7 +26,7 @@ import {
   MAX_AI_SOURCE_TITLE_LENGTH
 } from "../shared/ai-input";
 
-const SOURCE_KINDS: SourceKind[] = ["rss", "generic", "manual", "zhihu", "zhihu_follow", "x", "xiaohongshu", "academic"];
+const SOURCE_KINDS: SourceKind[] = ["rss", "generic", "manual", "zhihu", "zhihu_follow", "academic"];
 const AI_PROVIDERS = ["openai", "deepseek", "codex-cli"] as const;
 const REFRESH_INTERVALS = [30, 60, 120, 240, 720, 1440];
 
@@ -198,14 +197,6 @@ export function parseExtractionRule(value: unknown): ExtractionRule {
   }
   if (value.rendererRequired !== undefined) output.rendererRequired = requireBoolean(value.rendererRequired, "渲染设置无效。");
   return output;
-}
-
-export function parseProfileSubscriptionInput(value: unknown): ProfileSubscriptionInput {
-  if (!isRecord(value)) throw new Error("博主主页参数无效，请重新填写。");
-  return {
-    url: requiredString(value.url, "博主主页地址无效，请重新填写。", 2_000),
-    title: optionalString(value.title, "来源名称无效。", 120)
-  };
 }
 
 export function parseAcademicDraft(value: unknown): SubscriptionDraft {

@@ -9,8 +9,6 @@ const iconKindBySource: Record<Source["kind"], SourceIconKind> = {
   manual: "link",
   zhihu: "zhihu",
   zhihu_follow: "zhihu-follow",
-  x: "x",
-  xiaohongshu: "xiaohongshu",
   academic: "academic"
 };
 

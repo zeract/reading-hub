@@ -7,7 +7,6 @@ import {
   parseEntryPageQuery,
   parseEntryListQuery,
   parseExtractionRule,
-  parseProfileSubscriptionInput,
   parseSubscriptionScope,
   parseSourceSettings,
   requireEntityId,
@@ -19,6 +18,12 @@ describe("IPC input validation", () => {
   it("keeps every renderer channel unique", () => {
     const channels = Object.values(IPC_CHANNELS).flatMap((group) => Object.values(group));
     expect(new Set(channels).size).toBe(channels.length);
+    expect(channels).not.toContain("x:connect");
+    expect(channels).not.toContain("xiaohongshu:subscribe-profile");
+  });
+
+  it.each(["x", "xiaohongshu"])("rejects the removed %s source kind", (kind) => {
+    expect(() => parseSourceSettings({ title: "Removed", kind, pollingEnabled: true })).toThrow();
   });
 
   it("accepts only bounded source and extraction settings", () => {
@@ -30,11 +35,11 @@ describe("IPC input validation", () => {
     expect(parseExtractionRule({ version: 1, itemRootSelector: "article", rendererRequired: false })).toEqual({
       version: 1, itemRootSelector: "article", rendererRequired: false
     });
-    expect(() => parseSourceSettings({ title: "Example", kind: "x", pollingEnabled: true, refreshIntervalMinutes: 31 })).toThrow("刷新时间无效");
+    expect(() => parseSourceSettings({ title: "Example", kind: "zhihu_follow", pollingEnabled: true, refreshIntervalMinutes: 31 })).toThrow("刷新时间无效");
     expect(() => parseExtractionRule({ version: 2 })).toThrow("提取规则无效");
   });
 
-  it("rejects malformed renderer IDs, filters, and profile payloads", () => {
+  it("rejects malformed renderer IDs and filters", () => {
     expect(requireEntityId("source-1")).toBe("source-1");
     expect(() => requireEntityId(" ")).toThrow("项目无效");
     expect(() => requireText("x".repeat(21), "太长", 20)).toThrow("太长");
@@ -56,7 +61,6 @@ describe("IPC input validation", () => {
     }
     expect(() => parseEntryListQuery({ sourceId: "source-1", search: "x".repeat(161) })).toThrow("关键词搜索无效");
     expect(() => parseEntryPageQuery({ cursor: { createdAt: 8, id: "entry-1" } })).toThrow("文章分页游标无效");
-    expect(() => parseProfileSubscriptionInput({ title: "missing URL" })).toThrow("主页地址无效");
   });
 
   it("validates a coherent collection scope before it crosses IPC", () => {

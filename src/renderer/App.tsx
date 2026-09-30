@@ -7,7 +7,7 @@ import { Timeline, SourceSidebar } from "./library-pane";
 import type { LibraryView } from "./library-view";
 import { ReaderPlaceholder, ReaderView } from "./reader-view";
 import { SettingsView } from "./settings-view";
-import { AddSourceDialog, CalibrationDialog, isRetiredXPublicProfile, PreviewDialog, SourceSettingsDialog } from "./source-dialogs";
+import { AddSourceDialog, CalibrationDialog, PreviewDialog, SourceSettingsDialog } from "./source-dialogs";
 import { AppIcon } from "./ui-icons";
 import { useLibraryData } from "./use-library-data";
 import { useAsyncActivity } from "./use-async-activity";
@@ -226,10 +226,6 @@ function AppShell() {
 
   const refreshCurrentView = useCallback(() => {
     if (activeSource) {
-      if (isRetiredXPublicProfile(activeSource)) {
-        setNotice("此旧 X 公开来源已停止刷新：X 没有提供可合规自动读取的公开订阅接口。可保留已有卡片，或删除来源后使用官方 API。");
-        return;
-      }
       // The toolbar owns its notice; dialog callers receive the rejection
       // so their local action cannot mistake a failed refresh for success.
       void refresh(activeSource).catch(() => undefined);
@@ -248,7 +244,7 @@ function AppShell() {
       <header className="app-titlebar">
         <div className="app-titlebar-actions">
           <button type="button" className="app-titlebar-button" onClick={() => readerOnly ? setReaderOnly(false) : setSidebarCollapsed((collapsed) => !collapsed)} aria-label={readerOnly ? "退出沉浸阅读" : sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"} title={readerOnly ? "退出沉浸阅读" : sidebarCollapsed ? "显示来源边栏" : "隐藏来源边栏"}><AppIcon name={readerOnly ? "expand" : "sidebar"} /></button>
-          {!readerOnly && <button type="button" className="app-titlebar-button" onClick={refreshCurrentView} disabled={busy || Boolean(activeSource && !sourceCapabilities(activeSource).canRefresh)} aria-label={activeSource ? `刷新 ${activeSource.title}` : "重新载入收件箱"} title={isRetiredXPublicProfile(activeSource) ? "此旧 X 公开来源已停止刷新" : activeSource ? "刷新当前来源" : "重新载入收件箱"}><AppIcon name="refresh" /></button>}
+          {!readerOnly && <button type="button" className="app-titlebar-button" onClick={refreshCurrentView} disabled={busy || Boolean(activeSource && !sourceCapabilities(activeSource).canRefresh)} aria-label={activeSource ? `刷新 ${activeSource.title}` : "重新载入收件箱"} title={activeSource ? "刷新当前来源" : "重新载入收件箱"}><AppIcon name="refresh" /></button>}
           {!readerOnly && <button type="button" className="app-titlebar-button app-titlebar-add" onClick={openAddSource} aria-label="添加来源" title="添加来源"><AppIcon name="add" /></button>}
         </div>
       </header>
@@ -309,8 +305,6 @@ function AppShell() {
         onPreview={acceptPreview}
         onImportOpml={importOpml}
         onZhihuStarted={() => finishSourceAddition(addSourceSession, "已打开知乎登录窗口；登录完成后会自动同步关注动态。")}
-        onXStarted={() => finishSourceAddition(addSourceSession, "X 已授权，正在同步关注账号的原创帖子。")}
-        onXiaohongshuSaved={() => finishSourceAddition(addSourceSession, "小红书公开博主来源已添加，正在读取公开笔记。")}
         onAcademicSaved={() => finishSourceAddition(addSourceSession, "学术作者来源已添加，正在同步公开论文记录。")}
       />}
       {sourceDialog?.mode === "calibration" && <CalibrationDialog

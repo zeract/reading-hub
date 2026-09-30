@@ -21,6 +21,26 @@ afterEach(() => {
 });
 
 describe("startup data-location migration", () => {
+  it.each(["x", "xiaohongshu"])("safely imports a v17 library containing a retired %s collector", async (kind) => {
+    const canonicalDirectory = join(directory, "reading-hub");
+    const legacyDirectory = join(directory, "Reading Hub");
+    const legacy = createLibrary(legacyDirectory, "retired-platform");
+    const raw = new Sqlite(databasePath(legacyDirectory));
+    try {
+      raw.prepare("UPDATE sources SET kind = ?, connector_id = ? WHERE id = ?").run(kind, kind, legacy.sourceId);
+      raw.prepare("UPDATE subscriptions SET connector_id = ? WHERE source_id = ?").run(kind, legacy.sourceId);
+      raw.prepare("INSERT INTO sync_checkpoints (subscription_id, cursor, since_id, data_json, updated_at) VALUES (?, 'obsolete', '123', '{}', ?)").run(legacy.sourceId, NOW);
+      raw.prepare("DELETE FROM schema_migrations WHERE version = 18").run();
+    } finally { raw.close(); }
+    const result = await resolveDataLocation({ canonicalDirectory, legacyDirectories: [legacyDirectory], now: () => NOW });
+    expect(result.kind).toBe("migrated");
+    if (result.kind !== "migrated") throw new Error("expected migrated data location");
+    expect(rows(result.databasePath, "SELECT kind, connector_id, polling_enabled FROM sources")).toEqual([{ kind: "manual", connector_id: "manual", polling_enabled: 0 }]);
+    expect(rows(result.databasePath, "SELECT cursor, since_id, data_json FROM sync_checkpoints")).toEqual([{ cursor: null, since_id: null, data_json: null }]);
+    expect(readLibrary(result.databasePath).entries).toEqual(expect.arrayContaining([expect.objectContaining({ id: legacy.entryId })]));
+    expect(rows(databasePath(legacyDirectory), "SELECT kind FROM sources")).toEqual([{ kind }]);
+  });
+
   it("imports a single valid legacy library into the canonical location without deleting its source", async () => {
     const canonicalDirectory = join(directory, "reading-hub");
     const legacyDirectory = join(directory, "Electron");
@@ -97,7 +117,7 @@ describe("startup data-location migration", () => {
       raw.prepare("INSERT INTO rewrite_settings (id, settings_json) VALUES (1, ?)")
         .run('{"provider":"codex"}');
       raw.exec("DROP TABLE data_location_migrations");
-      raw.prepare("DELETE FROM schema_migrations WHERE version = ?").run(CURRENT_SCHEMA_VERSION);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(17);
     } finally {
       raw.close();
     }
@@ -389,7 +409,7 @@ describe("startup data-location migration", () => {
     const canonicalPath = databasePath(canonicalDirectory);
     const raw = new Sqlite(canonicalPath);
     try {
-      raw.prepare("DELETE FROM schema_migrations WHERE version = ?").run(CURRENT_SCHEMA_VERSION);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(17);
       // Mirror the pre-v17 schema rather than merely changing the marker:
       // migration 17 creates the durable origin-marker table.
       raw.exec("DROP TABLE data_location_migrations");

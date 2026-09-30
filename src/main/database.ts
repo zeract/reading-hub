@@ -681,11 +681,6 @@ export class ReadingDatabase {
     return (rows as AccountRow[]).map(accountFromRow);
   }
 
-  findAccount(connectorId: ConnectorId, subjectId: string): Account | undefined {
-    const row = this.db.prepare("SELECT * FROM accounts WHERE connector_id = ? AND subject_id = ?").get(connectorId, subjectId) as AccountRow | undefined;
-    return row ? accountFromRow(row) : undefined;
-  }
-
   saveAccount(input: Omit<Account, "id" | "createdAt" | "updatedAt"> & { id?: string }): Account {
     const now = Date.now();
     const id = input.id ?? randomUUID();
@@ -699,8 +694,14 @@ export class ReadingDatabase {
     return this.getAccount(id)!;
   }
 
-  updateAccountStatus(id: string, status: AccountStatus): void {
-    this.db.prepare("UPDATE accounts SET status = ?, updated_at = ? WHERE id = ?").run(status, Date.now(), id);
+  /** Credential cleanup may only remove an account already detached from sources. */
+  deleteAccount(id: string): void {
+    this.db.transaction(() => {
+      if (this.db.prepare("SELECT 1 FROM sources WHERE account_id = ? UNION ALL SELECT 1 FROM subscriptions WHERE account_id = ? LIMIT 1").get(id, id)) {
+        throw new Error("账号仍被来源引用，不能删除。");
+      }
+      this.db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
+    })();
   }
 
   recordSyncEvent(sourceId: string, outcome: "success" | "failure" | "warning", fetchedCount = 0, insertedCount = 0, message?: string): void {

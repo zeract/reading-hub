@@ -5,6 +5,7 @@ import { createServer, connect } from "node:net";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { pruneMainOutput } from "./prune-main-output.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const devLockPath = path.join(projectRoot, ".reading-hub-dev.lock");
@@ -236,6 +237,7 @@ function watchMainProcessOutput() {
 
 try {
   await acquireDevLock();
+  await pruneMainOutput(projectRoot);
   // Acquire the project lock before starting watchers. Otherwise a second
   // `npm run dev` can leave duplicate Vite/TypeScript children even though it
   // later refuses to start Electron.

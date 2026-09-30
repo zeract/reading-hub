@@ -258,9 +258,9 @@ const channels = [
   ["entry:read-language-variant", (_event, id, url, requestId, inlineLanguage) => {
     assert(url === `https://example.com/${id}` && ["zh", "en"].includes(inlineLanguage), "Inline IPC must carry its approved body separately from the URL.");
     assert(typeof requestId === "string", "Language switch must remain cancellable.");
-    return { entryId: id, url, title: "Readable fixture", renderProfile: "standard", activeLanguage: inlineLanguage,
+    return { kind: "article", article: { entryId: id, url, title: "Readable fixture", renderProfile: "standard", activeLanguage: inlineLanguage,
       languageVariants: ["zh", "en"].map(language => ({ url, language, inlineLanguage: language, label: language === "zh" ? "中文" : "English" })),
-      contentHtml: `<p>This is a deterministic reader fixture.</p><p>Inline ${inlineLanguage} body.</p><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image" data-reader-zoomable="true" tabindex="0">` };
+      contentHtml: `<p>This is a deterministic reader fixture.</p><p>Inline ${inlineLanguage} body.</p><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image" data-reader-zoomable="true" tabindex="0">` } };
   }],
   ["window:is-fullscreen", () => new Promise((resolve) => {
     completeFullscreenSnapshot = () => resolve(false);
@@ -348,8 +348,51 @@ async function clickText(selector, text) {
   await evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find((element) => element.textContent.trim() === ${JSON.stringify(text)}).click()`);
 }
 function assert(condition, message) { if (!condition) throw new Error(message); }
-let failure;
-try {
+async function verifySourceMethods() {
+  await evaluate("document.querySelector('[aria-label=\"添加来源\"]').focus(); document.querySelector('[aria-label=\"添加来源\"]').click()");
+  await waitFor(window, "Boolean(document.querySelector('.dialog'))");
+  assert(await evaluate("document.querySelector('.dialog').contains(document.activeElement)"), "Opening a source dialog must move keyboard focus inside it.");
+  await evaluate("document.querySelector('[aria-label=\"打开设置\"]').focus()");
+  assert(await evaluate("document.querySelector('.dialog').contains(document.activeElement)"), "A modal must prevent background controls from receiving focus.");
+  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').focus()");
+  await pressKey("Tab", ["shift"]);
+  assert(await evaluate("document.querySelector('.dialog').contains(document.activeElement)"), "Reverse tab navigation must stay within the source dialog.");
+  await pressKey("Tab");
+  assert(await evaluate("document.querySelector('.dialog').contains(document.activeElement)"), "Forward tab navigation must stay within the source dialog.");
+  await evaluate("document.querySelector('.modal-backdrop').click()");
+  assert(await evaluate("Boolean(document.querySelector('.dialog'))"), "Source drafts must not close from backdrop clicks.");
+  await evaluate("(() => { const input = document.querySelector('#source-url'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'https://example.com/keyboard-draft'); input.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('.dialog summary').focus(); })()");
+  await pressKey("Enter");
+  await waitFor(window, "document.querySelector('.dialog details').open");
+  assert(await evaluate("JSON.stringify([...document.querySelectorAll('.dialog [role=tab]')].map(tab => tab.textContent)) === JSON.stringify(['网页 / Feed', '知乎动态', '学术作者']) && !('connectX' in window.reader) && !('subscribeXiaohongshuProfile' in window.reader)"), "Only supported source methods may remain in the dialog and preload bridge.");
+  await pressKey("Tab");
+  assert(await evaluate("document.activeElement === document.querySelector('[role=tab][aria-selected=true]')"), "Tab must enter the selected source method.");
+  await pressKey("Left");
+  assert(await evaluate("document.activeElement.textContent === '学术作者' && document.querySelector('#source-url').value === 'https://example.com/keyboard-draft' && !document.querySelector('#academic-query')"), "Arrow navigation must preserve the selected form and its draft until activation.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const tabs = [...document.querySelectorAll('[role=tab]')]; const focused = document.activeElement; const rect = focused.getBoundingClientRect(); const dialog = focused.closest('.dialog').getBoundingClientRect(); return tabs.filter((tab) => tab.tabIndex === 0).length === 1 && focused.getAttribute('aria-selected') === 'false' && getComputedStyle(focused).outlineStyle !== 'none' && rect.top >= dialog.top && rect.bottom <= dialog.bottom && tabs.every((tab) => { const panel = document.getElementById(tab.getAttribute('aria-controls')); return panel?.getAttribute('aria-labelledby') === tab.id && panel.hidden === (tab.getAttribute('aria-selected') !== 'true'); }) && document.querySelectorAll('[role=tabpanel]:not([hidden])').length === 1; })()"), "Source tabs must distinguish focus from selection and keep their panel relationships valid at every viewport.");
+    await writeFile(path.join(tmpdir(), `reading-hub-source-tabs-${width}.png`), (await window.capturePage()).toPNG());
+  }
+  await pressKey("Tab");
+  assert(await evaluate("document.activeElement === document.querySelector('[role=tabpanel]:not([hidden])')"), "Tab must leave the method list for the active panel, without activating the focused method.");
+  await pressKey("Tab", ["shift"]);
+  assert(await evaluate("document.activeElement === document.querySelector('[role=tab][aria-selected=true]')"), "Returning to the method list must restore the selected method's tab stop.");
+  await pressKey("End"); await pressKey("Enter");
+  await waitFor(window, "Boolean(document.querySelector('#academic-query'))");
+  await pressKey("Home"); await pressKey("Space");
+  await waitFor(window, "Boolean(document.querySelector('#source-url'))");
+  assert(await evaluate("document.querySelector('.dialog details').open && document.activeElement === document.querySelector('[role=tab][aria-selected=true]')"), "Returning to the public method with Space must keep the selector and its focus visible.");
+  await evaluate("document.querySelector('.dialog summary').focus()");
+  await pressKey("Enter");
+  await waitFor(window, "!document.querySelector('.dialog details').open");
+  assert(await evaluate("Boolean(document.querySelector('#source-url'))"), "Collapsing the method selector must leave the active form available.");
+  await pressKey("Escape");
+  await waitFor(window, "!document.querySelector('.dialog')");
+  assert(await evaluate("document.activeElement === document.querySelector('[aria-label=\"添加来源\"]')"), "Closing a modal must restore its opener's focus.");
+}
+
+async function runChecks() {
   await verifyNavigationPolicy();
   await window.loadFile(renderer);
   await window.webContents.executeJavaScript(`document.fonts.ready.then(() => document.fonts.load('19px "Zhuque Fangsong"', "中文阅读")).then(fonts => { if (fonts.length !== 1 || fonts[0].status !== "loaded") throw new Error("Bundled Chinese font failed to load"); })`);
@@ -373,6 +416,11 @@ try {
   if (preloadErrors.length) throw new Error(`沙箱预加载加载失败：${preloadErrors.join("；")}`);
   const preloadError = messages.find((message) => /Unable to load preload script|module not found/i.test(message));
   if (preloadError) throw new Error(`沙箱预加载加载失败：${preloadError}`);
+  if (process.argv.includes("--source-dialogs")) {
+    await verifySourceMethods();
+    console.log("Reading Hub source-dialog scope: passed; three source methods, removed IPC bridge, keyboard navigation, modal focus and four viewport/zoom layouts verified.");
+    return;
+  }
   await waitFor(window, "document.querySelectorAll('.entry-card').length === 2");
   await sourceIconStarted;
   await evaluate("globalThis.failedSourceIcons = 0; document.addEventListener('error', event => { if (event.target instanceof HTMLImageElement && event.target.closest('.source-icon')) failedSourceIcons++; }, true)");
@@ -678,46 +726,7 @@ try {
     assert(!geometry.overflow && geometry.navBottom < geometry.footerTop && geometry.sourcesHeight > 20, `Library navigation does not fit ${width}px at ${scale}.`);
     await writeFile(path.join(tmpdir(), `reading-hub-workflow-${width}.png`), (await window.capturePage()).toPNG());
   }
-  await evaluate("document.querySelector('[aria-label=\"添加来源\"]').focus(); document.querySelector('[aria-label=\"添加来源\"]').click()");
-  await waitFor(window, "Boolean(document.querySelector('.dialog'))");
-  assert(await evaluate("document.querySelector('.dialog').contains(document.activeElement)"), "Opening a source dialog must move keyboard focus inside it.");
-  await evaluate("document.querySelector('[aria-label=\"打开设置\"]').focus()");
-  assert(await evaluate("document.querySelector('.dialog').contains(document.activeElement)"), "A modal must prevent background controls from receiving focus.");
-  await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').focus()");
-  await pressKey("Tab", ["shift"]);
-  assert(await evaluate("document.querySelector('.dialog').contains(document.activeElement)"), "Reverse tab navigation must stay within the source dialog.");
-  await pressKey("Tab");
-  assert(await evaluate("document.querySelector('.dialog').contains(document.activeElement)"), "Forward tab navigation must stay within the source dialog.");
-  await evaluate("document.querySelector('.modal-backdrop').click()");
-  assert(await evaluate("Boolean(document.querySelector('.dialog'))"), "Source drafts must not close from backdrop clicks.");
-  await evaluate("(() => { const input = document.querySelector('#source-url'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'https://example.com/keyboard-draft'); input.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('.dialog summary').focus(); })()");
-  await pressKey("Enter");
-  await waitFor(window, "document.querySelector('.dialog details').open");
-  await pressKey("Tab");
-  assert(await evaluate("document.activeElement === document.querySelector('[role=tab][aria-selected=true]')"), "Tab must enter the selected source method.");
-  await pressKey("Left");
-  assert(await evaluate("document.activeElement.textContent === '学术作者' && document.querySelector('#source-url').value === 'https://example.com/keyboard-draft' && !document.querySelector('#academic-query')"), "Arrow navigation must preserve the selected form and its draft until activation.");
-  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
-    await setViewport(width, height, scale);
-    assert(await evaluate("(() => { const tabs = [...document.querySelectorAll('[role=tab]')]; const focused = document.activeElement; const rect = focused.getBoundingClientRect(); const dialog = focused.closest('.dialog').getBoundingClientRect(); return tabs.filter((tab) => tab.tabIndex === 0).length === 1 && focused.getAttribute('aria-selected') === 'false' && getComputedStyle(focused).outlineStyle !== 'none' && rect.top >= dialog.top && rect.bottom <= dialog.bottom && tabs.every((tab) => { const panel = document.getElementById(tab.getAttribute('aria-controls')); return panel?.getAttribute('aria-labelledby') === tab.id && panel.hidden === (tab.getAttribute('aria-selected') !== 'true'); }) && document.querySelectorAll('[role=tabpanel]:not([hidden])').length === 1; })()"), "Source tabs must distinguish focus from selection and keep their panel relationships valid at every viewport.");
-    await writeFile(path.join(tmpdir(), `reading-hub-source-tabs-${width}.png`), (await window.capturePage()).toPNG());
-  }
-  await pressKey("Tab");
-  assert(await evaluate("document.activeElement === document.querySelector('[role=tabpanel]:not([hidden])')"), "Tab must leave the method list for the active panel, without activating the focused method.");
-  await pressKey("Tab", ["shift"]);
-  assert(await evaluate("document.activeElement === document.querySelector('[role=tab][aria-selected=true]')"), "Returning to the method list must restore the selected method's tab stop.");
-  await pressKey("End"); await pressKey("Enter");
-  await waitFor(window, "Boolean(document.querySelector('#academic-query'))");
-  await pressKey("Home"); await pressKey("Space");
-  await waitFor(window, "Boolean(document.querySelector('#source-url'))");
-  assert(await evaluate("document.querySelector('.dialog details').open && document.activeElement === document.querySelector('[role=tab][aria-selected=true]')"), "Returning to the public method with Space must keep the selector and its focus visible.");
-  await evaluate("document.querySelector('.dialog summary').focus()");
-  await pressKey("Enter");
-  await waitFor(window, "!document.querySelector('.dialog details').open");
-  assert(await evaluate("Boolean(document.querySelector('#source-url'))"), "Collapsing the method selector must leave the active form available.");
-  await pressKey("Escape");
-  await waitFor(window, "!document.querySelector('.dialog')");
-  assert(await evaluate("document.activeElement === document.querySelector('[aria-label=\"添加来源\"]')"), "Closing a modal must restore its opener's focus.");
+  await verifySourceMethods();
   await evaluate("document.querySelector('[aria-label=\"添加来源\"]').click()");
   const previewStarted = new Promise((resolve) => { previewRequested = resolve; });
   await evaluate(`(() => { const input = document.querySelector('#source-url'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'https://example.com/obsolete-feed'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
@@ -1341,6 +1350,11 @@ try {
   await waitFor(window, "document.querySelector('.source-settings-form input')?.value.startsWith('LongSource')");
   await evaluate("document.querySelector('.dialog [aria-label=\"关闭\"]').click()");
   console.log("Reading Hub renderer smoke test: passed; collection/search/read-failure/read-success/read-cancellation/late-read/image-proxy/image-cancellation/late-image/ai-module-deferred-load/ai-module-retry/ai-answer-reuse/ai-error-flush/ai-close-cancellation/unsubscribe/restore/settings-draft/settings-save-lock/settings-close/modal-keyboard/modal-focus/image-preview-dismissal/source-preview-lifetime, library layouts and four academic/settings layouts verified.");
+}
+
+let failure;
+try {
+  await runChecks();
 } catch (error) {
   failure = error;
   console.error(error);

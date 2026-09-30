@@ -11,7 +11,7 @@ let root: Root;
 let container: HTMLDivElement;
 let preview: ReturnType<typeof vi.fn>;
 let publish: ReturnType<typeof vi.fn>;
-const dialog = () => <AddSourceDialog onClose={vi.fn()} onPreview={publish} onImportOpml={vi.fn()} onZhihuStarted={vi.fn()} onXStarted={vi.fn()} onXiaohongshuSaved={vi.fn()} onAcademicSaved={vi.fn()} />;
+const dialog = () => <AddSourceDialog onClose={vi.fn()} onPreview={publish} onImportOpml={vi.fn()} onZhihuStarted={vi.fn()} onAcademicSaved={vi.fn()} />;
 const tabs = () => [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
 const panel = () => container.querySelector<HTMLElement>('[role="tabpanel"]:not([hidden])')!;
 async function key(value: string, modifiers = {}) {
@@ -30,6 +30,8 @@ afterEach(async () => { await act(async () => root.unmount()); container.remove(
 
 describe("source method navigation", () => {
   it("links every tab to a labelled panel while mounting only the selected form", () => {
+    expect(tabs().map(tab => tab.textContent)).toEqual(["网页 / Feed", "知乎动态", "学术作者"]);
+    expect(container.textContent).not.toMatch(/X 动态|小红书|Client ID/);
     expect(tabs().filter((tab) => tab.tabIndex === 0)).toHaveLength(1);
     for (const tab of tabs()) {
       const target = document.getElementById(tab.getAttribute("aria-controls")!);
@@ -45,11 +47,11 @@ describe("source method navigation", () => {
   it("moves and wraps focus without activating a different source method", async () => {
     await act(async () => tabs()[0].focus());
     expect((await key("ArrowLeft")).defaultPrevented).toBe(true);
-    expect(document.activeElement).toBe(tabs()[4]);
+    expect(document.activeElement).toBe(tabs()[2]);
     expect(tabs()[0].getAttribute("aria-selected")).toBe("true");
-    expect(tabs().filter((tab) => tab.tabIndex === 0)).toEqual([tabs()[4]]);
+    expect(tabs().filter((tab) => tab.tabIndex === 0)).toEqual([tabs()[2]]);
     await key("ArrowRight"); expect(document.activeElement).toBe(tabs()[0]);
-    await key("End"); expect(document.activeElement).toBe(tabs()[4]);
+    await key("End"); expect(document.activeElement).toBe(tabs()[2]);
     await key("Home"); expect(document.activeElement).toBe(tabs()[0]);
     expect((await key("ArrowDown")).defaultPrevented).toBe(false);
     expect((await key("ArrowRight", { altKey: true })).defaultPrevented).toBe(false);
@@ -67,7 +69,7 @@ describe("source method navigation", () => {
   });
 
   it("keeps the selector open when returning to the public method", async () => {
-    await act(async () => tabs()[4].click());
+    await act(async () => tabs()[2].click());
     expect(container.querySelector("details")!.open).toBe(true);
     await act(async () => tabs()[0].click());
     expect(container.querySelector("details")!.open).toBe(true);
@@ -85,7 +87,7 @@ describe("source method navigation", () => {
     });
     await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     await act(async () => tabs()[0].focus()); await key("End");
-    expect(document.activeElement).toBe(tabs()[4]);
+    expect(document.activeElement).toBe(tabs()[2]);
     expect(container.querySelector<HTMLInputElement>("#source-url")!.value).toBe("https://example.com/feed");
     const result = { token: "current" } as PendingPreview;
     await act(async () => resolve(result));
@@ -95,7 +97,7 @@ describe("source method navigation", () => {
   it("uses independent tab and panel identities for separate dialog instances", async () => {
     await act(async () => root.render(<>{dialog()}{dialog()}</>));
     const identified = [...container.querySelectorAll('[role="tab"], [role="tabpanel"]')];
-    expect(identified).toHaveLength(20);
-    expect(new Set(identified.map((element) => element.id)).size).toBe(20);
+    expect(identified).toHaveLength(12);
+    expect(new Set(identified.map((element) => element.id)).size).toBe(12);
   });
 });

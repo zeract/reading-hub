@@ -279,13 +279,13 @@ function readerHttpOptions(base: Omit<PublicRequestOptions, "signal"> | undefine
 /**
  * Keeps a useful in-app reading path for feeds whose links point to a page
  * that forbids automated article retrieval. This intentionally only renders
- * the normalised, bounded summary already saved for an RSS/X subscription;
+ * the normalised, bounded summary already saved for an RSS subscription;
  * it never reaches back to the blocked origin or treats the summary as a full
  * article.
  */
 function createFeedSummaryArticle(entry: Entry, source?: Source): ReaderArticle | undefined {
   const rawSummary = entry.summary;
-  if ((source?.kind !== "rss" && source?.kind !== "x") || !rawSummary) return undefined;
+  if (source?.kind !== "rss" || !rawSummary) return undefined;
   return createSummaryArticle(entry, rawSummary, "feed_summary");
 }
 

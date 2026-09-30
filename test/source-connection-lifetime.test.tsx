@@ -7,15 +7,13 @@ import { stubDialogPlatform } from "./dialog-platform";
 
 stubDialogPlatform();
 const cases = [
-  { label: "知乎动态", method: "connectZhihuFollow", fields: {} },
-  { label: "X 动态", method: "connectX", fields: { "x-client-id": "fixture-client" } },
-  { label: "小红书", method: "subscribeXiaohongshuProfile", fields: { "xiaohongshu-profile-url": "https://www.xiaohongshu.com/user/profile/fixture", "xiaohongshu-profile-title": "Fixture author" } }
+  { label: "知乎动态", method: "connectZhihuFollow", fields: {} as Record<string, string> }
 ] as const;
 let root: Root;
 let container: HTMLDivElement;
 let request: ReturnType<typeof vi.fn>;
 let saved: ReturnType<typeof vi.fn>;
-const mount = () => root.render(<AddSourceDialog onClose={() => root.render(null)} onPreview={() => undefined} onImportOpml={vi.fn()} onZhihuStarted={saved} onXStarted={saved} onXiaohongshuSaved={saved} onAcademicSaved={saved} />);
+const mount = () => root.render(<AddSourceDialog onClose={() => root.render(null)} onPreview={() => undefined} onImportOpml={vi.fn()} onZhihuStarted={saved} onAcademicSaved={saved} />);
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   request = vi.fn().mockResolvedValue(undefined); saved = vi.fn().mockResolvedValue(undefined);

@@ -6,7 +6,7 @@ import { discoverPublicArchiveUrl, findPublicArchiveUrls } from "./archive-backf
 import { loadGenericPage } from "./generic-page-loader";
 import { PublicHttpClient } from "./http";
 import type { PageRenderer } from "./page-renderer";
-import type { CalibrationResult, ProbeResult, RawEntry } from "../shared/types";
+import type { CalibrationResult, ProbeResult } from "../shared/types";
 import { assertFeedSubscriptionUrl, assertPublicUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 
 export class SourceProbe {
@@ -16,7 +16,6 @@ export class SourceProbe {
     throwIfAborted(signal);
     const localFeed = isTrustedLoopbackFeedUrl(rawUrl);
     const input = localFeed ? assertFeedSubscriptionUrl(rawUrl, true).toString() : assertPublicUrl(rawUrl).toString();
-    assertSupportedPublicProbeUrl(input);
     const page = localFeed
       ? await this.localFeedPage(input, signal)
       : await loadGenericPage(this.http, this.renderer, input, { signal });
@@ -113,7 +112,6 @@ export class SourceProbe {
   async calibrate(rawUrl: string, signal?: AbortSignal): Promise<CalibrationResult> {
     throwIfAborted(signal);
     const input = assertPublicUrl(rawUrl).toString();
-    assertSupportedPublicProbeUrl(input);
     const page = await loadGenericPage(this.http, this.renderer, input, { signal });
     throwIfAborted(signal);
     let html = page.text;
@@ -188,42 +186,4 @@ function archiveUrlForFeedHomepage(html: string, pageUrl: string, feedSiteUrl: s
 function withRendererRequirement(rule: ProbeResult["extractionRule"], required: boolean): ProbeResult["extractionRule"] {
   if (!required) return rule;
   return { version: 1, ...rule, rendererRequired: true };
-}
-
-export function isXiaohongshuUrl(url: string): boolean {
-  try {
-    return /(^|\.)xiaohongshu\.com$/i.test(new URL(url).hostname);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * X explicitly blocks generic crawler access on its profile pages. Detect it
- * before the public probe touches the network so pasting a profile URL into
- * “网页 / Feed” gives a product-level explanation rather than an IPC error.
- */
-export function isXUrl(url: string): boolean {
-  try {
-    return /(^|\.)(?:x|twitter)\.com$/i.test(new URL(url).hostname);
-  } catch {
-    return false;
-  }
-}
-
-function assertSupportedPublicProbeUrl(url: string): void {
-  if (!isXUrl(url)) return;
-  throw new Error("X 主页不能通过“网页 / Feed”自动探测：X 的 robots.txt 禁止自动读取。请在“X 动态”中查看可用连接方式；当前免 API 的公开自动订阅同样受此限制，Reading Hub 不会使用 Cookie、登录态或私有 Web API 绕过它。");
-}
-
-export function manualProbe(url: string, preview: RawEntry[], title: string): ProbeResult {
-  return {
-    kind: "manual",
-    title: title || "手动分享",
-    url,
-    confidence: 1,
-    preview,
-    requiresReview: false,
-    message: "该链接会保存为一次性阅读卡片，不会自动轮询。"
-  };
 }

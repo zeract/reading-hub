@@ -19,7 +19,7 @@ let container: HTMLDivElement;
 let preview: ReturnType<typeof vi.fn>;
 let publish: ReturnType<typeof vi.fn>;
 let importOpml: ReturnType<typeof vi.fn>;
-const mount = () => root.render(<AddSourceDialog onClose={() => root.render(null)} onPreview={publish} onImportOpml={importOpml} onZhihuStarted={async () => undefined} onXStarted={async () => undefined} onXiaohongshuSaved={async () => undefined} onAcademicSaved={async () => undefined} />);
+const mount = () => root.render(<AddSourceDialog onClose={() => root.render(null)} onPreview={publish} onImportOpml={importOpml} onZhihuStarted={async () => undefined} onAcademicSaved={async () => undefined} />);
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   preview = vi.fn(); publish = vi.fn(); importOpml = vi.fn();

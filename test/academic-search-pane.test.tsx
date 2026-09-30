@@ -21,7 +21,7 @@ beforeEach(async () => {
   saved = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(window, "reader", { configurable: true, value: { searchAcademicAuthors: search, subscribeAcademicAuthor: subscribe } });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
-  await act(async () => root.render(<AddSourceDialog onClose={() => undefined} onPreview={() => undefined} onImportOpml={vi.fn()} onZhihuStarted={async () => undefined} onXStarted={async () => undefined} onXiaohongshuSaved={async () => undefined} onAcademicSaved={saved} />));
+  await act(async () => root.render(<AddSourceDialog onClose={() => undefined} onPreview={() => undefined} onImportOpml={vi.fn()} onZhihuStarted={async () => undefined} onAcademicSaved={saved} />));
   const tab = [...container.querySelectorAll<HTMLButtonElement>("[role=tab]")].find((button) => button.textContent === "学术作者")!;
   await act(async () => tab.click());
 });
