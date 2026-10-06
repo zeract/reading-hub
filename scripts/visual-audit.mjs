@@ -409,8 +409,8 @@ async function auditViewport(window, viewport, mathJaxSvg) {
   if (!geometry.image || geometry.image.width > geometry.image.articleWidth + 1 || geometry.image.height > Math.min(360, viewport.height * 0.45) + 2) failures.push("图片尺寸没有受正文列约束");
   if (!geometry.embeddedChart || geometry.embeddedChart.width > geometry.embeddedChart.articleWidth + 1 || !geometry.embeddedChart.labelHeight || !geometry.embeddedChart.linkHeight) failures.push("嵌入图表的安全回退没有保持在正文列内");
   if (!geometry.feedSummaryNotice || geometry.feedSummaryNotice.left < -1 || geometry.feedSummaryNotice.right > geometry.feedSummaryNotice.articleWidth + geometry.feedSummaryNotice.left + 1 || geometry.feedSummaryNotice.width > geometry.feedSummaryNotice.articleWidth + 1 || geometry.feedSummaryNotice.height < 20) failures.push("订阅摘要提示没有受正文列约束");
-  if (!geometry.typography || geometry.typography.titleFontSize > geometry.typography.bodyFontSize * 2.1 || geometry.typography.titleFontSize < geometry.typography.bodyFontSize * 1.6) failures.push("阅读器标题与正文字号比例失衡");
-  if (!geometry.timelineSummary || geometry.timelineSummary.right > geometry.timelineSummary.copyRight + 1 || geometry.timelineSummary.height > 36 || geometry.timelineSummary.scrollHeight <= geometry.timelineSummary.clientHeight) {
+  if (!geometry.typography || geometry.typography.titleFontSize > geometry.typography.bodyFontSize * 1.75 || geometry.typography.titleFontSize < geometry.typography.bodyFontSize * 1.45) failures.push("阅读器标题与正文字号比例失衡");
+  if (!geometry.timelineSummary || geometry.timelineSummary.right > geometry.timelineSummary.copyRight + 1 || geometry.timelineSummary.height > 38 || geometry.timelineSummary.scrollHeight <= geometry.timelineSummary.clientHeight) {
     failures.push("时间线摘要没有在卡片宽度内截断为两行");
   }
   if (!geometry.timelineSearch
@@ -468,9 +468,9 @@ async function auditViewport(window, viewport, mathJaxSvg) {
   if (!geometry.titlebar || !geometry.fullscreenTitlebar || Math.abs((geometry.titlebar.controls[0]?.left || 0) - 96) > 1 || Math.abs(titlebarControlCenter - 20) > 1 || Math.abs((geometry.fullscreenTitlebar.controls[0]?.left || 0) - 16) > 1 || Math.abs(fullscreenControlCenter - geometry.titlebar.height / 2) > 1) {
     failures.push("全屏时顶部按钮没有随 macOS 交通灯隐藏而左移");
   }
-  if (!geometry.sourceList || geometry.sourceList.rowHeight > 37 || geometry.sourceList.titleHeight > 21 || Math.abs(geometry.sourceList.icon.width - 18) > 1 || Math.abs(geometry.sourceList.folder.width - 13) > 1 || Math.abs(geometry.sourceList.sourceFontSize - geometry.sourceList.groupFontSize) > .1 || geometry.sourceList.libraryFontSize > geometry.sourceList.groupFontSize + .1 || geometry.sourceList.libraryHeadingBottom > geometry.sourceList.libraryFilterTop + 1 || geometry.sourceList.sourceHeadingTop - geometry.sourceList.libraryNavBottom > 12) failures.push("来源列表的图标、字号层级或阅读分类间距异常");
-  if (!geometry.theme || geometry.theme.accent !== "#4f7ea8" || geometry.theme.selectionAccent !== "#4f7ea8" || !geometry.theme.underline?.includes("79, 126, 168") || !geometry.theme.cardShadow?.includes("rgba(27, 32, 39, 0.12)") || geometry.theme.selectedEntry !== "rgb(220, 232, 245)" || geometry.theme.selectedSource !== "rgb(220, 232, 245)") {
-    failures.push("原生蓝色选中状态、划词状态或浮层层级未保持一致");
+  if (!geometry.sourceList || geometry.sourceList.rowHeight > 40 || geometry.sourceList.titleHeight > 21 || Math.abs(geometry.sourceList.icon.width - 18) > 1 || Math.abs(geometry.sourceList.folder.width - 13) > 1 || Math.abs(geometry.sourceList.sourceFontSize - geometry.sourceList.groupFontSize) > .1 || Math.abs(geometry.sourceList.libraryFontSize - geometry.sourceList.groupFontSize) > .1 || geometry.sourceList.libraryHeadingBottom > geometry.sourceList.libraryFilterTop + 1 || geometry.sourceList.sourceHeadingTop - geometry.sourceList.libraryNavBottom > 14) failures.push("来源列表的图标、字号层级或阅读分类间距异常");
+  if (!geometry.theme || geometry.theme.accent !== "#47624f" || geometry.theme.selectionAccent !== "#47624f" || !geometry.theme.underline?.includes("0.278431 0.384314 0.309804") || !geometry.theme.cardShadow?.includes("rgba(31, 39, 31, 0.12)") || geometry.theme.selectedEntry !== "rgb(228, 235, 226)" || geometry.theme.selectedSource !== "rgb(228, 235, 226)") {
+    failures.push("暖纸鼠尾草绿选中状态、划词状态或浮层层级未保持一致");
   }
   const primaryControls = geometry.controls?.primary || [];
   if (primaryControls.length !== 3 || primaryControls.some((control) => !control || control.minHeight < 32)

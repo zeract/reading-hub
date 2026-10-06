@@ -35,8 +35,10 @@ describe("reader display-equation layout", () => {
     expect(styles).toContain(".shell { --titlebar-leading-inset: 96px;");
     expect(styles).toContain(".shell--fullscreen { --titlebar-leading-inset: 16px; }");
     expect(styles).toContain("padding: 0 16px 0 var(--titlebar-leading-inset);");
-    expect(styles).toContain(".shell:not(.shell--fullscreen) .app-titlebar-actions, .settings-shell:not(.settings-shell--fullscreen) .app-titlebar-actions { transform: translateY(-9px); }");
-    expect(styles).toMatch(/\.app-titlebar-button:hover:not\(:disabled\),\s*\.app-titlebar-button:active:not\(:disabled\)\s*\{[^}]*background:\s*transparent/s);
+    expect(styles).toMatch(/\.app-titlebar-actions\s*\{[^}]*height:\s*40px;[^}]*align-self:\s*start;[^}]*align-items:\s*center/s);
+    expect(styles).toContain(".shell--fullscreen .app-titlebar-actions, .settings-shell--fullscreen .app-titlebar-actions { align-self: center; }");
+    expect(styles).not.toContain("transform: translateY(-9px)");
+    expect(styles).toMatch(/\.app-titlebar-button:hover:not\(:disabled\),\s*\.app-titlebar-button:active:not\(:disabled\)\s*\{[^}]*background:\s*var\(--accent-wash\)/s);
   });
 
   it("keeps selected-text actions and the local answer inside the reader without introducing a page scroll region", () => {
@@ -59,7 +61,7 @@ describe("reader display-equation layout", () => {
   });
 
   it("keeps the article title proportional to the adjustable body size", () => {
-    expect(styles).toMatch(/\.reader-article h1\s*\{[^}]*font-size:\s*1\.68em;[^}]*line-height:\s*1\.5/s);
+    expect(styles).toMatch(/\.reader-article h1\s*\{[^}]*font-size:\s*1\.52em;[^}]*line-height:\s*1\.42/s);
     expect(styles).not.toContain(".reader-article h1 { margin: 0; color: var(--ink); font-family: \"Iowan Old Style\",\"Songti SC\",\"STSong\",Georgia,serif; font-size: clamp(32px,3.8vw,51px);");
   });
 
@@ -70,14 +72,16 @@ describe("reader display-equation layout", () => {
     expect(styles).toMatch(/\.reader-language-switcher button\.selected\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--accent-ink\)/s);
   });
 
-  it("uses a restrained native-blue palette for selection and local reader actions", () => {
-    expect(styles).toContain("--accent: #4f7ea8;");
-    expect(styles).toContain("--selection-surface: #dce8f5;");
+  it("uses warm paper and a restrained sage palette for selection and local reader actions", () => {
+    expect(styles).toContain("--paper: #f7f4ee;");
+    expect(styles).toContain("--accent: #47624f;");
+    expect(styles).toContain("--selection-surface: #e4ebe2;");
+    expect(styles).toContain('--font-ui: -apple-system,BlinkMacSystemFont,');
     expect(styles).toMatch(/\.entry-card\.selected,\s*\.entry-card\.selected:hover\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--ink\)/s);
     expect(styles).toMatch(/\.source-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--accent-ink\)/s);
     expect(styles).toMatch(/\.library-filter\.selected\s*\{[^}]*background:\s*var\(--selection-surface-strong\)/s);
-    expect(styles).toContain(".reader-selection-underlines span { position: fixed; height: 1px; background: rgba(79,126,168,.60);");
-    expect(styles).toMatch(/\.selection-assistant-card\s*\{[^}]*border-radius:\s*10px;[^}]*box-shadow:\s*0\s+16px\s+38px\s+rgba\(27,32,39,\.12\)/s);
+    expect(styles).toContain(".reader-selection-underlines span { position: fixed; height: 1px; background: color-mix(in srgb,var(--accent) 65%,transparent);");
+    expect(styles).toMatch(/\.selection-assistant-card\s*\{[^}]*border-radius:\s*var\(--card-radius\);[^}]*box-shadow:\s*0\s+16px\s+38px\s+var\(--shadow\)/s);
     expect(styles).toMatch(/\.selection-assistant-card\[data-intent="translate"\]\s*>\s*header\s+p\s*\{[^}]*color:\s*var\(--danger\)/s);
     expect(styles).not.toContain("#dc3c22");
     expect(styles).not.toContain("#d9ed72");
@@ -87,7 +91,7 @@ describe("reader display-equation layout", () => {
   it("supports a reader-only view while keeping source rows intentionally compact", () => {
     expect(styles).toContain(".shell--reader-only { grid-template-columns: 0 0 minmax(0,1fr); }");
     expect(styles).toContain(".shell--reader-only > .sidebar, .shell--reader-only > .timeline { display: none; }");
-    expect(styles).toMatch(/\.source-filter\s*\{[^}]*display:\s*flex;[^}]*min-height:\s*34px;[^}]*border-radius:\s*6px/s);
+    expect(styles).toMatch(/\.source-filter\s*\{[^}]*display:\s*flex;[^}]*min-height:\s*38px;[^}]*border-radius:\s*var\(--control-radius\)/s);
     expect(styles).toMatch(/\.source-title\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/s);
     expect(styles).toMatch(/\.source-icon\s*\{[^}]*flex:\s*0\s+0\s+18px/s);
     expect(styles).toMatch(/\.source-icon--favicon\s*\{[^}]*border:\s*1px\s+solid/s);
@@ -97,17 +101,23 @@ describe("reader display-equation layout", () => {
   });
 
   it("keeps the source collection directly beneath the reading filters with a compact local hierarchy", () => {
-    expect(styles).toMatch(/\.sidebar\s*\{[^}]*gap:\s*9px/s);
+    expect(styles).toMatch(/\.sidebar\s*\{[^}]*gap:\s*12px/s);
     expect(styles).toMatch(/\.source-section\s*\{[^}]*flex:\s*1\s+1\s+auto;[^}]*flex-direction:\s*column;[^}]*gap:\s*1px/s);
-    expect(styles).toMatch(/\.section-title\s*\{[^}]*margin:\s*1px\s+8px\s+2px;[^}]*font-size:\s*10px/s);
-    expect(styles).toMatch(/\.source-group-heading\s*\{[^}]*font-size:\s*12px/s);
-    expect(styles).toMatch(/\.library-filter\s*\{[^}]*font-size:\s*12px/s);
-    expect(styles).toMatch(/\.source-title\s*\{[^}]*font-size:\s*12px/s);
+    expect(styles).toMatch(/\.section-title\s*\{[^}]*margin:\s*1px\s+8px\s+4px;[^}]*font-size:\s*11px/s);
+    expect(styles).toMatch(/\.source-group-heading\s*\{[^}]*font-size:\s*13px/s);
+    expect(styles).toMatch(/\.library-filter\s*\{[^}]*font-size:\s*13px/s);
+    expect(styles).toMatch(/\.source-title\s*\{[^}]*font-size:\s*13px/s);
     expect(styles).not.toContain("margin: 2px 7px -8px");
   });
 
   it("clips timeline titles and summaries to the card width and two lines", () => {
     expect(styles).toMatch(/\.entry-card h2\s*\{[^}]*max-width:\s*100%;[^}]*overflow:\s*hidden;[^}]*overflow-wrap:\s*anywhere;[^}]*-webkit-line-clamp:\s*2/s);
-    expect(styles).toMatch(/\.summary\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;[^}]*max-height:\s*calc\(1\.6em\s*\*\s*2\);[^}]*overflow:\s*hidden;[^}]*overflow-wrap:\s*anywhere;[^}]*-webkit-line-clamp:\s*2/s);
+    expect(styles).toMatch(/\.summary\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;[^}]*max-height:\s*calc\(1\.55em\s*\*\s*2\);[^}]*overflow:\s*hidden;[^}]*overflow-wrap:\s*anywhere;[^}]*-webkit-line-clamp:\s*2/s);
+  });
+
+  it("keeps secondary card actions available on hover, selection, keyboard focus, and touch", () => {
+    expect(styles).toContain(".entry-action-secondary { display: none; }");
+    expect(styles).toMatch(/\.entry-card:is\(:hover,:focus-within,\.selected\)\s+\.entry-action-secondary\s*\{\s*display:\s*inline-flex;/s);
+    expect(styles).toMatch(/@media\s*\(hover:\s*none\)\s*\{[^}]*\.entry-action-secondary\s*\{\s*display:\s*inline-flex;/s);
   });
 });

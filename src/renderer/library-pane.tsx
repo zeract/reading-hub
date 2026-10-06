@@ -167,10 +167,10 @@ function EntryCard({ entry, source, selected, onRead, isEntryUpdating, onOpen, o
       {entry.imageUrl && <img src={entry.imageUrl} alt="" loading="lazy" />}
     </button>
     <div className="entry-actions">
-      <button type="button" className="action-button" onClick={() => onOpen(entry)}>应用内阅读</button>
-      <button type="button" className="action-button" disabled={isEntryUpdating(entry.id, "read")} onClick={() => void onRead(entry, "read", !entry.read)}>{entry.read ? "标为未读" : "标为已读"}</button>
-      <button type="button" className="action-button" disabled={isEntryUpdating(entry.id, "favorite")} aria-label="收藏" aria-pressed={entry.favorite} title={entry.favorite ? "取消收藏" : "收藏"} onClick={() => void onRead(entry, "favorite", !entry.favorite)}>{entry.favorite ? "★" : "☆"}</button>
-      <button type="button" className="action-button delete-entry" onClick={() => void onDismiss(entry)} disabled={busy}>删除</button>
+      <button type="button" className="action-button entry-action-secondary" onClick={() => onOpen(entry)}>应用内阅读</button>
+      <button type="button" className="action-button entry-action-secondary" disabled={isEntryUpdating(entry.id, "read")} onClick={() => void onRead(entry, "read", !entry.read)}>{entry.read ? "标为未读" : "标为已读"}</button>
+      <button type="button" className="action-button entry-action-favorite" disabled={isEntryUpdating(entry.id, "favorite")} aria-label="收藏" aria-pressed={entry.favorite} title={entry.favorite ? "取消收藏" : "收藏"} onClick={() => void onRead(entry, "favorite", !entry.favorite)}>{entry.favorite ? "★" : "☆"}</button>
+      <button type="button" className="action-button entry-action-secondary delete-entry" onClick={() => void onDismiss(entry)} disabled={busy}>删除</button>
     </div>
   </article>;
 }
