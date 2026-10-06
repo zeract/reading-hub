@@ -104,6 +104,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const [assistantState, setAssistantState] = useState<AssistantPanelState>("closed");
   const [imagePreview, setImagePreview] = useState<ReaderImagePreview>();
   const [textSelection, setTextSelection] = useState<ReaderTextSelection>();
+  const selectionAnchor = useRef<Range | undefined>(undefined);
   const [selectionQuestion, setSelectionQuestion] = useState("");
   const [preferredAiProviderId, setPreferredAiProviderId] = useState<AiProviderId>("codex-cli");
   const [languageSwitching, setLanguageSwitching] = useState<string>();
@@ -168,6 +169,39 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [textSelection]);
+  const hasTextSelection = Boolean(textSelection);
+  useEffect(() => {
+    if (!hasTextSelection) { selectionAnchor.current = undefined; return; }
+    const workspace = readerWorkspaceElement.current;
+    if (!workspace) return;
+    let animation: number | undefined;
+    const reposition = () => {
+      if (animation !== undefined) return;
+      animation = window.requestAnimationFrame(() => {
+        animation = undefined;
+        const range = selectionAnchor.current;
+        if (!range || !workspace.isConnected || !workspace.contains(range.commonAncestorContainer)) return;
+        const bounds = workspace.getBoundingClientRect();
+        const frame = { left: Math.max(0, bounds.left), top: Math.max(0, bounds.top), right: Math.min(window.innerWidth, bounds.right), bottom: Math.min(window.innerHeight, bounds.bottom) };
+        const overlay = selectionOverlay(Array.from(range.getClientRects()).map(toSelectionRect), frame);
+        if (overlay) setTextSelection(current => current && JSON.stringify(current.overlay) !== JSON.stringify(overlay) ? { ...current, overlay } : current);
+      });
+    };
+    // Retain a DOM range after native selection is cleared. Reflow must change
+    // placement, not the request identity or the already generated answer.
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(reposition);
+    observer?.observe(workspace);
+    const scroll = workspace.querySelector(".reader-scroll");
+    if (scroll) observer?.observe(scroll);
+    if (articleBodyElement.current) observer?.observe(articleBodyElement.current);
+    window.addEventListener("resize", reposition);
+    reposition();
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", reposition);
+      if (animation !== undefined) window.cancelAnimationFrame(animation);
+    };
+  }, [hasTextSelection, entry.id, rewriteVisible]);
 
   const displayed = article || entry;
   const date = displayed.publishedAt ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "long" }).format(displayed.publishedAt) : undefined;
@@ -225,6 +259,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
     // answer unobscured instead of competing with an already-open side panel.
     setAssistantState((state) => state === "open" ? "minimized" : state);
     setSelectionQuestion("");
+    selectionAnchor.current = range.cloneRange();
     setTextSelection({ text, overlay, asking: false });
   }
   function askAboutSelection(intent: Exclude<AiSelectionIntent, "ask">) {
@@ -578,7 +613,7 @@ function ReaderAssistant({ article, sourceTitle, providerId, onProviderChange, m
     <AiProviderFeedback status={providerState} error={providerError} onRetry={() => void reloadProviders()} />
     {selected?.availabilityMessage && <p className="ai-provider-note">{selected.availabilityMessage}</p>}
     {error && <p className="error ai-error">{error}</p>}
-    <div className="ai-messages" aria-live="polite" aria-busy={busy} ref={messagesElement}>{!messages.length && <p className="ai-empty">可以让 AI 解释概念、公式推导、例子或文章中的论证。回答不会保存到数据库。</p>}{messages.map((message) => <div key={message.id} className={`ai-message ${message.role}${message.error ? " error" : ""}${message.streaming ? " is-streaming" : ""}`}><strong>{message.role === "user" ? "你" : message.provider.label}</strong>{message.streaming && !message.text ? <p className="ai-streaming-status">正在生成…</p> : <AiMarkdownContent text={message.text} />}</div>)}</div>
+    <div className="ai-messages" aria-live="polite" aria-busy={busy} ref={messagesElement}>{!messages.length && <p className="ai-empty">可以让 AI 解释概念、公式推导、例子或文章中的论证。回答不会保存到数据库。</p>}{messages.map((message) => <div key={message.id} className={`ai-message ${message.role}${message.error ? " error" : ""}${message.streaming ? " is-streaming" : ""}`}><strong>{message.role === "user" ? "你" : message.provider.label}</strong>{message.streaming && !message.text ? <p className="ai-streaming-status">正在生成…</p> : <AiMarkdownContent text={message.text} showRecovery={message.role === "assistant"} />}</div>)}</div>
     <form className="ai-question" onSubmit={(event) => void ask(event)}><label htmlFor="ai-question">向文章提问（Enter 发送，Shift+Enter 换行）</label><textarea id="ai-question" value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={submitOnEnter} placeholder="例如：请用直觉解释这个公式的含义" disabled={busy} /><button className="primary" disabled={busy || providerState !== "ready" || !selected || !question.trim()}>{busy ? "回答中…" : "发送问题"}</button></form>
   </aside>;
 }

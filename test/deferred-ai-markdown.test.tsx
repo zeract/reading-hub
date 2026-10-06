@@ -30,8 +30,10 @@ it("shares a deferred module without retaining stale text or reviving a closed m
     </>));
     expect(aiMarkdownResource.getSnapshot().status).toBe("loading");
     expect(container.querySelectorAll('[role="status"]')).toHaveLength(2);
-    expect(container.textContent).not.toContain("Old text");
+    expect(container.textContent).toContain("Old text");
     await act(async () => root.render(<DeferredAiMarkdownContent key="first" text="Latest streaming text" />));
+    expect(container.textContent).toContain("Latest streaming text");
+    expect(container.textContent).not.toContain("Closed message");
     await act(async () => {
       gate.release();
       await vi.waitFor(() => expect(aiMarkdownResource.getSnapshot().status).toBe("ready"));

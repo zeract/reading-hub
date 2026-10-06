@@ -7,7 +7,7 @@ import { ReaderView } from "../src/renderer/reader-view";
 import type { AiProviderSettings, Entry } from "../src/shared/types";
 const entry: Entry = { id: "fixture", sourceId: "source", url: "https://example.com/article", canonicalUrl: "https://example.com/article", title: "Fixture", read: true, favorite: false, contentHash: "fixture", createdAt: 1 };
 const providers: AiProviderSettings[] = [{ id: "openai", label: "Fixture", configured: true, requiresApiKey: true, model: "fixture" }];
-let root: Root; let container: HTMLDivElement; let list: ReturnType<typeof vi.fn>; let start: ReturnType<typeof vi.fn>; let settings: ReturnType<typeof vi.fn>;
+let root: Root; let container: HTMLDivElement; let list: ReturnType<typeof vi.fn>; let start: ReturnType<typeof vi.fn>; let settings: ReturnType<typeof vi.fn>; let selectedRect: DOMRect;
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   list = vi.fn().mockResolvedValue(providers); start = vi.fn().mockResolvedValue(undefined); settings = vi.fn();
@@ -18,6 +18,7 @@ beforeEach(async () => {
     onAiStream: vi.fn(() => () => undefined), startAiStream: start, cancelAiStream: vi.fn(async () => undefined)
   } });
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 700));
+  selectedRect = new DOMRect(50, 100, 180, 25);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   await act(async () => root.render(<ReaderPreferencesProvider><ReaderView favoriteUpdating={false} entry={entry} onUpdateEntry={async () => true} readerOnly={false} onToggleReaderOnly={() => undefined} onOpenSettings={settings} /></ReaderPreferencesProvider>));
 });
@@ -26,7 +27,8 @@ async function selectText() {
   await act(async () => {
     const paragraph = container.querySelector(".article-body p")!;
     const range = document.createRange(); range.selectNodeContents(paragraph);
-    Object.defineProperty(range, "getClientRects", { value: () => [new DOMRect(50, 100, 180, 25)] });
+    Object.defineProperty(range, "getClientRects", { value: () => [selectedRect] });
+    vi.spyOn(range, "cloneRange").mockReturnValue(range);
     getSelection()!.removeAllRanges(); getSelection()!.addRange(range);
     paragraph.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
   });
@@ -65,6 +67,27 @@ it("does not start translation when a retry completes after its card closes", as
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="关闭所选文字回答"]')!.click());
   await act(async () => resolve(providers));
   expect(container.querySelector(".selection-assistant-card")).toBeNull(); expect(start).not.toHaveBeenCalled();
+});
+
+it("reanchors a retained selection after reflow without resending and still closes on reader scroll", async () => {
+  await translate();
+  const card = container.querySelector<HTMLElement>(".selection-assistant-card")!;
+  const oldLeft = card.style.left;
+  expect(start).toHaveBeenCalledTimes(1);
+  expect(getSelection()?.rangeCount).toBe(0);
+  vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue(new DOMRect(0, 0, 480, 500));
+  await act(async () => { window.dispatchEvent(new Event("resize")); await new Promise(resolve => window.requestAnimationFrame(resolve)); });
+  expect(card.style.left).not.toBe(oldLeft);
+  expect(Number.parseFloat(card.style.left) + Number.parseFloat(card.style.width)).toBeLessThanOrEqual(464);
+  expect(Number.parseFloat(card.style.top) + Number.parseFloat(card.style.maxHeight)).toBeLessThanOrEqual(484);
+  const oldTop = card.style.top;
+  selectedRect = new DOMRect(50, 40, 180, 25);
+  await act(async () => { window.dispatchEvent(new Event("resize")); await new Promise(resolve => window.requestAnimationFrame(resolve)); });
+  expect(card.style.top).not.toBe(oldTop);
+  expect(start).toHaveBeenCalledTimes(1);
+  await act(async () => container.querySelector(".reader-scroll")!.dispatchEvent(new Event("scroll")));
+  expect(container.querySelector(".selection-assistant-card")).toBeNull();
+  expect(start).toHaveBeenCalledTimes(1);
 });
 
 

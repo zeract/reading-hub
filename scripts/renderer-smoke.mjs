@@ -554,10 +554,16 @@ async function runChecks() {
   assert(markdownModuleRequests === 0, "The library, reader and empty assistant must not load AI Markdown code.");
   await evaluate("{ const question = document.querySelector('#ai-question'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(question, 'Explain fixture'); question.dispatchEvent(new Event('input', { bubbles: true })); }");
   await evaluate("document.querySelector('.ai-question').requestSubmit()");
-  await waitFor(window, "document.querySelectorAll('.ai-markdown-load-error').length === 2 && !document.querySelector('#ai-question').disabled");
+  await waitFor(window, "document.querySelectorAll('.ai-markdown-load-error').length === 1 && !document.querySelector('#ai-question').disabled");
   assert(markdownModuleRequests === 1 && aiRequests === 1, "Messages must share a failed module load without repeating the question.");
+  assert(await evaluate("document.querySelector('.ai-message.user').textContent.includes('Explain fixture') && !document.querySelector('.ai-message.user .ai-markdown-load-error') && document.querySelector('.ai-message.assistant .ai-message-content--plain').textContent.includes('Fixture answer')"), "Both texts must remain visible while only the answer offers recovery.");
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    assert(await evaluate("(() => { const error = document.querySelector('.ai-markdown-load-error'); const button = error.querySelector('button'); button.focus(); button.scrollIntoView({ block: 'nearest' }); const style = getComputedStyle(button); const tokens = getComputedStyle(document.documentElement); const rect = button.getBoundingClientRect(); const panel = button.closest('.reader-ai-panel').getBoundingClientRect(); const question = document.querySelector('.ai-message.user'); return error.scrollWidth <= error.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth + 1 && rect.left >= panel.left && rect.right <= panel.right && rect.bottom <= panel.bottom && style.fontSize === tokens.getPropertyValue('--control-font-size').trim() && style.minHeight === tokens.getPropertyValue('--control-height').trim() && style.borderRadius === tokens.getPropertyValue('--control-radius').trim() && getComputedStyle(button).outlineStyle !== 'none' && getComputedStyle(question.querySelector('.ai-message-content--plain')).color === getComputedStyle(question).color; })()"), "Recovery must use shared controls, preserve contrast and remain keyboard-accessible inside every panel layout.");
+    await writeFile(path.join(tmpdir(), `reading-hub-ai-recovery-${width}.png`), (await window.capturePage()).toPNG());
+  }
   await evaluate("document.querySelector('.ai-markdown-load-error button').click()");
-  await waitFor(window, "document.querySelectorAll('.ai-markdown-load-error').length === 2");
+  await waitFor(window, "document.querySelectorAll('.ai-markdown-load-error').length === 1");
   assert(markdownModuleRequests === 2 && aiRequests === 1, "A failed retry must remain recoverable without replaying the question.");
   blockMarkdownModule = false;
   await evaluate("document.querySelector('.ai-markdown-load-error button').click()");
@@ -595,6 +601,32 @@ async function runChecks() {
   assert(aiRequests === 3 && cancelledAiRequests.has(activeAiRequest), "Closing the assistant must cancel its unfinished request over IPC.");
   window.webContents.send("ai:stream", { requestId: activeAiRequest, type: "delta", text: "Late fixture" });
   aiMode = "complete";
+  if (process.argv.includes("--ai-markdown")) {
+    // New page/module state isolates selection recovery from the successful
+    // chat import above, while keeping all model and article work synthetic.
+    blockMarkdownModule = true;
+    await window.loadFile(renderer);
+    await waitFor(window, "Boolean(document.querySelector('[aria-label=\"在应用内阅读：Readable fixture\"]'))");
+    await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Readable fixture\"]').click()");
+    await waitFor(window, "Boolean(document.querySelector('.article-body p'))");
+    const selectionRequestsBefore = aiRequests;
+    await evaluate("(() => { const p = document.querySelector('.article-body p'); p.scrollIntoView({ block: 'center' }); const range = document.createRange(); range.selectNodeContents(p); getSelection().removeAllRanges(); getSelection().addRange(range); p.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); })()");
+    await waitFor(window, "Boolean(document.querySelector('.reader-selection-toolbar'))");
+    await clickText(".reader-selection-toolbar button", "解释");
+    await waitFor(window, "Boolean(document.querySelector('.selection-assistant-answer .ai-markdown-load-error'))");
+    assert(aiRequests === selectionRequestsBefore + 1 && await evaluate("document.querySelector('.selection-assistant-answer .ai-message-content--plain').textContent.includes('Fixture answer')"), "Selection failure must retain the generated answer.");
+    for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+      await setViewport(width, height, scale);
+      assert(await evaluate("(() => { const error = document.querySelector('.selection-assistant-answer .ai-markdown-load-error'); const button = error.querySelector('button'); button.focus(); button.scrollIntoView({ block: 'nearest' }); const rect = button.getBoundingClientRect(); const card = button.closest('.selection-assistant-card').getBoundingClientRect(); const toolbar = document.querySelector('.reader-selection-toolbar').getBoundingClientRect(); return error.scrollWidth <= error.clientWidth + 1 && card.left >= 0 && card.right <= innerWidth && card.top >= 0 && card.bottom <= innerHeight && toolbar.left >= 0 && toolbar.right <= innerWidth && rect.left >= card.left && rect.right <= card.right && rect.top >= card.top && rect.bottom <= card.bottom && getComputedStyle(button).fontSize === getComputedStyle(document.documentElement).getPropertyValue('--control-font-size').trim(); })()"), "Selection recovery must fit its card and the actual screen at every viewport.");
+      await writeFile(path.join(tmpdir(), `reading-hub-selection-recovery-${width}.png`), (await window.capturePage()).toPNG());
+    }
+    blockMarkdownModule = false;
+    await evaluate("document.querySelector('.selection-assistant-answer .ai-markdown-load-error button').click()");
+    await waitFor(window, "document.querySelectorAll('.selection-assistant-answer .katex').length === 2 && !document.querySelector('.selection-assistant-answer .ai-markdown-load-error')");
+    assert(aiRequests === selectionRequestsBefore + 1, "Selection display recovery must not send another AI request.");
+    console.log("Reading Hub AI Markdown scope: passed; safe text fallback, single shared recovery, real Markdown/math rendering, unchanged AI request count, close cancellation, selection recovery and four viewport/zoom layouts verified.");
+    return;
+  }
   const selectRewrite = async value => {
     await evaluate(`Array.from(document.querySelectorAll('.reader-version-tabs [role="tab"]')).find(b=>b.textContent===${JSON.stringify(value === "rewrite" ? "中文改写" : "原文")}).click()`);
     assert(await evaluate("document.querySelectorAll('.reader-version-tabs [role=\"tab\"]').length===2 && !document.querySelector('.reader-version-menu')"), "Two inline tabs must switch versions without an overlay.");

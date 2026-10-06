@@ -3,6 +3,9 @@ import { build, createServer } from "vite";
 import type { OutputChunk } from "rollup";
 import { fileURLToPath } from "node:url";
 import { createServer as createHttpServer } from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const markdownPath = fileURLToPath(new URL("../src/renderer/ai-markdown.tsx", import.meta.url));
 
@@ -37,13 +40,18 @@ it("keeps AI answer parsing and KaTeX out of the renderer's initial module graph
 });
 
 it("serves a transpiled deferred module through the development URL", async () => {
-  // Exercise URL resolution/transpilation without binding an HMR port or
-  // starting a dependency optimizer that needs a live browser to finish.
+  // Exercise transpilation without HMR ports or browser-triggered discovery;
+  // only explicitly declared dependencies need to be optimized here.
+  // A diagnostic must not overwrite an already running dev server's cache.
+  const cacheDir = await mkdtemp(join(tmpdir(), "reading-hub-vite-test-"));
   const server = await createServer({
-    logLevel: "silent", optimizeDeps: { noDiscovery: true, include: [] },
+    cacheDir,
+    logLevel: "silent", optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, hmr: { server: createHttpServer() }, preTransformRequests: false }
   });
   try {
+    expect(server.config.cacheDir).toBe(cacheDir);
+    expect(server.config.optimizeDeps.include).toEqual(expect.arrayContaining(["markdown-it", "katex"]));
     const reference = await server.transformRequest("/ai-markdown.tsx?chunk-url");
     const match = reference?.code.match(/export default ("[^"]+")/);
     expect(match).toBeTruthy();
@@ -51,5 +59,5 @@ it("serves a transpiled deferred module through the development URL", async () =
     const module = await server.transformRequest(url);
     expect(module?.code).toContain("AiMarkdownContent");
     expect(module?.code).not.toContain("type JSX");
-  } finally { await server.close(); }
+  } finally { await server.close(); await rm(cacheDir, { recursive: true, force: true }); }
 });
