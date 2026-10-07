@@ -375,14 +375,23 @@ async function auditViewport(window, viewport, mathJaxSvg) {
         const underline = document.querySelector('#selection-underline');
         const card = document.querySelector('#selection-card');
         const selectedEntry = document.querySelector('.entry-card.selected');
+        const plainEntry = document.querySelector('.entry-card:not(.selected)');
         const selectedSource = document.querySelector('.source-filter.selected');
+        const titlebarButton = document.querySelector('.app-titlebar-button');
+        const readerButton = document.querySelector('.reader-toolbar .toolbar-icon-button');
+        const assistantMessage = document.querySelector('.ai-message:not(.user)');
         return {
           accent: root.getPropertyValue('--accent').trim(),
           selectionAccent: root.getPropertyValue('--selection-accent').trim(),
           underline: underline ? getComputedStyle(underline).backgroundColor : undefined,
           cardShadow: card ? getComputedStyle(card).boxShadow : undefined,
           selectedEntry: selectedEntry ? getComputedStyle(selectedEntry).backgroundColor : undefined,
-          selectedSource: selectedSource ? getComputedStyle(selectedSource).backgroundColor : undefined
+          selectedEntryShadow: selectedEntry ? getComputedStyle(selectedEntry).boxShadow : undefined,
+          plainEntryRadius: plainEntry ? getComputedStyle(plainEntry).borderRadius : undefined,
+          selectedSource: selectedSource ? getComputedStyle(selectedSource).backgroundColor : undefined,
+          titlebarButtonRadius: titlebarButton ? getComputedStyle(titlebarButton).borderRadius : undefined,
+          readerButtonRadius: readerButton ? getComputedStyle(readerButton).borderRadius : undefined,
+          assistantMessageBackground: assistantMessage ? getComputedStyle(assistantMessage).backgroundColor : undefined
         };
       })()
     };
@@ -471,6 +480,9 @@ async function auditViewport(window, viewport, mathJaxSvg) {
   if (!geometry.sourceList || geometry.sourceList.rowHeight > 40 || geometry.sourceList.titleHeight > 21 || Math.abs(geometry.sourceList.icon.width - 18) > 1 || Math.abs(geometry.sourceList.folder.width - 13) > 1 || Math.abs(geometry.sourceList.sourceFontSize - geometry.sourceList.groupFontSize) > .1 || Math.abs(geometry.sourceList.libraryFontSize - geometry.sourceList.groupFontSize) > .1 || geometry.sourceList.libraryHeadingBottom > geometry.sourceList.libraryFilterTop + 1 || geometry.sourceList.sourceHeadingTop - geometry.sourceList.libraryNavBottom > 14) failures.push("来源列表的图标、字号层级或阅读分类间距异常");
   if (!geometry.theme || geometry.theme.accent !== "#47624f" || geometry.theme.selectionAccent !== "#47624f" || !geometry.theme.underline?.includes("0.278431 0.384314 0.309804") || !geometry.theme.cardShadow?.includes("rgba(31, 39, 31, 0.12)") || geometry.theme.selectedEntry !== "rgb(228, 235, 226)" || geometry.theme.selectedSource !== "rgb(228, 235, 226)") {
     failures.push("暖纸鼠尾草绿选中状态、划词状态或浮层层级未保持一致");
+  }
+  if (!geometry.theme || geometry.theme.plainEntryRadius !== "0px" || geometry.theme.selectedEntryShadow !== "none" || geometry.theme.titlebarButtonRadius !== "50%" || geometry.theme.readerButtonRadius !== "50%" || geometry.theme.assistantMessageBackground !== "rgba(0, 0, 0, 0)") {
+    failures.push("文章目录、圆形工具栏或 AI 回答仍带有过重的卡片外观");
   }
   const primaryControls = geometry.controls?.primary || [];
   if (primaryControls.length !== 3 || primaryControls.some((control) => !control || control.minHeight < 32)

@@ -49,8 +49,9 @@ describe("reader display-equation layout", () => {
     expect(styles).toContain(".selection-assistant-answer { min-height: 72px;");
   });
 
-  it("uses uniform toolbar surfaces and a filled icon for saved favorites", () => {
-    expect(styles).toContain('.reader-toolbar .toolbar-icon-button[aria-pressed="true"] { color: var(--accent-deep); }');
+  it("uses uniform circular toolbar surfaces and a filled icon for saved favorites", () => {
+    expect(styles).toMatch(/\.app-titlebar-button,\s*\.reader-toolbar\s+\.toolbar-icon-button,\s*\.notice-close\s*\{[^}]*border-radius:\s*50%;[^}]*background:\s*var\(--paper-bright\)/s);
+    expect(styles).toMatch(/\.reader-toolbar\s+\.toolbar-icon-button\[aria-pressed="true"\]\s*\{[^}]*background:\s*var\(--accent-wash\);[^}]*color:\s*var\(--accent-deep\)/s);
     expect(styles).toContain('.reader-toolbar .favorite-button.is-favorite svg { fill: currentColor; }');
     expect(styles).toContain('--font-reading: "Zhuque Fangsong",Georgia,');
     expect(styles).toContain('unicode-range: U+2E80-303F');
@@ -119,5 +120,14 @@ describe("reader display-equation layout", () => {
     expect(styles).toContain(".entry-action-secondary { display: none; }");
     expect(styles).toMatch(/\.entry-card:is\(:hover,:focus-within,\.selected\)\s+\.entry-action-secondary\s*\{\s*display:\s*inline-flex;/s);
     expect(styles).toMatch(/@media\s*\(hover:\s*none\)\s*\{[^}]*\.entry-action-secondary\s*\{\s*display:\s*inline-flex;/s);
+  });
+
+  it("keeps the article index flat and the assistant visually subordinate to the reader", () => {
+    expect(styles).toMatch(/\.entry-list\s*\{[^}]*padding:\s*0\s+8px/s);
+    expect(styles).toMatch(/\.entry-card\s*\{[^}]*border-bottom:\s*1px\s+solid\s+var\(--line\);[^}]*border-radius:\s*0/s);
+    expect(styles).toMatch(/\.entry-card\.selected,\s*\.entry-card\.selected:hover\s*\{[^}]*background:\s*var\(--selection-surface\);[^}]*color:\s*var\(--ink\);\s*\}/s);
+    expect(styles).not.toContain("box-shadow: inset 2px 0 var(--accent)");
+    expect(styles).toMatch(/\.ai-message\s*\{[^}]*border-bottom:\s*1px\s+solid\s+var\(--line\);[^}]*background:\s*transparent/s);
+    expect(styles).toContain("--action-radius: 999px;");
   });
 });
