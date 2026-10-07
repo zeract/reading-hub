@@ -1041,6 +1041,56 @@ describe("article reader extraction", () => {
     expect(load(result?.article.contentHtml || "")("img").attr("src")).toBe(expected);
   });
 
+  it("prefers the largest declared responsive image over a lazy thumbnail", () => {
+    const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p>
+      <img data-actualsrc="/thumb.jpg" data-src="/thumb.jpg" srcset="/medium.jpg 640w, /full.jpg 1600w" src="/placeholder.gif" alt="正文图片"></article>`, entry.url, entry);
+    expect(load(result?.article.contentHtml || "")("img").attr("src")).toBe("https://example.com/full.jpg");
+  });
+
+  it("compares all picture source sets rather than taking a mobile thumbnail", () => {
+    const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p>
+      <picture><source media="(max-width: 600px)" srcset="/mobile.jpg 400w">
+      <source media="(min-width: 601px)" srcset="/desktop.jpg 1600w">
+      <img src="/fallback.jpg" alt="响应式图片"></picture></article>`, entry.url, entry);
+    expect(load(result?.article.contentHtml || "")("img").attr("src")).toBe("https://example.com/desktop.jpg");
+  });
+
+  it("uses an explicit full-size image link instead of its linked thumbnail", () => {
+    const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p>
+      <figure><a href="/photos/original.webp"><picture><img src="/photos/thumbnail.webp" alt="照片"></picture></a><figcaption>原图</figcaption></figure>
+      <p><a href="/next-article"><img src="/photos/other-small.webp" alt="下一篇文章封面"></a></p></article>`, entry.url, entry);
+    const images = load(result?.article.contentHtml || "")("img");
+    expect(images.eq(0).attr("src")).toBe("https://example.com/photos/original.webp");
+    expect(images.eq(1).attr("src")).toBe("https://example.com/photos/other-small.webp");
+  });
+
+  it("does not follow an image-only link to a private address", () => {
+    const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p>
+      <a href="http://127.0.0.1/private.png"><img src="/photos/public.png" alt="公开图片"></a></article>`, entry.url, entry);
+    expect(load(result?.article.contentHtml || "")("img").attr("src")).toBe("https://example.com/photos/public.png");
+  });
+
+  it("retains the sharpest declared duplicate in a single figure", () => {
+    const small = "https://example.com/photos/diagram-480x240.png";
+    const original = "https://example.com/photos/diagram.png";
+    const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p><figure>
+      <img src="${small}" alt="流程图"><img src="${original}" alt="流程图"><figcaption>流程图说明</figcaption>
+      </figure></article>`, entry.url, entry);
+    const images = load(result?.article.contentHtml || "")("figure img");
+    expect(images).toHaveLength(1);
+    expect(images.attr("src")).toBe(original);
+    expect(result?.article.contentHtml).toContain("流程图说明");
+  });
+
+  it("upgrades a lazy generated size from an equivalent noscript original", () => {
+    const result = extractReaderArticle(`<article><p>${"正文内容 ".repeat(35)}</p><figure>
+      <img src="/photos/diagram-480x240.png" alt="图"><noscript><img src="/photos/diagram.png" alt="图"></noscript>
+      <figcaption>原始分辨率</figcaption></figure></article>`, entry.url, entry);
+    const images = load(result?.article.contentHtml || "")("figure img");
+    expect(images).toHaveLength(1);
+    expect(images.attr("src")).toBe("https://example.com/photos/diagram.png");
+  });
+
   it("keeps an in-body Open Graph image only once instead of rendering a duplicate cover", () => {
     const result = extractReaderArticle(
       `<html><head><meta property="og:image" content="/images/hero.png"></head><body><article class="post-content">

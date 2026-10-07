@@ -2,13 +2,16 @@ import { load } from "cheerio";
 import { parseSrcset } from "../shared/srcset";
 import { publicDocumentUrl as safeUrl } from "./html-document-url";
 const normalText=(value:string)=>value.replace(/\s+/g," ").trim();
+const GENERATED_IMAGE_SIZE = /-(\d{1,5})x(\d{1,5})(?=\.[a-z0-9]{2,5}$)/i;
 /** Hydrates common lazy-image and <picture> patterns before stripping markup. */
 export function hydrateLazyImages($: ReturnType<typeof load>, root: any, pageUrl: string): void {
   root.find("picture").each((_index: number, node: any) => {
     const picture = $(node);
     const image = picture.find("img").first();
-    const source = picture.find("source").toArray().map((item: any) => $(item).attr("data-srcset") || $(item).attr("srcset")).find(Boolean);
-    if (image.length && source && !image.attr("data-reader-picture-srcset")) image.attr("data-reader-picture-srcset", source);
+    const sources = picture.find("source").toArray().map((item: any) => $(item).attr("data-srcset") || $(item).attr("srcset")).filter(Boolean);
+    // <source> nodes disappear during sanitisation. Retain every declared
+    // resolution set, not just the first (often mobile-only) source.
+    if (image.length && sources.length && !image.attr("data-reader-picture-srcset")) image.attr("data-reader-picture-srcset", sources.join(", "));
   });
 
   root.find("noscript").each((_index: number, node: any) => {
@@ -40,7 +43,10 @@ export function hydrateLazyImages($: ReturnType<typeof load>, root: any, pageUrl
       // only an equivalent asset; adjacency alone does not establish identity.
       const targetImage = equivalentSibling || (previousImage.length && !imageSource(previousImage, pageUrl) ? previousImage : undefined);
       if (targetImage) {
-        if (!equivalentSibling) targetImage.attr("data-reader-noscript-src", fallbackSrc);
+        const currentSrc = imageSource(targetImage, pageUrl);
+        if (!equivalentSibling || (imageAssetKey(currentSrc) === imageAssetKey(fallbackSrc) && imageVariantScore(fallbackSrc) > imageVariantScore(currentSrc))) {
+          targetImage.attr("data-reader-noscript-src", fallbackSrc);
+        }
         const srcset = fallbackImage.attr("data-srcset") || fallbackImage.attr("srcset");
         if (srcset && !targetImage.attr("data-reader-noscript-srcset")) targetImage.attr("data-reader-noscript-srcset", srcset);
         const alt = normalText(fallbackImage.attr("alt") || "");
@@ -77,20 +83,23 @@ function removeLocalDuplicateImages($: ReturnType<typeof load>, root: any, pageU
 }
 
 function removeDuplicateImagesIn($: ReturnType<typeof load>, container: any, pageUrl: string, directOnly = false): void {
-  const seen = new Set<string>();
+  const seen = new Map<string, any>();
   const images = directOnly ? container.children("img").toArray() : container.find("img").toArray();
   for (const node of images) {
     const image = $(node);
     const src = imageSource(image, pageUrl);
     const key = imageAssetKey(src);
     if (!key) continue;
-    if (!seen.has(key)) {
-      seen.add(key);
-      continue;
-    }
-    const parentLink = image.parent("a");
-    image.remove();
+    const previous = seen.get(key);
+    if (!previous) { seen.set(key, image); continue; }
+    const keepNew = imageVariantScore(src) > imageVariantScore(imageSource(previous, pageUrl));
+    const kept = keepNew ? image : previous;
+    const removed = keepNew ? previous : image;
+    if (!normalText(kept.attr("alt") || "") && normalText(removed.attr("alt") || "")) kept.attr("alt", removed.attr("alt"));
+    const parentLink = removed.parent("a");
+    removed.remove();
     if (parentLink.length && !parentLink.find("img").length && !normalText(parentLink.text())) parentLink.remove();
+    if (keepNew) seen.set(key, image);
   }
 }
 
@@ -137,10 +146,21 @@ function imageAssetKey(value: string | undefined): string | undefined {
   if (!key) return undefined;
   try {
     const url = new URL(key);
-    url.pathname = url.pathname.replace(/-\d{1,5}x\d{1,5}(?=\.[a-z0-9]{2,5}$)/i, "");
+    url.pathname = url.pathname.replace(GENERATED_IMAGE_SIZE, "");
     return url.toString();
   } catch {
     return key.replace(/-\d{1,5}x\d{1,5}(?=\.[a-z0-9]{2,5}(?:[?#]|$))/i, "");
+  }
+}
+
+/** Compare only variants already proven equivalent inside one media block. */
+function imageVariantScore(value: string | undefined): number {
+  if (!value) return 0;
+  try {
+    const match = GENERATED_IMAGE_SIZE.exec(new URL(value).pathname);
+    return match ? Number(match[1]) * Number(match[2]) : Number.MAX_SAFE_INTEGER;
+  } catch {
+    return 0;
   }
 }
 
@@ -157,20 +177,27 @@ function imageSources(element: any, pageUrl: string): string[] {
     element.attr("data-reader-noscript-srcset"),
     element.attr("srcset")
   ];
+  const parentLink = element.closest("a");
+  const linkedImage = parentLink.length && parentLink.find("img").length === 1 && !normalText(parentLink.text())
+    ? safeUrl(parentLink.attr("href"), pageUrl) : undefined;
+  const linkedOriginal = linkedImage && /\.(?:avif|gif|jpe?g|png|webp)$/i.test(new URL(linkedImage).pathname) ? linkedImage : undefined;
   const values = [
-    element.attr("data-actualsrc"),
+    // An image-only link to an image file explicitly names the full-sized
+    // media, unlike a link to an article or an unrelated download.
+    linkedOriginal,
     element.attr("data-original"),
     element.attr("data-original-src"),
+    element.attr("data-reader-noscript-src"),
     // A srcset describes resolution variants of the same image. The reader
     // has no viewport-specific source selection to preserve, so retain its
     // largest safe candidate instead of a lazy loader's lower-resolution
     // data-src placeholder.
-    ...srcsets.flatMap((srcset) => parseSrcset(srcset)
+    ...srcsets.flatMap((srcset) => parseSrcset(srcset))
       .sort((left, right) => (right.width ?? right.density ?? 1) - (left.width ?? left.density ?? 1))
-      .map((candidate) => candidate.url)),
+      .map((candidate) => candidate.url),
+    element.attr("data-actualsrc"),
     element.attr("data-src"),
     element.attr("data-lazy-src"),
-    element.attr("data-reader-noscript-src"),
     element.attr("src")
   ];
   return [...new Set(values.map((value) => safeUrl(value, pageUrl)).filter((value): value is string => Boolean(value)))];
