@@ -50,7 +50,8 @@
       "notarize": true
     },
     "files": [
-      "dist/**/*",
+      "dist/main/**/*",
+      "dist/renderer/**/*",
       "assets/reading-hub-icon.svg",
       "package.json"
     ],

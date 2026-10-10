@@ -10,6 +10,8 @@ Reading Hub 的应用包和用户资料是分开的。DMG / `Reading Hub.app` �
 
 其中的主数据库为 `reading-hub.sqlite`。不要把此目录放入 Git、DMG 或发布附件，也不要在升级过程中删除它。macOS Keychain 中的授权凭据不在这个目录内，也不应手动导出、复制或上传。
 
+应用只打包 `dist/main/`、`dist/renderer/`、应用图标、包清单及运行时依赖。历史版本遗留在 `dist/` 根目录的 DMG、ZIP 和 `.app` 不属于运行时构建，不得嵌入新安装包；不依赖删除这些历史文件来保证打包范围。
+
 ## 先区分：本地开发验证与可分发版本
 
 | 目的 | 使用方式 | 是否产生可交付 DMG |
