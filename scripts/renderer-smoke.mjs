@@ -31,6 +31,7 @@ let pauseRead = false;
 let pendingRead;
 let readRequested;
 let contentReadRequests = 0;
+let feedFallbackOnce = true;
 const cancelledReads = new Set();
 let aiRequests = 0;
 let aiMode = "complete";
@@ -253,6 +254,10 @@ const channels = [
     assert(typeof requestId === "string" && requestId.startsWith("read-"), "Read IPC must carry an opaque request id.");
     if (pauseRead) return new Promise((resolve) => { pendingRead = { requestId, resolve }; readRequested?.(); });
     if (id === "failure") throw new Error("Deterministic offline fixture");
+    if (feedFallbackOnce) {
+      feedFallbackOnce = false;
+      return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", contentMode: "feed_body", contentHtml: "<p>Feed supplied body while the original is unavailable.</p>" } };
+    }
     return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", activeLanguage: "zh", languageVariants: ["zh", "en"].map(language => ({ url: `https://example.com/${id}`, language, inlineLanguage: language, label: language === "zh" ? "中文" : "English" })), contentHtml: '<p>This is a deterministic reader fixture.</p><div class="reader-video"><video controls preload="none" data-reader-video-sources="[&quot;https://fixture.invalid/video.webm&quot;]"></video><button class="action-button" data-reader-video-load>加载视频</button><span role="status" class="reader-video-status"></span><a href="https://example.com/success">在原文中观看视频</a></div><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image" data-reader-zoomable="true" tabindex="0">' } };
   }],
   ["entry:read-language-variant", (_event, id, url, requestId, inlineLanguage) => {
@@ -461,6 +466,17 @@ async function runChecks() {
   assert(!database.getEntry("failure").read, "Failed reader load must leave content unread.");
   await evaluate("document.querySelector('[aria-label=\"在应用内阅读：Readable fixture\"]').click()");
   await waitFor(window, "Boolean(document.querySelector('.reader-article')) && Boolean(document.querySelector('.entry-card.read'))");
+
+  const fallbackReadCount = contentReadRequests;
+  for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
+    await setViewport(width, height, scale);
+    const recovery = await evaluate("(() => { const notice = document.querySelector('.reader-content-notice'); const button = notice?.querySelector('button'); if (!notice || !button) return {}; button.focus(); const n=notice.getBoundingClientRect(), b=button.getBoundingClientRect(); return { label: notice.textContent.includes('原页当前无法读取'), focused: document.activeElement===button, left:b.left-n.left, right:n.right-b.right, bottom:n.bottom-b.bottom }; })()");
+    assert(recovery.label && recovery.focused && recovery.left>=-1 && recovery.right>=-1 && recovery.bottom>=-1, `Feed recovery must be keyboard-accessible and fit the notice: ${JSON.stringify(recovery)}`);
+  }
+  assert(contentReadRequests === fallbackReadCount, "Feed fallback must not start an automatic retry loop.");
+  await evaluate("document.querySelector('.reader-content-notice button').click()");
+  await waitFor(window, "Boolean(document.querySelector('.reader-article')) && !document.querySelector('.reader-content-notice')");
+  assert(contentReadRequests === fallbackReadCount + 1, "Explicit recovery must make one fresh read.");
 
   await waitFor(window, "document.querySelector('.article-body img')?.naturalWidth === 1");
   assert(imageLoads === 1, `A native body image error must invoke the proxy exactly once (observed ${imageLoads}).`);

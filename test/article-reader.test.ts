@@ -1266,6 +1266,29 @@ describe("article reader extraction", () => {
     expect(load(result?.article.contentHtml || "")(`img[src='${image}']`)).toHaveLength(2);
   });
 
+  it("retries the Scientific Spaces original on the next read after a temporary Feed fallback", async () => {
+    const scientificEntry = { ...entry, url: "https://kexue.fm/archives/11980", canonicalUrl: "https://kexue.fm/archives/11980" };
+    const source: Source = { id: "scientific", url: "https://kexue.fm/feed", title: "科学空间", kind: "rss", status: "active", pollingEnabled: true, consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1 };
+    let available = false;
+    const getText = vi.fn(async (url: string) => {
+      if (url === scientificEntry.url) {
+        if (!available) throw new Error("请求失败（HTTP 403）");
+        return { url, contentType: "text/html", text: `<div id="PostContent"><p>${"原页已恢复的科学文章正文。".repeat(30)}</p></div>` };
+      }
+      return { url: source.url, contentType: "application/rss+xml", text: `<rss version="2.0"><channel><title>科学空间</title><item><title>备用标题</title><link>${scientificEntry.url}</link><description><![CDATA[<p>${"订阅提供的科学文章正文。".repeat(8)}</p>]]></description></item></channel></rss>` };
+    });
+    const render = vi.fn(async () => { throw new RenderedPageHttpError(403); });
+    const reader = new ArticleReader({ getText } as unknown as PublicHttpClient, { render });
+    expect((await reader.read(scientificEntry, source)).contentMode).toBe("feed_body");
+    expect(getText.mock.calls.map(call => call[0])).toEqual([scientificEntry.url, source.url]);
+    available = true;
+    const recovered = await reader.read(scientificEntry, source);
+    expect(recovered.contentMode).toBeUndefined();
+    expect(recovered.contentHtml).toContain("原页已恢复");
+    expect(getText.mock.calls.map(call => call[0])).toEqual([scientificEntry.url, source.url, scientificEntry.url]);
+    expect(render).toHaveBeenCalledTimes(1);
+  });
+
   it("uses the isolated renderer after a non-robots HTTP failure", async () => {
     const http = {
       getText: async () => { throw new Error("请求失败（HTTP 403）"); }

@@ -27,6 +27,20 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 
 describe("successful reading lifecycle", () => {
+  it.each(["feed_body", "feed_summary"])("lets a %s fallback return to the original after a user retry", async (contentMode) => {
+    read.mockResolvedValueOnce({ kind: "article", article: { ...article, contentMode } });
+    await render();
+    const notice = container.querySelector(".reader-content-notice")!;
+    expect(notice.textContent).toContain("原页当前无法读取");
+    expect(notice.textContent).not.toMatch(/未被自动读取|不允许自动读取|完整原文/);
+    expect(read).toHaveBeenCalledTimes(1);
+    await act(async () => notice.querySelector<HTMLButtonElement>("button")!.click());
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(read.mock.calls[1][1]).not.toBe(read.mock.calls[0][1]);
+    expect(container.querySelector(".reader-content-notice")).toBeNull();
+    expect(container.textContent).toContain("Loaded article content");
+  });
+
   it("labels a saved Zhihu summary without presenting it as Feed content", async () => {
     read.mockResolvedValue({ kind: "article", article: { ...article, contentMode: "source_summary", contentHtml: "<p>知乎动态摘要</p>" } });
     await render();
