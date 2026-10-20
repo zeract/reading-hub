@@ -154,7 +154,13 @@ export class PublicHttpClient {
         // Redirects are followed explicitly so every destination is checked for
         // public-address and robots policy compliance.
         try {
-          response = await fetchResponse(chromiumFetch, targetUrl, { headers, redirect: "manual", signal: request.signal });
+          // Some publishers negotiate RSS/HTML at the same URL without
+          // Vary: Accept. Chromium can otherwise return a cached Feed to an
+          // explicit HTML read forever. Fetch that representation from the
+          // server and do not persist article bodies in the HTTP disk cache.
+          // Host-owned ETag/Last-Modified validators still pass through above.
+          response = await fetchResponse(chromiumFetch, targetUrl, { headers, redirect: "manual", signal: request.signal,
+            ...(options?.preferHtml ? { cache: "no-store" as const } : {}) });
           throwIfAborted(request.signal);
         } catch (error) {
           if (options?.signal?.aborted) throw abortError(options.signal);

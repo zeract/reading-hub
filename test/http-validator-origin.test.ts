@@ -10,6 +10,28 @@ const client = () => new PublicHttpClient({ assertAllowed: vi.fn().mockResolvedV
 beforeEach(() => { network.fetch.mockReset(); });
 
 describe("conditional requests belong to a specific response URL", () => {
+  it("bypasses incompatible cached Feed representations on every explicit HTML hop", async () => {
+    const robots = { assertAllowed: vi.fn().mockResolvedValue(undefined) };
+    network.fetch.mockImplementation(async (url: string, init: RequestInit) => {
+      if (init.cache !== "no-store") return new Response("<rss/>", { headers: { "content-type": "application/rss+xml" } });
+      return url === a ? new Response(null, { status: 302, headers: { location: b } })
+        : new Response("<article>Original</article>", { headers: { "content-type": "text/html" } });
+    });
+    const http = new PublicHttpClient(robots as never);
+    await expect(http.getText(a, undefined, { preferHtml: true })).resolves.toMatchObject({ url: b, contentType: "text/html", text: "<article>Original</article>" });
+    expect(robots.assertAllowed.mock.calls.map(call => call[0])).toEqual([a, b]);
+    expect(network.fetch.mock.calls.every(call => call[1].cache === "no-store")).toBe(true);
+  });
+
+  it("retains host-owned validators and respects a fresh HTTP denial for HTML reads", async () => {
+    network.fetch.mockResolvedValueOnce(new Response(null, { status: 304 }));
+    await expect(client().getText(a, { url: a, etag, lastModified }, { preferHtml: true })).resolves.toMatchObject({ status: 304 });
+    expect(new Headers(network.fetch.mock.calls[0][1].headers).get("if-none-match")).toBe(etag);
+    network.fetch.mockResolvedValueOnce(new Response(null, { status: 403 }));
+    await expect(client().getText(a, undefined, { preferHtml: true })).rejects.toThrow("HTTP 403");
+    expect(network.fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("does not send an initial resource validator to its redirect destination", async () => {
     const seen: Array<[string, Headers]> = [];
     network.fetch.mockImplementation(async (url: string, init: RequestInit) => {

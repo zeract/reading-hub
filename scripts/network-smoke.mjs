@@ -12,6 +12,7 @@ import { extractReaderArticle } from "../dist/main/main/article-reader.js";
 import { extractGenericPage } from "../dist/main/main/extractor.js";
 import { discoverFeedUrls } from "../dist/main/main/feed.js";
 import { findPublicArchiveUrls, parsePublishedArchive } from "../dist/main/main/archive-backfill.js";
+import { PublicHttpClient } from "../dist/main/main/http.js";
 
 app.setPath("userData", await mkdtemp(join(tmpdir(), "reading-hub-ai-network-data-")));
 // The isolated renderer destroys its only window before returning its result.
@@ -19,7 +20,16 @@ app.setPath("userData", await mkdtemp(join(tmpdir(), "reading-hub-ai-network-dat
 app.on("window-all-closed", () => {});
 await app.whenReady();
 const cookieObservations = [];
+let negotiationRequests = 0;
 const proxy = createServer((request, response) => {
+  if (request.url === "/fixture-negotiation") {
+    negotiationRequests++;
+    const html = request.headers.accept?.startsWith("text/html");
+    // Deliberately omit Vary: Accept, as observed on the affected publisher.
+    response.writeHead(200, { "content-type": html ? "text/html" : "application/rss+xml", "cache-control": "public, max-age=3600" });
+    response.end(html ? "<article>Original HTML body</article>" : "<rss><channel><title>Feed representation</title></channel></rss>");
+    return;
+  }
   if (request.url === "/fixture-cookie") {
     cookieObservations.push(Boolean(request.headers.cookie));
     response.writeHead(200, { "content-type": "application/json", "set-cookie": "fixture-response-session=fixture-value; Path=/" }); response.end("{}");
@@ -59,6 +69,17 @@ const watchdog = setTimeout(() => {
   app.exit(1);
 }, 15_000);
 try {
+  const negotiationUrl = `http://127.0.0.1:${proxy.address().port}/fixture-negotiation`;
+  const seed = await chromiumFetch(negotiationUrl, { redirect: "manual", headers: { Accept: "application/rss+xml" } });
+  assert.match(await seed.text(), /<rss>/);
+  // Positive control: a default Chromium request reuses the incompatible RSS.
+  const cached = await chromiumFetch(negotiationUrl, { redirect: "manual", headers: { Accept: "text/html" } });
+  assert.match(await cached.text(), /<rss>/);
+  assert.equal(negotiationRequests, 1);
+  const original = await new PublicHttpClient().getText(negotiationUrl, undefined, { allowTrustedLoopbackFeed: true, preferHtml: true });
+  assert.match(original.contentType, /text\/html/);
+  assert.match(original.text, /Original HTML body/);
+  assert.equal(negotiationRequests, 2, "An explicit HTML read must reach the server instead of reusing a cached Feed representation.");
   await configureChromiumNetwork({ HTTPS_PROXY: `http://127.0.0.1:${proxy.address().port}` });
   for (const provider of providers) {
     await service.configure({ provider, apiKey: "fixture-key" });
