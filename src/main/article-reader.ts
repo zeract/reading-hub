@@ -260,7 +260,8 @@ export class ArticleReader {
     // Complex formula documents must not first be rendered one record at a
     // time with KaTeX and then selectively retried with MathJax.  Start the
     // local SVG renderer before the first render so macros, labels and display
-    // layout use one atomic document policy from the outset.
+    // layout use one document semantic plan from the outset. Failed formulas
+    // are isolated without discarding successful members of that plan.
     if (prepared.content.formulaRenderPolicy === "scientific-document" && !this.scientificMath.isReady()) {
       await this.scientificMath.ready().catch(() => undefined);
     }

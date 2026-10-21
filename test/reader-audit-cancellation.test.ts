@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { expectedImageProxyDiagnostic, findLeakedInlineMath, readerAuditSummaryLead, ReaderAuditTimeoutError, runReaderAuditOperation, selectReaderAuditSamples } from "../src/main/reader-audit";
+import { expectedImageProxyDiagnostic, findLeakedInlineMath, inspectReaderAuditArticle, readerAuditSessionUnavailable, readerAuditSummaryLead, ReaderAuditTimeoutError, runReaderAuditOperation, selectReaderAuditSamples } from "../src/main/reader-audit";
 import { UnsupportedReaderImageTypeError } from "../src/main/http";
 import { RobotsDisallowedError } from "../src/main/robots";
 import type { Entry, Source } from "../src/shared/types";
@@ -32,6 +32,36 @@ function auditEntry(id: string): Entry {
 }
 
 describe("reader audit cancellation", () => {
+  it("does not mistake a mathematical blog for Scientific Spaces", () => {
+    const entry = { ...auditEntry("math"), title: "Mathematical blog", summary: "An independent editorial summary that need not start the body." };
+    const article = {
+      entryId: entry.id, title: entry.title, url: "https://example.com/math", renderProfile: "scientific" as const,
+      contentHtml: `<p>Mathematical blog ${"正文段落。".repeat(60)}</p>`
+    };
+    expect(inspectReaderAuditArticle(auditSource, entry, article).issues).toEqual([]);
+    expect(inspectReaderAuditArticle(auditSource, entry, { ...article, url: entry.url }).issues)
+      .toEqual(expect.arrayContaining(["科学空间页首元信息未清理", "科学空间正文起点与卡片摘要不一致"]));
+    expect(inspectReaderAuditArticle(auditSource, entry, {
+      ...article, contentHtml: `${article.contentHtml}<p>$q_i = x_i$</p>`
+    }).issues).toContain("正文中残留未渲染的 $…$ 行内公式");
+  });
+
+  it("requires an explicitly supplied authorized session instead of a fresh audit profile", () => {
+    const source = { ...auditSource, kind: "zhihu_follow" as const };
+    expect(readerAuditSessionUnavailable(source, {})).toBe(true);
+    expect(readerAuditSessionUnavailable(auditSource, {})).toBe(false);
+    expect(readerAuditSessionUnavailable(source, { renderWithZhihuSession: async url => ({ url, html: "", title: "" }) })).toBe(false);
+  });
+
+  it.each(["feed_summary", "source_summary"] as const)("does not count %s as verified article content", contentMode => {
+    const entry = auditEntry("summary");
+    const result = inspectReaderAuditArticle(auditSource, entry, {
+      entryId: entry.id, url: entry.url, title: entry.title, renderProfile: "standard", contentMode,
+      contentHtml: `<p>${"现有摘要可安全显示，但不能证明原文已读取。".repeat(12)}</p>`
+    });
+    expect(result.issues).toContain("仅验证了已收集摘要，原文正文与公式未验证");
+    expect(result.mode).toBe(contentMode);
+  });
   it("uses every entry only when a full source audit is explicitly requested", () => {
     const entries = [auditEntry("newest"), auditEntry("middle"), auditEntry("oldest")];
 

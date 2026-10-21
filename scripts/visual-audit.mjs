@@ -517,6 +517,37 @@ async function createMathJaxFixture() {
   return mathjax.startup.adaptor.outerHTML(node);
 }
 
+async function auditNativeEquationLayout() {
+  const { ScientificMathRenderer } = require(path.join(root, "dist/main/main/mathjax-renderer.js"));
+  const { extractReaderArticleAsync } = require(path.join(root, "dist/main/main/reader-extraction.js"));
+  const { withArticleDocument } = require(path.join(root, "dist/main/main/article-document.js"));
+  const { ScientificArticleVisualAuditor } = require(path.join(root, "dist/main/main/scientific-visual-audit.js"));
+  const { load } = require("cheerio");
+  const math = new ScientificMathRenderer();
+  await math.ready();
+  const source = String.raw`<article><p>${"Formula numbering and references remain consistent. ".repeat(12)}</p>
+    <p>\begin{equation}x=1\label{first}\end{equation}</p>
+    <p>\begin{align}S(q,i)&=H(q)+\partial_i H(q)-q\cdot\nabla H(q)\label{a}\\[5pt]
+      &=H(q)+(e_i-q)\cdot\nabla H(q)\label{b}\end{align}</p><p>References $\eqref{a}$ and $\eqref{b}$.</p></article>`;
+  const extracted = await extractReaderArticleAsync(source, "https://kexue.fm/archives/11854", { id: "native-fixture", title: "Native equations" }, math);
+  if (extracted?.article.formulaDiagnostics?.rendered !== 4 || extracted.article.formulaDiagnostics.fallback) throw new Error("Native equation fixture did not render completely");
+  const article = withArticleDocument(extracted.article);
+  const auditor = new ScientificArticleVisualAuditor(root);
+  try {
+    const failures = await auditor.inspect(article);
+    if (failures.length) throw new Error(failures.join("\n"));
+    // Positive geometry alone is insufficient: prove the checker catches
+    // the original percentage-SVG/viewBox loss after the structure roundtrip.
+    const broken = load(article.contentHtml);
+    broken(".reader-equation--native-tags mjx-container > svg").removeAttr("viewBox").attr("width", "100%");
+    const negative = await auditor.inspect({ ...article, contentHtml: broken.html() });
+    if (!negative.some(message => message.includes("编号与主体重叠"))) throw new Error("Native SVG collision negative control was not detected");
+    console.log("Native SVG equations: three viewports passed; collision negative control detected");
+  } finally {
+    await auditor.close();
+  }
+}
+
 await app.whenReady();
 const mathJaxSvg = await createMathJaxFixture();
 const window = new BrowserWindow({ show: false, width: 1280, height: 800, webPreferences: { contextIsolation: true, sandbox: true } });
@@ -527,6 +558,7 @@ try {
   console.log(JSON.stringify(report, null, 2));
   const failed = report.flatMap((item) => item.failures.map((failure) => `${item.viewport.name}: ${failure}`));
   if (failed.length) throw new Error(failed.join("\n"));
+  await auditNativeEquationLayout();
 } catch (error) {
   auditFailed = true;
   console.error("Reading Hub visual audit failed:", error);

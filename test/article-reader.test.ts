@@ -55,6 +55,27 @@ describe("article reader extraction", () => {
     expect(result?.textLength).toBeGreaterThan(500);
   });
 
+  it("recovers KaTeX source unwrapped by a publisher serializer without guessing prose as math", () => {
+    const unwrapped = (tex: string, displayMode: boolean) => katex.renderToString(tex, { displayMode })
+      .replace(/<\/?semantics>/g, "").replace(/<annotation\b[^>]*>|<\/annotation>/g, "");
+    const inline = unwrapped(String.raw`q_i`, false);
+    const block = unwrapped(String.raw`\text{Score}(Q,D)=\sum_i Q_i`, true);
+    const html = `<article><p>${"An explanation of scoring. ".repeat(25)}${inline}</p>${block}
+      <span class="katex">\\text{ordinary author text}</span>
+      <span class="katex"><span class="katex-mathml"><math><mi>x</mi></math></span><span class="katex-html" aria-hidden="true">x</span></span>
+      <pre><code>${inline.replace(/</g, "&lt;")}</code></pre></article>`;
+    const result = extractReaderArticle(html, entry.url, entry)!;
+    expect(result.article.formulaDiagnostics).toMatchObject({ total: 2, semantic: 2, display: 1, rendered: 2, fallback: 0, dropped: 0 });
+    const content = load(result.article.contentHtml);
+    expect(content("[data-reader-equation]")).toHaveLength(1);
+    expect(content("pre code").text()).toBe(inline);
+    content(".katex, pre, code").remove();
+    expect(content.text().replace("\\text{ordinary author text}", "")).not.toMatch(/\\(?:text|sum)/);
+    // A class without the paired semantic asset is not an invitation to parse.
+    expect(result.article.contentHtml).toContain("\\text{ordinary author text}");
+    expect(content.text()).not.toContain("ScoreScore");
+  });
+
   it("uses the same safe page-date parser as source collection", () => {
     const result = extractReaderArticle(
       `<article><header class="post-header"><h1>带发布日期的文章</h1><div class="post-byline"><span>作者</span><span>February 4, 2024</span></div></header><p>${"正文内容 ".repeat(30)}</p></article>`,
@@ -785,6 +806,17 @@ describe("article reader extraction", () => {
     }
   });
 
+  it.each(["data-mjx-viewBox", "data-mjx-viewbox"])("freezes responsive MathJax geometry from %s without enabling arbitrary CSS", attribute => {
+    const raw = `<mjx-container class="MathJax" jax="SVG" width="full"><svg width="100%" height="2ex" ${attribute}="0 -1000 2000 1000"><g transform="scale(0.02,-0.02) translate(0, -1000)"><svg data-table="true"><path d="M0 0L1 1"/></svg><svg data-labels="true"><path d="M2 0L3 1"/></svg></g></svg></mjx-container>`;
+    const output = sanitizeMathJaxSvg(raw)!;
+    expect(output).toContain('width="4.0000ex"');
+    expect(output).toContain('viewBox="0 0 40 20"');
+    expect(output).toContain('class="reader-math-labels"');
+    expect(output).not.toMatch(/data-|style=/);
+    expect(sanitizeMathJaxSvg(raw.replace("0 -1000 2000 1000", "0 -1000 Infinity 1000"))).toBeUndefined();
+    expect(sanitizeMathJaxSvg(raw.replace("scale(0.02,-0.02)", "scale(0,0)"))).toBeUndefined();
+  });
+
   it("keeps only local MathJax SVG glyph references and rejects active SVG nodes", () => {
     const safe = sanitizeMathJaxSvg(`
       <mjx-container class="MathJax" jax="SVG" overflow="overflow" width="full"><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1ex" height="1ex" viewBox="0 0 10 10" role="img" focusable="false" style="vertical-align:-0.02ex">
@@ -880,6 +912,71 @@ describe("article reader extraction", () => {
     const content = result?.article.contentHtml || "";
     expect(content).toContain('href="https://kexue.fm/archives/11854"');
     expect(content).not.toContain("\\url{");
+  });
+
+  it("materializes host-owned row numbers for label-only align and preserves nested cases", async () => {
+    const math = new ScientificMathRenderer();
+    await math.ready();
+    const render = vi.spyOn(math, "renderDocumentAsync");
+    const result = await extractReaderArticleAsync(
+      `<article><p>${"用于检验多行编号与引用一致性的正文。".repeat(25)}</p>
+      <p>\\begin{equation}x=1\\label{first}\\end{equation}</p>
+      <p>\\begin{align}S(q,i)&=H(q)+\\partial_i H(q)\\label{row-a}\\label{alias-a}\\\\[5pt]
+      &=H(q)+(e_i-q)\\cdot\\nabla H(q)\\label{row-b}\\\\
+      x&=\\begin{cases}1&x>0\\\\0&x<0\\end{cases}\\tag{13}\\label{explicit}\\end{align}</p>
+      <p>引用 $\\eqref{row-a},\\eqref{alias-a},\\eqref{row-b},\\eqref{explicit}$。</p></article>`,
+      "https://kexue.fm/archives/11854", entry, math
+    );
+    const html = result!.article.contentHtml;
+    expect(result!.article.formulaDiagnostics).toMatchObject({ total: 3, rendered: 3, fallback: 0, display: 2, displayRendered: 2 });
+    const $ = load(html);
+    expect($(".reader-equation--native-tags .reader-equation__tag")).toHaveLength(0);
+    const svg = $(".reader-equation--native-tags mjx-container > svg");
+    expect(svg.attr("viewBox")).toMatch(/^0 0 [\d.]+ [\d.]+$/);
+    expect(svg.attr("width")).toMatch(/^[\d.]+ex$/);
+    expect(svg.find(".reader-math-table, .reader-math-labels")).toHaveLength(2);
+    expect(render).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ tex: "(2),(2),(3),(13)" })]));
+    expect(html).not.toMatch(/reader-math-source|data-mjx-error/);
+    for (const request of render.mock.calls[0][0]) expect(request.tex).not.toContain("\\label{");
+  });
+
+  it("isolates shared-runtime macros, global definitions and native labels between reads", async () => {
+    const first = new ScientificMathRenderer();
+    const second = new ScientificMathRenderer();
+    await Promise.all([first.ready(), second.ready()]);
+    expect(await first.renderAsync("\\gdef\\readerGlobal{x}\\readerGlobal", false, {})).toContain("mjx-container");
+    expect(await second.renderAsync("\\readerGlobal", false, {})).toBeUndefined();
+    const equation = "\\begin{align}x&=1\\tag{13}\\label{eq:repeated-native}\\end{align}";
+    const results = await Promise.all([
+      first.renderAsync(equation, true, {}), second.renderAsync(equation, true, {}),
+      first.renderAsync("\\readerLocal(x)", false, { readerLocal: { body: "\\operatorname{first}" } }),
+      second.renderAsync("\\readerLocal(x)", false, { readerLocal: { body: "\\operatorname{second}" } })
+    ]);
+    for (const result of results) expect(result).toContain("mjx-container");
+    expect(await first.renderAsync("\\readerLocal(x)", false, {})).toBeUndefined();
+  });
+
+  it("isolates a failed scientific expression while preserving document macros, tags and references", async () => {
+    const math = new ScientificMathRenderer();
+    await math.ready();
+    const result = await extractReaderArticleAsync(
+      `<article id="PostContent"><p>${"作者正文保持完整，公式由同一语义计划处理。".repeat(24)}</p>
+        <p>$\\boldsymbol{p}$</p>
+        <p>\\begin{equation}\\newcommand{\\localscore}{\\operatorname{score}}\\unknownReaderCommand{x}\\label{eq:unsupported}\\end{equation}</p>
+        <p>\\begin{equation}\\localscore(x)=x^2\\label{eq:valid}\\end{equation}</p>
+        <p>引用 $\\eqref{eq:unsupported}$ 与 $\\eqref{eq:valid}$。</p></article>`,
+      "https://kexue.fm/archives/11854", entry, math
+    );
+    const html = result!.article.contentHtml;
+    const $ = load(html);
+    expect(result!.article.formulaDiagnostics).toMatchObject({ total: 5, rendered: 4, fallback: 1, dropped: 0, display: 2, displayRendered: 1, displayFallback: 1 });
+    expect($(".reader-math-source")).toHaveLength(1);
+    expect($("mjx-container")).toHaveLength(4);
+    expect($("[data-reader-equation] .reader-equation__tag").text()).toBe("(2)");
+    expect(html).not.toContain("class=\"katex\"");
+    expect(html).not.toMatch(/data-mjx-error|data-mml-node="merror"|READING_HUB_MATH/);
+    // A subsequent document cannot inherit this document's custom macros.
+    expect(await math.renderAsync("\\localscore(x)", false, {})).toBeUndefined();
   });
 
   it("renders a Scientific Spaces formula document through one MathJax path without duplicate previews or title anchors", async () => {

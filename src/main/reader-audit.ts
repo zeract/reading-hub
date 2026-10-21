@@ -1,11 +1,12 @@
 import { createReadSnapshot } from "./persistence/read-snapshot";
 import { load } from "cheerio";
 import { ArticleReader } from "./article-reader";
+import type { ReaderReadOptions } from "./article-reader";
 import { ReadingDatabase } from "./database";
 import { PublicHttpClient, UnsupportedReaderImageTypeError } from "./http";
-import { IsolatedPageRenderer } from "./page-renderer";
+import { IsolatedPageRenderer, type RenderedPage } from "./page-renderer";
+import { resolveReaderProfile } from "./reader-extraction";
 import { RobotsDisallowedError, RobotsPolicy } from "./robots";
-import { ZhihuFollowConnector } from "./zhihu-follow";
 import type { Entry, ReaderArticle, Source } from "../shared/types";
 
 const DEFAULT_READ_TIMEOUT_MS = 45_000;
@@ -54,6 +55,9 @@ export type ReaderAuditProgress = {
 };
 
 export interface ReaderAuditOptions {
+  /** Only an explicitly supplied, already-authorized session may read Zhihu.
+   * The standalone audit's temporary profile must not impersonate that session. */
+  renderWithZhihuSession?: (url: string, options?: ReaderReadOptions) => Promise<RenderedPage>;
   sourceFilter?: string;
   /**
    * Audit every saved entry for the selected source(s). This is intentionally
@@ -147,7 +151,7 @@ export function findLeakedInlineMath(value: string): string[] {
   return fragments;
 }
 
-function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): ReaderAuditResult {
+export function inspectReaderAuditArticle(source: Source, entry: Entry, article: ReaderArticle): ReaderAuditResult {
   const html = article.contentHtml;
   const text = plainText(html);
   const firstText = text.slice(0, 700);
@@ -182,6 +186,9 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
   const rawInlineTeX = findLeakedInlineMath(plainText(unrenderedHtml));
   const rawFormulaDiagnostics = [...rawTeXCommands, ...rawInlineTeX].slice(0, 2);
   const issues: string[] = [];
+  if (article.contentMode === "feed_summary" || article.contentMode === "source_summary") {
+    issues.push("仅验证了已收集摘要，原文正文与公式未验证");
+  }
   const formulaCounts = article.formulaDiagnostics;
   // Follow-feed cards can legitimately be a short public status update rather
   // than a long-form article. Their in-app display is still valid.
@@ -222,11 +229,14 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
   const scientificChrome = /首页|数学研究|信息时代/.test(firstText)
     || /\bBy\s+.+?\|\s*\d{4}-\d{2}-\d{2}\b/i.test(firstText)
     || firstText.includes(entry.title);
-  if (article.renderProfile === "scientific" && (/<h[1-6][^>]*>[^<]*#\s*<\/h/i.test(html) || scientificChrome)) {
+  // A mathematical blog may use the same formula renderer without sharing
+  // Scientific Spaces' page chrome or summary/extraction contract.
+  const scientificSite = resolveReaderProfile(article.url) === "scientific";
+  if (scientificSite && (/<h[1-6][^>]*>[^<]*#\s*<\/h/i.test(html) || scientificChrome)) {
     issues.push("科学空间页首元信息未清理");
   }
   const summaryStart = readerAuditSummaryLead(entry.summary);
-  if (article.renderProfile === "scientific" && summaryStart.length >= 12 && !firstText.includes(summaryStart)) {
+  if (scientificSite && summaryStart.length >= 12 && !firstText.includes(summaryStart)) {
     issues.push("科学空间正文起点与卡片摘要不一致");
   }
   return {
@@ -250,6 +260,10 @@ function inspectArticle(source: Source, entry: Entry, article: ReaderArticle): R
     renderedMathDiagnostics: renderedMathTeX.length ? renderedMathTeX : undefined,
     issues
   };
+}
+
+export function readerAuditSessionUnavailable(source: Source, options: ReaderAuditOptions): boolean {
+  return source.kind === "zhihu_follow" && !options.renderWithZhihuSession;
 }
 
 export function expectedImageProxyDiagnostic(error: unknown): string | undefined {
@@ -388,8 +402,7 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
   const robots = new RobotsPolicy();
   const http = new PublicHttpClient(robots);
   const renderer = new IsolatedPageRenderer(robots);
-  const zhihuFollow = new ZhihuFollowConnector();
-  const reader = new ArticleReader(http, renderer, (url, options) => zhihuFollow.renderArticle(url, options));
+  const reader = new ArticleReader(http, renderer, options.renderWithZhihuSession);
   const results: ReaderAuditResult[] = [];
   try {
     const configuredSourceFilter = options.sourceFilter ?? process.env.READING_HUB_AUDIT_SOURCE;
@@ -424,6 +437,18 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
       for (const { entry, sample } of samples) {
         const startedAt = Date.now();
         await reportProgress(options, { phase: "started", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "read" });
+        if (readerAuditSessionUnavailable(source, options)) {
+          const result: ReaderAuditResult = {
+            source: source.title, kind: source.kind, entry: entry.title, sample, status: "skipped",
+            durationMs: Date.now() - startedAt,
+            issues: ["独立审计使用临时浏览器配置，未提供主应用的知乎授权会话；未验证该文章，不能据此判断登录失效。"]
+          };
+          results.push(result);
+          completed += 1;
+          await reportResult(options, result);
+          await reportProgress(options, { phase: "finished", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, status: result.status, issueCount: result.issues.length });
+          continue;
+        }
         try {
           const article = await runReaderAuditOperation(
             (signal) => reader.read(entry, source, { signal }),
@@ -432,7 +457,7 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
             (elapsedMs) => void reportProgress(options, { phase: "waiting", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "read", elapsedMs }),
             heartbeatMs
           );
-          const result = inspectArticle(source, entry, article);
+          const result = inspectReaderAuditArticle(source, entry, article);
           result.sample = sample;
           await reportProgress(options, { phase: "started", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "image" });
           await runReaderAuditOperation(

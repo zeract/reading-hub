@@ -1,4 +1,5 @@
 import {normalizeKeyValueGrids} from "./reader-key-values";
+import { splitEquationRows } from "./reader-equation-rows";
 import { removeLeadingPagePropertyPanels } from "./reader-page-properties";
 import {normalizePreformattedCode} from "./reader-code";
 import {articleDocumentFromHtml} from "./article-document";
@@ -1204,6 +1205,20 @@ function renderedMathSource(element: any): string | undefined {
   ].join(", ")).first();
   const tex = annotation.text() || annotation.html() || "";
   if (tex.trim()) return tex.trim();
+  // Some publisher serializers unwrap <semantics>/<annotation> while keeping
+  // the annotation's source as the final direct text child of <math>. This
+  // is still a paired KaTeX semantic/visual asset, not ordinary prose. Require
+  // both halves and exactly one trailing source node; never infer TeX from a
+  // KaTeX-looking class or from MathML presentation text alone.
+  if (element.is(".katex, .katex-display") && element.find(".katex-html[aria-hidden='true']").length === 1) {
+    const math = element.find(".katex-mathml > math");
+    if (math.length === 1 && math.children().length > 0) {
+      const contents = math.contents().toArray().filter((node: any) => node.type !== "text" || node.data.trim());
+      const textNodes = contents.filter((node: any) => node.type === "text");
+      const tail = contents[contents.length - 1] as any;
+      if (textNodes.length === 1 && tail === textNodes[0]) return tail.data.trim();
+    }
+  }
   const script = element.find("script[type^='math/tex']").first();
   const scriptTex = script.html() || script.text() || "";
   return scriptTex.trim() || undefined;
@@ -1524,16 +1539,15 @@ async function renderStandardFormulaDocumentAsynchronously(
 }
 
 /**
- * Scientific formulas are an all-or-nothing document component. A partial
- * fallback makes macro scope and equation references impossible to trust, so
- * one MathJax failure deliberately produces safe TeX cards for the group
- * instead of silently mixing renderers.
+ * Scientific formulas share one document semantic plan and one renderer.
+ * Macro snapshots and equation references are resolved before rendering, so
+ * one malformed/unsupported expression can safely fall back without discarding
+ * every valid expression. Unavailable runtimes still reject the whole group.
  */
 function renderScientificFormulaDocumentSynchronously(
   plan: FormulaRenderPlan,
   scientificMath: ScientificMathRenderer | undefined
 ): Map<number, string | undefined> {
-  const failed = (): Map<number, string | undefined> => new Map(plan.formulas.map((item) => [item.record.id, undefined]));
   // `extractReaderArticle()` is the deterministic synchronous test/helper
   // API. It cannot start MathJax's asynchronous module loader, so retain the
   // safe KaTeX compatibility path here. User-visible reads always use the
@@ -1547,7 +1561,6 @@ function renderScientificFormulaDocumentSynchronously(
       continue;
     }
     const rendered = renderScientificFormula(item, plan.equations, scientificMath);
-    if (rendered === undefined) return failed();
     output.set(item.record.id, rendered);
   }
   return output;
@@ -1563,7 +1576,6 @@ async function renderScientificFormulaDocumentAsynchronously(
     const output = new Map<number, string | undefined>();
     for (const item of plan.formulas) {
       const html = await renderScientificFormulaAsync(item, plan.equations, scientificMath);
-      if (html === undefined) return failed();
       output.set(item.record.id, html);
     }
     return output;
@@ -1574,7 +1586,7 @@ async function renderScientificFormulaDocumentAsynchronously(
   const output = new Map<number, string | undefined>();
   plan.formulas.forEach((item, index) => {
     const html = rendered[index];
-    output.set(item.record.id, html === "" ? "" : wrapScientificFormula(item, plan.equations, html));
+    output.set(item.record.id, html === undefined || html === "" ? html : wrapScientificFormula(item, plan.equations, html));
   });
   return output;
 }
@@ -1676,10 +1688,14 @@ function collectEquationMetadata(records: FormulaRecord[]): EquationIndex {
     // A label map is a document semantic index, not a renderer side effect.
     // This makes references deterministic even when the original page used
     // distinct MathJax frames for neighbouring equations.
-    recordLabels.forEach((label, index) => {
-      const tag = explicitTags[index] || (explicitTags.length === 1 ? explicitTags[0] : undefined) || String(++generated);
-      labels.set(label, tag);
-    });
+    for (const row of splitEquationRows(record.tex)) {
+      const rowLabels = findTeXCommandGroups(row, "label").map(group => group.content.trim()).filter(Boolean);
+      if (!rowLabels.length) continue;
+      const tag = findTeXCommandGroups(row, "tag")[0]?.content.trim() || String(++generated);
+      // Multiple labels on the same authored row are aliases, not additional
+      // equations. Nested cases/arrays must not advance the document counter.
+      rowLabels.forEach(label => labels.set(label, tag));
+    }
     const label = recordLabels[0];
     // The sync-only compatibility path needs an app-owned fallback tag, while
     // the async scientific path suppresses it whenever `nativeTags` is true.
@@ -1825,7 +1841,19 @@ function prepareEquationTeX(
   labels: Map<string, string>,
   options?: { preserveNativeTags?: boolean }
 ): string {
-  const withoutMetadata = options?.preserveNativeTags ? tex : stripTeXCommandGroups(stripTeXCommandGroups(tex, "label"), "tag");
+  const withoutMetadata = options?.preserveNativeTags
+    ? splitEquationRows(tex).map(row => {
+      const label = findTeXCommandGroups(row, "label")[0];
+      const tag = label && labels.get(label.content.trim());
+      // MathJax defaults to tags:none: multiple label-only align rows then
+      // fail with "Multiple \\label". The host already owns the numbering;
+      // materialize its row tag and remove renderer-side labels, rather than
+      // enabling a second automatic counter that can disagree with references.
+      const tagged = tag && !findTeXCommandGroups(row, "tag").length
+        ? `${row.slice(0, label.start)}\\tag{${tag}}${row.slice(label.next)}` : row;
+      return stripTeXCommandGroups(tagged, "label");
+    }).join("\\\\")
+    : stripTeXCommandGroups(stripTeXCommandGroups(tex, "label"), "tag");
   const referencesResolved = withoutMetadata.replace(/\\(eqref|ref)\{([^}]+)\}/g, (_all, kind, reference) => {
     const label = labels.get(reference) || reference;
     return kind === "eqref" ? `(${label})` : label;

@@ -11,9 +11,9 @@ export interface MathMacroDefinition {
 
 /**
  * One already-sanitised FormulaDocument expression. The reader supplies a
- * lexical macro snapshot for every item, while this adapter guarantees that a
- * scientific formula group is either rendered as a whole or rejected as a
- * whole.  The type deliberately contains no URL, article HTML, or credential
+ * lexical macro snapshot for every item. Failed expressions remain explicit
+ * results rather than invalidating unrelated formulas. The type deliberately
+ * contains no URL, article HTML, or credential
  * material.
  */
 export interface MathJaxDocumentExpression {
@@ -21,6 +21,12 @@ export interface MathJaxDocumentExpression {
   displayMode: boolean;
   macros: Record<string, MathMacroDefinition>;
 }
+
+// The component package exports a process-wide runtime, even when callers
+// construct separate adapters. Serialize promise conversions so a package/font
+// load cannot interleave another expression's macro/label reset.
+let conversionQueue: Promise<void> = Promise.resolve();
+let runtimeStartup: Promise<MathJaxRuntime> | undefined;
 
 /**
  * Local MathJax 4 adapter for pages that author their formulas for MathJax.
@@ -52,6 +58,8 @@ export class ScientificMathRenderer {
   render(tex: string, displayMode: boolean, macros: Record<string, MathMacroDefinition>): string | undefined {
     if (!this.runtime || !tex.trim()) return undefined;
     try {
+      this.runtime.tex2mml("\\begingroupSandbox");
+      this.runtime.texReset();
       const node = this.runtime.tex2svg(this.withMacroPrelude(tex, macros), { display: displayMode });
       return this.serializeRenderedNode(node);
     } catch {
@@ -70,34 +78,40 @@ export class ScientificMathRenderer {
     displayMode: boolean,
     macros: Record<string, MathMacroDefinition>
   ): Promise<string | undefined> {
-    if (!this.runtime || !tex.trim()) return undefined;
-    try {
-      const node = await this.runtime.tex2svgPromise(this.withMacroPrelude(tex, macros), {
-        display: displayMode
-      });
-      return this.serializeRenderedNode(node);
-    } catch {
-      return undefined;
-    }
+    const convert = async () => {
+      if (!this.runtime || !tex.trim()) return undefined;
+      try {
+        this.runtime.tex2mml("\\begingroupSandbox");
+        this.runtime.texReset();
+        const node = await this.runtime.tex2svgPromise(this.withMacroPrelude(tex, macros), {
+          display: displayMode
+        });
+        return this.serializeRenderedNode(node);
+      } catch {
+        return undefined;
+      }
+    };
+    const pending = conversionQueue.then(convert);
+    conversionQueue = pending.then(() => undefined, () => undefined);
+    return pending;
   }
 
   /**
    * Render a document-scoped group in authored order.  MathJax's SVG adapter
    * is still invoked for each output anchor so prose can remain interleaved
-   * with equations, but the group is deliberately atomic: a failed member
-   * returns `undefined` for the entire group rather than mixing KaTeX, SVG,
-   * and raw-TeX fallbacks inside one macro/label scope.
+   * with equations. Macro snapshots and resolved references are supplied by
+   * the reader, not derived from successful rendering of earlier expressions.
+   * Reject only the failed member; never substitute another math renderer.
    */
-  async renderDocumentAsync(expressions: readonly MathJaxDocumentExpression[]): Promise<string[] | undefined> {
+  async renderDocumentAsync(expressions: readonly MathJaxDocumentExpression[]): Promise<Array<string | undefined> | undefined> {
     if (!this.runtime) return undefined;
-    const rendered: string[] = [];
+    const rendered: Array<string | undefined> = [];
     for (const expression of expressions) {
       if (!expression.tex.trim()) {
         rendered.push("");
         continue;
       }
       const html = await this.renderAsync(expression.tex, expression.displayMode, expression.macros);
-      if (html === undefined) return undefined;
       rendered.push(html);
     }
     return rendered;
@@ -120,16 +134,26 @@ export class ScientificMathRenderer {
   }
 
   private async start(): Promise<void> {
+    if (!runtimeStartup) {
+      runtimeStartup = this.loadRuntime().catch((error) => {
+        runtimeStartup = undefined;
+        throw error;
+      });
+    }
+    this.runtime = await runtimeStartup;
+  }
+
+  private async loadRuntime(): Promise<MathJaxRuntime> {
     // MathJax publishes a Node-safe CommonJS entry specifically for local
     // renderers. Loading that entry keeps this Electron main-process module
     // compatible with both production and the Electron-as-Node test runner.
     const runtime = require("mathjax") as MathJaxRuntime;
     if (!runtime) throw new Error("MathJax 未能加载。");
     await runtime.init({
-      loader: { load: ["input/tex", "output/svg", "[tex]/cancel"] },
+      loader: { load: ["input/tex", "output/svg", "[tex]/cancel", "[tex]/begingroup"] },
       tex: {
         packages: {
-          "[+]": ["base", "ams", "newcommand", "configmacros", "cancel"],
+          "[+]": ["base", "ams", "newcommand", "configmacros", "cancel", "begingroup"],
           // MathJax's default `noundefined` extension turns an unknown TeX
           // command into a red text glyph rather than a render failure. That
           // is useful in a browser authoring page, but unsafe for a reader:
@@ -140,7 +164,7 @@ export class ScientificMathRenderer {
         }
       }
     });
-    this.runtime = runtime;
+    return runtime;
   }
 }
 
@@ -188,6 +212,30 @@ export function sanitizeMathJaxSvg(rawHtml: string): string | undefined {
   if (container.length !== 1 || root.children().length !== 1) return undefined;
   const containerNode = container.get(0);
   if (!containerNode) return undefined;
+
+  // MathJax 4's responsive tables defer the outer viewBox to browser-side
+  // layout code. Reader View intentionally runs no MathJax scripts, so freeze
+  // that declared geometry to an intrinsic SVG before discarding data attrs.
+  // Keeping width=100% without its viewBox clips the table and stacks labels
+  // on the equation even though every glyph path itself is valid.
+  for (const node of container.children("svg[data-mjx-viewBox], svg[data-mjx-viewbox]").toArray()) {
+    const svg = $(node);
+    const box = (svg.attr("data-mjx-viewBox") || svg.attr("data-mjx-viewbox") || "").trim().split(/[\s,]+/).map(Number);
+    const height = /^(\d+(?:\.\d+)?)(ex|em|px)$/.exec(svg.attr("height") || "");
+    if (box.length !== 4 || !box.every(Number.isFinite) || box[2] <= 0 || box[3] <= 0 || !height || Number(height[1]) <= 0) return undefined;
+    const transform = svg.children("g").first().attr("transform") || "";
+    const scale = /^scale\(([\d.]+),\s*(-?[\d.]+)\)\s+translate\(0,\s*(-?[\d.]+)\)$/.exec(transform);
+    if (!scale || Number(scale[1]) <= 0 || Number(scale[2]) !== -Number(scale[1]) || box[0] !== 0 || Number(scale[3]) !== box[1]) return undefined;
+    const width = box[2] / box[3] * Number(height[1]);
+    if (!Number.isFinite(width) || width <= 0) return undefined;
+    // Responsive output has already changed the root group from font units
+    // into pixel coordinates and moved its origin to the top. Reusing the
+    // pre-transform viewBox would apply the conversion twice and clip rows.
+    const factor = Number(scale[1]);
+    svg.attr("viewBox", `0 0 ${box[2] * factor} ${box[3] * factor}`).attr("width", `${width.toFixed(4)}${height[2]}`);
+    svg.find("svg[data-table='true']").attr("class", "reader-math-table");
+    svg.find("svg[data-labels='true']").attr("class", "reader-math-labels");
+  }
 
   // MathJax 4 can split a single inline expression into several inert SVG
   // fragments, separated by its own `<mjx-break size="…">` marker.  The old
@@ -295,7 +343,8 @@ function isSafeMathJaxSvgAttribute(tag: string, name: string, value: string, def
   }
   if (name === "xmlns") return tag === "svg" && value === "http://www.w3.org/2000/svg";
   if (name === "xmlns:xlink") return tag === "svg" && value === "http://www.w3.org/1999/xlink";
-  if (name === "class") return tag === "mjx-container" && value === "MathJax";
+  if (name === "class") return (tag === "mjx-container" && value === "MathJax")
+    || (tag === "svg" && /^(?:reader-math-table|reader-math-labels)$/.test(value));
   if (name === "jax") return tag === "mjx-container" && value === "SVG";
   if (name === "overflow") return tag === "mjx-container" && value === "overflow";
   if (name === "display") return tag === "mjx-container" && /^(?:true|false)$/.test(value);
@@ -366,6 +415,8 @@ type MathJaxRuntime = {
   init(config: unknown): Promise<void>;
   tex2svg(tex: string, options: { display: boolean }): unknown;
   tex2svgPromise(tex: string, options: { display: boolean }): Promise<unknown>;
+  tex2mml(tex: string): string;
+  texReset(): void;
   startup: {
     adaptor: { outerHTML(node: unknown): string };
   };

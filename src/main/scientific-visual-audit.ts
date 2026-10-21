@@ -14,6 +14,7 @@ type FormulaGeometry = {
   horizontallyScrollable: boolean;
   /** A normal-width tag must be visible without scrolling its equation row. */
   tagEscapesVisibleArea: boolean;
+  nativeClipped: boolean;
 };
 type LayoutGeometry = {
   pageOverflow: boolean;
@@ -41,6 +42,7 @@ export class ScientificArticleVisualAuditor {
   private window?: BrowserWindow;
   private styles?: Promise<string>;
   private auditPagePath?: Promise<string>;
+  constructor(private readonly root = app.getAppPath()) {}
 
   async inspect(article: ReaderArticle): Promise<string[]> {
     const articleDom = load(`<div id="reader-audit-math">${article.contentHtml}</div>`);
@@ -68,6 +70,14 @@ export class ScientificArticleVisualAuditor {
         const bodyRect = body.getBoundingClientRect();
         const overlaps = (left, right) => Math.max(0, Math.min(left.right, right.right) - Math.max(left.left, right.left)) > .5
           && Math.max(0, Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top)) > .5;
+        const paintedRect = (element) => {
+          if (!element) return undefined;
+          const box = element.getBBox(), matrix = element.getScreenCTM();
+          if (!matrix) return undefined;
+          const corners = [[box.x,box.y],[box.x+box.width,box.y],[box.x,box.y+box.height],[box.x+box.width,box.y+box.height]]
+            .map(([x,y]) => new DOMPoint(x,y).matrixTransform(matrix));
+          return {left:Math.min(...corners.map(p=>p.x)),right:Math.max(...corners.map(p=>p.x)),top:Math.min(...corners.map(p=>p.y)),bottom:Math.max(...corners.map(p=>p.y))};
+        };
         const owned = [...body.querySelectorAll("[data-reader-equation]")];
         const legacyKatex = [...body.querySelectorAll(".katex-display")].filter((formula) => !formula.closest("[data-reader-equation]"));
         const legacyMathJax = [...body.querySelectorAll("mjx-container[display='true']")].filter((formula) => !formula.closest("[data-reader-equation]"));
@@ -78,10 +88,17 @@ export class ScientificArticleVisualAuditor {
           const bases = [...formula.querySelectorAll(".reader-equation__content > .katex, .reader-equation__content > mjx-container, :scope > .katex")];
           const tagRect = tag?.getBoundingClientRect();
           const baseRects = bases.map((base) => base.getBoundingClientRect());
-          const collision = Boolean(tagRect && baseRects.some((base) => overlaps(tagRect, base)));
+          const nativeTable = paintedRect(formula.querySelector("svg.reader-math-table"));
+          const nativeLabels = paintedRect(formula.querySelector("svg.reader-math-labels"));
+          const nativeSvgRect = nativeTable ? formula.querySelector("mjx-container > svg")?.getBoundingClientRect() : undefined;
+          const nativeClipped = Boolean(nativeSvgRect && [nativeTable, nativeLabels].filter(Boolean).some(part =>
+            part.left < nativeSvgRect.left - 1 || part.right > nativeSvgRect.right + 1 || part.top < nativeSvgRect.top - 1 || part.bottom > nativeSvgRect.bottom + 1));
+          const collision = Boolean((tagRect && baseRects.some((base) => overlaps(tagRect, base)))
+            || (nativeTable && nativeLabels && overlaps(nativeTable, nativeLabels)));
           return {
             hasTag: Boolean(tagRect),
             collision,
+            nativeClipped,
             escapesBody: rect.left < bodyRect.left - 1 || rect.right > bodyRect.right + 1,
             horizontallyScrollable: viewport.scrollWidth > viewport.clientWidth + 1,
             tagEscapesVisibleArea: Boolean(tagRect && (tagRect.left < rect.left - 1 || tagRect.right > rect.right + 1))
@@ -101,6 +118,7 @@ export class ScientificArticleVisualAuditor {
       if (geometry.imagesEscapeBody) diagnostics.push(`${viewport.name}：图片超出正文列宽`);
       geometry.formulas.forEach((formula, index) => {
         if (formula.collision) diagnostics.push(`${viewport.name}：第 ${index + 1} 个公式编号与主体重叠`);
+        if (formula.nativeClipped) diagnostics.push(`${viewport.name}：第 ${index + 1} 个公式内部绘制被 SVG 视口裁切`);
         if (formula.escapesBody) diagnostics.push(`${viewport.name}：第 ${index + 1} 个公式超出正文列宽`);
         if (formula.hasTag && !formula.horizontallyScrollable && formula.tagEscapesVisibleArea) {
           diagnostics.push(`${viewport.name}：第 ${index + 1} 个公式编号在非超宽公式中被裁切`);
@@ -148,7 +166,7 @@ export class ScientificArticleVisualAuditor {
 
   private async loadStyles(): Promise<string> {
     if (!this.styles) {
-      const root = app.getAppPath();
+      const root = this.root;
       this.styles = Promise.all([
         readFile(path.join(root, "node_modules", "katex", "dist", "katex.min.css"), "utf8"),
         readFile(path.join(root, "src", "renderer", "styles.css"), "utf8")
