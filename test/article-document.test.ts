@@ -28,7 +28,7 @@ it('stores new content trees without Markdown duplication and losslessly migrate
  const legacy={markdown:'# 已有中文\n\n[证据](https://example.com/a)',provider:'deepseek',model:'m',createdAt:1,sourceUrl:'https://example.com',sourceTitle:'Title',sourceHash:'x',promptVersion:10};
  const migrated=decodeRewriteResult(JSON.stringify(legacy));expect(migrated.markdown).toBe(legacy.markdown);expect(migrated.content?.provenance).toBe('legacy');expect(decodeRewriteResult(encodeRewriteResult(migrated))).toEqual(migrated);
  const content=articleDocumentFromMarkdown(legacy.markdown);content.provenance='rewrite';const result=decodeRewriteResult(JSON.stringify({...legacy,content,schemaVersion:2,promptVersion:11}));
- const stored=JSON.parse(encodeRewriteResult(result));expect(stored.markdown).toBeUndefined();expect(stored.document).toBeUndefined();expect(decodeRewriteResult(JSON.stringify(stored)).markdown).toBe(articleDocumentMarkdown(content));
+ const stored=JSON.parse(encodeRewriteResult(result));expect(stored.markdown).toBeUndefined();expect(stored.document).toBeUndefined();expect(decodeRewriteResult(JSON.stringify(stored)).markdown).toBeUndefined();expect(decodeRewriteResult(JSON.stringify(stored)).content).toEqual(content);
  expect(()=>decodeRewriteResult(JSON.stringify({...stored,content:{version:99}}))).toThrow();
 });
 it('resumes a whole-document checkpoint without model calls and respects cancellation',async()=>{
@@ -94,4 +94,26 @@ it('preserves existing public HTTP media without widening private-network access
  const {withArticleDocument}=await import('../src/main/article-document');
  const article=withArticleDocument({entryId:'one',url:'https://example.com',title:'Title',renderProfile:'standard',coverImageUrl:'http://example.com/cover.png',contentHtml:'<p>Text</p>'});
  expect(article.contentHtml).toContain('src="http://example.com/cover.png"');expect(articleDocumentHtml(articleDocumentFromHtml('<img src="http://example.com/image.png">'))).toContain('src="http://example.com/image.png"');expect(articleDocumentHtml(articleDocumentFromHtml('<img src="http://127.0.0.1/image.png">'))).not.toContain('127.0.0.1');
+});
+
+it('exports semantic assets directly without reinterpreting source HTML or duplicating cards',()=>{
+ const doc=articleDocumentFromHtml('<h2>Guide</h2><ol start="3"><li>First<ul><li>Nested</li></ul></li><li>Second</li></ol><p>Read <a href="https://example.com/a_(b)">the guide</a> and <code>a`b</code>.</p><pre><code>{\n  "allow": ["Read(*)"]\n}\n</code></pre><table><tr><th>Key</th><td colspan="2">Value</td></tr></table><figure><img src="https://example.com/image.png" alt="chart"><figcaption>Caption</figcaption></figure><span data-reader-tex="x_1" data-reader-math-display="false">rendered copy</span>');
+ const markdown=articleDocumentMarkdown(doc);
+ expect(markdown).toContain('## Guide');
+ expect(markdown).toMatch(/3\. First\n(?: *\n)?   - Nested/);
+ expect(markdown).toContain('4. Second');
+ expect(markdown).toContain('[the guide](<https://example.com/a_(b)>)');
+ expect(markdown).toContain('``a`b``');
+ expect(markdown).toContain('```\n{\n  "allow": ["Read(*)"]\n}\n```');
+ expect(markdown).toContain('<td colspan="2">Value</td>');
+ expect(markdown.match(/https:\/\/example.com\/image.png/g)).toHaveLength(1);
+ expect(markdown).toContain('$x_1$');expect(markdown).not.toContain('rendered copy');
+});
+
+it('reads canonical media-only documents without inventing a Markdown payload',()=>{
+ const content=articleDocumentFromHtml('<img src="https://example.com/figure.png" alt="">','rewrite');
+ const raw=JSON.stringify({schemaVersion:2,content,provider:'deepseek',model:'fixture',createdAt:1,sourceUrl:'https://example.com/post',sourceTitle:'Figure',sourceHash:'fixture',promptVersion:13});
+ const result=decodeRewriteResult(raw);
+ expect(result.content).toEqual(content);expect(result.markdown).toBeUndefined();
+ expect(JSON.parse(encodeRewriteResult(result))).toEqual(JSON.parse(raw));
 });

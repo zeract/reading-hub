@@ -24,7 +24,7 @@ try {
   const sample=rewriteParagraphQualityCase,start=Date.now();let calls=0;
   const output=await rewriteArticleDocument(articleDocumentFromHtml(sample.html),sample.title,async(stage,prompt,requestSignal)=>{
    calls++;return (await ai.rewriteChunk(settings,prompt,requestSignal,stage)).text;
-  },signal,undefined,undefined,undefined,true,REWRITE_PROMPT_VERSION);
+  },signal,undefined,undefined,undefined, {kind:"paragraphs",version:REWRITE_PROMPT_VERSION});
   const html=articleDocumentHtml(output.content);
   const linkCount=(html.match(/href="https:\/\/example\.com\/kv-cache-guide"/g)||[]).length;
   const row={id:sample.id,settings,calls,elapsedMs:Date.now()-start,linkCount,html,rewrittenTitle:output.rewrittenTitle};

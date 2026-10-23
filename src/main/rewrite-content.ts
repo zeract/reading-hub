@@ -10,17 +10,6 @@ const markdownLabel = (value:string) => value.replace(/[\\\[\]]/g, "\\$&").repla
 const markdownDestination = (value:string) => value.replace(/[<>\s]/g,c=>encodeURIComponent(c));
 const imageMarkdown = (url:string,alt:string) => `![${markdownLabel(alt || "图片")}](<${markdownDestination(url)}>)`;
 
-/** Only declared image-to-full-size links count as aliases; never compare filenames or strip URL parameters. */
-export function rewriteImageAliases(article:ReaderArticle): Array<{url:string;markdown:string}> {
- const $=load(article.contentHtml);const aliases:Array<{url:string;markdown:string}>=[];
- $("a[href] img[src]").each((_i,node)=>{
-  const image=$(node),url=image.closest("a").attr("href"),src=image.attr("src");
-  if(!url || !src?.startsWith("https://"))return;
-  try {const target=new URL(url);if(target.protocol==="https:" && /\.(png|jpe?g|webp|gif|avif|svg)$/i.test(target.pathname))aliases.push({url:target.href,markdown:imageMarkdown(src,image.attr("alt")||"图片")});}catch{/* An invalid declaration is not an alias. */}
- });
- return aliases;
-}
-
 export class RewriteContentError extends Error {
 }
 /** Use semantic source TeX once, not both rendered and accessibility copies. No network media. */

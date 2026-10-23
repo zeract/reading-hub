@@ -43,3 +43,21 @@ it("keeps checkpoints over restart, isolates keys and jobs, and removes them wit
   db.rewrites.saveCheckpoint(job,"key",["删除后内容"]);expect(db.rewrites.get("entry")).toBeUndefined();
  }finally{db.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+it.each(['queued','running'])('retires historical %s review jobs without losing results or checkpoints',status=>{
+ const db=new ReadingDatabase(':memory:');
+ try {
+  const source=db.createSource({url:'https://example.com/rss',title:'Fixture',kind:'rss',pollingEnabled:true});
+  db.saveEntries([{id:'entry',sourceId:source.id,url:'https://example.com/post',canonicalUrl:'https://example.com/post',title:'Fixture',contentHash:'hash',read:false,favorite:false,createdAt:1}]);
+  const job=db.rewrites.enqueue('entry',settings);db.rewrites.progress(job,1,1);
+  db.rewrites.finish(job,{markdown:'已有中文',provider:'deepseek',model:'future',createdAt:1,sourceUrl:'https://example.com/post',sourceTitle:'Fixture',sourceHash:'hash',promptVersion:1});
+  const sql=(db as any).db;
+  sql.prepare("UPDATE article_rewrites SET kind='review',status=?,checkpoint_json=? WHERE entry_id='entry'").run(status,JSON.stringify({key:'old',drafts:['已完成']}));
+  const saved=db.rewrites.get('entry')!.result;
+  db.rewrites.recover();db.rewrites.recover();
+  expect(db.rewrites.next()).toBeUndefined();
+  expect(db.rewrites.get('entry')).toMatchObject({status:'cancelled',result:saved});
+  expect(db.rewrites.checkpoint(job,'old')).toEqual(['已完成']);
+  expect(db.rewrites.enqueue('entry',settings)).toMatchObject({kind:'generate',status:'queued',result:saved});
+ } finally {db.close();}
+});

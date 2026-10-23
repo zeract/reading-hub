@@ -17,7 +17,7 @@ it('allows Chinese word order while preserving links, code and nested formatting
    const ref=b.text.match(/⟦([^/⟧]+)⟧⟦([^/⟧]+)⟧this guide⟦\/[^⟧]+⟧⟦\/[^⟧]+⟧/)!,code=b.text.match(/⟦[^⟧]+\/⟧/)![0];
    return {...b,text:`配置 ${code} 时，请参阅 ⟦${ref[1]}⟧⟦${ref[2]}⟧本指南⟦/${ref[2]}⟧⟦/${ref[1]}⟧。`};
   });return JSON.stringify({blocks});
- },new AbortController().signal,undefined,undefined,undefined,true);
+ },new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13});
  expect(result.rewrittenTitle).toBe('中文标题');expect(validArticleDocument(result.content)).toBe(true);
  expect(articleDocumentHtml(result.content)).toContain('配置 <code>agent</code> 时，请参阅 <a href="https://example.com"><strong>本指南</strong></a>。');
 });
@@ -55,11 +55,11 @@ it('keeps technical terms in English when they are clearer and isolates the new 
   const input=JSON.parse(prompt);instructions.push(input.instruction);
   return JSON.stringify({blocks:input.section.blocks.map((block:any)=>({...block,text:block.id==='rewrite-title.text'?'技术文章':block.text.replace('the guide','指南')}))});
  };
- await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined,true,13);
+ await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13});
  expect(instructions[0]).toContain('直接保留英文');
  expect(instructions[0]).not.toContain('选择准确、通行且前后一致的中文表达');
  instructions.length=0;
- await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined,true,12);
+ await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:12});
  expect(instructions[0]).not.toContain('不以翻成中文为目标');
 });
 it('rejects missing references, foreign references and nesting changes',()=>{
@@ -70,24 +70,24 @@ it('rejects missing references, foreign references and nesting changes',()=>{
 });
 it('does not call models for asset-only documents',async()=>{
  const run=vi.fn();const doc=articleDocumentFromHtml('<pre><code>x</code></pre>');
- await rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,undefined,undefined,true);expect(run).not.toHaveBeenCalled();
+ await rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13});expect(run).not.toHaveBeenCalled();
 });
 it('resumes paragraph checkpoints including the title without new requests',async()=>{
  const doc=articleDocumentFromHtml('<p>Agent <em>workflow</em>.</p>');let checkpoint:any;
- const result=await rewriteArticleDocument(doc,'Title',async(_s,p)=>JSON.stringify({blocks:JSON.parse(p).section.blocks}),new AbortController().signal,undefined,undefined,c=>checkpoint=c,true);
- const run=vi.fn();const resumed=await rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,checkpoint,undefined,true);expect(resumed.content).toEqual(result.content);expect(resumed.rewrittenTitle).toBe('Title');expect(run).not.toHaveBeenCalled();
+ const result=await rewriteArticleDocument(doc,'Title',async(_s,p)=>JSON.stringify({blocks:JSON.parse(p).section.blocks}),new AbortController().signal,undefined,undefined,c=>checkpoint=c, {kind:"paragraphs",version:13});
+ const run=vi.fn();const resumed=await rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,checkpoint,undefined, {kind:"paragraphs",version:13});expect(resumed.content).toEqual(result.content);expect(resumed.rewrittenTitle).toBe('Title');expect(run).not.toHaveBeenCalled();
 });
 it('repairs only one failed paragraph reference and never loops',async()=>{
  const source=articleDocumentFromHtml('<p>Use <code>x</code>.</p><p>Second paragraph.</p>');
  const run=vi.fn(async(_s:string,p:string)=>{const input=JSON.parse(p);const blocks=input.section.blocks.map((b:any)=>({...b,text:run.mock.calls.length===1?b.text.replace(/⟦[^⟧]+\/⟧/g,''):b.text}));return JSON.stringify({blocks});});
- const result=await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined,true);
+ const result=await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13});
  expect(run).toHaveBeenCalledTimes(2);expect(JSON.parse(run.mock.calls[1][1]).section.blocks).toHaveLength(1);expect(result.quality.repairedSections).toBe(1);
  const bad=vi.fn(async(_s:string,p:string)=>JSON.stringify({blocks:JSON.parse(p).section.blocks.map((b:any)=>({...b,text:b.text.replace(/⟦[^⟧]+\/⟧/g,'')}))}));
- await expect(rewriteArticleDocument(source,'Title',bad,new AbortController().signal,undefined,undefined,undefined,true)).rejects.toThrow();expect(bad).toHaveBeenCalledTimes(2);
+ await expect(rewriteArticleDocument(source,'Title',bad,new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13})).rejects.toThrow();expect(bad).toHaveBeenCalledTimes(2);
 });
 it('round-trips mixed scientific, list, table and media structures through paragraph protocol',async()=>{
  const source=articleDocumentFromHtml('<h2>Heading</h2><ul><li>Outer <em>item</em><ul><li>Inner</li></ul></li></ul><table><tr><td>Cell <a href="https://example.com/a">link</a></td></tr></table><p>Equation <span data-reader-tex="x_1">x_1</span> (1).</p><figure><img src="https://example.com/a.png"><figcaption>Caption</figcaption></figure><pre><code>  x = 1\n</code></pre>');
- const output=await rewriteArticleDocument(source,'Title',async(_s,p)=>JSON.stringify({blocks:JSON.parse(p).section.blocks}),new AbortController().signal,undefined,undefined,undefined,true);
+ const output=await rewriteArticleDocument(source,'Title',async(_s,p)=>JSON.stringify({blocks:JSON.parse(p).section.blocks}),new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13});
  expect(articleDocumentHtml(output.content)).toBe(articleDocumentHtml(source));
 });
 it('describes numbered references and sends exact failure feedback on local repair',async()=>{
@@ -97,7 +97,7 @@ it('describes numbered references and sends exact failure feedback on local repa
   if(run.mock.calls.length===1){missing=span.id;return JSON.stringify({blocks:v.section.blocks.map((b:any)=>({...b,text:b.text.replace(span.open,'').replace(span.close,'')}))});}
   expect(v.repair).toEqual({issues:[{paragraph:span.paragraph,reference:missing,reason:'missing'}]});expect(v.section.blocks).toHaveLength(1);return JSON.stringify({blocks:v.section.blocks});
  });
- const r=await rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,undefined,undefined,true);
+ const r=await rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13});
  expect(articleDocumentHtml(r.content)).toContain('<span>04</span><a href="https://example.com/paper">Authors. Paper.</a>');expect(run).toHaveBeenCalledTimes(2);
 });
 it('never leaks model-supplied unknown identifiers in reference diagnostics',()=>{
@@ -121,7 +121,7 @@ it('repairs every invalid paragraph in the section together, retaining valid tra
   expect(input.repair.issues.map((issue:any)=>issue.reason)).toEqual(['missing','nesting']);
   return JSON.stringify({blocks:input.section.blocks});
  });
- const result=await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined,true);
+ const result=await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13});
  expect(run).toHaveBeenCalledTimes(2);expect(result.quality.repairedSections).toBe(1);
  const html=articleDocumentHtml(result.content);expect(html).toContain('已成功的段落。');expect(load(html)('a')).toHaveLength(3);
 });
@@ -133,7 +133,7 @@ it('repairs missing blocks and malformed received references in the same bounded
   expect(input.section.blocks).toHaveLength(2);expect(input.repair.issues.map((issue:any)=>issue.reason)).toEqual(['missing','missing']);
   return JSON.stringify({blocks:input.section.blocks});
  });
- const result=await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined,true);
+ const result=await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13});
  expect(articleDocumentHtml(result.content)).toBe(articleDocumentHtml(source));expect(run).toHaveBeenCalledTimes(2);
 });
 it('collects safe diagnostics without returning a partially restored document or changing source nesting',()=>{
@@ -163,13 +163,13 @@ it('resumes the second of six sections with one batched repair and preserves the
  })});
  let checkpoint:DocumentCheckpoint|undefined;
  const failed=async(_s:string,p:string)=>{const input=JSON.parse(p);return JSON.stringify(input.section.id==='S2'?corrupt(input):{blocks:input.section.blocks});};
- await expect(rewriteArticleDocument(source,'Title',failed,new AbortController().signal,undefined,undefined,c=>checkpoint=c,true,13)).rejects.toThrow('第 2/6 节');
+ await expect(rewriteArticleDocument(source,'Title',failed,new AbortController().signal,undefined,undefined,c=>checkpoint=c, {kind:"paragraphs",version:13})).rejects.toThrow('第 2/6 节');
  expect(checkpoint?.patches).toHaveLength(1);const saved=structuredClone(checkpoint!);
  const resumed=vi.fn(async(_s:string,p:string)=>{
   const input=JSON.parse(p);expect(input.section.id).not.toBe('S1');
   return JSON.stringify(input.section.id==='S2'&&!input.repair?corrupt(input):{blocks:input.section.blocks});
  });
- const result=await rewriteArticleDocument(source,'Title',resumed,new AbortController().signal,undefined,checkpoint,c=>checkpoint=c,true,13);
+ const result=await rewriteArticleDocument(source,'Title',resumed,new AbortController().signal,undefined,checkpoint,c=>checkpoint=c, {kind:"paragraphs",version:13});
  expect(resumed).toHaveBeenCalledTimes(6);expect(checkpoint?.patches).toHaveLength(6);
  expect(checkpoint?.patches[0]).toEqual(saved.patches[0]);expect(result.quality.repairedSections).toBe(1);
  expect(articleDocumentHtml(result.content)).toBe(articleDocumentHtml(source));

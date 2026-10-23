@@ -109,10 +109,6 @@ const channels = [
   ["rewrite:configure", (_event,settings) => { database.rewrites.configure(settings); return settings; }],
   ["rewrite:cancel", (_event,id) => { database.rewrites.cancel(id);return database.rewrites.get(id); }],
   ["rewrite:remove", (_event,id) => database.rewrites.remove(id)],
-  ["rewrite:review", (_event,id) => {
-    const job=database.rewrites.enqueue(id,database.rewrites.settings(),"review");database.rewrites.progress(job,1,1,"review");
-    database.rewrites.finish(job,{...job.result,review:{checkedAt:Date.now(),reviewedSections:1,requests:1,issues:[{sectionId:"S1",blockId:"B1",kind:"cohesion",message:"过渡可进一步自然化。",sourceQuote:""}]}});return database.rewrites.get(id);
-  }],
   ["rewrite:generate", (_event,id) => {
     const job=database.rewrites.enqueue(id,database.rewrites.settings());database.rewrites.progress(job,1,1);
     database.rewrites.finish(job,{markdown:"3. 外层\n   - 内层\n4. 第二项\n\n| 方法 | 条件 |\n| --- | --- |\n| 分布 | $P(a | s)$ |\n\n> 第一段引用\n>\n> 第二段引用\n\n"+aiAnswer+"\n\n$$\n\\begin{align}x&=1\\tag{7}\\\\y&=2\\tag{8}\\end{align}\n$$"+"\n\n中文正文，链接与图片。动作 $\\pi_\\theta(a_t \\mid s_t)$；下一状态 $P(s_{t+1} \\mid a_t, s_t)$。参考[原文证据](https://example.com/post)，而不是 [嵌套链接](https://example.com/a_(b))。\n\n![图示](<https://example.com/image_(1).png>)",provider:"deepseek",model:"fixture-rewrite",createdAt:Date.now(),sourceUrl:"https://example.com/success",sourceTitle:"Fixture rewrite",sourceHash:"fixture",promptVersion:4,sections:[aiAnswer],quality:{version:1,reviewedSections:0,reviewedBlocks:0,repairedSections:0,requests:1,terms:[]}});

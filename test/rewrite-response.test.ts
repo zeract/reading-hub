@@ -12,14 +12,14 @@ it.each(['Explanation\n{"blocks":[]}','{"blocks":[]}\nThanks','```json\n{"blocks
 it('retries only a malformed current section, preserving the successful checkpoint',async()=>{
  const doc=articleDocumentFromHtml('<p>'+('First sentence. '.repeat(340))+'</p><p>'+('Second sentence. '.repeat(300))+'</p>');let cp:DocumentCheckpoint|undefined;
  const first=vi.fn(async(_s:string,p:string)=>{const v=JSON.parse(p);if(v.section.id==='S2')return '{bad';return JSON.stringify({blocks:v.section.blocks});});
- await expect(rewriteArticleDocument(doc,'Title',first,new AbortController().signal,undefined,undefined,c=>cp=c,true)).rejects.toThrow('重试本节一次');expect(cp?.patches).toHaveLength(1);expect(first).toHaveBeenCalledTimes(3);
+ await expect(rewriteArticleDocument(doc,'Title',first,new AbortController().signal,undefined,undefined,c=>cp=c, {kind:"paragraphs",version:13})).rejects.toThrow('重试本节一次');expect(cp?.patches).toHaveLength(1);expect(first).toHaveBeenCalledTimes(3);
  const second=vi.fn(async(_s:string,p:string)=>{const v=JSON.parse(p);expect(v.section.id).toBe('S2');return JSON.stringify({blocks:v.section.blocks});});
- await rewriteArticleDocument(doc,'Title',second,new AbortController().signal,undefined,cp,undefined,true);expect(second).toHaveBeenCalledTimes(1);
+ await rewriteArticleDocument(doc,'Title',second,new AbortController().signal,undefined,cp,undefined, {kind:"paragraphs",version:13});expect(second).toHaveBeenCalledTimes(1);
 });
 it('shares the retry budget with reference repair and never retries transport failures',async()=>{
  const doc=articleDocumentFromHtml('<p>See <a href="https://example.com">guide</a>.</p>');
  const run=vi.fn(async(_s:string,p:string)=>run.mock.calls.length===1?'{bad':JSON.stringify({blocks:JSON.parse(p).section.blocks.map((b:any)=>({...b,text:b.text.replace(/⟦[^⟧]+⟧/g,'')}))}));
- await expect(rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,undefined,undefined,true)).rejects.toThrow();expect(run).toHaveBeenCalledTimes(2);
+ await expect(rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13})).rejects.toThrow();expect(run).toHaveBeenCalledTimes(2);
  const disconnected=vi.fn(async()=>{throw Error('connection incomplete');});await expect(rewriteArticleDocument(doc,'Title',disconnected,new AbortController().signal)).rejects.toThrow('connection incomplete');expect(disconnected).toHaveBeenCalledTimes(1);
 });
 it.each(['duplicate','unknown-node','text-type','node-shape','text-length','response-shape','invalid-record'])('recovers a complete response with %s within the same section budget',async reason=>{
@@ -42,7 +42,7 @@ it.each(['duplicate','unknown-node','text-type','node-shape','text-length','resp
   if(reason==='invalid-record')blocks.push(null);
   return JSON.stringify(reason==='response-shape'?{items:blocks}:{blocks});
  });
- const result=await rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,undefined,undefined,true);
+ const result=await rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13});
  expect(first.section.blocks).toHaveLength(3);expect(run).toHaveBeenCalledTimes(2);expect(result.quality.repairedSections).toBe(1);
 });
 it('combines invalid known nodes with missing blocks and malformed references, without choosing a duplicate winner',async()=>{
@@ -56,7 +56,7 @@ it('combines invalid known nodes with missing blocks and malformed references, w
   expect(input.section.blocks).toHaveLength(3);expect(input.repair.issues.map((i:any)=>i.reason)).toEqual(['duplicate','missing','missing']);
   return JSON.stringify({blocks:input.section.blocks});
  });
- const result=await rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,undefined,undefined,true);
+ const result=await rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13});
  expect(JSON.stringify(result.content)).toContain('保留已成功译文。');expect(JSON.stringify(result.content)).not.toContain('Never select');expect(run).toHaveBeenCalledTimes(2);
 });
 it('removes all duplicate candidates and emits only source-owned diagnostics',()=>{
@@ -79,7 +79,7 @@ it('includes known reference failures in feedback even when unknown records requ
   expect(input.section.blocks).toHaveLength(3);expect(input.repair.issues.map((issue:any)=>issue.reason)).toEqual(['unknown-node','unclosed']);
   return JSON.stringify({blocks:input.section.blocks});
  });
- await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined,true);
+ await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13});
  expect(run).toHaveBeenCalledTimes(2);
 });
 it('regenerates source-owned missing slots rather than guessing the meaning of an unknown replacement',async()=>{
@@ -98,7 +98,7 @@ it('regenerates source-owned missing slots rather than guessing the meaning of a
   expect(JSON.stringify(input)).not.toContain('Do not use or map');expect(JSON.stringify(input)).not.toContain('private-unknown');
   return JSON.stringify({blocks:input.section.blocks});
  });
- const output=await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined,true);
+ const output=await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13});
  expect(JSON.stringify(output.content)).toContain('保留正确译文。');expect(run).toHaveBeenCalledTimes(2);
 });
 it.each(['unknown-node','duplicate','text-type','text-length'])('stops after one recovery even if the next response has %s',async reason=>{
@@ -113,7 +113,7 @@ it.each(['unknown-node','duplicate','text-type','text-length'])('stops after one
   return JSON.stringify({blocks});
  });
  const save=vi.fn();
- await expect(rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,save,true)).rejects.toThrow(reason);
+ await expect(rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,save, {kind:"paragraphs",version:13})).rejects.toThrow(reason);
  expect(run).toHaveBeenCalledTimes(2);expect(save).not.toHaveBeenCalled();
 });
 it('cancels a pending recovery without saving a late valid response',async()=>{
@@ -122,20 +122,20 @@ it('cancels a pending recovery without saving a late valid response',async()=>{
   const input=JSON.parse(p);if(run.mock.calls.length===1)return JSON.stringify({blocks:[{id:'unknown',text:'bad'}]});
   controller.abort();return JSON.stringify({blocks:input.section.blocks});
  });
- await expect(rewriteArticleDocument(articleDocumentFromHtml('<p>Example.</p>'),'Title',run,controller.signal,undefined,undefined,save,true)).rejects.toThrow();
+ await expect(rewriteArticleDocument(articleDocumentFromHtml('<p>Example.</p>'),'Title',run,controller.signal,undefined,undefined,save, {kind:"paragraphs",version:13})).rejects.toThrow();
  expect(run).toHaveBeenCalledTimes(2);expect(save).not.toHaveBeenCalled();
 });
 it('resumes section five of six, recovering unknown IDs without replaying the first four sections',async()=>{
  const source=articleDocumentFromHtml(Array.from({length:6},(_,i)=>`<p>Section ${i+1}. ${'An example paragraph. '.repeat(240)}</p>`).join(''));
  let checkpoint:DocumentCheckpoint|undefined;
  const failing=async(_s:string,prompt:string)=>{const input=JSON.parse(prompt);return JSON.stringify(input.section.id==='S5'?{blocks:[{id:'unknown',text:'bad'}]}:{blocks:input.section.blocks});};
- await expect(rewriteArticleDocument(source,'Title',failing,new AbortController().signal,undefined,undefined,c=>checkpoint=c,true,13)).rejects.toThrow('第 5/6 节');
+ await expect(rewriteArticleDocument(source,'Title',failing,new AbortController().signal,undefined,undefined,c=>checkpoint=c, {kind:"paragraphs",version:13})).rejects.toThrow('第 5/6 节');
  expect(checkpoint?.patches).toHaveLength(4);const previous=structuredClone(checkpoint!);
  const run=vi.fn(async(_s:string,prompt:string)=>{
   const input=JSON.parse(prompt);expect(['S5','S6']).toContain(input.section.id);
   return JSON.stringify(input.section.id==='S5'&&!input.repair?{blocks:[{id:'unknown',text:'bad'}]}:{blocks:input.section.blocks});
  });
- const result=await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,checkpoint,c=>checkpoint=c,true,13);
+ const result=await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,checkpoint,c=>checkpoint=c, {kind:"paragraphs",version:13});
  expect(run).toHaveBeenCalledTimes(3);expect(result.quality.repairedSections).toBe(1);expect(checkpoint?.patches).toHaveLength(6);
  expect(checkpoint?.patches.slice(0,4)).toEqual(previous.patches);
 });

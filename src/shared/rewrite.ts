@@ -30,7 +30,8 @@ export interface RewriteResult {
     schemaVersion?: 1 | 2;
     content?: import("./article-document").ArticleDocument;
     document?: RewriteDocument;
-    markdown: string;
+    /** Exact legacy draft only; canonical documents do not need an export to be read. */
+    markdown?: string;
     provider: AiProviderId;
     model: string;
     createdAt: number;
@@ -65,9 +66,9 @@ export function parseRewriteSettings(value: unknown): RewriteSettings {
 }
 export function rewritePending(value?: ArticleRewrite): boolean { return value?.status === "queued" || value?.status === "running"; }
 
-export type RewriteRequestStage = "write" | "review";
+export type RewriteRequestStage = "write";
 // Legacy stage labels remain readable for interrupted tasks from older releases.
-export type RewriteStage = RewriteRequestStage | "plan" | "outline" | "revise";
+export type RewriteStage = RewriteRequestStage | "review" | "plan" | "outline" | "revise";
 export interface RewriteQuality { version: 1; reviewedSections: number; reviewedBlocks: number; repairedSections: number; requests: number; terms: Array<{source:string;target:string}> }
 export const REWRITE_STAGE_LABELS: Record<RewriteStage,string> = {plan:"梳理原文",outline:"统一提纲与术语",write:"生成改写",review:"对照原文检查",revise:"修订问题段落"};
 

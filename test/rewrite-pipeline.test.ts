@@ -1,5 +1,5 @@
 import {expect,it,vi} from "vitest";
-import {makeRewriteSections,parseReview,runRewritePipeline,reviewRewrite} from "../src/main/rewrite-pipeline";
+import {makeRewriteSections,runRewritePipeline} from "../src/main/rewrite-pipeline";
 import {rewriteModelResponse} from "./support/rewrite-model";
 const source="The cache reduces latency by 20% only when warm. Cold requests have no guarantee.";
 const signal=()=>new AbortController().signal;
@@ -33,28 +33,6 @@ it("resumes all completed sections without requests, rejecting oversized saved o
 });
 it.each(["","中".repeat(40000)])("does not checkpoint empty or oversized output",async(answer)=>{
  const save=vi.fn();await expect(runRewritePipeline(source,"Fixture",async()=>answer,signal(),undefined,{save})).rejects.toThrow();expect(save).not.toHaveBeenCalled();
-});
-it("optional review returns factual and cohesion issues without rewriting the saved draft",async()=>{
- const drafts=["中文稿"];
- const run=vi.fn(async()=>JSON.stringify({coverage:[{blockId:"B1",covered:false}],issues:[{blockId:"B1",kind:"number",message:"核对20%",sourceQuote:"20%"},{blockId:"B1",kind:"cohesion",message:"过渡",sourceQuote:""}]}));
- const review=await reviewRewrite(source,"Fixture",drafts,run,signal());
- expect(review.issues).toHaveLength(2);expect(run).toHaveBeenCalledTimes(1);expect(drafts).toEqual(["中文稿"]);expect(review.issues[0].sectionId).toBe("S1");
-});
-it("retries malformed optional review once, never pretending it completed",async()=>{
- const run=vi.fn().mockResolvedValue("invalid");
- await expect(reviewRewrite(source,"Fixture",["中文"],run,signal())).rejects.toThrow("已保存中文仍可阅读");expect(run).toHaveBeenCalledTimes(2);
-});
-it("requires real source evidence and explicit explanation for uncovered blocks",()=>{
- const section=makeRewriteSections(source)[0];
- expect(()=>parseReview('{"coverage":[{"blockId":"B1","covered":false}],"issues":[]}',section)).toThrow("未说明");
- expect(()=>parseReview(JSON.stringify({coverage:[{blockId:"B1",covered:true}],issues:[{blockId:"B1",kind:"meaning",message:"wrong",sourceQuote:"invented"}]}),section)).toThrow("引文");
- expect(parseReview(JSON.stringify({coverage:[{blockId:"B1",covered:true}],issues:[{blockId:"B1",kind:"meaning",message:"check",sourceQuote:"only when warm"}]}),section)[0].sourceQuote).toBe("only when warm");
-});
-it("rejects missing coverage, duplicated ids, and review/source section mismatch",async()=>{
- const section=makeRewriteSections(source)[0];
- expect(()=>parseReview('{"issues":[]}',section)).toThrow("coverage");
- expect(()=>parseReview('{"coverage":[{"blockId":"B1","covered":true},{"blockId":"B1","covered":true}],"issues":[]}',section)).toThrow("coverage");
- const run=vi.fn();await expect(reviewRewrite(source,"Fixture",[],run,signal())).rejects.toThrow("结构");expect(run).not.toHaveBeenCalled();
 });
 it("keeps immutable code, image and formula blocks out of model output while retaining their source positions",async()=>{
  const text='Before.\n\n```js\nlet x = 1;\n```\n\n![chart](<https://example.com/a.png>)\n\n$$\nx_1=1\n$$\n\nAfter.';

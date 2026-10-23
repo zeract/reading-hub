@@ -95,7 +95,7 @@ it("continues a version 12 paragraph checkpoint with its original instruction",a
  await expect(rewriteArticleDocument(document,f.article.title,async(_stage,prompt)=>{
   if(++calls===2)throw new Error('interrupted');
   return JSON.stringify({blocks:JSON.parse(prompt).section.blocks});
- },new AbortController().signal,undefined,undefined,value=>checkpoint=value,true,12)).rejects.toThrow('interrupted');
+ },new AbortController().signal,undefined,undefined,value=>checkpoint=value, {kind:"paragraphs",version:12})).rejects.toThrow('interrupted');
  expect(checkpoint?.patches).toHaveLength(1);
  const job=f.service.enqueue('entry');
  const key=createHash('sha256').update(JSON.stringify({sourceHash:structuredSourceHash(document),title:f.article.title,url:f.article.url,settings:job.settings,version:12})).digest('hex');
@@ -117,21 +117,6 @@ it("invalidates saved sections when source or configured model changes",async()=
   f.rewriteChunk.mockClear();f.service.enqueue("entry");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("complete"));
   expect(JSON.parse(f.rewriteChunk.mock.calls[0][1]).section.id).toBe("S1");
  }
-});
-it("optional review saves cohesion advice without replacing or hiding the completed text",async()=>{
- const f=fixture();f.service.start();f.service.enqueue("entry");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("complete"));
- const saved=f.db.rewrites.get("entry")!.result!;
- f.rewriteChunk.mockImplementation(async(_s,p)=>{const input=JSON.parse(p);return {provider:"deepseek",model:"review-model",text:JSON.stringify({coverage:input.section.blocks.map(b=>({blockId:b.id,covered:true})),issues:[{blockId:input.section.blocks[0].id,kind:"cohesion",message:"过渡可更自然",sourceQuote:""}]})};});
- f.service.enqueue("entry","review");expect(f.db.rewrites.get("entry")?.result?.markdown).toBe(saved.markdown);
- await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("complete"));
- const result=f.db.rewrites.get("entry")!.result!;expect(result.markdown).toBe(saved.markdown);expect(result.createdAt).toBe(saved.createdAt);
- expect(result.review?.issues).toHaveLength(1);expect(result.review?.model).toBe("review-model");
- f.rewriteChunk.mockRejectedValue(new Error("network"));f.service.enqueue("entry","review");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("failed"));expect(f.db.rewrites.get("entry")?.result).toEqual(result);
-});
-it("does not send changed source to compare against an older draft",async()=>{
- const f=fixture();f.service.start();f.service.enqueue("entry");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("complete"));
- f.article.contentHtml+="<p>Changed.</p>";f.rewriteChunk.mockClear();f.service.enqueue("entry","review");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("failed"));
- expect(f.rewriteChunk).not.toHaveBeenCalled();expect(f.db.rewrites.get("entry")?.error).toContain("原文已变化");expect(f.db.rewrites.get("entry")?.result).toBeDefined();
 });
 it("migrates old results with a cascade-owned backup and skips malformed queued jobs",async()=>{
  const f=fixture();const job=f.service.enqueue("entry");f.db.rewrites.progress(job,1,1);

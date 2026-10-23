@@ -10,7 +10,7 @@ it('preserves declared label/value grids through extraction and rewriting',async
  const html='<style>.facts > div {display:grid;grid-template-columns:150px 1fr}</style><article><h1>Title</h1><p>'+('Context. '.repeat(120))+'</p><div class="facts">'+rows+'</div></article>';
  const article=extractReaderArticle(html,'https://example.com/a',{id:'a',title:'Title',url:'https://example.com/a'} as Entry)!.article;
  expect(load(article.contentHtml)('table tr')).toHaveLength(2);
- const r=await rewriteArticleDocument(article.document!,'Title',async(_s,p)=>JSON.stringify({blocks:JSON.parse(p).section.blocks}),new AbortController().signal,undefined,undefined,undefined,true);
+ const r=await rewriteArticleDocument(article.document!,'Title',async(_s,p)=>JSON.stringify({blocks:JSON.parse(p).section.blocks}),new AbortController().signal,undefined,undefined,undefined, {kind:"paragraphs",version:13});
  const $=load(articleDocumentHtml(r.content));expect($('th').text()).toBe('PrerequisitesInfrastructure');expect($('td code').text()).toBe('intent.md');expect($('style')).toHaveLength(0);
 });
 it('does not guess a table from repeated divs, single-column layouts or controls',()=>{

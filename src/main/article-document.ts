@@ -4,7 +4,7 @@ import {articleDocumentTags,safeDocumentAttribute,validArticleDocument,articleDo
 import {normalizeRewriteCards} from './rewrite-cards';
 import type {ReaderArticle} from '../shared/types';
 import katex from 'katex';
-import {rewriteText} from './rewrite-content';
+export {articleDocumentMarkdown} from './article-document-markdown';
 const parser=createReaderMarkdown();
 /** Called after the existing extraction/security boundary. Defensive allowlists also
  * make legacy/model Markdown imports safe; no source CSS or raw HTML is persisted. */
@@ -47,5 +47,3 @@ export function withArticleDocument(article:ReaderArticle):ReaderArticle {
  const document={...(article.document || articleDocumentFromHtml(article.contentHtml)),renderProfile:article.renderProfile,...(article.coverImageUrl?{cover:article.coverImageUrl}:{})};
  return {...article,document,importHtml:article.importHtml ?? article.contentHtml,contentHtml:articleDocumentHtml(document)};
 }
-
-export function articleDocumentMarkdown(doc:ArticleDocument):string {return rewriteText({entryId:"derived",url:"https://example.com/",title:"",renderProfile:"standard",contentHtml:articleDocumentHtml(doc)},false);}

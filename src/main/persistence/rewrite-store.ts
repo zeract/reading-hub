@@ -49,7 +49,7 @@ export class RewriteStore {
             ...(row.stage ? {stage:row.stage}:{}), ...(error ? {error}:{}), ...(result ? {result}:{}) };
 
     }
-    enqueue(entryId: string, settings: RewriteSettings, kind: "generate" | "review" = "generate"): ArticleRewrite {
+    enqueue(entryId: string, settings: RewriteSettings): ArticleRewrite {
         let previous: ArticleRewrite | undefined;
         try {previous=this.get(entryId);} catch { /* Explicit enqueue replaces unreadable settings, never the saved result. */ }
         if (rewritePending(previous))
@@ -61,12 +61,12 @@ export class RewriteStore {
             throw new Error("改写队列已满，请等待部分文章完成后再试。");
         this.db.prepare(`INSERT INTO article_rewrites (entry_id,job_id,status,settings_json,updated_at,kind) VALUES (?,?,'queued',?,?,?)
       ON CONFLICT(entry_id) DO UPDATE SET job_id=excluded.job_id,status='queued',settings_json=excluded.settings_json,updated_at=excluded.updated_at,error=NULL,completed_chunks=0,total_chunks=0,stage=NULL,kind=excluded.kind`)
-            .run(entryId, randomUUID(), JSON.stringify(settings), Date.now(), kind);
+            .run(entryId, randomUUID(), JSON.stringify(settings), Date.now(), "generate");
         return this.get(entryId)!;
     }
     next(): ArticleRewrite | undefined {
         // Isolate malformed jobs so one old record cannot stall the whole queue.
-        const rows=this.db.prepare("SELECT entry_id FROM article_rewrites WHERE status='queued' ORDER BY updated_at,entry_id").all() as {entry_id:string}[];
+        const rows=this.db.prepare("SELECT entry_id FROM article_rewrites WHERE status='queued' AND kind='generate' ORDER BY updated_at,entry_id").all() as {entry_id:string}[];
         for(const row of rows) {
             try { return this.get(row.entry_id); }
             catch { this.db.prepare("UPDATE article_rewrites SET status='failed',error=? WHERE entry_id=? AND status='queued'").run("任务设置无法读取，请重新选择模型；已有记录仍保留。",row.entry_id); }
@@ -74,6 +74,8 @@ export class RewriteStore {
 
     }
     recover(): void {
+        // Retire executable review jobs without discarding saved text/checkpoints.
+        this.db.prepare("UPDATE article_rewrites SET status='cancelled',error=NULL,updated_at=? WHERE kind='review' AND status IN ('queued','running')").run(Date.now());
         this.db.prepare("UPDATE article_rewrites SET status='failed',error=?,updated_at=? WHERE status='running'").run("上次改写被中断，可手动重试；已有改写仍保留。", Date.now());
     }
     progress(job: ArticleRewrite, completed: number, total: number, stage?: RewriteStage): void {

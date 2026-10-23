@@ -95,7 +95,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const rewritten=useMemo<ReaderArticle|undefined>(()=>rewriteResult?.content&&rewriteHtml!==undefined?{entryId:entry.id,title:rewriteResult.sourceTitle,url:rewriteResult.sourceUrl,renderProfile:rewriteProfile,document:rewriteResult.content,contentHtml:rewriteHtml}:undefined,[entry.id,rewriteHtml,rewriteResult?.sourceTitle,rewriteResult?.sourceUrl,rewriteProfile]);
   const visibleArticle=rewriteVisible?rewritten:article;
   const aiArticle: AiReaderDocument | undefined = rewriteVisible
-    ? rewrite.record?.result && { title: rewrite.record.result.sourceTitle, url: rewrite.record.result.sourceUrl, plainText: rewrite.record.result.content?articleDocumentText(rewrite.record.result.content):rewrite.record.result.markdown }
+    ? rewrite.record?.result && { title: rewrite.record.result.sourceTitle, url: rewrite.record.result.sourceUrl, plainText: rewrite.record.result.content?articleDocumentText(rewrite.record.result.content):rewrite.record.result.markdown || "" }
     : article;
   const [embedded, setEmbedded] = useState(false);
   const [error, setError] = useState<string>();
@@ -126,9 +126,18 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
     autoReadEntryId.current = undefined;
   }
 
+  const resetDocumentInteractions = useCallback(() => {
+    window.getSelection()?.removeAllRanges();
+    selectionAnchor.current = undefined;
+    setAssistantState("closed");
+    setImagePreview(undefined);
+    setTextSelection(undefined);
+    setSelectionQuestion("");
+  }, []);
+
   const loadArticle = useCallback(async () => {
     const request = beginArticleRequest();
-    setAssistantState("closed"); setImagePreview(undefined); setTextSelection(undefined); setSelectionQuestion("");
+    resetDocumentInteractions();
     setLoading(true); setError(undefined); setLanguageSwitchError(undefined); setArticle(undefined); setEmbedded(false);
     try {
       const result = await window.reader.readEntry(entry.id, request.id);
@@ -141,7 +150,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
       if (request.isCurrent()) setLoading(false);
       request.finish();
     }
-  }, [entry.id, beginArticleRequest]);
+  }, [entry.id, beginArticleRequest, resetDocumentInteractions]);
 
   useEffect(() => { void loadArticle(); }, [loadArticle]);
   // Only a successfully committed article counts as reading. Failed extraction
@@ -152,13 +161,10 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
     if (!entry.read) void onUpdateEntry(entry, "read", true);
   }, [article, entry, onUpdateEntry]);
   useEffect(() => {
-    setAssistantState("closed");
-    setImagePreview(undefined);
-    setTextSelection(undefined);
-    setSelectionQuestion("");
+    resetDocumentInteractions();
     setLanguageSwitching(undefined);
     setLanguageSwitchError(undefined);
-  }, [entry.id]);
+  }, [entry.id, resetDocumentInteractions]);
   useEffect(() => {
     if (!textSelection) return;
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
@@ -317,12 +323,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
       window.getSelection()?.removeAllRanges();
       setArticle(next.article);
       setEmbedded(false);
-      setImagePreview(undefined);
-      setTextSelection(undefined);
-      setSelectionQuestion("");
-      // An answer may quote the previous-language document, so do not retain
-      // a stale assistant panel across an article-version switch.
-      setAssistantState("closed");
+      resetDocumentInteractions();
     } catch (reason) {
       if (request.isCurrent()) setLanguageSwitchError(errorMessage(reason));
     } finally {
@@ -346,7 +347,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
     <header className="reader-toolbar">
       <RewriteVersion state={rewrite} onSelect={(visible)=>{
       if (visible === rewriteVisible) return;
-      clearTextSelection();setAssistantState("closed");rewrite.setVisible(visible);
+      resetDocumentInteractions();rewrite.setVisible(visible);
       readerWorkspaceElement.current?.querySelector(".reader-scroll")?.scrollTo({top:0});
     }}/>
       <div className="reader-toolbar-center">

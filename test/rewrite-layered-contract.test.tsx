@@ -35,7 +35,7 @@ it('independently checks source semantics before translating, storing and mounti
     return JSON.stringify({ blocks: input.section.blocks.map((block: { id: string; text: string }) => ({
       ...block, text: block.id === 'rewrite-title.text' ? '工作流程' : block.text.replace('Prerequisites', '前置条件').replace('Read ', '阅读这份指南').replace('the guide', '这份指南')
     })) });
-  }, new AbortController().signal, undefined, undefined, undefined, true);
+  }, new AbortController().signal, undefined, undefined, undefined, {kind:"paragraphs",version:13});
   const saved = decodeRewriteResult(JSON.stringify({ ...result, schemaVersion: 2, provider: 'fixture', model: 'simulated',
     sourceUrl: url, sourceTitle: 'Workflow', sourceHash: 'fixture', createdAt: 1, promptVersion: 12 }));
   const restored = decodeRewriteResult(encodeRewriteResult(saved));
