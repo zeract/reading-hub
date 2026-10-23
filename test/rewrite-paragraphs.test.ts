@@ -3,8 +3,8 @@ import {load} from 'cheerio';
 import {normalizePreformattedCode} from '../src/main/reader-code';
 import {articleDocumentFromHtml} from '../src/main/article-document';
 import {articleDocumentHtml,validArticleDocument} from '../src/shared/article-document';
-import {prepareRewriteParagraphs} from '../src/main/rewrite-paragraphs';
-import {rewriteArticleDocument} from '../src/main/document-rewrite';
+import {prepareRewriteParagraphs,ParagraphReferenceValidationError} from '../src/main/rewrite-paragraphs';
+import {rewriteArticleDocument,type DocumentCheckpoint} from '../src/main/document-rewrite';
 it('normalizes explicitly styled code before losing CSS without guessing JSON prose',()=>{
  const $=load('<div style="white-space:pre; font-family:Menlo, monospace">{\n "deny": ["Read(.env*)"]\n}</div><div>{"ordinary":true}</div><div style="white-space:pre">A poem</div>');normalizePreformattedCode($);
  expect($('pre code').text()).toBe('{\n "deny": ["Read(.env*)"]\n}');expect($('pre').length).toBe(1);expect($('div').length).toBe(2);
@@ -95,7 +95,7 @@ it('describes numbered references and sends exact failure feedback on local repa
  let missing='';const run=vi.fn(async(_s:string,p:string)=>{
   const v=JSON.parse(p);const span=v.references.find((r:any)=>r.kind==='span');expect(span.parent).toBeNull();expect(span.open).toBe(`⟦${span.id}⟧`);expect(span.close).toBe(`⟦/${span.id}⟧`);
   if(run.mock.calls.length===1){missing=span.id;return JSON.stringify({blocks:v.section.blocks.map((b:any)=>({...b,text:b.text.replace(span.open,'').replace(span.close,'')}))});}
-  expect(v.repair).toEqual({paragraph:span.paragraph,reference:missing,reason:'missing'});expect(v.section.blocks).toHaveLength(1);return JSON.stringify({blocks:v.section.blocks});
+  expect(v.repair).toEqual({issues:[{paragraph:span.paragraph,reference:missing,reason:'missing'}]});expect(v.section.blocks).toHaveLength(1);return JSON.stringify({blocks:v.section.blocks});
  });
  const r=await rewriteArticleDocument(doc,'Title',run,new AbortController().signal,undefined,undefined,undefined,true);
  expect(articleDocumentHtml(r.content)).toContain('<span>04</span><a href="https://example.com/paper">Authors. Paper.</a>');expect(run).toHaveBeenCalledTimes(2);
@@ -104,4 +104,73 @@ it('never leaks model-supplied unknown identifiers in reference diagnostics',()=
  const p=prepareRewriteParagraphs(articleDocumentFromHtml('<p>A <em>word</em></p>'));
  (p.document.children[0] as any).children[0].text='⟦private-message/⟧';
  expect(()=>p.restore(p.document)).toThrow('unknown/syntax');try{p.restore(p.document)}catch(e){expect(String(e)).not.toContain('private-message');}
+});
+it('repairs every invalid paragraph in the section together, retaining valid translations',async()=>{
+ const source=articleDocumentFromHtml('<p>Use <code>x</code>.</p><p>The datasets combine <a href="https://example.com/a">comparisons</a>, <a href="https://example.com/b">summaries</a> and <a href="https://example.com/c">preferences</a>.</p><p>A valid paragraph.</p>');
+ let affected:string[]=[];
+ const run=vi.fn(async(_stage:string,prompt:string)=>{
+  const input=JSON.parse(prompt);
+  if(run.mock.calls.length===1){
+   const blocks=input.section.blocks.map((b:any)=>{
+    if(b.text.includes('Use ')){affected.push(b.id);return {...b,text:b.text.replace(/⟦[^⟧]+\/⟧/,'')};}
+    if(b.text.includes('The datasets')){affected.push(b.id);const first=input.references.find((r:any)=>r.paragraph===b.id);return {...b,text:b.text.replace(first.close,'')};}
+    return {...b,text:b.text==='A valid paragraph.'?'已成功的段落。':b.text};
+   });return JSON.stringify({blocks});
+  }
+  expect(input.section.blocks.map((b:any)=>b.id)).toEqual(affected);
+  expect(input.repair.issues.map((issue:any)=>issue.reason)).toEqual(['missing','nesting']);
+  return JSON.stringify({blocks:input.section.blocks});
+ });
+ const result=await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined,true);
+ expect(run).toHaveBeenCalledTimes(2);expect(result.quality.repairedSections).toBe(1);
+ const html=articleDocumentHtml(result.content);expect(html).toContain('已成功的段落。');expect(load(html)('a')).toHaveLength(3);
+});
+it('repairs missing blocks and malformed received references in the same bounded request',async()=>{
+ const source=articleDocumentFromHtml('<p>A missing paragraph.</p><p>Use <code>agent</code>.</p><p>A valid paragraph.</p>');
+ const run=vi.fn(async(_stage:string,prompt:string)=>{
+  const input=JSON.parse(prompt);
+  if(run.mock.calls.length===1)return JSON.stringify({blocks:input.section.blocks.filter((b:any)=>b.text!=='A missing paragraph.').map((b:any)=>({...b,text:b.text.replace(/⟦[^⟧]+\/⟧/,'')}))});
+  expect(input.section.blocks).toHaveLength(2);expect(input.repair.issues.map((issue:any)=>issue.reason)).toEqual(['missing','missing']);
+  return JSON.stringify({blocks:input.section.blocks});
+ });
+ const result=await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined,true);
+ expect(articleDocumentHtml(result.content)).toBe(articleDocumentHtml(source));expect(run).toHaveBeenCalledTimes(2);
+});
+it('collects safe diagnostics without returning a partially restored document or changing source nesting',()=>{
+ const prepared=prepareRewriteParagraphs(articleDocumentFromHtml('<p><a href="https://example.com"><em>First</em></a> and <strong>second</strong>.</p><p><span>Another</span></p>'));
+ const blocks=(prepared.document.children as any[]).map(p=>p.children[0]);
+ const refs=prepared.references(new Set(blocks.map(p=>p.id)));
+ const child=refs.find(r=>r.kind==='em')!,outer=refs.find(r=>r.kind==='a')!;
+ blocks[0].text=blocks[0].text.replace(child.open,'').replace(child.close!,'')+`${child.open}moved${child.close}`;
+ blocks[1].text='⟦not-a-source-private-identifier/⟧';
+ const before=structuredClone(prepared.document);
+ try{prepared.restore(prepared.document);throw new Error('Expected validation failure');}catch(error){
+  expect(error).toBeInstanceOf(ParagraphReferenceValidationError);
+  expect((error as ParagraphReferenceValidationError).issues).toEqual([
+   {paragraph:blocks[0].id,reference:child.id,reason:'nesting'},
+   {paragraph:blocks[1].id,reference:'unknown',reason:'syntax'}
+  ]);
+  expect(JSON.stringify(error)).not.toContain('private-identifier');
+ }
+ expect(prepared.document).toEqual(before);expect(child.parent).toBe(outer.id);
+});
+it('resumes the second of six sections with one batched repair and preserves the first checkpoint',async()=>{
+ const source=articleDocumentFromHtml(`<p>${'First section. '.repeat(350)}</p><p>${'Some context. '.repeat(100)}<code>agent</code></p><p>${'Other context. '.repeat(100)}<a href="https://example.com/a">first</a>, <a href="https://example.com/b">second</a>.</p>${Array.from({length:4},()=>`<p>${'Later section. '.repeat(350)}</p>`).join('')}`);
+ const corrupt=(input:any)=>({blocks:input.section.blocks.map((b:any)=>{
+  if(b.text.includes('Some context.'))return {...b,text:b.text.replace(/⟦[^⟧]+\/⟧/,'')};
+  if(b.text.includes('Other context.')){const link=input.references.find((r:any)=>r.paragraph===b.id);return {...b,text:b.text.replace(link.close,'')};}
+  return b;
+ })});
+ let checkpoint:DocumentCheckpoint|undefined;
+ const failed=async(_s:string,p:string)=>{const input=JSON.parse(p);return JSON.stringify(input.section.id==='S2'?corrupt(input):{blocks:input.section.blocks});};
+ await expect(rewriteArticleDocument(source,'Title',failed,new AbortController().signal,undefined,undefined,c=>checkpoint=c,true,13)).rejects.toThrow('第 2/6 节');
+ expect(checkpoint?.patches).toHaveLength(1);const saved=structuredClone(checkpoint!);
+ const resumed=vi.fn(async(_s:string,p:string)=>{
+  const input=JSON.parse(p);expect(input.section.id).not.toBe('S1');
+  return JSON.stringify(input.section.id==='S2'&&!input.repair?corrupt(input):{blocks:input.section.blocks});
+ });
+ const result=await rewriteArticleDocument(source,'Title',resumed,new AbortController().signal,undefined,checkpoint,c=>checkpoint=c,true,13);
+ expect(resumed).toHaveBeenCalledTimes(6);expect(checkpoint?.patches).toHaveLength(6);
+ expect(checkpoint?.patches[0]).toEqual(saved.patches[0]);expect(result.quality.repairedSections).toBe(1);
+ expect(articleDocumentHtml(result.content)).toBe(articleDocumentHtml(source));
 });

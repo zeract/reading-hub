@@ -3,6 +3,12 @@ import {RewriteContentError} from './rewrite-content';
 export class ParagraphReferenceError extends RewriteContentError {
  constructor(readonly paragraphId:string,readonly referenceId:string='paragraph',readonly reason:'missing'|'duplicate'|'nesting'|'token-kind'|'unclosed'|'empty'|'syntax'='syntax'){super(`段落 ${paragraphId} 的行内引用校验失败（${referenceId}/${reason}），已完成分节仍保留。`);}
 }
+export interface ParagraphReferenceIssue {paragraph:string;reference:string;reason:ParagraphReferenceError['reason']}
+/** A section gets one repair request, so collect one diagnostic per affected
+ * paragraph before consuming that budget. Never return a partially restored tree. */
+export class ParagraphReferenceValidationError extends RewriteContentError {
+ constructor(readonly issues:ParagraphReferenceIssue[],message:string){super(message);}
+}
 const inlineTags=new Set(['a','strong','b','em','i','span','sup','sub','s','del','u','br','small','mark']);
 const inline=(n:ArticleNode):boolean=>n.type==='text'||n.type==='asset'&&!n.display&&n.kind!=='image'&&n.kind!=='video'&&n.element.tag!=='pre'||n.type==='element'&&inlineTags.has(n.tag)&&n.children.every(inline);
 const visible=(node:ArticleNode)=>articleDocumentText({version:1,provenance:'source',children:[node]}).trim();
@@ -77,8 +83,10 @@ export function prepareRewriteParagraphs(source:ArticleDocument) {
  document.children.forEach(visit);
  const restore=(draft:ArticleDocument):ArticleDocument=>{
   const result=structuredClone(draft);
+  const errors:ParagraphReferenceError[]=[];
   const expand=(n:ArticleNode):ArticleNode[]=>{
    if(n.type==='text'&&groups.has(n.id)){
+    try {
     const {refs,parents,source:original}=groups.get(n.id)!;const seen=new Set<string>();let next=0;
     const root:ArticleNode[]=[];const stack:Array<{id?:string;children:ArticleNode[]}>= [{children:root}];
     const fail=(id='paragraph',reason:ParagraphReferenceError['reason']='syntax')=>{throw new ParagraphReferenceError(n.id,id,reason);};
@@ -103,10 +111,16 @@ export function prepareRewriteParagraphs(source:ArticleDocument) {
     const check=(node:ArticleNode)=>{if(node.type==='element'){if(node.tag==='a'&&!articleDocumentText({version:1,provenance:'rewrite',children:[node]}).trim())fail(node.id,'empty');node.children.forEach(check);}};root.forEach(check);
     removeEchoedLinkLabels(root,original);
     if(!articleDocumentText({version:1,provenance:'rewrite',children:root}).trim())fail('paragraph','empty');return root;
+    } catch(error) {
+     if(!(error instanceof ParagraphReferenceError))throw error;
+     errors.push(error);return [n];
+    }
    }
    if(n.type==='element')n.children=n.children.flatMap(expand);else if(n.type==='card')n.title=n.title.flatMap(expand);return [n];
   };
-  result.children=result.children.flatMap(expand);return result;
+  result.children=result.children.flatMap(expand);
+  if(errors.length)throw new ParagraphReferenceValidationError(errors.map(e=>({paragraph:e.paragraphId,reference:e.referenceId,reason:e.reason})),errors[0].message);
+  return result;
  };
  const context=[...groups].flatMap(([id,g])=>[...g.refs.values()].filter(n=>n.type==='asset').map(n=>({paragraph:id,id:n.id,kind:n.type==='asset'?n.kind:'',text:articleDocumentText({version:1,provenance:'source',children:[n]}).slice(0,240)})));
  const references=(ids:Set<string>)=>[...groups].filter(([id])=>ids.has(id)).flatMap(([paragraph,g])=>[...g.refs].map(([id,n])=>({paragraph,id,kind:n.type==='asset'?n.kind:n.type==='element'?n.tag:'text',parent:g.parents.get(id)||null,open:n.type==='element'&&n.tag!=='br'?`⟦${id}⟧`:`⟦${id}/⟧`,close:n.type==='element'&&n.tag!=='br'?`⟦/${id}⟧`:null})));
