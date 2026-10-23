@@ -52,3 +52,23 @@
 - 新诊断仅使用固定枚举与数字状态；未知异常不从远端错误字符串猜测，回调失败不影响正文，取消不回退摘要。IPC 不暴露回调，不新增持久化、网络权限或原站脚本执行路径。删除重复 Feed 异常处理，未发现本次新增废弃分支。
 - SQLite、旧改写、收藏和登录凭据未修改，无历史数据迁移。需要重启开发应用加载新的主进程诊断；无安装包或远端 CI 验收。
 
+
+## 后续：恢复本机 RSSHub（2026-10-23 22:27–22:30）
+
+用户明确要求恢复服务并复查同一批 8 篇 Twitter。启动已安装的 Docker Desktop 后，已有 `rsshub-rsshub-1`、`rsshub-redis-1`、`rsshub-browserless-1` 自动恢复，三个容器均 healthy，1200 端口可用。未新建容器、修改配置、读取凭据或改变应用代码。
+
+以原来 8 个 entryId 对只读数据库快照执行正常 ArticleReader 管线，累计约 31 秒：
+
+| 来源 | 原最新样本 | 原历史样本 |
+| --- | --- | --- |
+| 向阳乔木 | AI 播客：仍为摘要 | 最佳 X 发帖时间：仍为摘要 |
+| Zartbot | content aware chunking：Feed 正文通过 | DeepSeek V4.1 架构分析：Feed 正文及图片通过 |
+| Madison Kanna | Fireworks Tokenomics：Feed 正文及图片通过 | swyx radio silence：仍为摘要 |
+| Charlie O’Neill | research conference：Feed 正文通过 | RSI cumulative task：仍为摘要 |
+
+- 四个 Feed 均 HTTP 200，分别返回 11、19、16、19 个条目。另行按推文 ID 核对原始 Feed，剩余 4 篇 ID 完全未出现，排除 URL 别名/匹配错误；不推断是帖子删除还是上游时间线窗口变化。
+- 最终 4/8 为 `feed_body`，正文中的两张图片代理均通过；4/8 为 `feed_summary`，固定诊断从 `feed/network` 变为 `feed/feed_entry_missing`。X 原页仍 robots 禁止，不绕过访问策略或增加历史补抓。
+- 这是 RSSHub 实际提供正文的验证，不宣称已读取 X 原页或独立核对其全文完整性。没有 UI/渲染代码修改，不重复构建、模型调用或全站审计。
+- 只保留元数据报告：`/tmp/reading-hub-rsshub-recovery.json`、`/tmp/reading-hub-rsshub-feed-check.json`，未持久化正文或修改用户 SQLite。
+- 服务保持运行；Reading Hub 无需重启，重新打开文章即可再次获取 Feed。Docker Desktop 需保持运行；未擅自改变系统登录启动设置。
+- 本轮仓库仅追加本记录，文档 `git diff --check` 通过。
