@@ -1,3 +1,4 @@
+import { readerFailureDiagnostic, reportReaderDiagnostic, type ReaderDiagnostic } from "./reader-diagnostics";
 import {withArticleDocument, articleDocumentFromHtml} from "./article-document";
 import { readerLanguageChoices } from "../shared/reader-languages";
 import { assertAnswerNavigation } from "./zhihu-answer-identity";
@@ -30,6 +31,8 @@ export interface ReaderReadOptions {
   /** Shared cancellation for foreground reads and audits. */
   signal?: AbortSignal;
   inlineLanguage?: string;
+  /** Optional main-process audit observer; never supplied over IPC. */
+  onDiagnostic?: (diagnostic: ReaderDiagnostic) => void;
 }
 
 type RenderWithSession = (url: string, options?: ReaderReadOptions) => Promise<RenderedPage>;
@@ -99,23 +102,25 @@ export class ArticleReader {
         // JSON metadata and other declared document formats are not article
         // HTML, even when their text is long enough to pass extraction scoring.
         // Keep the existing isolated-browser/Feed fallback for unavailable HTML.
-        if (response.contentType && !isHtmlDocumentContentType(response.contentType)) throw new ArticleContentUnavailableError();
+        if (response.contentType && !isHtmlDocumentContentType(response.contentType)) {
+          reportReaderDiagnostic(options?.onDiagnostic, { stage: "static", reason: "unsupported_content" });
+          throw new ArticleContentUnavailableError();
+        }
         assertAnswerNavigation(targetUrl, response.url);
         staticArticle = await awaitWithAbort(this.extractWithMathFallback(response.text, response.url, entry, options?.inlineLanguage), options?.signal);
         throwIfAborted(options?.signal);
+        if (!staticArticle) reportReaderDiagnostic(options?.onDiagnostic, { stage: "static", reason: "no_content" });
         if (staticArticle && staticArticle.textLength >= 220) return this.rememberLanguageVariants(entry.id, staticArticle.article, knownLanguageVariants, options?.signal);
       } catch (error) {
         if (options?.signal?.aborted) throw abortError(options.signal);
+        if (!(error instanceof ArticleContentUnavailableError)) reportReaderDiagnostic(options?.onDiagnostic, readerFailureDiagnostic("static", error));
         // robots.txt must remain a hard boundary. A feed can nevertheless
         // already contain an explicitly supplied summary, which is local
         // subscription data rather than an extraction of the blocked page.
         // This makes RSSHub/X items readable without trying to fetch X again.
         if (error instanceof RobotsDisallowedError) {
           if (!allowFeedFallback) throw error;
-          const feedBody = await awaitWithAbort(this.readTransientFeedBody(entry, source, options), options?.signal).catch(() => {
-            if (options?.signal?.aborted) throw abortError(options.signal);
-            return undefined;
-          });
+          const feedBody = await this.tryFeedBody(entry, source, options);
           if (feedBody) return this.rememberLanguageVariants(entry.id, feedBody, knownLanguageVariants, options?.signal);
           const feedSummary = createFeedSummaryArticle(entry, source);
           if (feedSummary) return this.rememberLanguageVariants(entry.id, feedSummary, knownLanguageVariants, options?.signal);
@@ -134,12 +139,14 @@ export class ArticleReader {
     } catch (error) {
       if (options?.signal?.aborted) throw abortError(options.signal);
       renderedFailure = error;
+      reportReaderDiagnostic(options?.onDiagnostic, readerFailureDiagnostic("render", error));
       // Keep a usable static article when Chromium rendering is unavailable.
     }
     throwIfAborted(options?.signal);
     if (renderedPage) assertAnswerNavigation(targetUrl, renderedPage.url);
     const renderedArticle = renderedPage?.html ? await awaitWithAbort(this.extractWithMathFallback(renderedPage.html, renderedPage.url, entry, options?.inlineLanguage), options?.signal) : undefined;
     throwIfAborted(options?.signal);
+    if (renderedPage && !renderedArticle) reportReaderDiagnostic(options?.onDiagnostic, { stage: "render", reason: "no_content" });
     if (renderedArticle && renderedArticle.textLength > (staticArticle?.textLength ?? 0)) {
       return this.rememberLanguageVariants(entry.id, renderedArticle.article, knownLanguageVariants, options?.signal);
     }
@@ -158,15 +165,22 @@ export class ArticleReader {
     }
     const sourceSummary = createSourceSummaryArticle(entry, source, failure);
     if (sourceSummary) return this.rememberLanguageVariants(entry.id, sourceSummary, knownLanguageVariants, options?.signal);
-    const feedBody = await awaitWithAbort(this.readTransientFeedBody(entry, source, options), options?.signal).catch(() => {
-      if (options?.signal?.aborted) throw abortError(options.signal);
-      return undefined;
-    });
+    const feedBody = await this.tryFeedBody(entry, source, options);
     if (feedBody) return this.rememberLanguageVariants(entry.id, feedBody, knownLanguageVariants, options?.signal);
     const feedSummary = createFeedSummaryArticle(entry, source);
     if (feedSummary) return this.rememberLanguageVariants(entry.id, feedSummary, knownLanguageVariants, options?.signal);
     if (failure) throw failure;
     throw new ArticleContentUnavailableError();
+  }
+
+  private async tryFeedBody(entry: Entry, source?: Source, options?: ReaderReadOptions): Promise<ReaderArticle | undefined> {
+    try {
+      return await awaitWithAbort(this.readTransientFeedBody(entry, source, options), options?.signal);
+    } catch (error) {
+      if (options?.signal?.aborted) throw abortError(options.signal);
+      reportReaderDiagnostic(options?.onDiagnostic, readerFailureDiagnostic("feed", error));
+      return undefined;
+    }
   }
 
   private rememberLanguageVariants(entryId: string, article: ReaderArticle, knownVariants: ReaderLanguageVariant[], signal?: AbortSignal): ReaderArticle {
@@ -213,7 +227,10 @@ export class ArticleReader {
         return false;
       }
     });
-    if (!item?.feedContentHtml) return undefined;
+    if (!item?.feedContentHtml) {
+      reportReaderDiagnostic(options?.onDiagnostic, { stage: "feed", reason: item ? "feed_body_missing" : "feed_entry_missing" });
+      return undefined;
+    }
 
     const renderProfile = resolveReaderProfile(entry.url);
     const preparedContent = prepareSanitizedContent(item.feedContentHtml, response.url);
@@ -231,7 +248,10 @@ export class ArticleReader {
     throwIfAborted(options?.signal);
     const contentHtml = sanitised.html;
     const content = load(contentHtml);
-    if (normalText(content.text()).length < 24 && !content("img").length) return undefined;
+    if (normalText(content.text()).length < 24 && !content("img").length) {
+      reportReaderDiagnostic(options?.onDiagnostic, { stage: "feed", reason: "no_content" });
+      return undefined;
+    }
     const coverCandidate = safeUrl(entry.imageUrl, response.url);
     return {
       entryId: entry.id,

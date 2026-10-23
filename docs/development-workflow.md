@@ -44,6 +44,8 @@ CI 上传报告供核对，现有 Ubuntu CI 不代表 macOS Keychain、安装包
 
 `feed_summary` / `source_summary` 仅证明已收集摘要可显示，不证明原页、正文或公式已验证；审计将其列为问题并保留降级模式，不能因没有公式错误节点就记为正文通过。
 
+每个样本附 `entryId`，避免同名文章混淆；`readDiagnostics` 记录静态请求、隔离渲染与 Feed 回退的固定原因和 HTTP 状态。明确 robots 禁止与规则暂不可达分开，Feed 服务失败、目标条目已不在 Feed 中、条目没有正文也分别记录。诊断不保存 URL、模型/网页内容或远端错误原文，不参与阅读选择、权限或通过判定。`unknown` 和 `no_content` 需要进一步核查，不能自动归为站点限制或提取缺陷；报告状态仍表示实际验收覆盖。
+
 MathJax 组件共享进程运行时，只初始化一次；异步转换串行，按其官方 `begingroupSandbox` 生命周期隔离宏并重置编号。每条表达式使用程序事先解析的词法宏快照与文档引用索引，不能继承前一表达式/文章的宏。单条失败仅保留该条安全 TeX 降级卡片，其余继续使用 MathJax，不改用另一渲染器。运行时不可用时仍整组降级；任何降级在审计中保持为问题，不因故障隔离而算通过。参考 [MathJax 动态内容规范](https://docs.mathjax.org/en/latest/advanced/typeset.html)。
 
 出版社序列化器可能去掉 KaTeX 的 `semantics` / `annotation` 标签，但留下 MathML 展示节点之后的 TeX。仅在同一 KaTeX 资产同时具有 `.katex-mathml > math`、唯一末尾源码文本和隐藏的 `.katex-html` 视觉副本时恢复；仅有类名、普通文字、纯 MathML 展示内容或代码上下文均不猜测为 TeX。

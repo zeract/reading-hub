@@ -70,6 +70,14 @@ export class ResponseTooLargeError extends Error {
   }
 }
 
+/** Preserve the status without retaining a remote response or URL. */
+export class HttpStatusError extends Error {
+  constructor(readonly status: number) {
+    super(`请求失败（HTTP ${status}）`);
+    this.name = "HttpStatusError";
+  }
+}
+
 /** A transport failure after robots policy has already allowed the request. */
 export class NetworkRequestError extends Error {
   constructor(cause?: unknown) {
@@ -190,7 +198,7 @@ export class PublicHttpClient {
           }
           return { url: targetUrl, status: 304, contentType: response.headers.get("content-type") ?? "", text: "", ...validators };
         }
-        if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
+        if (!response.ok) throw new HttpStatusError(response.status);
         const contentType = response.headers.get("content-type") ?? "";
         const declaredSize = Number(response.headers.get("content-length") ?? 0);
         const feedCandidate = isExplicitFeedContentType(contentType) || isAmbiguousFeedContentType(contentType);

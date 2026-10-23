@@ -1,3 +1,4 @@
+import type { ReaderDiagnostic } from "./reader-diagnostics";
 import { createReadSnapshot } from "./persistence/read-snapshot";
 import { load } from "cheerio";
 import { ArticleReader } from "./article-reader";
@@ -18,6 +19,8 @@ export type ReaderAuditResult = {
   source: string;
   kind: Source["kind"];
   entry?: string;
+  entryId?: string;
+  readDiagnostics?: ReaderDiagnostic[];
   profile?: ReaderArticle["renderProfile"];
   textLength?: number;
   images?: number;
@@ -243,6 +246,7 @@ export function inspectReaderAuditArticle(source: Source, entry: Entry, article:
     source: source.title,
     kind: source.kind,
     entry: entry.title,
+    entryId: entry.id,
     mode: article.contentMode || "article",
     profile: article.renderProfile,
     textLength: text.length,
@@ -436,10 +440,11 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
       }
       for (const { entry, sample } of samples) {
         const startedAt = Date.now();
+        const readDiagnostics: ReaderDiagnostic[] = [];
         await reportProgress(options, { phase: "started", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "read" });
         if (readerAuditSessionUnavailable(source, options)) {
           const result: ReaderAuditResult = {
-            source: source.title, kind: source.kind, entry: entry.title, sample, status: "skipped",
+            source: source.title, kind: source.kind, entry: entry.title, entryId: entry.id, sample, status: "skipped",
             durationMs: Date.now() - startedAt,
             issues: ["独立审计使用临时浏览器配置，未提供主应用的知乎授权会话；未验证该文章，不能据此判断登录失效。"]
           };
@@ -451,7 +456,9 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
         }
         try {
           const article = await runReaderAuditOperation(
-            (signal) => reader.read(entry, source, { signal }),
+            (signal) => reader.read(entry, source, { signal, onDiagnostic: diagnostic => {
+              if (readDiagnostics.length < 12) readDiagnostics.push(diagnostic);
+            } }),
             readTimeoutMs,
             "正文读取",
             (elapsedMs) => void reportProgress(options, { phase: "waiting", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "read", elapsedMs }),
@@ -459,6 +466,7 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
           );
           const result = inspectReaderAuditArticle(source, entry, article);
           result.sample = sample;
+          result.readDiagnostics = readDiagnostics.length ? readDiagnostics : undefined;
           await reportProgress(options, { phase: "started", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "image" });
           await runReaderAuditOperation(
             (signal) => inspectFirstImage(http, entry, article, result, signal),
@@ -488,7 +496,7 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
         } catch (error) {
           const timedOut = error instanceof ReaderAuditTimeoutError;
           if (error instanceof RobotsDisallowedError) {
-            const result: ReaderAuditResult = { source: source.title, kind: source.kind, entry: entry.title, sample, mode: "embedded", status: "skipped", durationMs: Date.now() - startedAt, issues: [error.message] };
+            const result: ReaderAuditResult = { source: source.title, kind: source.kind, entry: entry.title, entryId: entry.id, readDiagnostics, sample, mode: "embedded", status: "skipped", durationMs: Date.now() - startedAt, issues: [error.message] };
             results.push(result);
             await reportResult(options, result);
           } else {
@@ -496,6 +504,8 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
               source: source.title,
               kind: source.kind,
               entry: entry.title,
+              entryId: entry.id,
+              readDiagnostics,
               sample,
               status: timedOut ? "timed_out" : "failed",
               durationMs: Date.now() - startedAt,

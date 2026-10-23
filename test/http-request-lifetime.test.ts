@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const network = vi.hoisted(() => ({ fetch: vi.fn() }));
 vi.mock("../src/main/network", () => ({ chromiumFetch: network.fetch }));
-import { PublicHttpClient } from "../src/main/http";
+import { HttpStatusError, PublicHttpClient } from "../src/main/http";
 
 const client = () => new PublicHttpClient({ assertAllowed: vi.fn().mockResolvedValue(undefined) } as never);
 const read = (http: PublicHttpClient, image: boolean, signal?: AbortSignal) => image
@@ -70,4 +70,13 @@ describe("public response header lifetime", () => {
     });
     await expect(client().getText("https://example.com/post", { url: "https://example.com/post", etag: "fixture-etag" }, { signal: controller.signal })).rejects.toThrow("cancel conditional read");
   });
+});
+
+it.each([403, 404, 429, 503])("retains HTTP %s as typed metadata without response content", async status => {
+  network.fetch.mockResolvedValue(new Response("private remote error page", { status }));
+  const error = await read(client(), false).catch(error => error);
+  expect(error).toBeInstanceOf(HttpStatusError);
+  expect(error.status).toBe(status);
+  expect(error.message).toBe(`请求失败（HTTP ${status}）`);
+  expect(JSON.stringify(error)).not.toContain("private");
 });

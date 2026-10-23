@@ -61,6 +61,7 @@ describe("reader audit cancellation", () => {
     });
     expect(result.issues).toContain("仅验证了已收集摘要，原文正文与公式未验证");
     expect(result.mode).toBe(contentMode);
+    expect(result.entryId).toBe(entry.id);
   });
   it("uses every entry only when a full source audit is explicitly requested", () => {
     const entries = [auditEntry("newest"), auditEntry("middle"), auditEntry("oldest")];
