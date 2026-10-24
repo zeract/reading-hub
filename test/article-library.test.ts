@@ -337,3 +337,139 @@ it('waits for shared reader cleanup on shutdown after all waiters are cancelled'
   await closing;expect(closed).toBe(true);expect(f.db.articles.read(entry.id)).toBeUndefined();
  }finally{await f.close()}
 });
+
+it('repairs out-of-Feed legacy tasks even on 304, saves their images, and never refetches acquired originals',async()=>{
+ const f=fixture();try{
+  const entry=contentNormalizer.normalize({url:'https://example.com/legacy',title:'Legacy original outside Feed'},f.source);f.db.saveEntries([entry]);
+  const getText=f.http.getText.getMockImplementation()!;
+  f.http.getText.mockImplementation(async url=>url===entry.url?{url,status:200,contentType:'text/html',etag:'article',text:`<article><h1>Legacy original</h1>${body}</article>`}:getText(url));
+  f.state.status=304;f.library.start();await f.library['worker'];expect(f.db.articles.nextAcquisition()).toBeUndefined();
+  await f.sync.syncSource(f.source.id);await f.library['worker'];
+  expect(f.db.articles.hasOriginal(entry.id)).toBe(true);
+  expect(f.db.articles.image(entry.id,'https://example.com/one.png')).toBe(IMAGE);expect(f.db.articles.image(entry.id,'https://example.com/two.png')).toBe(IMAGE);
+  const calls=f.http.getText.mock.calls.length;await f.sync.syncSource(f.source.id);await f.library['worker'];
+  expect(f.http.getText).toHaveBeenCalledTimes(calls+1);expect(f.http.getImageDataUrl).toHaveBeenCalledTimes(2);
+ }finally{await f.close()}
+});
+
+it('bounds local task repair per source, includes shared origins, and does not enqueue dismissed or acquired entries',async()=>{
+ const f=fixture();try{
+  const entries=Array.from({length:25},(_,i)=>contentNormalizer.normalize({url:`https://example.com/old-${i}`,title:'Legacy item'},f.source));f.db.saveEntries(entries);
+  f.db.articles.save(entries[0].id,withArticleDocument({entryId:entries[0].id,title:'Original',url:entries[0].url,renderProfile:'standard',contentHtml:body}));
+  const raw=(f.db as any).db;
+  raw.prepare('INSERT INTO dismissed_contents(canonical_identity,dismissed_at) VALUES(?,?)').run(entries[1].canonicalUrl,Date.now());
+  f.library.reconcileSource(f.source.id);expect(raw.prepare('SELECT COUNT(*) AS n FROM article_acquisitions').get().n).toBe(20);
+  expect(raw.prepare('SELECT 1 FROM article_acquisitions WHERE entry_id IN (?,?)').get(entries[0].id,entries[1].id)).toBeUndefined();
+  f.library.reconcileSource(f.source.id);expect(raw.prepare('SELECT COUNT(*) AS n FROM article_acquisitions').get().n).toBe(23);
+  const other=f.db.createSource({url:'https://other.example/feed',kind:'rss',title:'Shared',pollingEnabled:true});
+  const shared=contentNormalizer.normalize({url:'https://example.com/shared',title:'Shared legacy'},f.source);f.db.saveEntries([shared]);f.db.saveEntries([contentNormalizer.normalize({url:shared.url,title:shared.title},other)]);
+  f.library.reconcileSource(other.id);expect(raw.prepare('SELECT 1 FROM article_acquisitions WHERE entry_id=?').get(shared.id)).toBeDefined();
+ }finally{await f.close()}
+});
+
+it('returns a legacy Feed snapshot immediately while automatically acquiring its original',async()=>{
+ const f=fixture();try{
+  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0];
+  (f.db as any).db.prepare('DELETE FROM article_acquisitions WHERE entry_id=?').run(entry.id);
+  vi.spyOn(f.reader,'read').mockResolvedValue(withArticleDocument({entryId:entry.id,title:entry.title,url:entry.url,renderProfile:'standard',contentHtml:body}));
+  f.library.start();await f.library['worker'];expect((await f.library.read(entry,f.source)).contentMode).toBe('feed_body');
+  await f.library['worker'];expect(f.db.articles.hasOriginal(entry.id)).toBe(true);
+ }finally{await f.close()}
+});
+
+it('automatically retries temporary original failures with persistent finite backoff and retains readable Feed content',async()=>{
+ vi.useFakeTimers();const f=fixture();try{
+  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0],saved=f.db.articles.read(entry.id)!;
+  const read=vi.spyOn(f.reader,'read').mockImplementation(async(_e,_s,options)=>{options?.onDiagnostic?.({stage:'static',reason:'http',status:503});return saved;});
+  f.library.start();await f.library['worker'];expect(read).toHaveBeenCalledTimes(1);
+  expect(f.db.articles.nextAcquisitionRetry()).toBe(Date.now()+60_000);expect(f.db.articles.read(entry.id)).toBeDefined();
+  await vi.advanceTimersByTimeAsync(59_999);expect(read).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);await f.library['worker'];expect(read).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(300_000);await f.library['worker'];expect(read).toHaveBeenCalledTimes(3);
+  await vi.advanceTimersByTimeAsync(86400_000);expect(read).toHaveBeenCalledTimes(3);expect(f.db.articles.nextAcquisitionRetry()).toBeUndefined();
+ }finally{await f.close();vi.useRealTimers()}
+});
+
+it('preserves a retry deadline across restart rather than resetting attempts or retrying immediately',async()=>{
+ vi.useFakeTimers();const path=location(),f=fixture(path);let id='';try{
+  await f.sync.syncSource(f.source.id);id=f.db.listEntries(f.source.id)[0].id;
+  const row=f.db.articles.nextAcquisition()!;f.db.articles.beginAcquisition(row);f.db.articles.finishAcquisition(id,'network');
+ }finally{await f.close()}
+ const db=new ReadingDatabase(path),read=vi.fn(async()=>withArticleDocument({entryId:id,title:'Original',url:'https://example.com/post',renderProfile:'standard',contentHtml:body}));
+ const library=new ArticleLibrary(db,{read} as unknown as ArticleReader,{getImageDataUrl:vi.fn(async()=>IMAGE)} as never);
+ try{
+  library.start();await library['worker'];expect(read).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(60_000);await library['worker'];expect(read).toHaveBeenCalledTimes(1);expect(db.articles.hasOriginal(id)).toBe(true);
+  expect((db as any).db.prepare('SELECT state,attempts,failure FROM article_acquisitions WHERE entry_id=?').get(id)).toEqual({state:'done',attempts:2,failure:null});
+ }finally{await library.close();db.close();vi.useRealTimers()}
+});
+
+it('does not retry explicit denial on sync/network events, but allows one retry after that source is reauthorized',async()=>{
+ const f=fixture();try{
+  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0],saved=f.db.articles.read(entry.id)!;
+  const read=vi.spyOn(f.reader,'read').mockImplementation(async(_e,_s,options)=>{options?.onDiagnostic?.({stage:'static',reason:'http',status:403});return saved;});
+  f.library.start();await f.library['worker'];f.library.onNetworkRestored();await f.sync.syncSource(f.source.id);await f.library['worker'];expect(read).toHaveBeenCalledTimes(1);
+  f.library.onSourceAuthenticated('unrelated-source');await f.library['worker'];expect(read).toHaveBeenCalledTimes(1);
+  read.mockResolvedValue(withArticleDocument({entryId:entry.id,title:entry.title,url:entry.url,renderProfile:'standard',contentHtml:body}));
+  f.library.onSourceAuthenticated(f.source.id);await f.library['worker'];expect(read).toHaveBeenCalledTimes(2);expect(f.db.articles.hasOriginal(entry.id)).toBe(true);
+ }finally{await f.close()}
+});
+
+it('settles a failed background job when foreground rereading saves a full original',async()=>{
+ const f=fixture();try{
+  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0],row=f.db.articles.nextAcquisition()!;
+  f.db.articles.beginAcquisition(row);f.db.articles.finishAcquisition(entry.id,'network');
+  const read=vi.spyOn(f.reader,'read').mockResolvedValue(withArticleDocument({entryId:entry.id,title:entry.title,url:entry.url,renderProfile:'standard',contentHtml:body}));
+  await f.library.read(entry,f.source,{refresh:true});f.library.start();await f.library['worker'];expect(read).toHaveBeenCalledTimes(1);
+  expect((f.db as any).db.prepare('SELECT state,failure,next_attempt_at FROM article_acquisitions WHERE entry_id=?').get(entry.id)).toEqual({state:'done',failure:null,next_attempt_at:null});
+ }finally{await f.close()}
+});
+
+it('does not lose a wake arriving between the final drain and worker cleanup',async()=>{
+ const f=fixture();try{
+  const entry=contentNormalizer.normalize({url:'https://example.com/new',title:'New queued read'},f.source);f.db.saveEntries([entry]);
+  vi.spyOn(f.reader,'read').mockResolvedValue(withArticleDocument({entryId:entry.id,title:entry.title,url:entry.url,renderProfile:'standard',contentHtml:body}));
+  vi.spyOn(f.library as any,'drain').mockImplementationOnce(async()=>{queueMicrotask(()=>queueMicrotask(()=>{f.library.commitCollected(entry,entry.id);f.library.wake()}));});
+  f.library.start();await vi.waitFor(()=>expect(f.db.articles.hasOriginal(entry.id)).toBe(true));
+ }finally{await f.close()}
+});
+
+it('rolls back repaired task coverage when the enclosing sync transaction cannot commit',async()=>{
+ const f=fixture();try{
+  const entry=contentNormalizer.normalize({url:'https://example.com/old',title:'Old entry'},f.source);f.db.saveEntries([entry]);f.state.status=304;
+  vi.spyOn(f.db,'markSuccess').mockImplementationOnce(()=>{throw new Error('fixture commit failure')});
+  await expect(f.sync.syncSource(f.source.id)).rejects.toThrow('fixture commit failure');
+  expect(f.db.articles.nextAcquisition()).toBeUndefined();
+ }finally{await f.close()}
+});
+
+it('does not let a late background failure reopen a job already completed by a foreground refresh',async()=>{
+ const f=fixture();let fail!:(error:Error)=>void;try{
+  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0];
+  const original=withArticleDocument({entryId:entry.id,title:entry.title,url:entry.url,renderProfile:'standard',contentHtml:body});
+  const read=vi.spyOn(f.reader,'read').mockImplementationOnce(()=>new Promise((_resolve,reject)=>{fail=reject})).mockResolvedValue(original);
+  f.library.start();await vi.waitFor(()=>expect(read).toHaveBeenCalledTimes(1));await f.library.read(entry,f.source,{refresh:true});
+  fail(new NetworkRequestError());await f.library['worker'];expect(f.db.articles.hasOriginal(entry.id)).toBe(true);expect(f.db.articles.nextAcquisitionRetry()).toBeUndefined();
+  expect((f.db as any).db.prepare('SELECT state,failure FROM article_acquisitions WHERE entry_id=?').get(entry.id)).toEqual({state:'done',failure:null});
+ }finally{fail?.(new Error('cleanup'));await f.close()}
+});
+
+it('does not introduce new background acquisition when reading a paused source snapshot',async()=>{
+ const f=fixture();try{
+  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0];(f.db as any).db.prepare('DELETE FROM article_acquisitions').run();
+  const read=vi.spyOn(f.reader,'read');f.library.start();await f.library.read(entry,{...f.source,pollingEnabled:false,status:'paused'});await f.library['worker'];
+  expect(read).not.toHaveBeenCalled();expect(f.db.articles.nextAcquisition()).toBeUndefined();
+ }finally{await f.close()}
+});
+
+it('repairs a legacy done-with-Feed-only job once without resetting attempts or rearming later permanent failures',async()=>{
+ const f=fixture();try{
+  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0],saved=f.db.articles.read(entry.id)!,row=f.db.articles.nextAcquisition()!;
+  f.db.articles.beginAcquisition(row);f.db.articles.finishAcquisition(entry.id);
+  const read=vi.spyOn(f.reader,'read').mockImplementation(async(_e,_s,options)=>{options?.onDiagnostic?.({stage:'static',reason:'robots_disallowed'});return saved;});
+  f.library.reconcileSource(f.source.id);expect(f.db.articles.nextAcquisition()?.attempts).toBe(1);f.library.start();await f.library['worker'];
+  f.library.reconcileSource(f.source.id);f.library.wake();await f.library['worker'];expect(read).toHaveBeenCalledTimes(1);
+  expect((f.db as any).db.prepare('SELECT state,attempts,failure FROM article_acquisitions WHERE entry_id=?').get(entry.id)).toEqual({state:'failed',attempts:2,failure:'robots_disallowed'});
+  (f.db as any).db.prepare("UPDATE article_acquisitions SET state='done',attempts=3,failure=NULL WHERE entry_id=?").run(entry.id);f.library.reconcileSource(f.source.id);expect(f.db.articles.nextAcquisition()).toBeUndefined();
+ }finally{await f.close()}
+});

@@ -7,9 +7,12 @@ import { combineAbortSignals, throwIfAborted } from "./cancellation";
 import type { ReadingDatabase } from "./database";
 import type { PublicHttpClient } from "./http";
 import { ArticlePersistenceContentError, articleImageUrls } from "./persistence/article-store";
-import { readerFailureDiagnostic } from "./reader-diagnostics";
 import { readerImageFailure } from "./reader-image-retry";
 import { SharedTaskMap } from "./shared-task-map";
+import { acquisitionFailure, fallbackAcquisitionFailure } from "./article-acquisition";
+import type { ReaderDiagnostic } from "./reader-diagnostics";
+
+type AcquiredArticle = { article: ReaderArticle; failure?: string };
 
 /** Local library ownership around the existing acquisition pipeline. No second extractor or renderer. */
 export class ArticleLibrary {
@@ -18,17 +21,21 @@ export class ArticleLibrary {
   private worker?: Promise<void>;
   private requested = false;
   private started = false;
-  private readonly reads = new SharedTaskMap<ReaderArticle>();
+  private readonly reads = new SharedTaskMap<AcquiredArticle>();
   private readonly activeReads = new Set<Promise<ReaderArticle>>();
+  private retryTimer?: ReturnType<typeof setTimeout>;
   constructor(private readonly db: ReadingDatabase, private readonly reader: ArticleReader, private readonly http: PublicHttpClient) {}
 
   start(): void {
     this.started = true;
     this.db.articles.recover();
-    this.db.articles.retryTransient();
+    this.db.articles.retryTransient(false);
     this.wake();
   }
-  beginShutdown(): void { this.controller.abort(new Error("应用正在退出，已取消正文保存请求。")); }
+  beginShutdown(): void {
+    clearTimeout(this.retryTimer);
+    this.controller.abort(new Error("应用正在退出，已取消正文保存请求。"));
+  }
   async close(): Promise<void> {
     this.beginShutdown();
     await Promise.allSettled([...this.pending, this.worker]);
@@ -37,15 +44,18 @@ export class ArticleLibrary {
     await Promise.allSettled([...this.activeReads]);
   }
   onNetworkRestored(): void { this.db.articles.retryTransient(); this.wake(); }
+  onSourceAuthenticated(sourceId: string): void { this.db.articles.retryAuthentication(sourceId); this.wake(); }
+  reconcileSource(sourceId: string): void { this.db.articles.reconcileSource(sourceId); }
 
   read(entry: Entry, source?: Source, options?: ReaderReadOptions): Promise<ReaderArticle> {
     return this.work(options?.signal, async signal => {
       const saved = !options?.refresh ? this.db.articles.read(entry.id) : undefined;
       if (saved) {
+        if (source?.pollingEnabled && source.subscribed !== false && source.status !== "paused") this.db.articles.enqueue(entry.id);
         this.wake();
         return this.reader.restoreSavedArticle(entry, saved, signal);
       }
-      const article = await this.acquire(entry, source, { ...options, signal });
+      const { article } = await this.acquire(entry, source, { ...options, signal });
       throwIfAborted(signal);
       this.db.articles.save(entry.id, article);
       this.wake();
@@ -60,8 +70,8 @@ export class ArticleLibrary {
       const variant = JSON.stringify([canonicalizeUrl(url), options?.inlineLanguage ?? ""]);
       const saved = this.db.articles.read(entry.id, variant);
       if (saved) return this.reader.restoreSavedArticle(entry, saved, signal);
-      const load = (sharedSignal: AbortSignal) => this.trackRead(() => this.reader.readLanguageVariant(entry, source, url, { ...options, signal: sharedSignal }));
-      const article = await (options?.onDiagnostic ? load(signal)
+      const load = async (sharedSignal: AbortSignal) => ({ article: await this.trackRead(() => this.reader.readLanguageVariant(entry, source, url, { ...options, signal: sharedSignal })) });
+      const { article } = await (options?.onDiagnostic ? load(signal)
         : this.reads.run(JSON.stringify(["variant",entry.id,source?.id,variant]), load, signal));
       throwIfAborted(signal);
       this.db.articles.save(entry.id, article, variant);
@@ -115,11 +125,16 @@ export class ArticleLibrary {
     });
   }
 
-  private acquire(entry: Entry, source: Source | undefined, options: ReaderReadOptions): Promise<ReaderArticle> {
+  private acquire(entry: Entry, source: Source | undefined, options: ReaderReadOptions): Promise<AcquiredArticle> {
     const load = async (signal: AbortSignal) => {
-      const article = await this.trackRead(() => this.reader.read(entry, source, { ...options, signal }));
+      const diagnostics: ReaderDiagnostic[] = [];
+      const article = await this.trackRead(() => this.reader.read(entry, source, { ...options, signal, onDiagnostic: diagnostic => {
+        if (diagnostics.length < 12) diagnostics.push(diagnostic);
+        options.onDiagnostic?.(diagnostic);
+      } }));
       throwIfAborted(signal);
-      return article;
+      return { article, failure: article.contentMode === "feed_body" || isReaderSummaryContent(article.contentMode)
+        ? fallbackAcquisitionFailure(diagnostics) : undefined };
     };
     // Diagnostic observers belong to their own request. Explicit rereads do
     // not join an older automatic acquisition; ordinary reads share its work.
@@ -136,6 +151,7 @@ export class ArticleLibrary {
 
   wake(): void {
     if (!this.started || this.controller.signal.aborted) return;
+    clearTimeout(this.retryTimer);
     this.requested = true;
     if (this.worker) return;
     this.worker = Promise.resolve().then(async () => {
@@ -146,7 +162,18 @@ export class ArticleLibrary {
     }).catch(() => {
       // Storage errors leave durable running jobs for restart. Never log body/URL/error payloads.
       if (!this.controller.signal.aborted) console.warn("本地正文或图片保存未完成，已保留待处理记录。");
-    }).finally(() => { this.worker = undefined; });
+    }).finally(() => {
+      this.worker = undefined;
+      if (this.controller.signal.aborted) return;
+      if (this.requested) this.wake();
+      else {
+        const due = this.db.articles.nextAcquisitionRetry();
+        if (due !== undefined) {
+          this.retryTimer = setTimeout(() => this.wake(), Math.max(0,due-Date.now()));
+          this.retryTimer.unref();
+        }
+      }
+    });
   }
 
   private async drain(): Promise<void> {
@@ -184,21 +211,23 @@ export class ArticleLibrary {
         }
         const entry = this.db.getEntry(acquisition.entry_id);
         if (!entry) continue;
-        let article: ReaderArticle;
-        try { article = await this.acquire(entry, this.db.getSource(entry.sourceId), { signal }); }
+        let acquired: AcquiredArticle;
+        try { acquired = await this.acquire(entry, this.db.getSource(entry.sourceId), { signal }); }
         catch (error) {
           if (signal.aborted) return;
-          this.db.articles.finishAcquisition(entry.id, readerFailureDiagnostic("static", error).reason);
+          this.db.articles.finishAcquisition(entry.id, acquisitionFailure(error));
           continue;
         }
         throwIfAborted(signal);
-        try { this.db.articles.save(entry.id, article); }
+        try { this.db.articles.save(entry.id, acquired.article); }
         catch (error) {
           if (!(error instanceof ArticlePersistenceContentError)) throw error;
           this.db.articles.finishAcquisition(entry.id,"invalid_content");
           continue;
         }
-        this.db.articles.finishAcquisition(entry.id, isReaderSummaryContent(article.contentMode) ? "summary" : undefined);
+        // A foreground waiter may already have saved a full original while
+        // this request was completing its Feed fallback.
+        this.db.articles.finishAcquisition(entry.id, this.db.articles.hasOriginal(entry.id) ? undefined : acquired.failure);
       }
     }
   }

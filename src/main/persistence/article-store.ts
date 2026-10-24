@@ -3,6 +3,7 @@ import { load } from "cheerio";
 import { articleDocumentHtml, validArticleDocument } from "../../shared/article-document";
 import { assertPublicUrl } from "../../shared/url";
 import { isReaderSummaryContent, type ReaderArticle } from "../../shared/types";
+import { acquisitionRetryAt, TRANSIENT_ACQUISITION_FAILURES } from "../article-acquisition";
 
 export type MediaRecord = { entry_id: string; url: string; referrer: string; state: string; attempts: number };
 export type AcquisitionRecord = { entry_id: string; state: string; attempts: number };
@@ -46,6 +47,7 @@ export class ArticleStore {
         WHERE excluded.quality >= article_documents.quality`).run(entryId, variant, snapshot, quality, Date.now(), entryId);
       if (!result.changes) return false;
       for (const url of articleImageUrls(article)) this.registerImage(entryId, url, article.url);
+      if (!variant && quality >= 2) this.finishAcquisition(entryId);
       return true;
     })();
   }
@@ -102,6 +104,24 @@ export class ArticleStore {
     this.db.prepare(`INSERT OR IGNORE INTO article_acquisitions(entry_id)
       SELECT id FROM entries WHERE id=? AND NOT EXISTS(SELECT 1 FROM article_documents WHERE entry_id=? AND variant='' AND quality>=2)`).run(entryId, entryId);
   }
+  /** Repair local task coverage, never discover or import remote history. */
+  reconcileSource(sourceId: string): void {
+    this.db.prepare(`INSERT INTO article_acquisitions(entry_id)
+      SELECT e.id FROM entries e LEFT JOIN article_acquisitions a ON a.entry_id=e.id
+      WHERE (e.source_id=? OR EXISTS(SELECT 1 FROM entry_origins o WHERE o.entry_id=e.id AND o.source_id=?))
+        AND NOT EXISTS(SELECT 1 FROM dismissed_contents WHERE canonical_identity=COALESCE(e.canonical_identity,e.canonical_url))
+        AND NOT EXISTS(SELECT 1 FROM article_documents WHERE entry_id=e.id AND variant='' AND quality>=2)
+        AND (a.entry_id IS NULL OR a.state='done' AND a.attempts<3)
+      ORDER BY e.created_at DESC,e.id DESC LIMIT 20
+      ON CONFLICT(entry_id) DO UPDATE SET state='pending',failure=NULL,next_attempt_at=NULL
+        WHERE article_acquisitions.state='done' AND article_acquisitions.attempts<3`).run(sourceId,sourceId);
+  }
+  retryAuthentication(sourceId: string): void {
+    this.db.prepare(`UPDATE article_acquisitions SET state='pending',attempts=MIN(attempts,2),next_attempt_at=NULL
+      WHERE state='failed' AND failure IN ('http_401','http_403')
+        AND entry_id IN (SELECT id FROM entries WHERE source_id=?)
+        AND NOT EXISTS(SELECT 1 FROM article_documents WHERE entry_id=article_acquisitions.entry_id AND variant='' AND quality>=2)`).run(sourceId);
+  }
   recover(): void {
     for (const table of ["article_media", "article_acquisitions"]) {
       this.db.prepare(`UPDATE ${table} SET state='pending',attempts=MAX(0,attempts-1) WHERE state='running'`).run();
@@ -115,7 +135,10 @@ export class ArticleStore {
     return this.db.prepare("SELECT entry_id,url,referrer,state,attempts FROM article_media WHERE state='pending' AND attempts<3 LIMIT 4").all() as MediaRecord[];
   }
   nextAcquisition(): AcquisitionRecord | undefined {
-    return this.db.prepare("SELECT * FROM article_acquisitions WHERE state='pending' AND attempts<3 LIMIT 1").get() as AcquisitionRecord | undefined;
+    return this.db.prepare("SELECT * FROM article_acquisitions WHERE (state='pending' OR state='failed' AND next_attempt_at<=?) AND attempts<3 LIMIT 1").get(Date.now()) as AcquisitionRecord | undefined;
+  }
+  nextAcquisitionRetry(): number | undefined {
+    return (this.db.prepare("SELECT MIN(next_attempt_at) AS due FROM article_acquisitions WHERE state='failed' AND attempts<3").get() as { due: number | null }).due ?? undefined;
   }
   beginMedia(row: MediaRecord): boolean {
     return Boolean(this.db.prepare("UPDATE article_media SET state='running',attempts=attempts+1 WHERE entry_id=? AND url=? AND state='pending'").run(row.entry_id, row.url).changes);
@@ -124,14 +147,19 @@ export class ArticleStore {
     this.db.prepare("UPDATE article_media SET state='failed',failure=? WHERE entry_id=? AND url=? AND state!='ready'").run((retryable ? "transient:" : "permanent:") + failure, row.entry_id, row.url);
   }
   beginAcquisition(row: AcquisitionRecord): boolean {
-    return Boolean(this.db.prepare("UPDATE article_acquisitions SET state='running',attempts=attempts+1 WHERE entry_id=? AND state='pending'").run(row.entry_id).changes);
+    return Boolean(this.db.prepare("UPDATE article_acquisitions SET state='running',attempts=attempts+1,next_attempt_at=NULL WHERE entry_id=? AND (state='pending' OR state='failed' AND next_attempt_at<=?) AND attempts<3").run(row.entry_id,Date.now()).changes);
   }
   finishAcquisition(entryId: string, failure?: string): void {
-    this.db.prepare("UPDATE article_acquisitions SET state=?,failure=? WHERE entry_id=?").run(failure ? "failed" : "done", failure ?? null, entryId);
+    const row = this.db.prepare("SELECT attempts FROM article_acquisitions WHERE entry_id=?").get(entryId) as { attempts: number } | undefined;
+    if (!row) return;
+    if (failure && this.hasOriginal(entryId)) failure = undefined;
+    this.db.prepare("UPDATE article_acquisitions SET state=?,failure=?,next_attempt_at=? WHERE entry_id=?")
+      .run(failure ? "failed" : "done", failure ?? null, acquisitionRetryAt(failure,row.attempts), entryId);
   }
-  retryTransient(): void {
+  retryTransient(includeAcquisitions = true): void {
     this.db.prepare("UPDATE article_media SET state='pending' WHERE state='failed' AND failure LIKE 'transient:%' AND attempts<3").run();
-    this.db.prepare("UPDATE article_acquisitions SET state='pending' WHERE state='failed' AND failure IN ('network','robots_unavailable','timeout') AND attempts<3").run();
+    if (includeAcquisitions) this.db.prepare(`UPDATE article_acquisitions SET state='pending',next_attempt_at=NULL WHERE state='failed'
+      AND failure IN (${TRANSIENT_ACQUISITION_FAILURES.map(() => "?").join(",")}) AND attempts<3`).run(...TRANSIENT_ACQUISITION_FAILURES);
   }
 }
 

@@ -184,3 +184,18 @@ function inspectMigrationState(filePath: string): {
     database.close();
   }
 }
+
+it('adds persisted deadlines only to known retryable legacy jobs without resetting their attempt budgets',()=>{
+ const directory=mkdtempSync(join(tmpdir(),'article-retry-migration-')),path=join(directory,'library.sqlite');let db:ReadingDatabase|undefined;
+ try{
+  db=new ReadingDatabase(path);const source=db.createSource({url:'https://example.com/feed',title:'Feed',kind:'rss',pollingEnabled:true});
+  const raw=(db as unknown as {db:Sqlite.Database}).db;
+  for(const [i,failure,attempts] of [[0,'network',1],[1,'http',1],[2,'robots_disallowed',1],[3,'timeout',3]] as const){
+   db.saveEntries([{id:String(i),sourceId:source.id,url:`https://example.com/${i}`,canonicalUrl:`https://example.com/${i}`,title:'Old job',contentHash:'hash',read:false,favorite:false,createdAt:1}]);
+   raw.prepare("INSERT INTO article_acquisitions(entry_id,state,failure,attempts) VALUES(?,'failed',?,?)").run(String(i),failure,attempts);
+  }
+  raw.exec('DROP INDEX article_acquisitions_retry; ALTER TABLE article_acquisitions DROP COLUMN next_attempt_at; DELETE FROM schema_migrations WHERE version=21');db.close();db=undefined;
+  db=new ReadingDatabase(path);const jobs=(db as unknown as {db:Sqlite.Database}).db.prepare('SELECT entry_id,attempts,next_attempt_at FROM article_acquisitions ORDER BY entry_id').all();
+  expect(jobs).toEqual([{entry_id:'0',attempts:1,next_attempt_at:0},{entry_id:'1',attempts:1,next_attempt_at:null},{entry_id:'2',attempts:1,next_attempt_at:null},{entry_id:'3',attempts:3,next_attempt_at:null}]);
+ }finally{db?.close();rmSync(directory,{recursive:true,force:true})}
+});

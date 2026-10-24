@@ -115,6 +115,7 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
   }
   zhihuFollow.setOnAuthenticated(async () => {
     const source = sources.ensureZhihuFollowSource();
+    articles.onSourceAuthenticated(source.id);
     await sync.syncSource(source.id);
   });
 

@@ -167,6 +167,7 @@ export class SyncManager {
           const saved = outcome.notModified
             ? { inserted: 0, accepted: 0, identityConflicts: 0 }
             : this.saveRawEntries(effectiveSource, outcome.entries, subscription, bodies);
+          this.articles?.reconcileSource(effectiveSource.id);
           const inserted = saved.inserted;
           if (connectorId === "generic" && !isManualExtractionRule(effectiveSource.extractionRule) && saved.accepted >= 2) {
             const pageIdentity = canonicalizeContentUrl(effectiveSource.url);

@@ -9,7 +9,7 @@ import { ENTRY_ORDER_BY } from "./entry-order";
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 20;
+export const CURRENT_SCHEMA_VERSION = 21;
 
 type SqliteDatabase = Database.Database;
 
@@ -471,6 +471,14 @@ const MIGRATIONS: readonly SchemaMigration[] = [
   {
     version: 20, name: "index-reusable-owned-images", up: database => database.exec(`
       CREATE INDEX article_media_reusable ON article_media(url, referrer) WHERE state='ready';
+    `)
+  },
+  {
+    version: 21, name: "schedule-bounded-article-retries", up: database => database.exec(`
+      ALTER TABLE article_acquisitions ADD COLUMN next_attempt_at INTEGER;
+      UPDATE article_acquisitions SET next_attempt_at=0
+        WHERE state='failed' AND attempts<3 AND failure IN ('network','robots_unavailable','timeout');
+      CREATE INDEX article_acquisitions_retry ON article_acquisitions(next_attempt_at) WHERE state='failed';
     `)
   },
 ];

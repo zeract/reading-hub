@@ -61,3 +61,5 @@ MathJax 4 的响应式 SVG 在主进程冻结为有明确像素坐标 `viewBox` 
 ## 本地正文和图片验收
 
 `npm run audit:offline` 使用两个独立 Electron 进程及临时数据库：第一进程同步含正文、表格、代码、公式和两张图片的 Feed，再从 Feed 移除条目；第二进程阻断主进程及渲染器网络，使用真实 ArticleBody、图片 hook 和 preload 验证全部已存资源。关闭后删除夹具库，不修改用户库。该测试证明重启及离线存储链路，不代表远端站点仍可访问；真实来源仍单独运行 `audit:reader`。
+
+`READING_HUB_OFFLINE_RECONCILE=1 node scripts/offline-reader-smoke.mjs` 复用当前构建，模拟已收集条目无正文任务且 Feed 返回 304；必须由正常同步补齐队列、后台取得原页与全部图片，再在第二个断网进程验证真实正文 DOM。它是受控传输夹具，不是真实站点在线结果。

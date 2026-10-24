@@ -39,3 +39,13 @@ describe("application assistant shutdown", () => {
     } finally { services.database.close(); }
   });
 });
+
+it('releases source-scoped authorization failures even when the post-login source sync fails',async()=>{
+ const {ZhihuFollowConnector}=await import('../src/main/zhihu-follow');let authenticated:(()=>Promise<void>)|undefined;
+ vi.spyOn(ZhihuFollowConnector.prototype,'setOnAuthenticated').mockImplementation(callback=>{authenticated=callback});
+ const services=await createApplicationServices(':memory:');try{
+  const rearm=vi.spyOn(services.articles,'onSourceAuthenticated');vi.spyOn(services.sync,'syncSource').mockRejectedValue(new Error('temporary follow failure'));
+  await expect(authenticated!()).rejects.toThrow('temporary follow failure');
+  const source=services.database.listSources().find(s=>s.kind==='zhihu_follow')!;expect(rearm).toHaveBeenCalledExactlyOnceWith(source.id);
+ }finally{await services.close()}
+});
