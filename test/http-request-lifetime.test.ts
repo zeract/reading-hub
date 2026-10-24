@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const network = vi.hoisted(() => ({ fetch: vi.fn() }));
 vi.mock("../src/main/network", () => ({ chromiumFetch: network.fetch }));
 import { HttpStatusError, PublicHttpClient } from "../src/main/http";
+import { AccessChallengeError } from "../src/main/access-challenge";
 
 const client = () => new PublicHttpClient({ assertAllowed: vi.fn().mockResolvedValue(undefined) } as never);
 const read = (http: PublicHttpClient, image: boolean, signal?: AbortSignal) => image
@@ -12,6 +13,24 @@ beforeEach(() => { network.fetch.mockReset(); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe("public response header lifetime", () => {
+  it("does not retry or consume a challenged image response", async () => {
+    const pull = vi.fn(), cancel = vi.fn();
+    network.fetch.mockResolvedValueOnce(new Response(new ReadableStream({pull,cancel},{highWaterMark:0}), {
+      status:200,headers:{'cf-mitigated':'challenge','content-type':'text/html'}
+    }));
+    await expect(read(client(),true)).rejects.toBeInstanceOf(AccessChallengeError);
+    expect(pull).not.toHaveBeenCalled(); expect(cancel).toHaveBeenCalledOnce();
+    expect(network.fetch).toHaveBeenCalledOnce();
+  });
+  it.each([202, 200, 403])("rejects HTTP %i with an explicit challenge marker without reading its body", async status => {
+    const pull = vi.fn(), cancel = vi.fn();
+    network.fetch.mockResolvedValueOnce(new Response(new ReadableStream({pull,cancel},{highWaterMark:0}), {
+      status,headers:{'x-amzn-waf-action':'challenge','content-type':'text/html'}
+    }));
+    await expect(client().getText("https://example.com/post")).rejects.toBeInstanceOf(AccessChallengeError);
+    expect(pull).not.toHaveBeenCalled(); expect(cancel).toHaveBeenCalledOnce();
+    expect(network.fetch).toHaveBeenCalledOnce();
+  });
   it.each([false, true])("ends a stalled header timeout (image=%s)", async (image) => {
     vi.useFakeTimers();
     let finish!: (response: Response) => void;

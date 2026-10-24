@@ -1,13 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const network = vi.hoisted(() => ({ fetch: vi.fn() }));
 vi.mock("../src/main/network", () => ({ chromiumFetch: network.fetch }));
-import { RobotsDisallowedError, RobotsNetworkUnavailableError, RobotsPolicy, RobotsRateLimitedError } from "../src/main/robots";
+import { RobotsChallengeError, RobotsDisallowedError, RobotsNetworkUnavailableError, RobotsPolicy, RobotsRateLimitedError } from "../src/main/robots";
 import { PublicHttpClient } from "../src/main/http";
 
 beforeEach(() => { network.fetch.mockReset(); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe("robots access decisions", () => {
+  it.each([202, 403])("never treats a challenged HTTP %i robots response as permission or an absent policy", async status => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    network.fetch.mockResolvedValueOnce(new Response(new ReadableStream({cancel},{highWaterMark:0}), {
+      status,headers:{'x-amzn-waf-action':'challenge'}
+    }));
+    const policy = new RobotsPolicy();
+    await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsChallengeError);
+    policy.forgetTransientFailures();
+    await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsChallengeError);
+    expect(network.fetch).toHaveBeenCalledOnce(); expect(cancel).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(5*60_000);
+    network.fetch.mockResolvedValueOnce(new Response('User-agent: *\nDisallow: /post'));
+    await expect(policy.assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsDisallowedError);
+    expect(network.fetch).toHaveBeenCalledTimes(2);
+  });
   it("uses the most specific allow rule", async () => {
     network.fetch.mockResolvedValue(new Response("User-agent: *\nDisallow: /\nAllow: /public/"));
     await expect(new RobotsPolicy().assertAllowed("https://example.com/public/post")).resolves.toBeUndefined();

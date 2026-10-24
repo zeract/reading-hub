@@ -34,7 +34,7 @@ vi.mock("electron", () => ({
   BrowserWindow: fixture.BrowserWindow,
   session: { fromPartition: () => {
     const value = {
-      webRequest: Object.fromEntries(["onBeforeRequest", "onCompleted", "onErrorOccurred"].map(key => [key, vi.fn()])),
+      webRequest: Object.fromEntries(["onBeforeRequest", "onCompleted", "onErrorOccurred", "onHeadersReceived"].map(key => [key, vi.fn()])),
       setPermissionRequestHandler: vi.fn(),
       setPermissionCheckHandler: vi.fn(),
       clearStorageData: vi.fn(() => fixture.cleanup())
@@ -70,6 +70,22 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("public rendering task lifetime", () => {
+  it("rejects a main-frame challenge before capturing HTML and releases its observer", async () => {
+    fixture.navigate.mockImplementationOnce(async () => {
+      const onHeaders = fixture.sessions[0].webRequest.onHeadersReceived.mock.calls[0][0];
+      const callback = vi.fn();
+      onHeaders({ resourceType: "mainFrame", responseHeaders: { "X-Amzn-Waf-Action": ["challenge"] } }, callback);
+      expect(callback).toHaveBeenCalledWith({ cancel: true });
+      throw new Error("ERR_BLOCKED_BY_CLIENT");
+    });
+    await expect(new IsolatedPageRenderer(robots() as never).render("https://example.com/article"))
+      .rejects.toMatchObject({ name: "AccessChallengeError" });
+    expect(fixture.capture).not.toHaveBeenCalled();
+    expect(fixture.sessions[0].webRequest.onHeadersReceived).toHaveBeenLastCalledWith(null);
+    expect(fixture.windows[0].isDestroyed()).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("reserves snapshot time after slow navigation despite a stalled hydration request", async () => {
     fixture.configure.mockImplementationOnce(() => pause(3_000));
     fixture.navigate.mockImplementationOnce(async (window) => {

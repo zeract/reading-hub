@@ -1,4 +1,5 @@
 import { BrowserWindow, session } from "electron";
+import { observeAccessChallenges, type AccessChallengeError } from "./access-challenge";
 import { assertPublicUrl } from "../shared/url";
 import { awaitWithAbort, throwIfAborted, withRequestTimeout } from "./cancellation";
 import { observeRenderResources } from "./render-resource-readiness";
@@ -35,6 +36,8 @@ export class IsolatedPageRenderer implements PageRenderer {
     let capture: RenderedPageCapture | undefined;
     let resources: ReturnType<typeof observeRenderResources> | undefined;
     let failed = true;
+    let challenge: AccessChallengeError | undefined;
+    let disposeAccess: (() => void) | undefined;
     const stopAndDestroy = () => {
       try {
         if (window && !window.isDestroyed()) window.webContents.stop();
@@ -56,6 +59,7 @@ export class IsolatedPageRenderer implements PageRenderer {
       isolatedSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
       isolatedSession.setPermissionCheckHandler(() => false);
       resources = observeRenderResources(isolatedSession.webRequest);
+      disposeAccess = observeAccessChallenges(isolatedSession.webRequest, error => { challenge = error; });
       window = createBackgroundWindow({
         webPreferences: {
           partition,
@@ -81,10 +85,14 @@ export class IsolatedPageRenderer implements PageRenderer {
       throwIfAborted(request.signal);
       failed = false;
       return page;
+    } catch (error) {
+      throwIfAborted(options?.signal);
+      throw challenge ?? error;
     } finally {
       try {
         capture?.dispose();
         resources?.dispose();
+        disposeAccess?.();
         request.signal.removeEventListener("abort", stopAndDestroy);
         stopAndDestroy();
         if (isolatedSession) {

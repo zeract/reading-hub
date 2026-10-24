@@ -15,7 +15,8 @@ export function readerImageFailure(error: unknown): { reason: string; retryable:
     UnsupportedReaderImageTypeError: "unsupported_content", InvalidSvgImageError: "invalid_svg",
     RobotsDisallowedError: "robots_disallowed", RobotsResponseTooLargeError: "robots_size_limit",
     RobotsUnreachableError: "robots_unavailable", RobotsNetworkUnavailableError: "robots_unavailable",
-    RobotsRateLimitedError: "robots_rate_limited", TaskPoolFullError: "busy"
+    RobotsRateLimitedError: "robots_rate_limited", TaskPoolFullError: "busy",
+    RobotsChallengeError: "access_challenge", AccessChallengeError: "access_challenge"
   };
   return { reason: reasons[name] ?? "unclassified", retryable: isTransientReaderImageError(error) || name === "RobotsNetworkUnavailableError" };
 }

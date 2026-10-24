@@ -1,4 +1,5 @@
 import { readerFailureDiagnostic, reportReaderDiagnostic, type ReaderDiagnostic } from "./reader-diagnostics";
+import { AccessChallengeError } from "./access-challenge";
 import {withArticleDocument, articleDocumentFromHtml} from "./article-document";
 import { readerLanguageChoices } from "../shared/reader-languages";
 import { assertAnswerNavigation } from "./zhihu-answer-identity";
@@ -128,7 +129,7 @@ export class ArticleReader {
         // already contain an explicitly supplied summary, which is local
         // subscription data rather than an extraction of the blocked page.
         // This makes RSSHub/X items readable without trying to fetch X again.
-        if (error instanceof RobotsDisallowedError) {
+        if (error instanceof RobotsDisallowedError || error instanceof AccessChallengeError) {
           if (!allowFeedFallback) throw error;
           const feedBody = await this.tryFeedBody(entry, source, options);
           if (feedBody) return this.rememberLanguageVariants(entry.id, feedBody, knownLanguageVariants, options?.signal);

@@ -1,4 +1,5 @@
 import { networkFailureKind, NETWORK_REQUEST_MESSAGES } from "./network-failure";
+import { assertNoAccessChallenge } from "./access-challenge";
 export { NETWORK_REQUEST_MESSAGES } from "./network-failure";
 import { sanitizeSvgImage } from "./reader-svg-image";
 import { rasterImageType, ReaderImageRedirectError, ReaderImageSizeError } from "./reader-image-format";
@@ -159,6 +160,7 @@ export class PublicHttpClient {
           if (options?.signal?.aborted) throw abortError(options.signal);
           throw new NetworkRequestError(error);
         }
+        assertNoAccessChallenge(response.headers);
         const location = response.headers.get("location");
         if (location && [301, 302, 303, 307, 308].includes(response.status)) {
           if (redirectCount === 5) throw new Error("重定向次数过多，已停止请求。");
@@ -268,6 +270,7 @@ export class PublicHttpClient {
           if (signal.aborted) throw abortError(signal);
           throw new NetworkRequestError(error);
         }
+        assertNoAccessChallenge(response.headers);
         const location = response.headers.get("location");
         if (location && response.status >= 300 && response.status < 400) {
           if (redirectCount === 5) throw new ReaderImageRedirectError();

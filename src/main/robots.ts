@@ -7,10 +7,11 @@ import { fetchResponse } from "./fetch-response";
 import { WeightedLruCache } from "./weighted-lru-cache";
 import { SharedTaskMap } from "./shared-task-map";
 import { networkFailureKind, type NetworkFailureKind } from "./network-failure";
+import { AccessChallengeError, assertNoAccessChallenge } from "./access-challenge";
 
 type RobotsResult = { kind: "rules"; rules: RobotsRule[] } | { kind: "unavailable" }
   | { kind: "unreachable"; cause: "network"; reason: NetworkFailureKind }
-  | { kind: "unreachable"; cause: "server" | "rate_limit" };
+  | { kind: "unreachable"; cause: "server" | "rate_limit" | "challenge" };
 type CacheItem = { expiresAt: number; result: RobotsResult };
 const MAX_ROBOTS_BYTES = 1_048_576;
 const POLICY_CACHE_MS = 24 * 60 * 60_000;
@@ -60,6 +61,14 @@ export class RobotsNetworkUnavailableError extends RobotsUnreachableError {
   }
 }
 
+export class RobotsChallengeError extends RobotsUnreachableError {
+  constructor() {
+    super();
+    this.name = "RobotsChallengeError";
+    this.message = "该站点的 robots.txt 要求人机验证，无法确认访问规则，已停止自动读取。请在浏览器中打开原文查看。";
+  }
+}
+
 /** Keep a site's explicit rate limit separate from a transient server outage. */
 export class RobotsRateLimitedError extends RobotsUnreachableError {
   static readonly messageText = "该站点暂时限制 robots.txt 请求，已停止自动读取；稍后会按限流间隔重试。";
@@ -87,7 +96,7 @@ export class RobotsPolicy {
   /** A real offline-to-online transition may recheck transient failures, but
    * must not reset a site's explicit 429 cooldown or grant page access. */
   forgetTransientFailures(): void {
-    this.cache.deleteWhere((_origin, item) => item.result.kind === "unreachable" && item.result.cause !== "rate_limit");
+    this.cache.deleteWhere((_origin, item) => item.result.kind === "unreachable" && ["network", "server"].includes(item.result.cause));
   }
 
   async assertAllowed(rawUrl: string, options?: { signal?: AbortSignal }): Promise<void> {
@@ -105,6 +114,7 @@ export class RobotsPolicy {
     if (item.result.kind === "unreachable") {
       if (item.result.cause === "network") throw new RobotsNetworkUnavailableError(item.result.reason);
       if (item.result.cause === "rate_limit") throw new RobotsRateLimitedError();
+      if (item.result.cause === "challenge") throw new RobotsChallengeError();
       throw new RobotsUnreachableError();
     }
     if (item.result.kind === "rules" && !isRobotsPathAllowed(item.result.rules, url.pathname + url.search)) {
@@ -126,6 +136,7 @@ export class RobotsPolicy {
             signal: request.signal
           });
           throwIfAborted(request.signal);
+          assertNoAccessChallenge(response.headers);
           const location = response.headers.get("location");
           if (location && response.status >= 300 && response.status < 400) {
             if (redirects === 5) return { expiresAt: Date.now() + POLICY_CACHE_MS, result: { kind: "unavailable" } };
@@ -158,6 +169,7 @@ export class RobotsPolicy {
       // the reader's policy fallback after the request has been abandoned.
       if (signal?.aborted) throw abortError(signal);
       if (error instanceof RobotsResponseTooLargeError) throw error;
+      if (error instanceof AccessChallengeError) return { expiresAt: Date.now() + SERVER_RETRY_MS, result: { kind: "unreachable", cause: "challenge" } };
       const serverFailure = error instanceof RobotsUnreachableError;
       return { expiresAt: Date.now() + (serverFailure ? SERVER_RETRY_MS : NETWORK_RETRY_MS),
         result: serverFailure ? { kind: "unreachable", cause: "server" }
