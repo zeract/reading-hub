@@ -15,3 +15,12 @@ it("cancels backoff without another request and redacts diagnostics",async()=>{
  const task=retryReaderImage(read,abort.signal);const rejected=expect(task).rejects.toThrow();await Promise.resolve();abort.abort();await rejected;await vi.runAllTimersAsync();expect(read).toHaveBeenCalledTimes(1);
  expect(readerImageDiagnostic(new Error("private URL or token")).message).not.toContain("private");
 });
+
+it('classifies persistent failures without conflating policy, size and transport',async()=>{
+ const {readerImageFailure}=await import('../src/main/reader-image-retry');
+ const {ReaderImageSizeError}=await import('../src/main/reader-image-format');
+ expect(readerImageFailure(new ReaderImageSizeError())).toEqual({reason:'size_limit',retryable:false});
+ expect(readerImageFailure(new ReaderImageHttpError(429))).toEqual({reason:'http_429',retryable:true});
+ expect(readerImageFailure(new ReaderImageHttpError(501))).toEqual({reason:'http_501',retryable:false});
+ expect(readerImageFailure(new Error('private data'))).toEqual({reason:'unclassified',retryable:false});
+});

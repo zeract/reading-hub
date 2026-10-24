@@ -5,11 +5,10 @@ import { ArticleReader, type ReaderReadOptions } from "./article-reader";
 import { withArticleDocument } from "./article-document";
 import { combineAbortSignals, throwIfAborted } from "./cancellation";
 import type { ReadingDatabase } from "./database";
-import { NetworkRequestError, type PublicHttpClient } from "./http";
+import type { PublicHttpClient } from "./http";
 import { ArticlePersistenceContentError, articleImageUrls } from "./persistence/article-store";
 import { readerFailureDiagnostic } from "./reader-diagnostics";
-import { ReaderImageHttpError } from "./reader-image-retry";
-import { RobotsNetworkUnavailableError } from "./robots";
+import { readerImageFailure } from "./reader-image-retry";
 
 /** Local library ownership around the existing acquisition pipeline. No second extractor or renderer. */
 export class ArticleLibrary {
@@ -132,9 +131,8 @@ export class ArticleLibrary {
         try { data = await this.http.getImageDataUrl(row.url, row.referrer, { signal }); }
         catch (error) {
           if (signal.aborted) return;
-          const reason = readerFailureDiagnostic("feed", error).reason;
-          this.db.articles.finishMedia(row, error instanceof ReaderImageHttpError ? `http_${error.status}` : reason,
-            error instanceof NetworkRequestError || error instanceof RobotsNetworkUnavailableError || error instanceof ReaderImageHttpError && error.status >= 500);
+          const failure = readerImageFailure(error);
+          this.db.articles.finishMedia(row, failure.reason, failure.retryable);
           return;
         }
         throwIfAborted(signal);

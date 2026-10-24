@@ -258,3 +258,18 @@ it("keeps sibling downloads in the worker lifetime when a disk write fails", asy
     expect(settled).toBe(true);expect(save).toHaveBeenCalledTimes(2);
   } finally { finish?.(IMAGE);await f.close();warn.mockRestore(); }
 });
+
+it('reclassifies legacy unknowns once while retaining the retry budget and explicit denials',async()=>{
+ const f=fixture();try{
+  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0];
+  for(const reason of ['unknown','unclassified','robots_disallowed']){
+   const row={entry_id:entry.id,url:`https://example.com/${reason}.png`,referrer:entry.url,state:'pending',attempts:0};
+   f.db.articles.registerImage(entry.id,row.url,entry.url);f.db.articles.beginMedia(row);f.db.articles.finishMedia(row,reason,false);
+  }
+  f.db.articles.recover();
+  const pending=f.db.articles.pendingMedia().filter(r=>r.url.endsWith('unknown.png'));
+  expect(pending).toHaveLength(1);expect(pending[0].attempts).toBe(1);
+  f.db.articles.beginMedia(pending[0]);f.db.articles.finishMedia(pending[0],'unclassified',false);f.db.articles.recover();
+  expect(f.db.articles.pendingMedia().some(r=>/unknown|unclassified|robots_disallowed/.test(r.url))).toBe(false);
+ }finally{await f.close()}
+});

@@ -1,6 +1,9 @@
 import { load } from "cheerio";
 import type { Element } from "domhandler";
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+export class InvalidSvgImageError extends Error {
+  constructor(message: string) { super(message); this.name = "InvalidSvgImageError"; }
+}
 function svgName(node: Element): string | undefined {
   const parts = node.tagName.split(":");
   if (parts.length === 1) return parts[0];
@@ -22,11 +25,15 @@ function safeValue(name: string, value: string): boolean {
 }
 /** Static SVG image subset. No scripts, stylesheets, embedded documents or remote subresources. */
 export function sanitizeSvgImage(bytes: Buffer): Buffer {
-  const input = bytes.toString("utf8");
-  if (/<!DOCTYPE|<!ENTITY/i.test(input)) throw new Error("SVG 图片包含不支持的文档声明。");
+  // Strip an inert external declaration before parsing; never load a DTD or
+  // accept an internal subset/entity declaration. Common SVG exporters emit it.
+  let input = bytes.toString("utf8");
+  if (/<!ENTITY/i.test(input)) throw new InvalidSvgImageError("SVG 图片包含不支持的文档声明。");
+  input = input.replace(/<!DOCTYPE\s+svg(?:\s+(?:PUBLIC\s+(?:"[^"<>\[\]]*"|'[^'<>\[\]]*')\s+|SYSTEM\s+)(?:"[^"<>\[\]]*"|'[^'<>\[\]]*'))?\s*>/g, "");
+  if (/<!DOCTYPE/i.test(input)) throw new InvalidSvgImageError("SVG 图片包含不支持的文档声明。");
   const $ = load(input, { xml: true });
   const root = $.root().children();
-  if (root.length !== 1 || svgName(root[0]) !== "svg") throw new Error("SVG 图片格式无效。");
+  if (root.length !== 1 || svgName(root[0]) !== "svg") throw new InvalidSvgImageError("SVG 图片格式无效。");
   // Resolve XML namespaces before removing original namespace declarations.
   const nodes = root.find("*").addBack().toArray();
   for (const node of nodes) if ("tagName" in node) node.name = svgName(node) ?? "unsupported";

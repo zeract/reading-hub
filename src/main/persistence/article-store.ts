@@ -86,6 +86,10 @@ export class ArticleStore {
     for (const table of ["article_media", "article_acquisitions"]) {
       this.db.prepare(`UPDATE ${table} SET state='pending',attempts=MAX(0,attempts-1) WHERE state='running'`).run();
     }
+    // Legacy image failures conflated body transport errors, size and SVG
+    // declarations. Reclassify once within the existing three-attempt budget;
+    // new unknowns use "unclassified" and do not re-enter this compatibility path.
+    this.db.prepare("UPDATE article_media SET state='pending' WHERE state='failed' AND failure='permanent:unknown' AND attempts<3").run();
   }
   pendingMedia(): MediaRecord[] {
     return this.db.prepare("SELECT entry_id,url,referrer,state,attempts FROM article_media WHERE state='pending' AND attempts<3 LIMIT 4").all() as MediaRecord[];

@@ -1,6 +1,6 @@
 import { load } from "cheerio";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PublicHttpClient } from "../src/main/http";
+import { PublicHttpClient, NetworkRequestError } from "../src/main/http";
 const fetcher = vi.hoisted(() => vi.fn());
 vi.mock("../src/main/network", () => ({ chromiumFetch: fetcher }));
 const target = "https://example.com/image.png";
@@ -60,13 +60,16 @@ describe("bounded image responses", () => {
   it("times out a stalled body even if the transport does not settle cancellation", async () => {
     vi.useFakeTimers();
     const cancel = vi.fn(() => new Promise<void>(() => undefined));
-    const body = new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => undefined), cancel }, { highWaterMark: 0 });
-    fetcher.mockResolvedValueOnce(new Response(body, { headers: { "content-type": "image/png" } }));
-    const rejected = expect(client().getImageDataUrl(target, referrer)).rejects.toThrow("图片请求超时");
-    await vi.advanceTimersByTimeAsync(20_000);
+    const bodies: ReadableStream<Uint8Array>[] = [];
+    fetcher.mockImplementation(async () => {
+      const body = new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => undefined), cancel }, { highWaterMark: 0 });
+      bodies.push(body); return new Response(body, { headers: { "content-type": "image/png" } });
+    });
+    const rejected = expect(client().getImageDataUrl(target, referrer)).rejects.toBeInstanceOf(NetworkRequestError);
+    await vi.advanceTimersByTimeAsync(40_500);
     await rejected;
-    expect(cancel).toHaveBeenCalledTimes(1);
-    expect(body.locked).toBe(false);
+    expect(cancel).toHaveBeenCalledTimes(2);
+    expect(bodies.every(body => !body.locked)).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -110,4 +113,24 @@ it("sanitizes a bounded SVG before returning durable image bytes", async () => {
   expect(xml).not.toMatch(/script|foreignObject|onload|evil\.example|127\.0\.0\.1|style=/);
   fetcher.mockResolvedValueOnce(new Response('<!DOCTYPE svg [<!ENTITY secret SYSTEM "file:///private/key">]><svg>&secret;</svg>', { headers: { "content-type": "image/svg+xml" } }));
   await expect(client().getImageDataUrl(target, referrer)).rejects.toThrow("文档声明");
+});
+
+it.each(['application/octet-stream',''])('recognizes binary raster signatures with generic MIME %s',async type=>{
+  const bytes=Buffer.from([255,216,255,224,0,0]);
+  fetcher.mockResolvedValueOnce(new Response(bytes,{headers:{'content-type':type}}));
+  expect(await client().getImageDataUrl(target,referrer)).toBe('data:image/jpeg;base64,'+bytes.toString('base64'));
+});
+it.each(['<html>error</html>','<script>alert(1)</script>','not an image'])('does not sniff active or unrecognized generic content',async body=>{
+  fetcher.mockResolvedValueOnce(new Response(body,{headers:{'content-type':'application/octet-stream'}}));
+  await expect(client().getImageDataUrl(target,referrer)).rejects.toThrow('不是可安全');
+});
+it.each(['text/plain','application/octet-stream'])('sanitizes mislabeled SVG rather than forwarding active XML (%s)',async type=>{
+  fetcher.mockResolvedValueOnce(new Response('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><script>alert(1)</script><rect width="10" height="10"/></svg>',{headers:{'content-type':type}}));
+  const data=await client().getImageDataUrl(target,referrer);
+  expect(data).toMatch(/^data:image\/svg\+xml;base64,/);
+  expect(Buffer.from(data.split(',')[1],'base64').toString()).not.toMatch(/onload|script|alert/);
+});
+it('does not reinterpret explicit HTML as a raster image',async()=>{
+  fetcher.mockResolvedValueOnce(new Response(Buffer.from([255,216,255]),{headers:{'content-type':'text/html'}}));
+  await expect(client().getImageDataUrl(target,referrer)).rejects.toThrow('不是可安全');
 });

@@ -1,4 +1,5 @@
 import { sanitizeSvgImage } from "./reader-svg-image";
+import { rasterImageType, ReaderImageRedirectError, ReaderImageSizeError } from "./reader-image-format";
 import { retryReaderImage, ReaderImageHttpError } from "./reader-image-retry";
 import { downloadReaderVideo } from "./reader-video";
 import { assertFeedSubscriptionUrl, assertPublicUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
@@ -96,11 +97,7 @@ export const NETWORK_REQUEST_MESSAGES = {
   connection: "无法连接到该站点。请检查网络或系统代理设置后重试。"
 } as const;
 
-/**
- * The failed-image fallback intentionally converts only raster images to data
- * URLs. SVG can carry active/external content, so it remains a direct browser
- * image and is never proxied until a dedicated SVG sanitiser exists.
- */
+/** Unsupported responses must not enter the local image store. */
 export class UnsupportedReaderImageTypeError extends Error {
   constructor(readonly contentType: string) {
     super("远程资源不是可安全由本地代理显示的图片。");
@@ -286,22 +283,39 @@ export class PublicHttpClient {
         }
         const location = response.headers.get("location");
         if (location && response.status >= 300 && response.status < 400) {
-          if (redirectCount === 5) throw new Error("图片重定向次数过多，已停止请求。");
+          if (redirectCount === 5) throw new ReaderImageRedirectError();
           targetUrl = assertPublicUrl(new URL(location, targetUrl).toString()).toString();
           continue;
         }
         if (!response.ok) throw new ReaderImageHttpError(response.status);
-        const contentType = response.headers.get("content-type")?.split(";", 1)[0].toLowerCase() || "";
-        if (!/^(image\/(?:svg\+xml|avif|gif|jpe?g|png|webp|x-icon|vnd\.microsoft\.icon))$/.test(contentType)) {
+        let contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() || "";
+        const genericType = !contentType || contentType === "application/octet-stream" || contentType === "text/plain";
+        if (!genericType && !/^(image\/(?:svg\+xml|avif|gif|jpe?g|png|webp|x-icon|vnd\.microsoft\.icon))$/.test(contentType)) {
           throw new UnsupportedReaderImageTypeError(contentType);
         }
         const maxBytes = 8_000_000;
         const size = Number(response.headers.get("content-length") ?? 0);
-        if (size > maxBytes) throw new Error("图片响应超过 8 MB，已跳过加载。");
-        const bytes = Buffer.from(await readResponseBytes(response, (_chunk, receivedBytes) => {
-          if (receivedBytes > maxBytes) throw new Error("图片响应超过 8 MB，已跳过加载。");
-        }, request.signal));
+        if (size > maxBytes) throw new ReaderImageSizeError();
+        let bytes: Buffer;
+        try {
+          bytes = Buffer.from(await readResponseBytes(response, (_chunk, receivedBytes) => {
+            if (receivedBytes > maxBytes) throw new ReaderImageSizeError();
+          }, request.signal));
+        } catch (error) {
+          if (error instanceof ReaderImageSizeError) throw error;
+          if (signal.aborted) throw abortError(signal);
+          throw new NetworkRequestError(error);
+        }
         throwIfAborted(request.signal);
+        if (genericType) {
+          const detected = rasterImageType(bytes);
+          if (detected) contentType = detected;
+          else if (/^\s*(?:<\?xml\b|<!DOCTYPE\s+svg\b|<(?:[\w-]+:)?svg(?:\s|\/?>))/.test(bytes.toString("utf8"))) {
+            // Textual SVG still passes the same strict root check and static
+            // sanitizer below; explicit HTML responses never reach this path.
+            contentType = "image/svg+xml";
+          } else throw new UnsupportedReaderImageTypeError(contentType);
+        }
         const safeBytes = contentType === "image/svg+xml" ? sanitizeSvgImage(bytes) : bytes;
         return `data:${contentType};base64,${safeBytes.toString("base64")}`;
       } finally {
@@ -309,7 +323,7 @@ export class PublicHttpClient {
         request.dispose();
       }
     }
-    throw new Error("图片重定向次数过多，已停止请求。");
+    throw new ReaderImageRedirectError();
   }
 }
 
