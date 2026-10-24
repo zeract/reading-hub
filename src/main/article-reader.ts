@@ -31,6 +31,7 @@ export interface ReaderReadOptions {
   /** Shared cancellation for foreground reads and audits. */
   signal?: AbortSignal;
   inlineLanguage?: string;
+  refresh?: boolean;
   /** Optional main-process audit observer; never supplied over IPC. */
   onDiagnostic?: (diagnostic: ReaderDiagnostic) => void;
 }
@@ -70,15 +71,24 @@ export class ArticleReader {
     return withArticleDocument(await this.readAtUrl(entry, source, entry.url, options, true));
   }
 
+  restoreSavedArticle(entry: Entry, article: ReaderArticle, signal?: AbortSignal): ReaderArticle {
+    return this.rememberLanguageVariants(entry.id, article, [], signal);
+  }
+
   async readLanguageVariant(entry: Entry, source: Source | undefined, rawUrl: string, options?: ReaderReadOptions): Promise<ReaderArticle> {
+    const { variant, cached } = this.assertLanguageVariant(entry.id, rawUrl, options?.inlineLanguage);
+    return withArticleDocument(await this.readAtUrl(entry, source, variant.url, options, false, cached.variants));
+  }
+
+  assertLanguageVariant(entryId: string, rawUrl: string, inlineLanguage?: string) {
     const requestedUrl = assertPublicUrl(rawUrl).toString();
-    const cached = this.languageVariants.get(entry.id);
+    const cached = this.languageVariants.get(entryId);
     const requestedCanonicalUrl = canonicalizeUrl(requestedUrl);
-    const variant = cached?.variants.find((candidate) => canonicalizeUrl(candidate.url) === requestedCanonicalUrl && candidate.inlineLanguage === options?.inlineLanguage);
+    const variant = cached?.variants.find((candidate) => canonicalizeUrl(candidate.url) === requestedCanonicalUrl && candidate.inlineLanguage === inlineLanguage);
     if (!cached || !variant) {
       throw new Error("这个文章的语言版本已过期或不可用，请重新打开文章后再切换。");
     }
-    return withArticleDocument(await this.readAtUrl(entry, source, variant.url, options, false, cached.variants));
+    return { variant, cached };
   }
 
   private async readAtUrl(
@@ -158,7 +168,7 @@ export class ArticleReader {
     // out) even though its RSS response already supplied a body. That body is
     // part of the user's subscription, so re-fetch and sanitise it in memory
     // before surfacing an avoidable read error. This never retries a blocked
-    // original page and never persists full Feed content.
+    // original page; ArticleLibrary owns any subsequent durable save.
     if (!allowFeedFallback) {
       if (failure) throw failure;
       throw new ArticleContentUnavailableError();
@@ -232,8 +242,14 @@ export class ArticleReader {
       return undefined;
     }
 
+    return this.readFeedBody(entry, item.feedContentHtml, response.url, options);
+  }
+
+  /** Shared import for sync-time bodies and read-time Feed fallback. */
+  async readFeedBody(entry: Entry, html: string, baseUrl: string, options?: ReaderReadOptions): Promise<ReaderArticle | undefined> {
+    throwIfAborted(options?.signal);
     const renderProfile = resolveReaderProfile(entry.url);
-    const preparedContent = prepareSanitizedContent(item.feedContentHtml, response.url);
+    const preparedContent = prepareSanitizedContent(html, baseUrl);
     if (preparedContent.formulaRenderPolicy === "scientific-document" && !this.scientificMath.isReady()) {
       await awaitWithAbort(this.scientificMath.ready().catch(() => undefined), options?.signal);
     }
@@ -252,7 +268,7 @@ export class ArticleReader {
       reportReaderDiagnostic(options?.onDiagnostic, { stage: "feed", reason: "no_content" });
       return undefined;
     }
-    const coverCandidate = safeUrl(entry.imageUrl, response.url);
+    const coverCandidate = safeUrl(entry.imageUrl, baseUrl);
     return {
       entryId: entry.id,
       url: entry.url,

@@ -97,7 +97,9 @@ export class RewriteService {
         if (!entry)
             return;
         this.database.rewrites.progress(job, 0, 0);
-        const article = withArticleDocument(await this.articles.read(entry, this.database.getSource(entry.sourceId), { signal }));
+        // Legacy fingerprints depend on the transient sanitized import, which is not
+        // reconstructed from a rendered local tree. Preserve their original read path.
+        const article = withArticleDocument(await this.articles.read(entry, this.database.getSource(entry.sourceId), { signal, refresh: this.database.rewrites.hasLegacyCheckpoint(job) }));
         throwIfAborted(signal);
         const plain=articleDocumentText(article.document!);
         if(isReaderSummaryContent(article.contentMode))throw new RewriteContentError(readerSummaryUnavailableMessage(article.contentMode));

@@ -1,3 +1,4 @@
+import { sanitizeSvgImage } from "./reader-svg-image";
 import { retryReaderImage, ReaderImageHttpError } from "./reader-image-retry";
 import { downloadReaderVideo } from "./reader-video";
 import { assertFeedSubscriptionUrl, assertPublicUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
@@ -271,7 +272,7 @@ export class PublicHttpClient {
           response = await fetchResponse(chromiumFetch, targetUrl, {
             headers: {
               "User-Agent": "ReadingHub/0.1 (+local reader)",
-              Accept: "image/avif,image/webp,image/apng,image/png,image/jpeg,image/gif,image/x-icon,image/vnd.microsoft.icon;q=0.9,*/*;q=0.1"
+              Accept: "image/svg+xml,image/avif,image/webp,image/apng,image/png,image/jpeg,image/gif,image/x-icon,image/vnd.microsoft.icon;q=0.9,*/*;q=0.1"
             },
             redirect: "manual",
             referrer,
@@ -291,7 +292,7 @@ export class PublicHttpClient {
         }
         if (!response.ok) throw new ReaderImageHttpError(response.status);
         const contentType = response.headers.get("content-type")?.split(";", 1)[0].toLowerCase() || "";
-        if (!/^(image\/(?:avif|gif|jpe?g|png|webp|x-icon|vnd\.microsoft\.icon))$/.test(contentType)) {
+        if (!/^(image\/(?:svg\+xml|avif|gif|jpe?g|png|webp|x-icon|vnd\.microsoft\.icon))$/.test(contentType)) {
           throw new UnsupportedReaderImageTypeError(contentType);
         }
         const maxBytes = 8_000_000;
@@ -301,7 +302,8 @@ export class PublicHttpClient {
           if (receivedBytes > maxBytes) throw new Error("图片响应超过 8 MB，已跳过加载。");
         }, request.signal));
         throwIfAborted(request.signal);
-        return `data:${contentType};base64,${bytes.toString("base64")}`;
+        const safeBytes = contentType === "image/svg+xml" ? sanitizeSvgImage(bytes) : bytes;
+        return `data:${contentType};base64,${safeBytes.toString("base64")}`;
       } finally {
         discardResponseBody(response);
         request.dispose();

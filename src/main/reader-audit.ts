@@ -4,7 +4,7 @@ import { load } from "cheerio";
 import { ArticleReader } from "./article-reader";
 import type { ReaderReadOptions } from "./article-reader";
 import { ReadingDatabase } from "./database";
-import { PublicHttpClient, UnsupportedReaderImageTypeError } from "./http";
+import { PublicHttpClient } from "./http";
 import { IsolatedPageRenderer, type RenderedPage } from "./page-renderer";
 import { resolveReaderProfile } from "./reader-extraction";
 import { RobotsDisallowedError, RobotsPolicy } from "./robots";
@@ -271,11 +271,8 @@ export function readerAuditSessionUnavailable(source: Source, options: ReaderAud
 }
 
 export function expectedImageProxyDiagnostic(error: unknown): string | undefined {
-  if (error instanceof UnsupportedReaderImageTypeError && error.contentType === "image/svg+xml") {
-    return "首图为 SVG；正文保留直接图片显示，加载失败时不会绕过安全代理限制。";
-  }
   if (error instanceof RobotsDisallowedError) {
-    return `${error.message} 首图的本地失败回退受 robots.txt 限制；正文保留原始图片地址与安全原文入口。`;
+    return `${error.message} 首图无法下载并保存到本地；阅读器保留安全原文入口。`;
   }
   return undefined;
 }
@@ -284,14 +281,12 @@ async function inspectFirstImage(http: PublicHttpClient, entry: Entry, article: 
   const imageUrl = load(article.contentHtml)("img").first().attr("src");
   if (!imageUrl) return;
   try {
-    // The data URL is held in memory only. This checks the same robots-aware
-    // proxy used for a failed renderer image without retaining a copy.
+    // This read-only audit checks the same restricted download path as local
+    // persistence, without modifying the user library.
     await http.getImageDataUrl(imageUrl, entry.url, { signal });
   } catch (error) {
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : error;
-    // The renderer can safely use a remote SVG as an <img>, but the main
-    // process deliberately refuses to turn un-sanitised SVG into a data URL.
-    // That is an expected proxy exclusion rather than a broken article image.
+    // Access restrictions remain explicit audit metadata.
     const diagnostic = expectedImageProxyDiagnostic(error);
     if (diagnostic) {
       result.imageDiagnostics = [...(result.imageDiagnostics || []), diagnostic];

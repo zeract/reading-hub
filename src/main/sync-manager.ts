@@ -1,3 +1,4 @@
+import type { ArticleLibrary } from "./article-library";
 import { isRecruitmentUrl } from "./content-eligibility";
 import { isManualExtractionRule } from "./extraction-rule";
 import { canonicalizeContentUrl } from "../shared/url";
@@ -30,7 +31,8 @@ export class SyncManager {
     private readonly db: ReadingDatabase,
     private readonly registry: ConnectorRegistry,
     private readonly maintenance?: ContentMaintenance,
-    private readonly connectivity?: { isOnline(): boolean; onRestored(): void }
+    private readonly connectivity?: { isOnline(): boolean; onRestored(): void },
+    private readonly articles?: ArticleLibrary
   ) {}
 
   start(): void {
@@ -134,7 +136,12 @@ export class SyncManager {
         const outcome = await connector.sync({ source, subscription, account, checkpoint: this.db.getCheckpoint(subscription.id), signal });
         throwIfAborted(signal);
         this.assertOpen();
-        return this.db.writeTransaction(() => {
+        const incoming = outcome.entries.map(entry => connector.normalize(entry, source))
+          .filter(createSubscriptionScopeMatcher(subscription.scope));
+        const bodies = await this.articles?.prepareFeedBodies(incoming, outcome.bodies, signal);
+        throwIfAborted(signal);
+        this.assertOpen();
+        const committed = this.db.writeTransaction(() => {
           const currentSource = currentSourceForSync(this.db, source, subscription);
           let effectiveSource = connectorId === "generic" && outcome.extractionRule
             ? this.db.replaceAutomaticRule(currentSource.id, outcome.extractionRule)
@@ -152,7 +159,7 @@ export class SyncManager {
           // across RSS, web, platform, or future adapters.
           const saved = outcome.notModified
             ? { inserted: 0, accepted: 0, identityConflicts: 0 }
-            : this.saveRawEntries(effectiveSource, outcome.entries, subscription);
+            : this.saveRawEntries(effectiveSource, outcome.entries, subscription, bodies);
           const inserted = saved.inserted;
           if (connectorId === "generic" && !isManualExtractionRule(effectiveSource.extractionRule) && saved.accepted >= 2) {
             const pageIdentity = canonicalizeContentUrl(effectiveSource.url);
@@ -177,6 +184,8 @@ export class SyncManager {
           this.db.recordSyncEvent(source.id, updated.status === "needs_review" || saved.identityConflicts > 0 ? "warning" : "success", outcome.entries.length, inserted, eventMessage);
           return { inserted, source: updated };
         });
+        this.articles?.wake();
+        return committed;
       } catch (error) {
         throwIfAborted(signal);
         if (error instanceof SyncCancelledError) throw error;
@@ -198,10 +207,11 @@ export class SyncManager {
     if (saved.identityConflicts > 0) {
       this.db.recordSyncEvent(source.id, "warning", entries.length, saved.inserted, `预览已跳过 ${saved.identityConflicts} 条身份冲突内容`);
     }
+    this.articles?.wake();
     return saved.inserted;
   }
 
-  private saveRawEntries(source: Source, entries: RawEntry[], subscription?: Subscription): { inserted: number; accepted: number; identityConflicts: number } {
+  private saveRawEntries(source: Source, entries: RawEntry[], subscription?: Subscription, bodies?: Map<string, import("../shared/types").ReaderArticle>): { inserted: number; accepted: number; identityConflicts: number } {
     const connector = this.registry.get(source.connectorId ?? source.kind);
     const eligible = connector.manifest.entryPolicy === "article-links"
       ? entries.filter((entry) => !isRecruitmentUrl(entry.url))
@@ -212,7 +222,8 @@ export class SyncManager {
       : normalized;
     const saved = this.db.saveEntriesWithReport(accepted, {
       initialCollection: source.lastSuccessfulAt === undefined,
-      identityNamespaces: connector.manifest.identityNamespaces ?? []
+      identityNamespaces: connector.manifest.identityNamespaces ?? [],
+      onSaved: (entry, storedId) => this.articles?.commitCollected(entry, storedId, bodies)
     });
     return { ...saved, accepted: accepted.length };
   }

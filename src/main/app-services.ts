@@ -1,3 +1,4 @@
+import { ArticleLibrary } from "./article-library";
 import { RewriteService } from "./rewrite-service";
 import { AcademicAuthorConnector } from "./academic";
 import { AiService } from "./ai-service";
@@ -30,7 +31,7 @@ export interface ApplicationServices {
   academic: AcademicAuthorConnector;
   learningAssistant: AiService;
   rewrites: RewriteService;
-  articles: ArticleReader;
+  articles: ArticleLibrary;
   inAppArticleViewer: InAppArticleViewer;
   beginShutdown(): void;
   close(): Promise<void>;
@@ -51,6 +52,7 @@ export async function createApplicationServices(databasePath: string): Promise<A
     if (!process.env.READING_HUB_READER_AUDIT) {
       await removeRetiredPlatformAccounts(database, services.secrets);
       services.rewrites.start();
+      services.articles.start();
     }
     return services;
   } catch (error) {
@@ -82,10 +84,12 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
   registry.register(academic);
   const maintenance = new ContentMaintenance(database);
   database.rescheduleLegacyRobotsFailure(new RobotsUnreachableError().message);
+  const articles = new ArticleLibrary(database, new ArticleReader(http, renderer, (url, options) => zhihuFollow.renderArticle(url, options)), http);
   const sync = new SyncManager(database, registry, maintenance, {
     isOnline: () => net.isOnline(),
     onRestored: () => {
       robots.forgetTransientFailures();
+      articles.onNetworkRestored();
       database.expediteNetworkFailures([
         RobotsNetworkUnavailableError.messageText,
         // Earlier versions persisted this generic message even for offline failures.
@@ -93,9 +97,9 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
         ...Object.values(NETWORK_REQUEST_MESSAGES)
       ]);
     }
-  });
+  }, articles);
   const sources = new SourceService(database, probe, sync, zhihuFollow, registry);
-  const articles = new ArticleReader(http, renderer, (url, options) => zhihuFollow.renderArticle(url, options));
+
   const inAppArticleViewer = new InAppArticleViewer();
   const rewrites = new RewriteService(database, articles, learningAssistant);
 
@@ -120,6 +124,7 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
   const beginShutdown = () => {
     zhihuFollow.close();
     sync.beginShutdown();
+    articles.beginShutdown();
     rewriteClose ??= rewrites.close();
     assistantClose ??= learningAssistant.close();
     // Begin cleanup before the IPC drain; retain any failure for close().
@@ -144,7 +149,7 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
     beginShutdown,
     close: () => {
       beginShutdown();
-      closePromise ??= Promise.all([sync.close(), assistantClose, rewriteClose]).then(() => database.close());
+      closePromise ??= Promise.all([sync.close(), assistantClose, rewriteClose, articles.close()]).then(() => database.close());
       return closePromise;
     }
   };

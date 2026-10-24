@@ -1,3 +1,4 @@
+import { load } from "cheerio";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PublicHttpClient } from "../src/main/http";
 const fetcher = vi.hoisted(() => vi.fn());
@@ -92,10 +93,21 @@ describe("bounded image responses", () => {
     const body = new ReadableStream<Uint8Array>({ cancel }, { highWaterMark: 0 });
     const response = kind === "redirect" ? new Response(body, { status: 302, headers: { location: "https://127.0.0.1/private" } })
       : kind === "http-error" ? new Response(body, { status: 403 })
-      : new Response(body, { headers: { "content-type": "image/svg+xml" } });
+      : new Response(body, { headers: { "content-type": "text/html" } });
     fetcher.mockResolvedValueOnce(response);
     await expect(client().getImageDataUrl(target, referrer)).rejects.toThrow();
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+});
+
+it("sanitizes a bounded SVG before returning durable image bytes", async () => {
+  fetcher.mockResolvedValueOnce(new Response(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" onload="alert(1)"><style>text{fill:red}</style><script>alert(1)</script><foreignObject><div>unsafe</div></foreignObject><defs><path id="glyph" d="M0 0L10 10"/></defs><use href="#glyph"/><use href="https://evil.example/payload.svg#x"/><image href="http://127.0.0.1/private"/><rect width="50" height="50" style="fill:blue;filter:url(https://evil.example/filter)"/><text x="5" y="20">离线图形</text></svg>`, { headers: { "content-type": "image/svg+xml" } }));
+  const data = await client().getImageDataUrl(target, referrer);
+  expect(data).toMatch(/^data:image\/svg\+xml;base64,/);
+  const xml = Buffer.from(data.split(",")[1], "base64").toString();
+  expect(xml).toContain('href="#glyph"'); expect(xml).toContain('fill="blue"'); expect(load(xml, { xml: true })('text').text()).toBe('离线图形');
+  expect(xml).not.toMatch(/script|foreignObject|onload|evil\.example|127\.0\.0\.1|style=/);
+  fetcher.mockResolvedValueOnce(new Response('<!DOCTYPE svg [<!ENTITY secret SYSTEM "file:///private/key">]><svg>&secret;</svg>', { headers: { "content-type": "image/svg+xml" } }));
+  await expect(client().getImageDataUrl(target, referrer)).rejects.toThrow("文档声明");
 });

@@ -53,7 +53,7 @@ it('independently checks source semantics before translating, storing and mounti
     expect(container.querySelector('pre code')?.textContent).toBe('{\n  "allow": ["Read(*)"]\n}');
     expect(container.querySelectorAll('img')).toHaveLength(1);
     // ArticleBody preserves source ownership; request interception is tested by the media lifecycle suite.
-    expect(container.querySelector('img')?.getAttribute('src')).toBe('https://example.com/plot.png');
+    expect(container.querySelector('img')?.getAttribute('data-reader-image-url')).toBe('https://example.com/plot.png');
     expect(container.textContent).not.toContain('⟦');
     expect(container.querySelector('style')).toBeNull();
   } finally { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); }

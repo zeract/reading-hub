@@ -323,7 +323,11 @@ export interface SyncContext {
   checkpoint?: SyncCheckpoint;
 }
 
+export interface CollectedArticleBody { url: string; baseUrl: string; html: string }
+
 export interface SyncResult {
+  /** Main-process transient input; committed only after host normalization and sanitization. */
+  bodies?: CollectedArticleBody[];
   entries: RawEntry[];
   /** Optional current-user followee metadata; committed by the host with this result. */
   followees?: Followee[];
@@ -408,8 +412,10 @@ export interface ReaderLanguageVariant {
   label: string;
 }
 
-/** A transient, sanitised article document shown only inside the local reader. */
+/** Sanitised local article; only its validated document and metadata are persisted. */
 export interface ReaderArticle {
+  /** Present when reading a durable local snapshot. */
+  savedAt?: number;
   /** Transient sanitized import, used only to finish pre-document-model checkpoints. */
   importHtml?: string;
   document?: import("./article-document").ArticleDocument;

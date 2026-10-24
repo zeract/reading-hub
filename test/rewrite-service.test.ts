@@ -143,4 +143,5 @@ it.each([7,8,9,10])("reuses validated v%s checkpoints after the envelope-only pr
  sql.prepare("UPDATE article_rewrites SET checkpoint_json=? WHERE entry_id='entry'").run(JSON.stringify(cp));
  f.rewriteChunk.mockClear();f.service.enqueue("entry");await vi.waitFor(()=>expect(f.db.rewrites.get("entry")?.status).toBe("complete"));
  expect(JSON.parse(f.rewriteChunk.mock.calls[0][1]).section.id).toBe("S2");expect(f.db.rewrites.get("entry")?.result?.sections?.[0]).toBe(cp.drafts[0]);
+ expect(f.read).toHaveBeenCalledWith(expect.anything(),expect.anything(),expect.objectContaining({refresh:true}));
 });

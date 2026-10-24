@@ -30,7 +30,8 @@ describe("startup data-location migration", () => {
       raw.prepare("UPDATE sources SET kind = ?, connector_id = ? WHERE id = ?").run(kind, kind, legacy.sourceId);
       raw.prepare("UPDATE subscriptions SET connector_id = ? WHERE source_id = ?").run(kind, legacy.sourceId);
       raw.prepare("INSERT INTO sync_checkpoints (subscription_id, cursor, since_id, data_json, updated_at) VALUES (?, 'obsolete', '123', '{}', ?)").run(legacy.sourceId, NOW);
-      raw.prepare("DELETE FROM schema_migrations WHERE version = 18").run();
+      raw.exec("DROP TABLE article_documents; DROP TABLE article_media; DROP TABLE article_acquisitions;");
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= 18").run();
     } finally { raw.close(); }
     const result = await resolveDataLocation({ canonicalDirectory, legacyDirectories: [legacyDirectory], now: () => NOW });
     expect(result.kind).toBe("migrated");
@@ -116,7 +117,7 @@ describe("startup data-location migration", () => {
         .run(legacy.sourceId, "facet-pre-v17");
       raw.prepare("INSERT INTO rewrite_settings (id, settings_json) VALUES (1, ?)")
         .run('{"provider":"codex"}');
-      raw.exec("DROP TABLE data_location_migrations");
+      raw.exec("DROP TABLE article_documents; DROP TABLE article_media; DROP TABLE article_acquisitions; DROP TABLE data_location_migrations");
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(17);
     } finally {
       raw.close();
@@ -412,7 +413,7 @@ describe("startup data-location migration", () => {
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(17);
       // Mirror the pre-v17 schema rather than merely changing the marker:
       // migration 17 creates the durable origin-marker table.
-      raw.exec("DROP TABLE data_location_migrations");
+      raw.exec("DROP TABLE article_documents; DROP TABLE article_media; DROP TABLE article_acquisitions; DROP TABLE data_location_migrations");
     } finally {
       raw.close();
     }

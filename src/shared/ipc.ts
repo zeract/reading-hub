@@ -111,7 +111,7 @@ export interface ReaderApi {
   calibrateSource(id: string): Promise<CalibrationResult>;
   listEntryPage(query?: EntryPageQuery): Promise<EntryPage>;
   getLibraryCounts(): Promise<LibraryCounts>;
-  readEntry(id: string, requestId: string): Promise<ArticleReadResult>;
+  readEntry(id: string, requestId: string, refresh?: boolean): Promise<ArticleReadResult>;
   /** Opens only a language URL declared by the currently loaded article. */
   readEntryLanguageVariant(id: string, url: string, requestId: string, inlineLanguage?: string): Promise<ReaderLanguageReadResult>;
   cancelEntryRead(requestId: string): Promise<void>;

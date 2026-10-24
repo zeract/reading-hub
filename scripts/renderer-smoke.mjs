@@ -466,7 +466,7 @@ async function runChecks() {
   const fallbackReadCount = contentReadRequests;
   for (const [width, height, scale] of [[1024, 768, 1], [1280, 800, 1], [1440, 900, 1.25], [1720, 1000, 1]]) {
     await setViewport(width, height, scale);
-    const recovery = await evaluate("(() => { const notice = document.querySelector('.reader-content-notice'); const button = notice?.querySelector('button'); if (!notice || !button) return {}; button.focus(); const n=notice.getBoundingClientRect(), b=button.getBoundingClientRect(); return { label: notice.textContent.includes('原页当前无法读取'), focused: document.activeElement===button, left:b.left-n.left, right:n.right-b.right, bottom:n.bottom-b.bottom }; })()");
+    const recovery = await evaluate("(() => { const notice = document.querySelector('.reader-content-notice'); const button = notice?.querySelector('button'); if (!notice || !button) return {}; button.focus(); const n=notice.getBoundingClientRect(), b=button.getBoundingClientRect(); return { label: notice.textContent.includes('正在显示订阅 Feed 提供的正文'), focused: document.activeElement===button, left:b.left-n.left, right:n.right-b.right, bottom:n.bottom-b.bottom }; })()");
     assert(recovery.label && recovery.focused && recovery.left>=-1 && recovery.right>=-1 && recovery.bottom>=-1, `Feed recovery must be keyboard-accessible and fit the notice: ${JSON.stringify(recovery)}`);
   }
   assert(contentReadRequests === fallbackReadCount, "Feed fallback must not start an automatic retry loop.");

@@ -15,9 +15,11 @@ const invoke = async (sender: Sender, channel: string, ...args: unknown[]) => mo
 const start = (sender: Sender, requestId: unknown, suffix = "") => invoke(sender, IPC_CHANNELS.entry.loadImage, "entry", `https://example.com/image.png${suffix}`, requestId);
 const cancel = (sender: Sender, requestId: unknown) => invoke(sender, IPC_CHANNELS.entry.cancelImage, requestId);
 function setup() {
+  const http = new PublicHttpClient({ assertAllowed: vi.fn().mockResolvedValue(undefined) } as never);
   return registerIpcHandlers({
     database: { getEntry: () => ({ id: "entry", sourceId: "source", url: "https://example.com/article" }) },
-    http: new PublicHttpClient({ assertAllowed: vi.fn().mockResolvedValue(undefined) } as never)
+    http,
+    articles: { loadImage: (entry: { url: string }, url: string, options: { signal?: AbortSignal }) => http.getImageDataUrl(url, entry.url, options) }
   } as unknown as ApplicationServices);
 }
 beforeEach(() => { mocks.handlers.clear(); mocks.fetch.mockReset(); });

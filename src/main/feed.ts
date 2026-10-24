@@ -26,8 +26,8 @@ const parser = new RSSParser({
 });
 
 // This is deliberately separate from the bounded card summary. Feed HTML is
-// not durable data: it is retained only for the current fetch so the reader
-// can sanitize it in memory if the linked page cannot be requested.
+// carried separately until the shared reader sanitizes it; sync persists the
+// resulting document together with cards and the checkpoint.
 const MAX_TRANSIENT_FEED_HTML_LENGTH = 250_000;
 
 /**
@@ -35,7 +35,7 @@ const MAX_TRANSIENT_FEED_HTML_LENGTH = 250_000;
  * replayed once so cached cards can receive newly supported fields, then
  * resume normal conditional requests.
  */
-export const RSS_METADATA_REVISION = 5;
+export const RSS_METADATA_REVISION = 6;
 
 /**
  * Older generic sources are rechecked once for a declared Feed. A Feed is
@@ -175,6 +175,12 @@ export async function parseFeed(text: string, feedUrl: string): Promise<ParsedFe
 }
 
 /** The caller must sanitize body HTML before creating a ReaderArticle. */
+export async function parseFeedForSync(text: string, feedUrl: string) {
+  const feed = await parseFeedForReading(text, feedUrl);
+  const bodies = feed.entries.flatMap(item => item.feedContentHtml ? [{ url: item.url, baseUrl: feedUrl, html: item.feedContentHtml }] : []);
+  return { ...feed, entries: feed.entries.map(({ feedContentHtml: _body, ...metadata }) => metadata), bodies };
+}
+
 export async function parseFeedForReading(text: string, feedUrl: string): Promise<ParsedFeed<TransientFeedEntry>> {
   const normalizedText = text.replace(/^\uFEFF?\s*/, "");
   if (/^\{/.test(normalizedText)) return parseJsonFeed(normalizedText, feedUrl);
@@ -250,7 +256,7 @@ function parseJsonFeed(text: string, feedUrl: string): ParsedFeed<TransientFeedE
       publishedAt: parsePublishedAt(item.date_published) ?? parsePublishedAt(item.date_modified),
       summary: compactText(item.summary || item.content_text || stripHtml(item.content_html), 500),
       imageUrl: toAbsoluteUrl(item.image || item.banner_image, feedUrl),
-      feedContentHtml: transientFeedHtml(item.content_html)
+      feedContentHtml: transientFeedHtml(item.content_html || (typeof item.content_text === "string" ? `<p>${item.content_text.replace(/[&<>]/g, (c: string) => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]!)).replace(/\n/g, "<br>")}</p>` : undefined))
     }, facets));
   }
   return {
@@ -277,8 +283,8 @@ function transientFeedHtml(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const html = value.trim();
   // Truncating HTML would make the subsequent sanitizer operate on a broken
-  // document. Prefer the already-persisted summary if a Feed item is too
-  // large for the ephemeral reader path.
+  // document. Oversized items fall back to the bounded source-page acquisition
+  // queue instead of storing a truncated body.
   return html && html.length <= MAX_TRANSIENT_FEED_HTML_LENGTH ? html : undefined;
 }
 

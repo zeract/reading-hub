@@ -1,3 +1,4 @@
+import { ArticleStore } from "./persistence/article-store";
 import { RewriteStore } from "./persistence/rewrite-store";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
@@ -313,6 +314,7 @@ function subscriptionFromRow(row: SubscriptionRow, scope: SubscriptionScope = de
 export class ReadingDatabase {
   private readonly db: Database.Database;
   readonly rewrites: RewriteStore;
+  readonly articles: ArticleStore;
   private readonly changeListeners = new Set<(revision: number) => void>();
   private publishedRevision = -1;
   private publishingChanges = false;
@@ -366,6 +368,7 @@ export class ReadingDatabase {
       this.db.pragma("foreign_keys = ON");
       migrateDatabaseSchema(this.db);
       this.rewrites = new RewriteStore(this.db);
+      this.articles = new ArticleStore(this.db);
       this.publishedRevision = this.getLibraryRevision();
     } catch (error) {
       // A failed constructor has no owner that can later close its handle.
@@ -1072,13 +1075,13 @@ export class ReadingDatabase {
     return removeEntriesForSourceOrigins(this.db, source.id, doomed);
   }
 
-  saveEntries(entries: Entry[], options?: { initialCollection?: boolean; identityNamespaces?: readonly ContentIdentityNamespace[] }): number {
+  saveEntries(entries: Entry[], options?: { initialCollection?: boolean; identityNamespaces?: readonly ContentIdentityNamespace[]; onSaved?: (entry: Entry, storedId: string) => void }): number {
     return this.saveEntriesWithReport(entries, options).inserted;
   }
 
   saveEntriesWithReport(
     entries: Entry[],
-    options?: { initialCollection?: boolean; identityNamespaces?: readonly ContentIdentityNamespace[] }
+    options?: { initialCollection?: boolean; identityNamespaces?: readonly ContentIdentityNamespace[]; onSaved?: (entry: Entry, storedId: string) => void }
   ): { inserted: number; identityConflicts: number } {
     const insert = this.db.prepare(`INSERT INTO entries (
       id, source_id, canonical_url, original_url, title, author, published_at, summary, image_url,
@@ -1170,6 +1173,7 @@ export class ReadingDatabase {
         // The upsert retains an existing ID or inserts the supplied ID. Both
         // are known in this transaction; no second canonical lookup is needed.
         const storedId = existing?.id ?? entry.id;
+        options?.onSaved?.(entry, storedId);
         upsertOrigin.run(
           storedId,
           entry.sourceId,

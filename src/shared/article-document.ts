@@ -32,16 +32,21 @@ export function validArticleDocument(value:unknown):value is ArticleDocument {
  };
  return doc.children.every(n=>check(n,0));
 }
-export function articleDocumentHtml(doc:ArticleDocument):string {
+export function articleDocumentHtml(doc:ArticleDocument, deferImages=false):string {
  if(!validArticleDocument(doc))throw new Error('正文结构格式无效，请检查应用版本。');
+ const image=(attributes:Record<string,string>):string=>{
+  const values=deferImages&&attributes.src?{...attributes,'data-reader-image-url':attributes.src,src:'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'}:attributes;
+  return '<img'+Object.entries(values).map(([k,v])=>` ${k}="${escape(v)}"`).join('')+'>';
+ };
  const render=(n:ArticleNode):string=>{
   if(n.type==='text')return escape(n.text);
   if(n.type==='asset')return render(n.element);
-  if(n.type==='card')return `<aside class="reader-link-card">${n.image?`<img src="${escape(n.image)}" loading="lazy" data-reader-zoomable="true" alt="">`:''}<div><a href="${escape(n.url)}">${n.title.map(render).join('')}</a>${n.metadata.length?`<div class="reader-link-card-meta">${n.metadata.map(render).join('')}</div>`:''}</div></aside>`;
+  if(n.type==='card')return `<aside class="reader-link-card">${n.image?image({src:n.image,loading:'lazy','data-reader-zoomable':'true',alt:''}):''}<div><a href="${escape(n.url)}">${n.title.map(render).join('')}</a>${n.metadata.length?`<div class="reader-link-card-meta">${n.metadata.map(render).join('')}</div>`:''}</div></aside>`;
+  if(n.tag==='img')return image(n.attrs);
   const attributes=Object.entries(n.attrs).map(([k,v])=>` ${k}="${escape(v)}"`).join('');
   return `<${n.tag}${attributes}>`+(['br','hr','img'].includes(n.tag)?'':n.children.map(render).join('')+`</${n.tag}>`);
  };
- return (doc.cover?`<img class="reader-cover" src="${escape(doc.cover)}" loading="lazy" data-reader-zoomable="true" tabindex="0" role="button" alt="">`:'')+doc.children.map(render).join('');
+ return (doc.cover?image({class:'reader-cover',src:doc.cover,loading:'lazy','data-reader-zoomable':'true',tabindex:'0',role:'button',alt:''}):'')+doc.children.map(render).join('');
 }
 export function articleDocumentText(doc:ArticleDocument):string {
  const text=(n:ArticleNode):string=>n.type==='text'?n.text:n.type==='asset'?n.tex || (n.kind==='code'?text(n.element):''):n.type==='card'?[...n.title,...n.metadata].map(text).join(' '):n.children.map(text).join('')+(/^(p|h[1-6]|li|div|tr|blockquote)$/.test(n.tag)?'\n':'');

@@ -77,9 +77,9 @@ describe("reader audit cancellation", () => {
     ]);
   });
 
-  it("records an SVG proxy exclusion as safe reader metadata instead of an image failure", () => {
+  it("does not exempt unsupported image types from audit failures", () => {
     expect(expectedImageProxyDiagnostic(new UnsupportedReaderImageTypeError("image/svg+xml")))
-      .toContain("SVG");
+      .toBeUndefined();
     expect(expectedImageProxyDiagnostic(new UnsupportedReaderImageTypeError("text/html"))).toBeUndefined();
     expect(expectedImageProxyDiagnostic(new RobotsDisallowedError()))
       .toContain("robots.txt 不允许此路径");

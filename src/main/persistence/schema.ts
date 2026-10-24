@@ -9,7 +9,7 @@ import { ENTRY_ORDER_BY } from "./entry-order";
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 18;
+export const CURRENT_SCHEMA_VERSION = 19;
 
 type SqliteDatabase = Database.Database;
 
@@ -435,7 +435,39 @@ const MIGRATIONS: readonly SchemaMigration[] = [
       // Account records keep only the reference needed for startup Keychain
       // cleanup. Remove each record only after its credential is cleared.
     }
-  }
+  },
+  {
+    version: 19, name: "persist-acquired-article-documents-and-media", up: database => database.exec(`
+      CREATE TABLE article_documents (
+        entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+        variant TEXT NOT NULL DEFAULT '',
+        snapshot_json TEXT NOT NULL,
+        quality INTEGER NOT NULL,
+        saved_at INTEGER NOT NULL,
+        PRIMARY KEY(entry_id, variant)
+      );
+      CREATE TABLE article_media (
+        entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+        url TEXT NOT NULL,
+        referrer TEXT NOT NULL,
+        mime TEXT,
+        bytes BLOB,
+        state TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        failure TEXT,
+        PRIMARY KEY(entry_id, url)
+      );
+      CREATE INDEX article_media_pending ON article_media(state, attempts);
+      CREATE TABLE article_acquisitions (
+        entry_id TEXT PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+        state TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        failure TEXT
+      );
+      CREATE INDEX article_acquisitions_pending ON article_acquisitions(state, attempts);
+    `)
+  },
+
 ];
 
 function ensureColumn(database: SqliteDatabase, table: "sources" | "entries" | "entry_origins" | "article_rewrites", column: string, type: string): void {

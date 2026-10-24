@@ -5,7 +5,7 @@ import { assertPublicUrl, canonicalizeContentUrl, isTrustedLoopbackFeedUrl } fro
 import { inspectPublicArchiveFacets, type ArchiveFacetCatalog } from "./archive-backfill";
 import { contentNormalizer } from "./content-normalizer";
 import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage, extractPagePublishedAt, extractPublicationDateFromUrl, withPublicationDateRevision } from "./extractor";
-import { discoverFeedUrls, FEED_DISCOVERY_REVISION, looksLikeFeed, parseFeed, RSS_METADATA_REVISION } from "./feed";
+import { discoverFeedUrls, FEED_DISCOVERY_REVISION, looksLikeFeed, parseFeedForSync, RSS_METADATA_REVISION } from "./feed";
 import { isManualExtractionRule } from "./extraction-rule";
 import { loadGenericPage } from "./generic-page-loader";
 import { PublicHttpClient } from "./http";
@@ -16,7 +16,7 @@ import { responseValidators, sourceValidators } from "./response-validators";
 /** RSS and public-web fetchers return the same host-owned sync contract. */
 export type FetchOutcome = Pick<
   SyncResult,
-  "entries" | "notModified" | "emptyIsHealthy" | "etag" | "lastModified" | "validatorUrl" | "extractionRule" | "metadataRevision" | "iconUrl" | "checkpoint"
+  "entries" | "bodies" | "notModified" | "emptyIsHealthy" | "etag" | "lastModified" | "validatorUrl" | "extractionRule" | "metadataRevision" | "iconUrl" | "checkpoint"
 >;
 
 abstract class BaseConnector {
@@ -56,9 +56,10 @@ export class RssConnector extends BaseConnector implements ConnectorAdapter {
       needsMetadataReplay ? undefined : sourceValidators(source),
       { allowTrustedLoopbackFeed, signal }
     );
-    const feed = response.status === 304 ? undefined : await parseFeed(response.text, response.url);
+    const feed = response.status === 304 ? undefined : await parseFeedForSync(response.text, response.url);
     return {
       entries: feed?.entries ?? [],
+      bodies: feed?.bodies,
       notModified: response.status === 304,
       emptyIsHealthy: true,
       ...responseValidators(response),
@@ -147,10 +148,11 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
       try {
         const feedResponse = await this.http.getText(feedUrl, undefined, { signal });
         if (!looksLikeFeed(feedResponse.contentType, feedResponse.text)) continue;
-        const feed = await parseFeed(feedResponse.text, feedResponse.url);
+        const feed = await parseFeedForSync(feedResponse.text, feedResponse.url);
         if (!feed.entries.length) continue;
         return {
           entries: feed.entries,
+          bodies: feed.bodies,
           notModified: false,
           emptyIsHealthy: true,
           ...responseValidators(feedResponse),
@@ -225,9 +227,10 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
     const response = await this.http.getText(feedUrl, needsMetadataReplay ? undefined : sourceValidators(source), { signal });
     if (response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true, ...responseValidators(response) };
     if (!looksLikeFeed(response.contentType, response.text)) throw new Error("来源声明的 Feed 已不再是有效订阅，请重新校准该来源。");
-    const feed = await parseFeed(response.text, response.url);
+    const feed = await parseFeedForSync(response.text, response.url);
     return {
       entries: feed.entries,
+      bodies: feed.bodies,
       notModified: false,
       emptyIsHealthy: true,
       ...responseValidators(response),

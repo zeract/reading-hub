@@ -145,12 +145,13 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
 
   handle(IPC_CHANNELS.entry.listPage, (_event, query: unknown) => database.listEntryPage(parseEntryPageQuery(query)));
   handle(IPC_CHANNELS.entry.counts, () => database.getLibraryCounts());
-  handle(IPC_CHANNELS.entry.readContent, (event, entryId: unknown, rawRequestId: unknown) => {
+  handle(IPC_CHANNELS.entry.readContent, (event, entryId: unknown, rawRequestId: unknown, rawRefresh?: unknown) => {
     const entry = findEntry(database, requireEntityId(entryId));
     const requestId = requireText(rawRequestId, "正文请求标识无效。", 160);
+    const refresh = rawRefresh === undefined ? false : requireBoolean(rawRefresh, "重新读取参数无效。");
     return readerRequestResult(foregroundRequests.run(event.sender, async (signal) => {
       try {
-        return { kind: "article" as const, article: await articles.read(entry, database.getSource(entry.sourceId), { signal }) };
+        return { kind: "article" as const, article: await articles.read(entry, database.getSource(entry.sourceId), { signal, refresh }) };
       } catch (error) {
         throwIfAborted(signal);
         if (!(error instanceof RobotsDisallowedError)) throw error;
@@ -192,7 +193,7 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     const url = requireText(imageUrl, "图片地址无效。", 4_000);
     const requestId = requireText(rawRequestId, "图片请求标识无效。", 160);
     return foregroundRequests.run(event.sender, async (signal) => {
-      try {return await http.getImageDataUrl(url, entry.url, {signal});}
+      try {return await articles.loadImage(entry, url, {signal});}
       catch(error){throwIfAborted(signal);throw readerImageDiagnostic(error);}
     }, `image:${requestId}`);
   });
