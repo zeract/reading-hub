@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { discoverFeedUrls, hasFeedSignature, looksLikeFeed, parseFeed, parseFeedForReading } from "../src/main/feed";
+import { discoverFeedUrls, hasFeedSignature, looksLikeFeed, parseFeed, parseFeedForReading, parseFeedForSync } from "../src/main/feed";
+
+it("does not turn a plain RSS description into a durable body, while retaining explicit plain content", async () => {
+  const rss = '<rss version="2.0"><channel><title>Fixture</title><item><title>One</title><link>https://example.com/one</link><description>A plain introduction to the linked article.</description></item></channel></rss>';
+  const parsed = await parseFeedForSync(rss, "https://example.com/feed");
+  expect(parsed.entries[0].summary).toBe("A plain introduction to the linked article.");
+  expect(parsed.bodies).toEqual([]);
+  const long = "A full plain-text post with more content than its card summary. ".repeat(30);
+  expect((await parseFeedForSync(rss.replace("A plain introduction to the linked article.",long),"https://example.com/feed")).bodies[0].html).toBe(long.trim());
+  const atom = '<feed xmlns="http://www.w3.org/2005/Atom"><title>Feed</title><entry><title>One</title><id>https://example.com/one</id><link href="https://example.com/one"/><content type="text">A complete plain authored post.</content></entry></feed>';
+  expect((await parseFeedForReading(atom,"https://example.com/feed")).entries[0].feedContentHtml).toBe("A complete plain authored post.");
+});
 
 it("returns subscription metadata without transferring untrusted Feed HTML", async () => {
   const feed = await parseFeed(JSON.stringify({ version: "https://jsonfeed.org/version/1.1", title: "Fixture", items: [

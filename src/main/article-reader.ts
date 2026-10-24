@@ -8,8 +8,8 @@ import { WeightedLruCache } from "./weighted-lru-cache";
 import { compactText } from "../shared/text";
 import { assertPublicUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
 import type { Entry, ReaderArticle, ReaderLanguageVariant, Source } from "../shared/types";
-import { parseFeedForReading } from "./feed";
-import { abortError, awaitWithAbort, throwIfAborted } from "./cancellation";
+import { discoverFeedUrls, parseFeedForReading } from "./feed";
+import { abortError, awaitWithAbort, throwIfAborted, withRequestTimeout } from "./cancellation";
 import { isHtmlDocumentContentType, PublicHttpClient, type PublicRequestOptions } from "./http";
 import { ScientificMathRenderer } from "./mathjax-renderer";
 import type { PageRenderer, RenderedPage } from "./page-renderer";
@@ -48,6 +48,11 @@ const LANGUAGE_VARIANT_CACHE_TTL_MS = 15 * 60_000;
 const MAX_LANGUAGE_VARIANT_CACHES = 240;
 
 export class ArticleReader {
+  private readonly declaredFeedCache = new WeightedLruCache<string, { expiresAt: number; urls: string[] }>({
+    maxEntries: 128, maxWeight: 1_048_576,
+    weight: (key, value) => 128 + key.length * 2 + value.urls.reduce((size, url) => size + 32 + url.length * 2, 0),
+    expiresAt: value => value.expiresAt
+  });
   /**
    * The renderer never gets authority to fetch an arbitrary URL.  It can only
    * switch to a publisher-declared language variant that this short-lived,
@@ -213,15 +218,60 @@ export class ArticleReader {
   /**
    * A Feed body is an explicit part of the subscription response, not a
    * request to the linked article. Re-read it only when the user opens a
-   * blocked item, sanitize it in this process, and discard it with the
-   * ReaderArticle. SQLite never receives feedContentHtml.
+   * blocked item. ArticleLibrary persists the resulting sanitized document,
+   * never the untrusted feedContentHtml.
    */
   private async readTransientFeedBody(entry: Entry, source?: Source, options?: ReaderReadOptions): Promise<ReaderArticle | undefined> {
     throwIfAborted(options?.signal);
-    if (source?.kind !== "rss") return undefined;
-    const allowTrustedLoopbackFeed = source.config?.allowTrustedLoopbackFeed === true && isTrustedLoopbackFeedUrl(source.url);
+    if (!source || !["rss", "generic"].includes(source.kind)) return undefined;
+    const request = withRequestTimeout(options?.signal, 20_000, "订阅正文读取超时，请稍后重试。");
+    try {
+      const urls = await awaitWithAbort(this.declaredFeeds(source, request.signal), request.signal);
+      let summary: ReaderArticle | undefined;
+      for (const url of urls) {
+        try {
+          const article = await awaitWithAbort(this.readFeedEntry(entry, source, url, { ...options, signal: request.signal }), request.signal);
+          if (article && article.contentMode !== "feed_summary") return article;
+          summary ??= article;
+        } catch (error) {
+          throwIfAborted(request.signal);
+          if (source.kind === "rss") throw error;
+          reportReaderDiagnostic(options?.onDiagnostic, readerFailureDiagnostic("feed", error));
+        }
+      }
+      return summary;
+    } finally { request.dispose(); }
+  }
+
+  /** Only declared URLs: a site's root may publish the Feed omitted by its
+   * article index. This does not change subscription scope or the sync rule. */
+  private async declaredFeeds(source: Source, signal: AbortSignal): Promise<string[]> {
+    if (source.kind === "rss") return [source.url];
+    if (source.extractionRule?.feedUrl) return [assertPublicUrl(source.extractionRule.feedUrl).toString()];
+    const sourceUrl = assertPublicUrl(source.url).toString();
+    const cached = this.declaredFeedCache.get(sourceUrl);
+    if (cached) return cached.urls;
+    for (const pageUrl of new Set([sourceUrl, new URL("/", sourceUrl).toString()])) {
+      try {
+        const page = await this.http.getText(pageUrl, undefined, { signal, preferHtml: true });
+        throwIfAborted(signal);
+        const urls = discoverFeedUrls(page.text, page.url);
+        if (!urls.length) continue;
+        this.declaredFeedCache.set(sourceUrl, { urls, expiresAt: Date.now() + LANGUAGE_VARIANT_CACHE_TTL_MS });
+        return urls;
+      } catch (error) {
+        throwIfAborted(signal);
+        // This optional public page may itself be inaccessible. Never render
+        // it or infer Feed endpoints from a domain/platform URL pattern.
+      }
+    }
+    return [];
+  }
+
+  private async readFeedEntry(entry: Entry, source: Source, feedUrl: string, options: ReaderReadOptions): Promise<ReaderArticle | undefined> {
+    const allowTrustedLoopbackFeed = source.kind === "rss" && source.config?.allowTrustedLoopbackFeed === true && isTrustedLoopbackFeedUrl(feedUrl);
     const response = await this.http.getText(
-      source.url,
+      feedUrl,
       undefined,
       allowTrustedLoopbackFeed
         ? readerHttpOptions({ allowTrustedLoopbackFeed: true }, options?.signal)
@@ -240,7 +290,7 @@ export class ArticleReader {
     });
     if (!item?.feedContentHtml) {
       reportReaderDiagnostic(options?.onDiagnostic, { stage: "feed", reason: item ? "feed_body_missing" : "feed_entry_missing" });
-      return undefined;
+      return item ? createSummaryArticle(entry, item.summary, "feed_summary") : undefined;
     }
 
     return this.readFeedBody(entry, item.feedContentHtml, response.url, options);

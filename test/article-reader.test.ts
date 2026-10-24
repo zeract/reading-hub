@@ -1532,7 +1532,7 @@ describe("article reader extraction", () => {
     expect(article.coverImageUrl).toBeUndefined();
     expect(requests).toEqual([
       { url: xEntry.url, options: { maxBytes: 8_000_000, preferHtml: true } },
-      { url: source.url, options: { allowTrustedLoopbackFeed: true } }
+      { url: source.url, options: { allowTrustedLoopbackFeed: true, signal: expect.any(AbortSignal) } }
     ]);
   });
 

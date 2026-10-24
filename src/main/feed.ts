@@ -17,6 +17,7 @@ const parser = new RSSParser({
       // <description>. Keep content:encoded distinct so the reader can
       // prefer the actual feed body when both are present.
       ["content:encoded", "contentEncoded"],
+      ["description", "rssDescription"],
       // `rss-parser` exposes RSS categories for many feeds, but Atom
       // categories carry their stable `term` in attributes. Retain the raw
       // category nodes so both formats can use the same facet mapper.
@@ -35,7 +36,7 @@ const MAX_TRANSIENT_FEED_HTML_LENGTH = 250_000;
  * replayed once so cached cards can receive newly supported fields, then
  * resume normal conditional requests.
  */
-export const RSS_METADATA_REVISION = 6;
+export const RSS_METADATA_REVISION = 7;
 
 /**
  * Older generic sources are rechecked once for a declared Feed. A Feed is
@@ -193,7 +194,15 @@ export async function parseFeedForReading(text: string, feedUrl: string): Promis
     if (!url || !title) continue;
     const publishedAt = parsePublishedAt(item.isoDate) ?? parsePublishedAt(item.pubDate);
     const summary = compactText(item.contentSnippet || item.content || item.summary, 500);
-    const feedContentHtml = transientFeedHtml((item as any).contentEncoded || item.content);
+    const encoded = (item as any).contentEncoded;
+    // rss-parser aliases RSS descriptions to `content`. An unformatted exact
+    // copy of the bounded card summary supplies no additional body evidence.
+    // Keep longer plain descriptions, formatted bodies and explicit content;
+    // RSS allows descriptions to carry full posts too.
+    const descriptionOnly = (item as any).rssDescription !== undefined && !encoded;
+    const bodyMarkup = item.content && load(item.content)("p,div,section,article,ul,ol,table,pre,blockquote,figure,img,video,math,svg,h1,h2,h3,h4,h5,h6,br").length > 0;
+    const summaryOnly = descriptionOnly && !bodyMarkup && compactText(item.content, MAX_TRANSIENT_FEED_HTML_LENGTH) === summary;
+    const feedContentHtml = transientFeedHtml(encoded || (!summaryOnly ? item.content : undefined));
     const imageUrl = toAbsoluteUrl((item as any).mediaContent?.[0]?.$.url || item.enclosure?.url, feedUrl);
     if (isFeedNavigationLink({ url, title, publishedAt, summary, feedContentHtml, imageUrl }, feedUrl, feedTitle)) continue;
     const facets = feedItemFacets(item as unknown as Record<string, unknown>, feedUrl, "category");
