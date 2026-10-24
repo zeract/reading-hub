@@ -108,7 +108,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
   }
 
   sync(context: SyncContext): Promise<SyncResult> {
-    return this.fetchWithMetadata(context.source, context.signal);
+    return this.fetchWithMetadata(context.source, context.signal, context.knownPublishedAt);
   }
 
   private genericHomepageMismatchTarget(item: RawEntry, source: Source): string | undefined {
@@ -125,7 +125,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
     }
   }
 
-  async fetchWithMetadata(source: Source, signal?: AbortSignal): Promise<FetchOutcome> {
+  async fetchWithMetadata(source: Source, signal?: AbortSignal, knownPublishedAt?: SyncContext["knownPublishedAt"]): Promise<FetchOutcome> {
     const needsLegacyRuleAudit = Boolean(source.extractionRule?.itemRootSelector && source.extractionRule.autoRepairRevision !== AUTOMATIC_RULE_REVISION);
     const needsPublicationDateAudit = source.extractionRule?.publicationDateRevision !== PUBLICATION_DATE_REVISION;
     const configuredFeedUrl = source.extractionRule?.feedUrl;
@@ -168,7 +168,7 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
     }
 
     const extraction = extractGenericPage(page.text, page.url, source.extractionRule);
-    const entries = await this.enrichPublicationDates(extraction.entries, signal);
+    const entries = await this.enrichPublicationDates(extraction.entries, signal, knownPublishedAt);
     return {
       entries,
       notModified: false,
@@ -188,12 +188,12 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
    * linked public article has one. Enrich only missing records, keeping the
    * normal robots-aware HTTP policy and never persisting fetched page bodies.
    */
-  private async enrichPublicationDates(entries: RawEntry[], signal?: AbortSignal): Promise<RawEntry[]> {
+  private async enrichPublicationDates(entries: RawEntry[], signal?: AbortSignal, knownPublishedAt?: SyncContext["knownPublishedAt"]): Promise<RawEntry[]> {
     const missing = entries.filter((entry) => entry.publishedAt === undefined);
     const dates = new Map<string, number>();
     const unresolved: RawEntry[] = [];
     for (const entry of missing) {
-      const date = extractPublicationDateFromUrl(entry.url);
+      const date = knownPublishedAt?.(entry) ?? extractPublicationDateFromUrl(entry.url);
       if (date !== undefined) dates.set(entry.url, date);
       else unresolved.push(entry);
     }

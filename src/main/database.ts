@@ -889,6 +889,13 @@ export class ReadingDatabase {
     return row ? this.withOrigins([entryFromRow(row)])[0] : undefined;
   }
 
+  /** Indexed exact identity lookup; missing dates remain eligible for enrichment. */
+  getPublishedAtByCanonicalUrl(canonicalUrl: string): number | undefined {
+    const row = this.db.prepare("SELECT published_at FROM entries WHERE canonical_url = ?")
+      .get(canonicalUrl) as { published_at: number | null } | undefined;
+    return row?.published_at ?? undefined;
+  }
+
   private withOrigins(entries: Entry[]): Entry[] {
     if (!entries.length) return entries;
     // Historical imports can contain thousands of cards. Fetch their origin
