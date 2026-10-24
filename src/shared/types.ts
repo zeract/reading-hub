@@ -317,7 +317,7 @@ export interface SubscriptionDraft {
 
 export interface SyncContext {
   /** Host-owned lookup for this incoming article; no connector database access. */
-  knownPublishedAt?: (entry: RawEntry) => number | undefined;
+  knownArticleMetadata?: (entry: RawEntry) => { publishedAt?: number; hasOriginal: boolean };
   signal?: AbortSignal;
   source: Source;
   subscription: Subscription;

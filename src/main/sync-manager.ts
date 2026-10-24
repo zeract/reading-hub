@@ -134,10 +134,11 @@ export class SyncManager {
         const connector = this.registry.get(subscription.connectorId);
         if (connector.manifest.requiresAccount && !account) throw new Error(`${connector.manifest.displayName} 需要重新授权。`);
         const outcome = await connector.sync({ source, subscription, account, checkpoint: this.db.getCheckpoint(subscription.id), signal,
-          knownPublishedAt: entry => {
+          knownArticleMetadata: entry => {
             throwIfAborted(signal);
             this.assertOpen();
-            return this.db.getPublishedAtByCanonicalUrl(connector.normalize(entry, source).canonicalUrl);
+            const url = connector.normalize(entry, source).canonicalUrl;
+            return { publishedAt: this.db.getPublishedAtByCanonicalUrl(url), hasOriginal: this.db.articles.hasOriginalForUrl(url) };
           }
         });
         throwIfAborted(signal);
