@@ -19,6 +19,7 @@ import { SourceService } from "./source-service";
 import { SyncManager } from "./sync-manager";
 import { ZhihuConnector } from "./zhihu";
 import { ZhihuFollowConnector } from "./zhihu-follow";
+import { StorageWorkerClient } from "./storage-worker-client";
 
 /** Main-process dependencies assembled once at application startup. */
 export interface ApplicationServices {
@@ -47,12 +48,12 @@ export async function createApplicationServices(databasePath: string): Promise<A
   const database = new ReadingDatabase(databasePath);
   let services: ApplicationServices | undefined;
   try {
-    services = assembleApplicationServices(database);
+    services = assembleApplicationServices(database, databasePath);
     await services.sources.removeUnsubscribedSources();
     if (!process.env.READING_HUB_READER_AUDIT) {
       await removeRetiredPlatformAccounts(database, services.secrets);
       services.rewrites.start();
-      services.articles.start();
+      await services.articles.start();
     }
     return services;
   } catch (error) {
@@ -66,7 +67,7 @@ export async function createApplicationServices(databasePath: string): Promise<A
 
 /** Assembly is synchronous and does not start timers, children or windows.
  * Only a fully assembled service graph takes ownership of the database. */
-function assembleApplicationServices(database: ReadingDatabase): ApplicationServices {
+function assembleApplicationServices(database: ReadingDatabase, databasePath: string): ApplicationServices {
   const resumedAutomaticSources = database.resumeLegacyAutoPausedSources();
   const robots = new RobotsPolicy();
   const http = new PublicHttpClient(robots);
@@ -84,12 +85,13 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
   registry.register(academic);
   const maintenance = new ContentMaintenance(database);
   database.rescheduleLegacyRobotsFailure(new RobotsUnreachableError().message);
-  const articles = new ArticleLibrary(database, new ArticleReader(http, renderer, (url, options) => zhihuFollow.renderArticle(url, options)), http);
+  const articles = new ArticleLibrary(database, new ArticleReader(http, renderer, (url, options) => zhihuFollow.renderArticle(url, options)), http,
+    databasePath === ":memory:" ? undefined : new StorageWorkerClient(databasePath));
   const sync = new SyncManager(database, registry, maintenance, {
     isOnline: () => net.isOnline(),
     onRestored: () => {
       robots.forgetTransientFailures();
-      articles.onNetworkRestored();
+      void articles.onNetworkRestored().catch(() => console.warn("本地正文保存任务未能恢复，已保留待处理记录。"));
       database.expediteNetworkFailures([
         ...Object.values(RobotsNetworkUnavailableError.messages),
         // Earlier versions persisted this generic message even for offline failures.
@@ -115,7 +117,7 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
   }
   zhihuFollow.setOnAuthenticated(async () => {
     const source = sources.ensureZhihuFollowSource();
-    articles.onSourceAuthenticated(source.id);
+    await articles.onSourceAuthenticated(source.id);
     await sync.syncSource(source.id);
   });
 

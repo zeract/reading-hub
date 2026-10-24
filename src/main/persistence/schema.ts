@@ -9,7 +9,7 @@ import { ENTRY_ORDER_BY } from "./entry-order";
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 21;
+export const CURRENT_SCHEMA_VERSION = 22;
 
 type SqliteDatabase = Database.Database;
 
@@ -46,6 +46,17 @@ export function migrateDatabaseSchema(database: SqliteDatabase): void {
         .run(migration.version, migration.name, Date.now());
     })();
   }
+  // A recorded migration is not evidence that a secondary index still exists.
+  // This cheap idempotent check also repairs libraries created by early builds.
+  ensureArticleIndexes(database);
+}
+
+function ensureArticleIndexes(database: SqliteDatabase): void {
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS article_media_pending ON article_media(state, attempts);
+    CREATE INDEX IF NOT EXISTS article_acquisitions_pending ON article_acquisitions(state, attempts);
+    CREATE INDEX IF NOT EXISTS article_documents_quality ON article_documents(entry_id, variant, quality);
+  `);
 }
 
 const MIGRATIONS: readonly SchemaMigration[] = [
@@ -481,6 +492,7 @@ const MIGRATIONS: readonly SchemaMigration[] = [
       CREATE INDEX article_acquisitions_retry ON article_acquisitions(next_attempt_at) WHERE state='failed';
     `)
   },
+  { version: 22, name: "restore-article-task-and-metadata-indexes", up: ensureArticleIndexes },
 ];
 
 function ensureColumn(database: SqliteDatabase, table: "sources" | "entries" | "entry_origins" | "article_rewrites", column: string, type: string): void {

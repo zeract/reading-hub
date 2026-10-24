@@ -30,7 +30,7 @@ describe("main-process boundaries", () => {
     const index = mainFile("index.ts");
     const bootstrap = index.match(/async function bootstrap\(\): Promise<void> \{([\s\S]*?)\n\}/)?.[1] ?? "";
 
-    expect(index).toContain('resolveDataLocation');
+    expect(index).toContain('prepareStartupLibrary');
     expect(index).toContain('const LEGACY_USER_DATA_DIRECTORIES = ["Reading Hub", "Electron"] as const;');
     expect(bootstrap.indexOf("resolveStartupDatabasePath()")).toBeGreaterThanOrEqual(0);
     expect(bootstrap.indexOf("resolveStartupDatabasePath()")).toBeLessThan(bootstrap.indexOf("showStartupWindow()"));

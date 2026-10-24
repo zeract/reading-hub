@@ -3,7 +3,7 @@ import { load } from "cheerio";
 import { articleDocumentHtml, validArticleDocument } from "../../shared/article-document";
 import { assertPublicUrl } from "../../shared/url";
 import { isReaderSummaryContent, type ReaderArticle } from "../../shared/types";
-import { acquisitionRetryAt, TRANSIENT_ACQUISITION_FAILURES } from "../article-acquisition";
+import { acquisitionRetryAt, TRANSIENT_ACQUISITION_FAILURES } from "../article-acquisition-policy";
 
 export type MediaRecord = { entry_id: string; url: string; referrer: string; state: string; attempts: number };
 export type AcquisitionRecord = { entry_id: string; state: string; attempts: number };
@@ -62,10 +62,10 @@ export class ArticleStore {
     return Boolean(this.db.prepare("SELECT 1 FROM article_media WHERE entry_id=? AND url=?").get(entryId, url));
   }
   hasOriginal(entryId: string): boolean {
-    return Boolean(this.db.prepare("SELECT 1 FROM article_documents WHERE entry_id=? AND variant='' AND quality>=2").get(entryId));
+    return Boolean(this.db.prepare("SELECT 1 FROM article_documents INDEXED BY article_documents_quality WHERE entry_id=? AND variant='' AND quality>=2").get(entryId));
   }
   hasOriginalForUrl(canonicalUrl: string): boolean {
-    return Boolean(this.db.prepare(`SELECT 1 FROM entries e JOIN article_documents d ON d.entry_id=e.id
+    return Boolean(this.db.prepare(`SELECT 1 FROM entries e JOIN article_documents d INDEXED BY article_documents_quality ON d.entry_id=e.id
       WHERE e.canonical_url=? AND d.variant='' AND d.quality>=2`).get(canonicalUrl));
   }
 
@@ -102,7 +102,7 @@ export class ArticleStore {
 
   enqueue(entryId: string): void {
     this.db.prepare(`INSERT OR IGNORE INTO article_acquisitions(entry_id)
-      SELECT id FROM entries WHERE id=? AND NOT EXISTS(SELECT 1 FROM article_documents WHERE entry_id=? AND variant='' AND quality>=2)`).run(entryId, entryId);
+      SELECT id FROM entries WHERE id=? AND NOT EXISTS(SELECT 1 FROM article_documents INDEXED BY article_documents_quality WHERE entry_id=? AND variant='' AND quality>=2)`).run(entryId, entryId);
   }
   /** Repair local task coverage, never discover or import remote history. */
   reconcileSource(sourceId: string): void {
@@ -110,7 +110,7 @@ export class ArticleStore {
       SELECT e.id FROM entries e LEFT JOIN article_acquisitions a ON a.entry_id=e.id
       WHERE (e.source_id=? OR EXISTS(SELECT 1 FROM entry_origins o WHERE o.entry_id=e.id AND o.source_id=?))
         AND NOT EXISTS(SELECT 1 FROM dismissed_contents WHERE canonical_identity=COALESCE(e.canonical_identity,e.canonical_url))
-        AND NOT EXISTS(SELECT 1 FROM article_documents WHERE entry_id=e.id AND variant='' AND quality>=2)
+        AND NOT EXISTS(SELECT 1 FROM article_documents INDEXED BY article_documents_quality WHERE entry_id=e.id AND variant='' AND quality>=2)
         AND (a.entry_id IS NULL OR a.state='done' AND a.attempts<3)
       ORDER BY e.created_at DESC,e.id DESC LIMIT 20
       ON CONFLICT(entry_id) DO UPDATE SET state='pending',failure=NULL,next_attempt_at=NULL
@@ -120,7 +120,7 @@ export class ArticleStore {
     this.db.prepare(`UPDATE article_acquisitions SET state='pending',attempts=MIN(attempts,2),next_attempt_at=NULL
       WHERE state='failed' AND failure IN ('http_401','http_403')
         AND entry_id IN (SELECT id FROM entries WHERE source_id=?)
-        AND NOT EXISTS(SELECT 1 FROM article_documents WHERE entry_id=article_acquisitions.entry_id AND variant='' AND quality>=2)`).run(sourceId);
+        AND NOT EXISTS(SELECT 1 FROM article_documents INDEXED BY article_documents_quality WHERE entry_id=article_acquisitions.entry_id AND variant='' AND quality>=2)`).run(sourceId);
   }
   recover(): void {
     for (const table of ["article_media", "article_acquisitions"]) {

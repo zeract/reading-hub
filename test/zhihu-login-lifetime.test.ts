@@ -1,3 +1,7 @@
+vi.mock("../src/main/storage-worker-client", async (original) => {
+  const { storageWorkerFixture } = await import("./helpers/storage-worker-fixture");
+  return storageWorkerFixture(await original());
+});
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -264,7 +268,7 @@ describe("Zhihu login attempt lifetime", () => {
         expect(resumed.database.getSource(source.id)).toBeUndefined();
         expect(resumed.database.listSources()[0]?.subscribed).toBe(true);
         expect(resumed.database.listSources()).toHaveLength(1);
-        expect(resumedSync).toHaveBeenCalledTimes(1);
+        await vi.waitFor(() => expect(resumedSync).toHaveBeenCalledTimes(1));
       } finally { await resumed.close(); }
     } finally { await services.close(); rmSync(directory, { recursive: true }); }
   });

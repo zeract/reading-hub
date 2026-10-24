@@ -1,3 +1,7 @@
+vi.mock("../src/main/storage-worker-client", async (original) => {
+  const { storageWorkerFixture } = await import("./helpers/storage-worker-fixture");
+  return storageWorkerFixture(await original());
+});
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

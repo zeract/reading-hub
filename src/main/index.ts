@@ -11,11 +11,13 @@ import { ScientificArticleVisualAuditor } from "./scientific-visual-audit";
 import { installDevelopmentSupervisorGuard } from "./dev-supervisor";
 import { MainWindowLifecycle } from "./main-window-lifecycle";
 import { createShutdownHandler } from "./shutdown";
-import { LIBRARY_FILE_NAME, resolveDataLocation } from "./data-location-migration";
+import { LIBRARY_FILE_NAME, type DataLocationResolution } from "./data-location-migration";
+import { prepareStartupLibrary } from "./storage-worker-client";
 
 let tray: Tray | undefined;
 let services: ApplicationServices | undefined;
 let servicesStartup: Promise<ApplicationServices> | undefined;
+let libraryStartup: Promise<DataLocationResolution> | undefined;
 let drainIpc: (() => Promise<void>) | undefined;
 let quitting = false;
 
@@ -82,6 +84,9 @@ function quitApplication(): void {
  * creation that was already in progress when the user requested shutdown.
  */
 async function closeApplicationServices(): Promise<void> {
+  // Validation/backup/index creation owns a worker before services exist.
+  // Drain it too, so quitting cannot interrupt an accepted migration write.
+  await libraryStartup?.catch(() => undefined);
   const activeServices = services ?? await servicesStartup;
   activeServices?.beginShutdown();
   await drainIpc?.();
@@ -235,13 +240,14 @@ async function bootstrap(): Promise<void> {
 }
 
 async function resolveStartupDatabasePath(): Promise<string> {
-  let resolution: Awaited<ReturnType<typeof resolveDataLocation>>;
+  let resolution: DataLocationResolution;
   try {
-    resolution = await resolveDataLocation({
+    libraryStartup = prepareStartupLibrary({
       canonicalDirectory: persistentUserDataPath,
       legacyDirectories: LEGACY_USER_DATA_DIRECTORIES.map((directory) => path.join(app.getPath("appData"), directory)),
       libraryFileName: LIBRARY_FILE_NAME
     });
+    resolution = await libraryStartup;
   } catch {
     throw new DataLocationStartupError("无法安全检查或备份本地资料库；应用未继续启动。请保留现有资料目录并检查磁盘空间与文件权限后重试。");
   }

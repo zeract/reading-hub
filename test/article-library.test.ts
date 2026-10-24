@@ -409,9 +409,9 @@ it('does not retry explicit denial on sync/network events, but allows one retry 
   await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0],saved=f.db.articles.read(entry.id)!;
   const read=vi.spyOn(f.reader,'read').mockImplementation(async(_e,_s,options)=>{options?.onDiagnostic?.({stage:'static',reason:'http',status:403});return saved;});
   f.library.start();await f.library['worker'];f.library.onNetworkRestored();await f.sync.syncSource(f.source.id);await f.library['worker'];expect(read).toHaveBeenCalledTimes(1);
-  f.library.onSourceAuthenticated('unrelated-source');await f.library['worker'];expect(read).toHaveBeenCalledTimes(1);
+  await f.library.onSourceAuthenticated('unrelated-source');await f.library['worker'];expect(read).toHaveBeenCalledTimes(1);
   read.mockResolvedValue(withArticleDocument({entryId:entry.id,title:entry.title,url:entry.url,renderProfile:'standard',contentHtml:body}));
-  f.library.onSourceAuthenticated(f.source.id);await f.library['worker'];expect(read).toHaveBeenCalledTimes(2);expect(f.db.articles.hasOriginal(entry.id)).toBe(true);
+  await f.library.onSourceAuthenticated(f.source.id);await f.library['worker'];expect(read).toHaveBeenCalledTimes(2);expect(f.db.articles.hasOriginal(entry.id)).toBe(true);
  }finally{await f.close()}
 });
 
