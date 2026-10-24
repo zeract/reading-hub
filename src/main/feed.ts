@@ -36,7 +36,7 @@ const MAX_TRANSIENT_FEED_HTML_LENGTH = 250_000;
  * replayed once so cached cards can receive newly supported fields, then
  * resume normal conditional requests.
  */
-export const RSS_METADATA_REVISION = 7;
+export const RSS_METADATA_REVISION = 8;
 
 /**
  * Older generic sources are rechecked once for a declared Feed. A Feed is
@@ -194,7 +194,7 @@ export async function parseFeedForReading(text: string, feedUrl: string): Promis
     const title = compactText(item.title, 240);
     if (!url || !title) continue;
     const publishedAt = parsePublishedAt(item.isoDate) ?? parsePublishedAt(item.pubDate);
-    const summary = compactText(item.contentSnippet || item.content || item.summary, 500);
+    const summary = compactText(item.contentSnippet || stripHtml(item.content || item.summary), 500);
     const encoded = (item as any).contentEncoded;
     // rss-parser aliases RSS descriptions to `content`. An unformatted exact
     // copy of the bounded card summary supplies no additional body evidence.
@@ -286,7 +286,12 @@ function feedIconUrl(feed: any, feedUrl: string): string | undefined {
 }
 
 function stripHtml(value?: string): string | undefined {
-  return value?.replace(/<[^>]*>/g, " ");
+  if (!value) return undefined;
+  const $ = load(value, {}, false);
+  $("script,style,template,noscript").remove();
+  $("br").replaceWith(" ");
+  $("p,div,li,h1,h2,h3,h4,h5,h6,blockquote,pre,td,th").append(" ");
+  return $.root().text();
 }
 
 function transientFeedHtml(value: unknown): string | undefined {

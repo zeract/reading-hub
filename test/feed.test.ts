@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { discoverFeedUrls, hasFeedSignature, looksLikeFeed, parseFeed, parseFeedForReading, parseFeedForSync } from "../src/main/feed";
 
+it("turns Atom HTML summaries into plain card text without exposing markup or script text", async () => {
+  const xml='<feed xmlns="http://www.w3.org/2005/Atom"><title>Fixture</title><entry><id>one</id><title>One</title><link href="https://example.com/post"/><summary type="html">&lt;p&gt;Use &lt;strong&gt;tools&lt;/strong&gt; &amp;amp; code.&lt;/p&gt;&lt;p&gt;Literal &amp;lt;tag&amp;gt;&lt;/p&gt;&lt;script&gt;doNotDisplay()&lt;/script&gt;</summary></entry></feed>';
+  expect((await parseFeed(xml,'https://example.com/feed')).entries[0].summary).toBe('Use tools & code. Literal <tag>');
+});
+
 it("recognizes an XML prolog with alternating instructions/comments without trusting a nested Feed", () => {
   const prolog = '<?xml version="1.0"?>\n<!-- publisher --><?xml-stylesheet type="text/xsl" href="/rss.xsl"?>\n<!-- feed follows -->';
   expect(hasFeedSignature(prolog + '<rss version="2.0"><channel/></rss>')).toBe(true);

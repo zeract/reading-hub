@@ -37,6 +37,7 @@ const CONTENT_SELECTORS = [
   // elements, so letting the bare tag win can select a card that later gets
   // removed as chrome and leave the reader empty.
   { selector: ".article-content, .article-body, .entry-content, .post-content, .post-body", priority: 9 },
+  { selector: ".entryPage, .h-entry", priority: 8 },
   { selector: ".RichContent-inner, .RichText", priority: 5 },
   { selector: "#content", priority: 4 },
   // Framer pages commonly expose their semantic section name in this
@@ -162,7 +163,7 @@ const ALLOWED_TAGS = new Set([
 const ARTICLE_CHROME_SELECTOR = [
   ".post-header", ".entry-header", ".article-header", ".post-title", ".entry-title", ".breadcrumb", ".breadcrumbs",
   "[class*='breadcrumb']", "[class*='post-meta']", "[class*='entry-meta']", "[class*='article-meta']",
-  ".post-footer", ".entry-footer", ".article-footer", "[class*='post-footer']", "[class*='entry-footer']", "[class*='article-footer']"
+  ".post-footer", ".entry-footer", ".article-footer", ".postFooter", ".entryFooter", ".articleFooter", "[class*='post-footer']", "[class*='entry-footer']", "[class*='article-footer']"
 ].join(",");
 
 // Scientific Spaces puts its discussion thread inside the same `#content`
@@ -185,6 +186,7 @@ type ContentCandidate = {
   html: string;
   quality: number;
   priority: number;
+  verifiedBoundary?: boolean;
   title?: string;
   author?: string;
   publishedAt?: number;
@@ -242,9 +244,8 @@ function collectGlobalMathMacros($: ReturnType<typeof load>): MathMacroScope {
 }
 
 /**
- * Fetches an article only when it is opened. The resulting HTML is sanitised in
- * the main process and never persisted, so remote documents cannot run code in
- * the React renderer or become an on-disk full-text archive.
+ * Selects the authored body before sanitisation and local document storage.
+ * Remote presentation and executable content never reach the renderer.
  */
 function prepareReaderArticle(html: string, pageUrl: string, entry: Entry, inlineLanguage?: string): PreparedReaderArticle | undefined {
   let $ = load(html);
@@ -544,9 +545,20 @@ function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfil
       candidates.set(node, Math.max(candidates.get(node) || 0, priority));
     });
   }
+  // Some blog engines declare the article URL on the body rather than using
+  // <article>. Use that explicit identity only when it has one unambiguous
+  // match; a sibling post or a cross-origin URL is not this article's body.
+  const boundRoots = !options.selectors ? $("[data-permalink-context]").toArray().filter(node => {
+    const url = safeUrl($(node).attr("data-permalink-context"), htmlDocumentBaseUrl($, pageUrl));
+    return Boolean(url && sameCanonicalUrl(url, pageUrl));
+  }) : [];
+  const verifiedRoot = boundRoots.length === 1 ? boundRoots[0] : undefined;
+  const pageRoots = !options.selectors ? $(".entryPage, .h-entry").toArray() : [];
+  const pageRoot = pageRoots.length === 1 ? pageRoots[0] : undefined;
+  if (verifiedRoot) candidates.set(verifiedRoot, 11);
   if (!candidates.size && options.fallbackToBody !== false) candidates.set($("body").get(0), -1);
 
-  let best: { html: string; score: number; priority: number } | undefined;
+  let best: { html: string; score: number; priority: number; verifiedBoundary: boolean } | undefined;
   for (const [node, priority] of candidates) {
     if (!node) continue;
     // Candidate discovery sees every `<article>`, including the small cards
@@ -570,12 +582,12 @@ function pickContentRoot($: ReturnType<typeof load>, profile: ReaderRenderProfil
     // A coherent semantic article must beat a page-sized main container even
     // when the latter contains much more sidebar and comment text.
     if (!best || priority > best.priority || (priority === best.priority && score > best.score)) {
-      best = { html: candidate.html() || "", score, priority };
+      best = { html: candidate.html() || "", score, priority, verifiedBoundary: node === verifiedRoot || node === pageRoot };
     }
   }
   if (!best) return undefined;
   const root = load(`<article id="reader-clean-content">${best.html}</article>`)("#reader-clean-content");
-  return { html: best.html, quality: readerContentQuality(root), priority: best.priority };
+  return { html: best.html, quality: readerContentQuality(root), priority: best.priority, verifiedBoundary: best.verifiedBoundary };
 }
 
 function isReaderNoiseCandidate($: ReturnType<typeof load>, node: any): boolean {
@@ -750,7 +762,7 @@ function chooseContentCandidate(semantic: ContentCandidate | undefined, readable
   // A verified inner body is a stronger boundary than Reader View's broader
   // text-density guess. The latter can reintroduce bylines and related cards
   // even when a source's authored-prose container was found successfully.
-  if (preferVerifiedInnerBody && semantic.priority >= 11) return semantic;
+  if (semantic.verifiedBoundary || preferVerifiedInnerBody && semantic.priority >= 11) return semantic;
   // Explicit article containers tend to preserve the author's Markdown and
   // code structure. For loose main/content shells, prefer Reader View when
   // it improves the text/link-density quality materially.
