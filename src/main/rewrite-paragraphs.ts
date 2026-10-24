@@ -10,6 +10,7 @@ export class ParagraphReferenceValidationError extends RewriteContentError {
  constructor(readonly issues:ParagraphReferenceIssue[],message:string){super(message);}
 }
 const inlineTags=new Set(['a','strong','b','em','i','span','sup','sub','s','del','u','br','small','mark']);
+type ReferencePart=string|{ref:string;parts:ReferencePart[]}|{ref:string};
 const inline=(n:ArticleNode):boolean=>n.type==='text'||n.type==='asset'&&!n.display&&n.kind!=='image'&&n.kind!=='video'&&n.element.tag!=='pre'||n.type==='element'&&inlineTags.has(n.tag)&&n.children.every(inline);
 const visible=(node:ArticleNode)=>articleDocumentText({version:1,provenance:'source',children:[node]}).trim();
 const joinWithoutDoubleSpace=(left:string,right:string)=>left.endsWith(' ')&&right.startsWith(' ')?left+right.replace(/^[ \t]+/,''):left+right;
@@ -127,5 +128,32 @@ export function prepareRewriteParagraphs(source:ArticleDocument) {
  // Explanatory metadata is bounded independently of the complete markers in
  // paragraph text. A local repair automatically gets its own reference budget.
  const boundedReferences=(ids:Set<string>)=>{let remaining=6000;return references(ids).filter(ref=>{const size=JSON.stringify(ref).length;if(size>remaining)return false;remaining-=size;return true;});};
- return {document,restore,context,references:boundedReferences};
+ /** The repair response carries complete subtrees, never handwritten closing
+  * tokens. Canonical markers remain the checkpoint format and still pass the
+  * same strict ownership/count/parent validator; no missing boundary is guessed. */
+ const toParts=(node:{id:string;text:string}):ReferencePart[]=>{
+  const encode=(n:ArticleNode):ReferencePart=>n.type==='text'?n.text:n.type==='element'&&n.tag!=='br'
+   ?{ref:n.id,parts:n.children.map(encode)}:{ref:n.id};
+  return groups.get(node.id)?.source.map(encode) ?? [node.text];
+ };
+ const fromParts=(paragraph:string,parts:unknown):string=>{
+  const refs=groups.get(paragraph)?.refs;
+  let count=0;
+  const fail=(reference='paragraph',reason:ParagraphReferenceError['reason']='syntax'):never=>{throw new ParagraphReferenceError(paragraph,reference,reason);};
+  const encode=(value:unknown,depth:number):string=>{
+   if(depth>100||!Array.isArray(value))return fail();
+   return value.map((part:unknown):string=>{
+    if(++count>100000)return fail();
+    if(typeof part==='string')return refs?part.replace(/⟦/g,'⟦literal-open⟧'):part;
+    if(!part||typeof part!=='object'||Array.isArray(part)||!('ref' in part)||typeof part.ref!=='string')return fail();
+    const original=refs?.get(part.ref);
+    if(!original)return fail('unknown');
+    const paired=original.type==='element'&&original.tag!=='br';
+    if(Object.keys(part).length!==(paired?2:1)||paired&&!('parts' in part)||!paired&&'parts' in part)return fail(part.ref,'token-kind');
+    return paired&&'parts' in part?`⟦${part.ref}⟧${encode(part.parts,depth+1)}⟦/${part.ref}⟧`:`⟦${part.ref}/⟧`;
+   }).join('');
+  };
+  return encode(parts,0);
+ };
+ return {document,restore,context,references:boundedReferences,toParts,fromParts};
 }

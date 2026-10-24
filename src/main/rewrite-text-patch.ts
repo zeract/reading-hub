@@ -15,7 +15,7 @@ export class TextPatchValidationError extends RewriteContentError {
  }
 }
 
-export function parseTextPatch(raw:string,nodes:readonly TextNode[]):Record<string,string> {
+export function parseTextPatch(raw:string,nodes:readonly TextNode[],fromParts?:(id:string,parts:unknown)=>string):Record<string,string> {
  const value:unknown=parseRewriteResponse(raw);
  const sectionIssue=(reason:TextPatchReason):TextPatchIssue=>({paragraph:'section',reference:'unknown',reason});
  if(!value||typeof value!=='object'||!('blocks' in value)||!Array.isArray(value.blocks)||Object.keys(value).length!==1) {
@@ -32,8 +32,12 @@ export function parseTextPatch(raw:string,nodes:readonly TextNode[]):Record<stri
   if(!source){sectionIssues.push(sectionIssue('unknown-node'));continue;}
   if(seen.has(source.id)){invalid.set(source.id,'duplicate');delete result[source.id];continue;}
   seen.add(source.id);
-  const reason=Object.keys(block).length!==2?'node-shape':typeof block.text!=='string'?'text-type':block.text.length>Math.max(2000,source.text.length*6)?'text-length':undefined;
-  if(reason)invalid.set(source.id,reason);else result[source.id]=block.text;
+  // Only a known source block may enter the typed repair decoder. Legacy text
+  // responses/checkpoints keep the exact same contract and limits.
+  const text=fromParts&&Object.keys(block).length===2&&Object.hasOwn(block,'parts')
+   ?fromParts(source.id,block.parts):block.text;
+  const reason=Object.keys(block).length!==2?'node-shape':typeof text!=='string'?'text-type':text.length>Math.max(2000,source.text.length*6)?'text-length':undefined;
+  if(reason)invalid.set(source.id,reason);else result[source.id]=text;
  }
  const issues:TextPatchIssue[]=[];
  for(const node of nodes){

@@ -93,7 +93,7 @@ it('regenerates source-owned missing slots rather than guessing the meaning of a
    return JSON.stringify({blocks:input.section.blocks.map((b:any)=>b.id===missingId?{id:'private-unknown',text:'Do not use or map this text.'}:{...b,text:b.text==='Keep successful text.'?'保留正确译文。':b.text.replace(link.close,'')})});
   }
   expect(input.section.blocks).toHaveLength(2);
-  expect(input.section.blocks.map((b:any)=>b.text)).toContain('Missing target.');
+  expect(input.section.blocks.map((b:any)=>b.parts)).toContainEqual(['Missing target.']);
   expect(input.repair.issues.map((issue:any)=>issue.reason)).toEqual(['unknown-node','missing','unclosed']);
   expect(JSON.stringify(input)).not.toContain('Do not use or map');expect(JSON.stringify(input)).not.toContain('private-unknown');
   return JSON.stringify({blocks:input.section.blocks});
@@ -109,7 +109,7 @@ it.each(['unknown-node','duplicate','text-type','text-length'])('stops after one
   const blocks=input.section.blocks.map((b:any)=>({...b}));
   if(reason==='unknown-node')blocks.push({id:'private-secret',text:'bad'});
   else if(reason==='duplicate')blocks.push({...blocks[0]});
-  else blocks[0].text=reason==='text-type'?null:'x'.repeat(2001);
+  else blocks[0]={id:blocks[0].id,text:reason==='text-type'?null:'x'.repeat(2001)};
   return JSON.stringify({blocks});
  });
  const save=vi.fn();

@@ -162,7 +162,7 @@ it('resumes the second of six sections with one batched repair and preserves the
   return b;
  })});
  let checkpoint:DocumentCheckpoint|undefined;
- const failed=async(_s:string,p:string)=>{const input=JSON.parse(p);return JSON.stringify(input.section.id==='S2'?corrupt(input):{blocks:input.section.blocks});};
+ const failed=async(_s:string,p:string)=>{const input=JSON.parse(p);return JSON.stringify(input.repair?{blocks:input.section.blocks.map((b:any)=>({id:b.id,parts:[]}))}:input.section.id==='S2'?corrupt(input):{blocks:input.section.blocks});};
  await expect(rewriteArticleDocument(source,'Title',failed,new AbortController().signal,undefined,undefined,c=>checkpoint=c, {kind:"paragraphs",version:13})).rejects.toThrow('第 2/6 节');
  expect(checkpoint?.patches).toHaveLength(1);const saved=structuredClone(checkpoint!);
  const resumed=vi.fn(async(_s:string,p:string)=>{
@@ -173,4 +173,60 @@ it('resumes the second of six sections with one batched repair and preserves the
  expect(resumed).toHaveBeenCalledTimes(6);expect(checkpoint?.patches).toHaveLength(6);
  expect(checkpoint?.patches[0]).toEqual(saved.patches[0]);expect(result.quality.repairedSections).toBe(1);
  expect(articleDocumentHtml(result.content)).toBe(articleDocumentHtml(source));
+});
+
+it('uses structured inline subtrees for the one repair after a missing closing marker',async()=>{
+ const source=articleDocumentFromHtml('<p><strong>Generative systems</strong> (<a href="https://example.com/paper">Authors, 2023</a>) preserve context.</p>');
+ let outer='',link='';
+ const run=vi.fn(async(_s:string,p:string)=>{
+  const v=JSON.parse(p),refs=v.references;outer=refs.find((r:any)=>r.kind==='strong').id;link=refs.find((r:any)=>r.kind==='a').id;
+  if(!v.repair)return JSON.stringify({blocks:v.section.blocks.map((b:any)=>({...b,text:b.text.replace(`⟦/${link}⟧`,'')}))});
+  expect(v.instruction).toContain('parts');expect(v.repair.issues[0].reason).toBe('unclosed');
+  expect(v.section.blocks[0].parts).toEqual([{ref:outer,parts:['Generative systems']},' (',{ref:link,parts:['Authors, 2023']},') preserve context.']);
+  expect(v.section.blocks[0]).not.toHaveProperty('text');
+  return JSON.stringify({blocks:v.section.blocks.map((b:any)=>({id:b.id,parts:[{ref:outer,parts:['生成系统']},'（',{ref:link,parts:['作者，2023']},'）保留上下文。']}))});
+ });
+ const r=await rewriteArticleDocument(source,'Title',run,new AbortController().signal,undefined,undefined,undefined,{kind:'paragraphs',version:13});
+ expect(run).toHaveBeenCalledTimes(2);expect(r.quality.requests).toBe(2);
+ expect(articleDocumentHtml(r.content)).toBe('<p><strong>生成系统</strong>（<a href="https://example.com/paper">作者，2023</a>）保留上下文。</p>');
+});
+
+it('restores only source-owned typed subtrees and rejects foreign, duplicated, reparented or renamed references',()=>{
+ const source=articleDocumentFromHtml('<p><a href="https://example.com/paper"><em>Paper</em></a> uses <code>x</code>.<br></p>');
+ const p=prepareRewriteParagraphs(source),block=(p.document.children[0] as any).children[0],refs=p.references(new Set([block.id]));
+ const link=refs.find(r=>r.kind==='a')!,em=refs.find(r=>r.kind==='em')!,code=refs.find(r=>r.kind==='code')!,br=refs.find(r=>r.kind==='br')!;
+ const valid=[{ref:link.id,parts:[{ref:em.id,parts:['论文']}]},' 使用 ',{ref:code.id},'。',{ref:br.id}];
+ expect(p.fromParts(block.id,p.toParts(block))).toBe(block.text);
+ const restore=(parts:unknown)=>{const draft=structuredClone(p.document);(draft.children[0] as any).children[0].text=p.fromParts(block.id,parts);return articleDocumentHtml(p.restore(draft));};
+ expect(restore(valid)).toBe('<p><a href="https://example.com/paper"><em>论文</em></a> 使用 <code>x</code>。<br></p>');
+ for(const invalid of [[...valid,{ref:code.id}], [{ref:em.id,parts:['论文']},...valid], [{ref:'private-model-identifier',parts:['x']},...valid], [{ref:link.id,parts:[]},...valid.slice(1)], [{ref:code.id,parts:['changed']},...valid]]){
+  expect(()=>restore(invalid)).toThrow();
+ }
+ try{restore([{ref:'private-model-identifier'}])}catch(e){expect(String(e)).not.toContain('private-model-identifier')}
+});
+
+it('keeps all four checkpoints when resuming six sections and repairs typed references only in section five',async()=>{
+ const source=articleDocumentFromHtml(`${Array.from({length:4},()=>`<p>${'Earlier section. '.repeat(350)}</p>`).join('')}<p>${'Current context. '.repeat(200)}<a href="https://example.com/one">Paper</a> closes here.</p><p>${'Final section. '.repeat(350)}</p>`);
+ let checkpoint:DocumentCheckpoint|undefined;
+ const failed=async(_s:string,p:string)=>{const v=JSON.parse(p);const close=v.references?.find((r:any)=>r.kind==='a')?.close;return JSON.stringify({blocks:v.section.blocks.map((b:any)=>v.repair?{id:b.id,parts:[]}:{...b,text:close?b.text.replace(close,''):b.text})});};
+ await expect(rewriteArticleDocument(source,'Title',failed,new AbortController().signal,undefined,undefined,c=>checkpoint=c,{kind:'paragraphs',version:13})).rejects.toThrow('第 5/6 节');
+ expect(checkpoint!.patches).toHaveLength(4);const firstFour=structuredClone(checkpoint!.patches);
+ const resumed=vi.fn(async(_s:string,p:string)=>{
+  const v=JSON.parse(p);expect(['S5','S6']).toContain(v.section.id);
+  if(!v.repair)return failed(_s,p);
+  const ref=v.references.find((r:any)=>r.kind==='a');expect(v.section.id).toBe('S5');
+  return JSON.stringify({blocks:v.section.blocks.map((b:any)=>({id:b.id,parts:['当前上下文。',{ref:ref.id,parts:['论文']},' 在此结束。']}))});
+ });
+ await rewriteArticleDocument(source,'Title',resumed,new AbortController().signal,undefined,checkpoint,c=>checkpoint=c,{kind:'paragraphs',version:13});
+ expect(resumed).toHaveBeenCalledTimes(3);expect(checkpoint!.patches).toHaveLength(6);expect(checkpoint!.patches.slice(0,4)).toEqual(firstFour);
+});
+
+it('keeps literal delimiters and readonly assets distinct, and rejects malformed parts',()=>{
+ const p=prepareRewriteParagraphs(articleDocumentFromHtml('<p>A literal ⟦ value with <code>x</code>.</p>'));
+ const block=(p.document.children[0] as any).children[0],code=p.references(new Set([block.id])).find(r=>r.kind==='code')!;
+ const draft=structuredClone(p.document);(draft.children[0] as any).children[0].text=p.fromParts(block.id,['字面字符 ⟦ 和 ',{ref:code.id},'。']);
+ expect(articleDocumentHtml(p.restore(draft))).toBe('<p>字面字符 ⟦ 和 <code>x</code>。</p>');
+ for(const bad of [null,[12],[{ref:code.id,extra:'x'}],[{parts:['x']}],[['nested strings']]])expect(()=>p.fromParts(block.id,bad)).toThrow();
+ const nested=prepareRewriteParagraphs(articleDocumentFromHtml('<p><strong>Nested</strong></p>')),target=(nested.document.children[0] as any).children[0],strong=nested.references(new Set([target.id]))[0];
+ let deep:unknown=['x'];for(let i=0;i<102;i++)deep=[{ref:strong.id,parts:deep}];expect(()=>nested.fromParts(target.id,deep)).toThrow();
 });
