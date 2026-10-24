@@ -6,8 +6,11 @@ import { isRobotsPathAllowed, parseRobots, type RobotsRule } from "./robots-rule
 import { fetchResponse } from "./fetch-response";
 import { WeightedLruCache } from "./weighted-lru-cache";
 import { SharedTaskMap } from "./shared-task-map";
+import { networkFailureKind, type NetworkFailureKind } from "./network-failure";
 
-type RobotsResult = { kind: "rules"; rules: RobotsRule[] } | { kind: "unavailable" } | { kind: "unreachable"; cause: "network" | "server" | "rate_limit" };
+type RobotsResult = { kind: "rules"; rules: RobotsRule[] } | { kind: "unavailable" }
+  | { kind: "unreachable"; cause: "network"; reason: NetworkFailureKind }
+  | { kind: "unreachable"; cause: "server" | "rate_limit" };
 type CacheItem = { expiresAt: number; result: RobotsResult };
 const MAX_ROBOTS_BYTES = 1_048_576;
 const POLICY_CACHE_MS = 24 * 60 * 60_000;
@@ -44,10 +47,16 @@ export class RobotsUnreachableError extends RobotsDisallowedError {
 
 export class RobotsNetworkUnavailableError extends RobotsUnreachableError {
   static readonly messageText = "网络暂时中断，无法确认该站点的 robots.txt 规则；恢复连接后会自动重试。";
-  constructor() {
+  static readonly messages = {
+    connection: RobotsNetworkUnavailableError.messageText,
+    proxy: "无法连接到配置的代理服务器，未能取得 robots.txt 规则，已停止自动读取。请检查代理设置后重试。",
+    dns: "无法解析该站点域名，未能取得 robots.txt 规则，已停止自动读取。请检查 DNS 或网络设置后重试。",
+    timeout: "获取该站点的 robots.txt 超时，已停止自动读取；稍后会自动重试。"
+  } as const;
+  constructor(readonly reason: NetworkFailureKind = "connection") {
     super();
     this.name = "RobotsNetworkUnavailableError";
-    this.message = RobotsNetworkUnavailableError.messageText;
+    this.message = RobotsNetworkUnavailableError.messages[reason];
   }
 }
 
@@ -94,7 +103,7 @@ export class RobotsPolicy {
     }, options?.signal);
     throwIfAborted(options?.signal);
     if (item.result.kind === "unreachable") {
-      if (item.result.cause === "network") throw new RobotsNetworkUnavailableError();
+      if (item.result.cause === "network") throw new RobotsNetworkUnavailableError(item.result.reason);
       if (item.result.cause === "rate_limit") throw new RobotsRateLimitedError();
       throw new RobotsUnreachableError();
     }
@@ -151,7 +160,8 @@ export class RobotsPolicy {
       if (error instanceof RobotsResponseTooLargeError) throw error;
       const serverFailure = error instanceof RobotsUnreachableError;
       return { expiresAt: Date.now() + (serverFailure ? SERVER_RETRY_MS : NETWORK_RETRY_MS),
-        result: { kind: "unreachable", cause: serverFailure ? "server" : "network" } };
+        result: serverFailure ? { kind: "unreachable", cause: "server" }
+          : { kind: "unreachable", cause: "network", reason: networkFailureKind(error) } };
     } finally {
       request.dispose();
     }

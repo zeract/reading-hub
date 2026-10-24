@@ -91,7 +91,7 @@ function assembleApplicationServices(database: ReadingDatabase): ApplicationServ
       robots.forgetTransientFailures();
       articles.onNetworkRestored();
       database.expediteNetworkFailures([
-        RobotsNetworkUnavailableError.messageText,
+        ...Object.values(RobotsNetworkUnavailableError.messages),
         // Earlier versions persisted this generic message even for offline failures.
         new RobotsUnreachableError().message,
         ...Object.values(NETWORK_REQUEST_MESSAGES)

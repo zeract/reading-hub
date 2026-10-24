@@ -43,6 +43,27 @@ describe("robots access decisions", () => {
     await expect(new RobotsPolicy().assertAllowed("https://example.com/post")).rejects.toBeInstanceOf(RobotsNetworkUnavailableError);
   });
 
+  it.each([
+    ["net::ERR_PROXY_CONNECTION_FAILED", "proxy"],
+    ["net::ERR_NAME_NOT_RESOLVED", "dns"],
+    ["net::ERR_TIMED_OUT", "timeout"],
+    ["net::ERR_CONNECTION_RESET", "connection"]
+  ] as const)("retains redacted %s diagnostics through cached failure and reconnection", async (code, reason) => {
+    const policy = new RobotsPolicy();
+    network.fetch.mockRejectedValueOnce(new Error(`${code} https://user:secret@example.com/private`));
+    const client = new PublicHttpClient(policy);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const error = await client.getText("https://example.com/post").catch(error => error);
+      expect(error).toMatchObject({ name: "RobotsNetworkUnavailableError", reason, message: RobotsNetworkUnavailableError.messages[reason] });
+      expect(JSON.stringify(error)).not.toMatch(/secret|private|ERR_/);
+    }
+    expect(network.fetch).toHaveBeenCalledTimes(1);
+    policy.forgetTransientFailures();
+    network.fetch.mockResolvedValueOnce(new Response("User-agent: *\nDisallow: /post"));
+    await expect(client.getText("https://example.com/post")).rejects.toBeInstanceOf(RobotsDisallowedError);
+    expect(network.fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("rechecks a formerly offline policy after reconnection and still enforces its rules", async () => {
     const policy = new RobotsPolicy();
     network.fetch.mockRejectedValueOnce(new Error("offline"));

@@ -34,6 +34,7 @@ vi.mock("electron", () => ({
   BrowserWindow: fixture.BrowserWindow,
   session: { fromPartition: () => {
     const value = {
+      webRequest: Object.fromEntries(["onBeforeRequest", "onCompleted", "onErrorOccurred"].map(key => [key, vi.fn()])),
       setPermissionRequestHandler: vi.fn(),
       setPermissionCheckHandler: vi.fn(),
       clearStorageData: vi.fn(() => fixture.cleanup())
@@ -69,6 +70,27 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("public rendering task lifetime", () => {
+  it("reserves snapshot time after slow navigation despite a stalled hydration request", async () => {
+    fixture.configure.mockImplementationOnce(() => pause(3_000));
+    fixture.navigate.mockImplementationOnce(async (window) => {
+      await pause(18_000);
+      const beforeRequest = fixture.sessions[0].webRequest.onBeforeRequest.mock.calls[0][0];
+      beforeRequest({ id: 1, resourceType: "script" }, () => {});
+      window.webContents.isLoading = () => true;
+      window.webContents.stop.mockImplementation(() => window.listeners.get("did-stop-loading")?.());
+      window.listeners.get("did-navigate")?.({}, window.url, 200, "OK");
+      window.listeners.get("dom-ready")?.();
+      await never();
+    });
+    // Snapshot evaluation itself can take time; it must still get a budget.
+    fixture.capture.mockImplementationOnce(async () => { await pause(2_000); return "<p>Ready article</p>"; });
+    const outcome = new IsolatedPageRenderer(robots() as never).render("https://example.com/article").catch(error => error);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await outcome).toMatchObject({ html: "<p>Ready article</p>" });
+    expect(fixture.windows[0].isDestroyed()).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("captures a ready document while optional subresources are still loading", async () => {
     fixture.navigate.mockImplementationOnce(async (window) => {
       window.webContents.isLoading = () => true;

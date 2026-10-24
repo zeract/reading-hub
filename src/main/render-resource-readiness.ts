@@ -23,13 +23,15 @@ export function observeRenderResources(request?: Pick<WebRequest, "onBeforeReque
   request?.onCompleted(finish);
   request?.onErrorOccurred(finish);
   return {
-    async wait(signal?: AbortSignal): Promise<void> {
+    async wait(signal?: AbortSignal, remainingMs = MAX_WAIT_MS): Promise<void> {
+      throwIfAborted(signal);
       const started = Date.now();
+      const waitMs = Math.min(MAX_WAIT_MS, Math.max(0, remainingMs));
       changedAt = Math.max(changedAt, started);
-      while (Date.now() - started < MAX_WAIT_MS) {
+      while (Date.now() - started < waitMs) {
         throwIfAborted(signal);
         if (!pending.size && Date.now() - changedAt >= QUIET_MS) return;
-        await delayWithAbort(100, signal);
+        await delayWithAbort(Math.min(100, waitMs - (Date.now() - started)), signal);
       }
       // The task's existing snapshot/HTML contracts still decide whether the
       // bounded result is usable; an unending analytics request is not proof

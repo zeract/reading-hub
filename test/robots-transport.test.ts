@@ -40,7 +40,7 @@ describe("robots transport boundary", () => {
     network.fetch.mockResolvedValueOnce(new Response(body));
     let settled = false;
     const pending = expect(new RobotsPolicy().assertAllowed("https://example.com/post"))
-      .rejects.toBeInstanceOf(RobotsDisallowedError).then(() => { settled = true; });
+      .rejects.toMatchObject({ name: "RobotsNetworkUnavailableError", reason: "timeout" }).then(() => { settled = true; });
     try {
       await vi.advanceTimersByTimeAsync(8_000);
       expect(settled).toBe(true);

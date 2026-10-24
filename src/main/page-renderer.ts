@@ -12,6 +12,8 @@ export type { PageRenderOptions, RenderedPage } from "./rendered-document";
 
 const RENDER_TIMEOUT_MS = 20_000;
 const RENDER_TASK_TIMEOUT_MS = 30_000;
+// Leave room for the bounded load-stop and DOM-snapshot operations (5s each).
+const SNAPSHOT_RESERVE_MS = 10_000;
 const RENDER_TIMEOUT_MESSAGE = "页面渲染超时，请检查网络后重试。";
 const MAX_RENDER_REDIRECTS = 5;
 
@@ -26,6 +28,7 @@ export class IsolatedPageRenderer implements PageRenderer {
   async render(rawUrl: string, options?: PageRenderOptions): Promise<RenderedPage> {
     throwIfAborted(options?.signal);
     const url = assertPublicUrl(rawUrl).toString();
+    const deadline = Date.now() + RENDER_TASK_TIMEOUT_MS;
     const request = withRequestTimeout(options?.signal, RENDER_TASK_TIMEOUT_MS, RENDER_TIMEOUT_MESSAGE);
     let isolatedSession: ReturnType<typeof session.fromPartition> | undefined;
     let window: BrowserWindow | undefined;
@@ -69,7 +72,7 @@ export class IsolatedPageRenderer implements PageRenderer {
       window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       window.webContents.on("will-attach-webview", (event) => event.preventDefault());
       const pendingResources = await loadWithVerifiedRedirects(window, this.robots, url, request.signal);
-      await resources.wait(request.signal);
+      await resources.wait(request.signal, Math.max(0, deadline - Date.now() - SNAPSHOT_RESERVE_MS));
       // Electron queues isolated-world evaluation until loading stops. Once
       // the DOM and hydration grace period are complete, cancel remaining
       // subresources so they cannot also stall the bounded DOM snapshot.

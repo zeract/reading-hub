@@ -35,3 +35,16 @@ it("bounds stalled scripts and preserves caller cancellation", async () => {
   tracker.dispose();
   expect(vi.getTimerCount()).toBe(0);
 });
+it("uses a shorter remaining budget without extending the hydration ceiling", async () => {
+  const { tracker, start } = fixture(); start(1, "xhr");
+  let ready = false;
+  const waiting = tracker.wait(undefined, 550).then(() => { ready = true; });
+  await vi.advanceTimersByTimeAsync(549); expect(ready).toBe(false);
+  await vi.advanceTimersByTimeAsync(1); await waiting;
+  await tracker.wait(undefined, 0);
+  const controller = new AbortController(); controller.abort(new Error("Cancelled"));
+  await expect(tracker.wait(controller.signal, 0)).rejects.toThrow("Cancelled");
+  const capped = tracker.wait(undefined, 30_000);
+  await vi.advanceTimersByTimeAsync(12_000); await capped;
+  tracker.dispose(); expect(vi.getTimerCount()).toBe(0);
+});
