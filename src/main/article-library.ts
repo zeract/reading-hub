@@ -9,6 +9,7 @@ import type { PublicHttpClient } from "./http";
 import { ArticlePersistenceContentError, articleImageUrls } from "./persistence/article-store";
 import { readerFailureDiagnostic } from "./reader-diagnostics";
 import { readerImageFailure } from "./reader-image-retry";
+import { SharedTaskMap } from "./shared-task-map";
 
 /** Local library ownership around the existing acquisition pipeline. No second extractor or renderer. */
 export class ArticleLibrary {
@@ -17,6 +18,8 @@ export class ArticleLibrary {
   private worker?: Promise<void>;
   private requested = false;
   private started = false;
+  private readonly reads = new SharedTaskMap<ReaderArticle>();
+  private readonly activeReads = new Set<Promise<ReaderArticle>>();
   constructor(private readonly db: ReadingDatabase, private readonly reader: ArticleReader, private readonly http: PublicHttpClient) {}
 
   start(): void {
@@ -29,6 +32,9 @@ export class ArticleLibrary {
   async close(): Promise<void> {
     this.beginShutdown();
     await Promise.allSettled([...this.pending, this.worker]);
+    // A cancelled waiter can settle before its shared transport finishes
+    // cleanup. Drain those readers before the owner closes SQLite/app services.
+    await Promise.allSettled([...this.activeReads]);
   }
   onNetworkRestored(): void { this.db.articles.retryTransient(); this.wake(); }
 
@@ -39,7 +45,7 @@ export class ArticleLibrary {
         this.wake();
         return this.reader.restoreSavedArticle(entry, saved, signal);
       }
-      const article = await this.reader.read(entry, source, { ...options, signal });
+      const article = await this.acquire(entry, source, { ...options, signal });
       throwIfAborted(signal);
       this.db.articles.save(entry.id, article);
       this.wake();
@@ -54,7 +60,9 @@ export class ArticleLibrary {
       const variant = JSON.stringify([canonicalizeUrl(url), options?.inlineLanguage ?? ""]);
       const saved = this.db.articles.read(entry.id, variant);
       if (saved) return this.reader.restoreSavedArticle(entry, saved, signal);
-      const article = await this.reader.readLanguageVariant(entry, source, url, { ...options, signal });
+      const load = (sharedSignal: AbortSignal) => this.trackRead(() => this.reader.readLanguageVariant(entry, source, url, { ...options, signal: sharedSignal }));
+      const article = await (options?.onDiagnostic ? load(signal)
+        : this.reads.run(JSON.stringify(["variant",entry.id,source?.id,variant]), load, signal));
       throwIfAborted(signal);
       this.db.articles.save(entry.id, article, variant);
       this.wake();
@@ -69,6 +77,9 @@ export class ArticleLibrary {
       throwIfAborted(signal);
       const body = supplied.get(entry.url);
       if (!body) continue;
+      // A Feed body cannot replace an acquired original. Avoid repeating its
+      // conversion/math work only in that case; Feed-only documents still update.
+      if (this.db.articles.hasOriginalForUrl(entry.canonicalUrl)) continue;
       const article = await this.reader.readFeedBody(entry, body.html, body.baseUrl, { signal });
       if (article) result.set(entry.url, withArticleDocument(article));
     }
@@ -96,11 +107,31 @@ export class ArticleLibrary {
         if (!belongs) throw new Error("图片不属于当前文章。");
         this.db.articles.registerImage(entry.id, target, entry.url);
       }
+      if (this.db.articles.reuseImage(entry.id, target)) return this.db.articles.image(entry.id, target)!;
       const data = await this.http.getImageDataUrl(target, this.db.articles.imageReferrer(entry.id, target) ?? entry.url, { signal });
       throwIfAborted(signal);
       this.db.articles.saveImage(entry.id, target, data);
       return data;
     });
+  }
+
+  private acquire(entry: Entry, source: Source | undefined, options: ReaderReadOptions): Promise<ReaderArticle> {
+    const load = async (signal: AbortSignal) => {
+      const article = await this.trackRead(() => this.reader.read(entry, source, { ...options, signal }));
+      throwIfAborted(signal);
+      return article;
+    };
+    // Diagnostic observers belong to their own request. Explicit rereads do
+    // not join an older automatic acquisition; ordinary reads share its work.
+    if (options.onDiagnostic) return load(options.signal!);
+    return this.reads.run(JSON.stringify([entry.id,entry.url,source?.id,source?.kind,Boolean(options.refresh),options.inlineLanguage]), load, options.signal);
+  }
+
+  private trackRead(load: () => Promise<ReaderArticle>): Promise<ReaderArticle> {
+    const pending = load();
+    this.activeReads.add(pending);
+    void pending.finally(() => this.activeReads.delete(pending)).catch(() => undefined);
+    return pending;
   }
 
   wake(): void {
@@ -126,6 +157,7 @@ export class ArticleLibrary {
       if (!media.length && !acquisition) return;
       // One page at a time and at most four media requests; the HTTP client also enforces its shared pool.
       const mediaResults = await Promise.allSettled(media.map(async row => {
+        if (this.db.articles.hasImage(row.entry_id,row.url) || this.db.articles.reuseImage(row.entry_id,row.url)) return;
         if (!this.db.articles.beginMedia(row)) return;
         let data: string;
         try { data = await this.http.getImageDataUrl(row.url, row.referrer, { signal }); }
@@ -146,10 +178,14 @@ export class ArticleLibrary {
       const mediaFailure = mediaResults.find(result => result.status === "rejected");
       if (mediaFailure?.status === "rejected") throw mediaFailure.reason;
       if (acquisition && !signal.aborted && this.db.articles.beginAcquisition(acquisition)) {
+        if (this.db.articles.hasOriginal(acquisition.entry_id)) {
+          this.db.articles.finishAcquisition(acquisition.entry_id);
+          continue;
+        }
         const entry = this.db.getEntry(acquisition.entry_id);
         if (!entry) continue;
         let article: ReaderArticle;
-        try { article = await this.reader.read(entry, this.db.getSource(entry.sourceId), { signal }); }
+        try { article = await this.acquire(entry, this.db.getSource(entry.sourceId), { signal }); }
         catch (error) {
           if (signal.aborted) return;
           this.db.articles.finishAcquisition(entry.id, readerFailureDiagnostic("static", error).reason);
@@ -159,7 +195,7 @@ export class ArticleLibrary {
         try { this.db.articles.save(entry.id, article); }
         catch (error) {
           if (!(error instanceof ArticlePersistenceContentError)) throw error;
-          this.db.articles.finishAcquisition(entry.id, "invalid_content");
+          this.db.articles.finishAcquisition(entry.id,"invalid_content");
           continue;
         }
         this.db.articles.finishAcquisition(entry.id, isReaderSummaryContent(article.contentMode) ? "summary" : undefined);

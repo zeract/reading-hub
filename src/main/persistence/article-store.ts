@@ -59,6 +59,23 @@ export class ArticleStore {
   ownsImage(entryId: string, url: string): boolean {
     return Boolean(this.db.prepare("SELECT 1 FROM article_media WHERE entry_id=? AND url=?").get(entryId, url));
   }
+  hasOriginal(entryId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM article_documents WHERE entry_id=? AND variant='' AND quality>=2").get(entryId));
+  }
+  hasOriginalForUrl(canonicalUrl: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM entries e JOIN article_documents d ON d.entry_id=e.id
+      WHERE e.canonical_url=? AND d.variant='' AND d.quality>=2`).get(canonicalUrl));
+  }
+
+  /** Copy only an exact resource/referrer match into an already owned row.
+   * Article lifetimes remain independent; no URL rewriting or orphan creation. */
+  reuseImage(entryId: string, url: string): boolean {
+    return Boolean(this.db.prepare(`UPDATE article_media AS target SET
+      (mime,bytes)=(SELECT mime,bytes FROM article_media WHERE url=target.url AND referrer=target.referrer AND state='ready' LIMIT 1),
+      state='ready',failure=NULL
+      WHERE entry_id=? AND url=? AND state!='ready' AND EXISTS(
+        SELECT 1 FROM article_media WHERE url=target.url AND referrer=target.referrer AND state='ready')`).run(entryId,url).changes);
+  }
   imageReferrer(entryId: string, url: string): string | undefined {
     return (this.db.prepare("SELECT referrer FROM article_media WHERE entry_id=? AND url=?").get(entryId, url) as { referrer: string } | undefined)?.referrer;
   }
@@ -67,6 +84,9 @@ export class ArticleStore {
     const url = assertPublicUrl(rawUrl).toString();
     const row = this.db.prepare("SELECT mime,bytes FROM article_media WHERE entry_id=? AND url=? AND state='ready'").get(entryId, url) as { mime: string; bytes: Buffer } | undefined;
     return row ? `data:${row.mime};base64,${row.bytes.toString("base64")}` : undefined;
+  }
+  hasImage(entryId: string, url: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM article_media WHERE entry_id=? AND url=? AND state='ready'").get(entryId,url));
   }
 
   saveImage(entryId: string, rawUrl: string, data: string): void {

@@ -273,3 +273,67 @@ it('reclassifies legacy unknowns once while retaining the retry budget and expli
   expect(f.db.articles.pendingMedia().some(r=>/unknown|unclassified|robots_disallowed/.test(r.url))).toBe(false);
  }finally{await f.close()}
 });
+
+it('rechecks persisted original and images before queued background acquisition',async()=>{
+ const f=fixture();try{
+  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0];
+  f.db.articles.save(entry.id,withArticleDocument({entryId:entry.id,title:entry.title,url:entry.url,renderProfile:'standard',contentHtml:body}));
+  f.db.articles.saveImage(entry.id,'https://example.com/one.png',IMAGE);f.db.articles.saveImage(entry.id,'https://example.com/two.png',IMAGE);
+  f.http.getText.mockClear();f.library.start();await f.library['worker'];
+  expect(f.http.getText).not.toHaveBeenCalled();expect(f.http.getImageDataUrl).not.toHaveBeenCalled();
+  const convert=vi.spyOn(f.reader,'readFeedBody');await f.sync.syncSource(f.source.id);
+  expect(convert).not.toHaveBeenCalled();expect(f.http.getText).toHaveBeenCalledTimes(1);
+ }finally{await f.close()}
+});
+
+it('coalesces concurrent original reads, isolates waiter cancellation, and preserves explicit refresh',async()=>{
+ const f=fixture();try{
+  const entry=contentNormalizer.normalize({url:'https://example.com/new-original',title:'Technical original'},f.source);f.db.saveEntries([entry]);
+  let finish!:(article:ReturnType<typeof withArticleDocument>)=>void;
+  const article=withArticleDocument({entryId:entry.id,title:entry.title,url:entry.url,renderProfile:'standard',contentHtml:body});
+  const read=vi.spyOn(f.reader,'read').mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve})).mockResolvedValue(article);
+  const controller=new AbortController();const first=f.library.read(entry,f.source,{signal:controller.signal});const rejected=expect(first).rejects.toThrow();
+  const second=f.library.read(entry,f.source);await vi.waitFor(()=>expect(read).toHaveBeenCalledTimes(1));controller.abort();await rejected;finish(article);await second;
+  await f.library.read(entry,f.source);expect(read).toHaveBeenCalledTimes(1);
+  await f.library.read(entry,f.source,{refresh:true});expect(read).toHaveBeenCalledTimes(2);
+ }finally{await f.close()}
+});
+
+it('reuses exact owned image/referrer bytes across entries after restart, without borrowing other referrers or resurrecting deleted ownership',async()=>{
+ const path=location(),f=fixture(path);let firstId:string,otherId:string;
+ try{
+  await f.sync.syncSource(f.source.id);const first=f.db.listEntries(f.source.id)[0];firstId=first.id;
+  const otherSource=f.db.createSource({url:'https://example.com/other-feed',title:'Other feed',kind:'rss',pollingEnabled:true});
+  const other=contentNormalizer.normalize({url:'https://example.com/other',title:'Other technical article'},otherSource);f.db.saveEntries([other]);otherId=other.id;
+  f.db.articles.saveImage(firstId,'https://example.com/one.png',IMAGE);
+  f.db.articles.registerImage(otherId,'https://example.com/one.png',first.url);
+  f.db.articles.registerImage(otherId,'https://example.com/two.png',other.url);
+  f.db.articles.saveImage(firstId,'https://example.com/two.png',IMAGE);
+ }finally{await f.close()}
+ const db=new ReadingDatabase(path),http={getImageDataUrl:vi.fn(async()=>IMAGE)};
+ const library=new ArticleLibrary(db,{} as ArticleReader,http as unknown as PublicHttpClient);
+ try{
+  const other=db.getEntry(otherId!)!;
+  expect(await library.loadImage(other,'https://example.com/one.png')).toBe(IMAGE);expect(http.getImageDataUrl).not.toHaveBeenCalled();
+  expect(db.articles.image(other.id,'https://example.com/one.png')).toBe(IMAGE);
+  await library.loadImage(other,'https://example.com/two.png');expect(http.getImageDataUrl).toHaveBeenCalledTimes(1);
+  db.deleteSource(db.getEntry(firstId!)!.sourceId);
+  expect(db.articles.image(other.id,'https://example.com/one.png')).toBe(IMAGE);
+  expect(db.articles.reuseImage('deleted-entry','https://example.com/one.png')).toBe(false);
+ }finally{await library.close();db.close()}
+});
+
+it('waits for shared reader cleanup on shutdown after all waiters are cancelled',async()=>{
+ const f=fixture();try{
+  const entry=contentNormalizer.normalize({url:'https://example.com/drain',title:'Drain read'},f.source);f.db.saveEntries([entry]);
+  let finish!:(value:ReaderArticleForTest)=>void;type ReaderArticleForTest=Awaited<ReturnType<ArticleReader['read']>>;
+  let transportSignal:AbortSignal|undefined;
+  vi.spyOn(f.reader,'read').mockImplementation((_e,_s,options)=>{transportSignal=options?.signal;return new Promise(resolve=>{finish=resolve})});
+  const result=f.library.read(entry,f.source);const rejected=expect(result).rejects.toThrow();
+  await vi.waitFor(()=>expect(transportSignal).toBeDefined());
+  let closed=false;const closing=f.library.close().then(()=>{closed=true});await rejected;
+  expect(transportSignal?.aborted).toBe(true);expect(closed).toBe(false);
+  finish(withArticleDocument({entryId:entry.id,title:entry.title,url:entry.url,renderProfile:'standard',contentHtml:body}));
+  await closing;expect(closed).toBe(true);expect(f.db.articles.read(entry.id)).toBeUndefined();
+ }finally{await f.close()}
+});
