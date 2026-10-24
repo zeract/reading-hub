@@ -93,7 +93,7 @@ describe("PublicHttpClient local-feed boundary", () => {
     const robots = { assertAllowed: vi.fn() };
     const padding = "x".repeat(3_050_000);
     chromiumFetch.mockResolvedValueOnce(new Response(
-      `<?xml version="1.0"?><rss version="2.0"><channel><title>Large feed</title><item><title>Post</title><description>${padding}</description></item></channel></rss>`,
+      `<?xml version="1.0"?><!-- publisher --><?xml-stylesheet type="text/xsl" href="/feed.xsl"?><rss version="2.0"><channel><title>Large feed</title><item><title>Post</title><description>${padding}</description></item></channel></rss>`,
       { status: 200, headers: { "content-type": "text/plain" } }
     ));
     const client = new PublicHttpClient(robots as never);

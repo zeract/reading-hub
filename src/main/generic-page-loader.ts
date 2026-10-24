@@ -6,13 +6,15 @@ import {
   type TextValidators,
   type TextResponse
 } from "./http";
-import { isAmbiguousFeedContentType, isExplicitFeedContentType } from "./feed";
+import { isAmbiguousFeedContentType, isExplicitFeedContentType, looksLikeFeed } from "./feed";
 import type { PageRenderer } from "./page-renderer";
 
 export interface GenericPageLoadOptions {
   cached?: TextValidators;
   /** A previously verified page needs Chromium every time it is refreshed. */
   preferRenderer?: boolean;
+  /** One-time audit of legacy rendered sources; a raw Feed must bypass XSL. */
+  inspectFeed?: boolean;
   signal?: AbortSignal;
 }
 
@@ -38,9 +40,12 @@ export async function loadGenericPage(
   url: string,
   options?: GenericPageLoadOptions
 ): Promise<LoadedGenericPage> {
-  if (options?.preferRenderer && renderer) return renderPage(renderer, url, options?.signal);
+  if (options?.preferRenderer && renderer && !options.inspectFeed) return renderPage(renderer, url, options?.signal);
   try {
     const response = await http.getText(url, options?.cached, options?.signal ? { signal: options.signal } : undefined);
+    if (options?.preferRenderer && renderer && !looksLikeFeed(response.contentType, response.text)) {
+      return renderPage(renderer, response.url, options?.signal);
+    }
     return { url: response.url, text: response.text, contentType: response.contentType, response, fromRenderer: false };
   } catch (error) {
     if (!renderer || !shouldUseRenderedFallback(error)) throw error;

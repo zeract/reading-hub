@@ -42,9 +42,9 @@ export const RSS_METADATA_REVISION = 7;
  * Older generic sources are rechecked once for a declared Feed. A Feed is
  * preferable to structural page extraction because it carries stable ids and
  * publication timestamps, and it does not depend on a site's visual layout.
- * Revision 2 replays pages whose relative Feed/card URLs ignored HTML base.
+ * Revision 3 checks legacy rendered sources for a raw Feed before Chromium.
  */
-export const FEED_DISCOVERY_REVISION = 2;
+export const FEED_DISCOVERY_REVISION = 3;
 
 /** A MIME type that explicitly identifies a syndication document. */
 export function isExplicitFeedContentType(contentType: string): boolean {
@@ -80,10 +80,11 @@ export function hasFeedSignature(text: string): boolean {
   // A MIME type can be wrong, so only the actual document root earns the
   // larger Feed budget. Comments and an XML declaration are allowed before
   // the root; arbitrary XML/JSON payloads are not Feed signatures.
+  // XML processing instructions (including xml-stylesheet) and comments may
+  // alternate before the root. Recognize them as prolog only; never execute
+  // the stylesheet or search for a Feed nested inside an HTML document.
   const xml = prefix
-    .replace(/^(?:<\?xml[^>]*>\s*)?/i, "")
-    .replace(/^(?:<!--[\s\S]*?-->\s*)*/i, "")
-    .replace(/^(?:<!DOCTYPE[^>]*>\s*)*/i, "");
+    .replace(/^(?:(?:<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[^>]*>)\s*)*/i, "");
   return /^<(?:rss|feed|rdf:RDF)\b/i.test(xml)
     || /^\{[\s\S]{0,65536}?"version"\s*:\s*"https?:\/\/jsonfeed\.org\/version\//i.test(prefix);
 }

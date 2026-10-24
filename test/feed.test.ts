@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { discoverFeedUrls, hasFeedSignature, looksLikeFeed, parseFeed, parseFeedForReading, parseFeedForSync } from "../src/main/feed";
 
+it("recognizes an XML prolog with alternating instructions/comments without trusting a nested Feed", () => {
+  const prolog = '<?xml version="1.0"?>\n<!-- publisher --><?xml-stylesheet type="text/xsl" href="/rss.xsl"?>\n<!-- feed follows -->';
+  expect(hasFeedSignature(prolog + '<rss version="2.0"><channel/></rss>')).toBe(true);
+  expect(hasFeedSignature(prolog + '<feed xmlns="http://www.w3.org/2005/Atom"/>')).toBe(true);
+  expect(hasFeedSignature(prolog + '<html><rss/></html>')).toBe(false);
+  expect(hasFeedSignature('<?xml-stylesheet href="/rss.xsl" <rss/>')).toBe(false);
+});
+
 it("does not turn a plain RSS description into a durable body, while retaining explicit plain content", async () => {
   const rss = '<rss version="2.0"><channel><title>Fixture</title><item><title>One</title><link>https://example.com/one</link><description>A plain introduction to the linked article.</description></item></channel></rss>';
   const parsed = await parseFeedForSync(rss, "https://example.com/feed");

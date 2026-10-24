@@ -6,6 +6,55 @@ import { ResponseTooLargeError } from "../src/main/http";
 import type { Source } from "../src/shared/types";
 
 describe("GenericConnector", () => {
+  it("recovers a raw Feed from a legacy rendered source once, persists its body, then uses one conditional request", async () => {
+    const url = "https://example.com/archive";
+    const xml = '<?xml version="1.0"?><?xml-stylesheet type="text/xsl" href="/feed.xsl"?><rss version="2.0"><channel><title>Feed</title><item><title>Authored post</title><link>/post</link><description>&lt;p&gt;Authored body&lt;/p&gt;&lt;img src="/diagram.png"/&gt;</description></item></channel></rss>';
+    const getText = vi.fn().mockResolvedValueOnce({ url, text: xml, status: 200, contentType: "text/xml", etag: "feed-v1" })
+      .mockResolvedValueOnce({ url, text: "", status: 304, contentType: "text/xml", etag: "feed-v1" });
+    const renderer = { render: vi.fn().mockRejectedValue(new Error("An XML stylesheet must never run")) };
+    const source: Source = {
+      id: "source", url, title: "Example", kind: "generic", status: "active", pollingEnabled: true,
+      consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1, etag: "old-html",
+      extractionRule: { version: 1, rendererRequired: true, feedDiscoveryRevision: FEED_DISCOVERY_REVISION - 1 }
+    };
+    const connector = new GenericConnector({ getText } as any, renderer as any);
+    const result = await connector.fetchWithMetadata(source);
+    expect(result.entries).toHaveLength(1);
+    expect(result.bodies).toEqual([{ url: "https://example.com/post", baseUrl: url, html: '<p>Authored body</p><img src="/diagram.png"/>' }]);
+    expect(result.extractionRule).toMatchObject({ feedUrl: url, feedDiscoveryRevision: FEED_DISCOVERY_REVISION });
+    const next = await connector.fetchWithMetadata({ ...source, ...result, extractionRule: result.extractionRule });
+    expect(next.notModified).toBe(true);
+    expect(getText.mock.calls).toEqual([[url, undefined, undefined], [url, expect.objectContaining({ etag: "feed-v1" }), { signal: undefined }]]);
+    expect(renderer.render).not.toHaveBeenCalled();
+  });
+
+  it("audits a rendered HTML source only once and retains its rendering requirement", async () => {
+    const url = "https://example.com/";
+    const getText = vi.fn().mockResolvedValue({ url, status: 200, contentType: "text/html", text: "<html>JavaScript app</html>" });
+    const renderer = { render: vi.fn().mockResolvedValue({ url, html: '<main><article><a href="/post">A sufficiently descriptive post title</a><time datetime="2026-10-24"/></article></main>' }) };
+    const source: Source = { id: "source", url, title: "Example", kind: "generic", status: "active", pollingEnabled: true,
+      consecutiveEmpty: 0, failureCount: 0, createdAt: 1, updatedAt: 1,
+      extractionRule: { version: 1, rendererRequired: true, feedDiscoveryRevision: FEED_DISCOVERY_REVISION - 1 } };
+    const connector = new GenericConnector({ getText } as any, renderer as any);
+    const known = () => ({ publishedAt: Date.UTC(2026, 9, 24), hasOriginal: true });
+    const result = await connector.fetchWithMetadata(source, undefined, known);
+    await connector.fetchWithMetadata({ ...source, extractionRule: result.extractionRule }, undefined, known);
+    expect(result.entries).toHaveLength(1);
+    expect(result.extractionRule?.rendererRequired).toBe(true);
+    expect(getText).toHaveBeenCalledTimes(1);
+    expect(renderer.render).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not turn a denied legacy Feed audit into a browser retry", async () => {
+    const denied = new Error("robots disallowed");
+    const renderer = { render: vi.fn() };
+    const connector = new GenericConnector({ getText: vi.fn().mockRejectedValue(denied) } as any, renderer as any);
+    await expect(connector.fetchWithMetadata({ id: "source", url: "https://example.com/", kind: "generic",
+      extractionRule: { version: 1, rendererRequired: true, feedDiscoveryRevision: FEED_DISCOVERY_REVISION - 1 }
+    } as Source)).rejects.toBe(denied);
+    expect(renderer.render).not.toHaveBeenCalled();
+  });
+
   it("uses a same-site article identity when a legacy rule returns the source homepage", () => {
     const connector = new GenericConnector({} as any);
     const source: Source = {

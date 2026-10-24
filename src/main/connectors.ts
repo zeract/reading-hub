@@ -8,7 +8,7 @@ import { AUTOMATIC_RULE_REVISION, PUBLICATION_DATE_REVISION, extractGenericPage,
 import { discoverFeedUrls, FEED_DISCOVERY_REVISION, looksLikeFeed, parseFeedForSync, RSS_METADATA_REVISION } from "./feed";
 import { isManualExtractionRule } from "./extraction-rule";
 import { loadGenericPage } from "./generic-page-loader";
-import { PublicHttpClient } from "./http";
+import { PublicHttpClient, type TextResponse } from "./http";
 import type { PageRenderer } from "./page-renderer";
 import { builtInManifest } from "./connector-registry";
 import { responseValidators, sourceValidators } from "./response-validators";
@@ -140,26 +140,19 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
         ? undefined
         : sourceValidators(source),
       signal,
+      inspectFeed: needsFeedDiscoveryAudit && !isManualExtractionRule(source.extractionRule),
       preferRenderer: source.extractionRule?.rendererRequired === true
     });
     if (page.response?.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true, ...responseValidators(page.response) };
+    if (page.response && looksLikeFeed(page.contentType, page.text)) return this.parseFeedResponse(source, page.response);
 
     for (const feedUrl of isManualExtractionRule(source.extractionRule) ? [] : discoverFeedUrls(page.text, page.url)) {
       try {
         const feedResponse = await this.http.getText(feedUrl, undefined, { signal });
         if (!looksLikeFeed(feedResponse.contentType, feedResponse.text)) continue;
-        const feed = await parseFeedForSync(feedResponse.text, feedResponse.url);
-        if (!feed.entries.length) continue;
-        return {
-          entries: feed.entries,
-          bodies: feed.bodies,
-          notModified: false,
-          emptyIsHealthy: true,
-          ...responseValidators(feedResponse),
-          metadataRevision: RSS_METADATA_REVISION,
-          iconUrl: feed.iconUrl,
-          extractionRule: withFeedDiscoveryRevision({ version: 1, ...source.extractionRule, feedUrl: feedResponse.url })
-        };
+        const outcome = await this.parseFeedResponse(source, feedResponse);
+        if (!outcome.entries.length) continue;
+        return outcome;
       } catch {
         throwIfAborted(signal);
         // A candidate is only an optimisation. Preserve the working generic
@@ -228,6 +221,10 @@ export class GenericConnector extends BaseConnector implements ConnectorAdapter 
     const response = await this.http.getText(feedUrl, needsMetadataReplay ? undefined : sourceValidators(source), { signal });
     if (response.status === 304) return { entries: [], notModified: true, emptyIsHealthy: true, ...responseValidators(response) };
     if (!looksLikeFeed(response.contentType, response.text)) throw new Error("来源声明的 Feed 已不再是有效订阅，请重新校准该来源。");
+    return this.parseFeedResponse(source, response);
+  }
+
+  private async parseFeedResponse(source: Source, response: TextResponse): Promise<FetchOutcome> {
     const feed = await parseFeedForSync(response.text, response.url);
     return {
       entries: feed.entries,
