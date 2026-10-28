@@ -14,6 +14,8 @@ it("persists settings, queued work and completed output across actual database r
   const job=db.rewrites.enqueue(entry.id,settings);db.rewrites.progress(job,1,1);db.rewrites.finish(job,{markdown:"本地改写",provider:"deepseek",model:"future",createdAt:2,sourceUrl:entry.url,sourceTitle:entry.title,sourceHash:"hash",promptVersion:1});db.rewrites.enqueue("queued",settings);
   db.close();db=new ReadingDatabase(path);
   expect(db.rewrites.settings()).toEqual(settings);expect(db.rewrites.get(entry.id)?.result?.markdown).toBe("本地改写");expect(db.rewrites.next()?.entryId).toBe("queued");
+  expect(db.rewrites.get(entry.id,true)).toMatchObject({entryId:entry.id,status:'complete'});
+  expect(db.rewrites.get(entry.id,true)?.result).toBeUndefined();
   const other=db.createSource({url:"https://example.com/other",title:"Other",kind:"rss",pollingEnabled:true});db.saveEntries([{...entry,id:"duplicate",sourceId:other.id}]);
   db.deleteSource(source.id);expect(db.rewrites.get(entry.id)?.result?.markdown).toBe("本地改写");
   db.deleteSource(other.id);expect(db.rewrites.get(entry.id)).toBeUndefined();

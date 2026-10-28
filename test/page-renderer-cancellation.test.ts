@@ -38,6 +38,7 @@ const electron = vi.hoisted(() => {
   const isolatedSession = {
     setPermissionRequestHandler: vi.fn(),
     setPermissionCheckHandler: vi.fn(),
+    clearCache:vi.fn().mockResolvedValue(undefined),clearAuthCache:vi.fn().mockResolvedValue(undefined),closeAllConnections:vi.fn().mockResolvedValue(undefined),
     clearStorageData: vi.fn().mockResolvedValue(undefined)
   };
   return {
@@ -51,7 +52,9 @@ const electron = vi.hoisted(() => {
 vi.mock("electron", () => electron);
 vi.mock("../src/main/network", () => ({ configureChromiumSession: vi.fn() }));
 
-import { IsolatedPageRenderer, RenderedPageTooLargeError } from "../src/main/page-renderer";
+import { IsolatedPageRenderer as PublicPageRenderer, RenderedPageTooLargeError } from "../src/main/page-renderer";
+import {RenderSessionPool} from "../src/main/render-session-pool";
+class IsolatedPageRenderer extends PublicPageRenderer { constructor(robots?:ConstructorParameters<typeof PublicPageRenderer>[0]){super(robots,new RenderSessionPool());} }
 import { ArticleReader } from "../src/main/article-reader";
 import { SourceProbe } from "../src/main/source-probe";
 import { loadGenericPage } from "../src/main/generic-page-loader";

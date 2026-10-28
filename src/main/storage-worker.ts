@@ -8,7 +8,7 @@ import { resolveDataLocation, type DataLocationResolverOptions } from "./data-lo
 
 const methods = new Set<keyof ArticleStore>([
   "read", "save", "registerImage", "ownsImage", "hasOriginal", "hasOriginalForUrl", "reuseImage",
-  "imageReferrer", "image", "hasImage", "saveImage", "enqueue", "reconcileSource", "retryAuthentication",
+  "imageReferrer", "image", "imageBytes", "hasImage", "saveImage", "enqueue", "reconcileSource", "retryAuthentication",
   "recover", "pendingMedia", "nextAcquisition", "nextAcquisitionRetry", "beginMedia", "beginAcquisition",
   "finishAcquisition", "finishMedia", "retryTransient"
 ]);

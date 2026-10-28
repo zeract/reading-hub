@@ -63,7 +63,7 @@ const IPC_CHANNELS = {
 } as const satisfies typeof SharedIpcChannels;
 
 const readerApi: ReaderApi = {
-  getArticleRewrite: (id) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.get, id),
+  getArticleRewrite: (id,metadataOnly) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.get, id,metadataOnly),
   generateArticleRewrite: (id) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.generate, id),
   cancelArticleRewrite: (id) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.cancel, id),
   removeArticleRewrite: (id) => ipcRenderer.invoke(IPC_CHANNELS.rewrite.remove, id),

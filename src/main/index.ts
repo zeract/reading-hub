@@ -11,6 +11,7 @@ import { ScientificArticleVisualAuditor } from "./scientific-visual-audit";
 import { installDevelopmentSupervisorGuard } from "./dev-supervisor";
 import { MainWindowLifecycle } from "./main-window-lifecycle";
 import { createShutdownHandler } from "./shutdown";
+import { publicRenderSessions } from "./render-session-pool";
 import { LIBRARY_FILE_NAME, type DataLocationResolution } from "./data-location-migration";
 import { prepareStartupLibrary } from "./storage-worker-client";
 
@@ -91,6 +92,7 @@ async function closeApplicationServices(): Promise<void> {
   activeServices?.beginShutdown();
   await drainIpc?.();
   await activeServices?.close();
+  await publicRenderSessions.close();
   services = undefined;
 }
 

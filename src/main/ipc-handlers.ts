@@ -193,7 +193,7 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     const url = requireText(imageUrl, "图片地址无效。", 4_000);
     const requestId = requireText(rawRequestId, "图片请求标识无效。", 160);
     return foregroundRequests.run(event.sender, async (signal) => {
-      try {return await articles.loadImage(entry, url, {signal});}
+      try {return await articles.loadImageBytes(entry, url, {signal});}
       catch(error){throwIfAborted(signal);throw readerImageDiagnostic(error);}
     }, `image:${requestId}`);
   });
@@ -207,7 +207,7 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     database.markFavorite(requireEntityId(id), requireBoolean(favorite)));
   handle(IPC_CHANNELS.entry.dismiss, (_event, id: unknown) => database.dismissEntry(requireEntityId(id)));
 
-  handle(IPC_CHANNELS.rewrite.get, (_event, id: unknown) => database.rewrites.get(requireEntityId(id)));
+  handle(IPC_CHANNELS.rewrite.get, (_event, id: unknown, metadataOnly:unknown) => database.rewrites.get(requireEntityId(id),metadataOnly===undefined?false:requireBoolean(metadataOnly)));
   handle(IPC_CHANNELS.rewrite.generate, (_event, id: unknown) => services.rewrites.enqueue(requireEntityId(id)));
   handle(IPC_CHANNELS.rewrite.cancel, (_event, id: unknown) => services.rewrites.cancel(requireEntityId(id)));
   handle(IPC_CHANNELS.rewrite.remove, (_event, id: unknown) => services.rewrites.remove(requireEntityId(id)));

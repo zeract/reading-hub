@@ -4,6 +4,7 @@ import { articleDocumentHtml, validArticleDocument } from "../../shared/article-
 import { assertPublicUrl } from "../../shared/url";
 import { isReaderSummaryContent, type ReaderArticle } from "../../shared/types";
 import { acquisitionRetryAt, TRANSIENT_ACQUISITION_FAILURES } from "../article-acquisition-policy";
+import type {ReaderImageResource} from '../../shared/reader-image';
 
 export type MediaRecord = { entry_id: string; url: string; referrer: string; state: string; attempts: number };
 export type AcquisitionRecord = { entry_id: string; state: string; attempts: number };
@@ -83,9 +84,13 @@ export class ArticleStore {
   }
 
   image(entryId: string, rawUrl: string): string | undefined {
+    const row=this.imageBytes(entryId,rawUrl);
+    return row ? `data:${row.mime};base64,${Buffer.from(row.bytes).toString('base64')}` : undefined;
+  }
+  imageBytes(entryId:string,rawUrl:string):ReaderImageResource|undefined {
     const url = assertPublicUrl(rawUrl).toString();
     const row = this.db.prepare("SELECT mime,bytes FROM article_media WHERE entry_id=? AND url=? AND state='ready'").get(entryId, url) as { mime: string; bytes: Buffer } | undefined;
-    return row ? `data:${row.mime};base64,${row.bytes.toString("base64")}` : undefined;
+    return row;
   }
   hasImage(entryId: string, url: string): boolean {
     return Boolean(this.db.prepare("SELECT 1 FROM article_media WHERE entry_id=? AND url=? AND state='ready'").get(entryId,url));

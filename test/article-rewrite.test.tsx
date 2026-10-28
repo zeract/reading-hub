@@ -26,7 +26,7 @@ it("ignores a late article response after switching entries",async()=>{
 });
 it("polls background completion without regenerating and releases polling on unmount",async()=>{
  vi.useFakeTimers();get.mockResolvedValueOnce({...record,status:"running"}).mockResolvedValue(record);
- await act(async()=>root.render(<View id="one"/>));await act(async()=>vi.advanceTimersByTimeAsync(2000));expect(get).toHaveBeenCalledTimes(2);expect(generate).not.toHaveBeenCalled();const calls=get.mock.calls.length;await act(async()=>vi.advanceTimersByTimeAsync(6000));expect(get).toHaveBeenCalledTimes(calls);
+ await act(async()=>root.render(<View id="one"/>));await act(async()=>vi.advanceTimersByTimeAsync(2000));expect(get.mock.calls).toEqual([["one"],["one",true],["one"]]);expect(generate).not.toHaveBeenCalled();const calls=get.mock.calls.length;await act(async()=>vi.advanceTimersByTimeAsync(6000));expect(get).toHaveBeenCalledTimes(calls);
 });
 it("saves rewrite settings independently of question settings",async()=>{
  const api=window.reader;const providers=[{id:"deepseek" as const,label:"DeepSeek",model:"learning-model",configured:true,requiresApiKey:true}];

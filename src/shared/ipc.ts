@@ -1,3 +1,4 @@
+import type { ReaderImageResource } from "./reader-image";
 import type { ArticleRewrite, RewriteSettings } from "./rewrite";
 import type {
   AiModelCatalog,
@@ -87,7 +88,7 @@ export type PendingPreview = Awaited<ReturnType<ReaderApi["previewSource"]>>;
 
 /** Renderer-safe surface exposed by preload through `window.reader`. */
 export interface ReaderApi {
-  getArticleRewrite(entryId: string): Promise<ArticleRewrite | undefined>;
+  getArticleRewrite(entryId: string,metadataOnly?:boolean): Promise<ArticleRewrite | undefined>;
   generateArticleRewrite(entryId: string): Promise<ArticleRewrite>;
   cancelArticleRewrite(entryId: string): Promise<ArticleRewrite | undefined>;
   removeArticleRewrite(entryId: string): Promise<void>;
@@ -118,7 +119,7 @@ export interface ReaderApi {
   openEmbeddedEntry(id: string): Promise<void>;
   loadArticleVideo(id: string, url: string, requestId: string): Promise<{ bytes: Uint8Array; contentType: string }>;
   cancelArticleVideo(requestId: string): Promise<void>;
-  loadArticleImage(id: string, imageUrl: string, requestId: string): Promise<string>;
+  loadArticleImage(id: string, imageUrl: string, requestId: string): Promise<ReaderImageResource>;
   cancelArticleImage(requestId: string): Promise<void>;
   loadSourceIcon(id: string): Promise<string | undefined>;
   markRead(id: string, read: boolean): Promise<void>;

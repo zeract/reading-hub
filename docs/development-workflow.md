@@ -63,3 +63,5 @@ MathJax 4 的响应式 SVG 在主进程冻结为有明确像素坐标 `viewBox` 
 `npm run audit:offline` 使用两个独立 Electron 进程及临时数据库：第一进程同步含正文、表格、代码、公式和两张图片的 Feed，再从 Feed 移除条目；第二进程阻断主进程及渲染器网络，使用真实 ArticleBody、图片 hook 和 preload 验证全部已存资源。关闭后删除夹具库，不修改用户库。该测试证明重启及离线存储链路，不代表远端站点仍可访问；真实来源仍单独运行 `audit:reader`。
 
 `READING_HUB_OFFLINE_RECONCILE=1 node scripts/offline-reader-smoke.mjs` 复用当前构建，模拟已收集条目无正文任务且 Feed 返回 304；必须由正常同步补齐队列、后台取得原页与全部图片，再在第二个断网进程验证真实正文 DOM。它是受控传输夹具，不是真实站点在线结果。
+
+`node node_modules/electron/cli.js scripts/memory-smoke-app` 复用当前构建，在临时隔离环境连续创建/关闭 80 个原生窗口，验证最多两个会话及每次 Cookie、存储、HTTP 缓存清理，记录主进程内存与线程数；随后用真实图片调度及 preload 滚动 40 图文档，验证离屏释放、尺寸不跳动、返回重载、预览独立持有和关闭后零 Blob，阻断并断言零 HTTP 请求。它是有界生命周期回归，不能证明真实文章的长时内存或所有远端资源可用。

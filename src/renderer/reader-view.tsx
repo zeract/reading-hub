@@ -6,6 +6,7 @@ import { RewriteVersion, RewrittenArticle } from "./article-rewrite";
 import { readerLanguageChoices } from "../shared/reader-languages";
 import { useReaderVideos } from "./use-reader-videos";
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {retainReaderImage} from './reader-image-resource';
 import type { AiArticleContext, AiProviderId, AiProviderSettings, AiSelectionContext, AiSelectionIntent, Entry, ReaderArticle, ReaderLanguageVariant, Source } from "../shared/types";
 import { AppIcon } from "./ui-icons";
 import { ModalSurface } from "./modal-surface";
@@ -88,7 +89,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const rewriteVisible = rewrite.visible;
   const [article, setArticle] = useState<ReaderArticle>();
   const rewriteResult=rewrite.record?.result;
-  const rewriteHtml=useMemo(()=>rewriteResult?.content?articleDocumentHtml(rewriteResult.content):undefined,[rewriteResult?.content]);
+  const rewriteHtml=useMemo(()=>rewriteVisible&&rewriteResult?.content?articleDocumentHtml(rewriteResult.content):undefined,[rewriteVisible,rewriteResult?.content]);
   const rewriteProfile=rewriteResult?.content?.renderProfile||article?.renderProfile||"standard";
   // Polling may deserialize the same saved tree again. Keep the media owner stable
   // while its actual presentation is unchanged, so pending image requests survive.
@@ -103,6 +104,9 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const { preferences } = useReaderPreferences();
   const [assistantState, setAssistantState] = useState<AssistantPanelState>("closed");
   const [imagePreview, setImagePreview] = useState<ReaderImagePreview>();
+  const imagePreviewRelease=useRef<(()=>void)|undefined>(undefined);
+  useEffect(()=>{if(!imagePreview){imagePreviewRelease.current?.();imagePreviewRelease.current=undefined;}},[imagePreview]);
+  useEffect(()=>()=>imagePreviewRelease.current?.(),[]);
   const [textSelection, setTextSelection] = useState<ReaderTextSelection>();
   const selectionAnchor = useRef<Range | undefined>(undefined);
   const [selectionQuestion, setSelectionQuestion] = useState("");
@@ -214,7 +218,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const date = displayed.publishedAt ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "long" }).format(displayed.publishedAt) : undefined;
   function previewImage(image: HTMLImageElement) {
     const src = image.currentSrc || image.src;
-    if (src) setImagePreview({ src, alt: image.alt || "文章图片" });
+    if (src) {imagePreviewRelease.current?.();imagePreviewRelease.current=retainReaderImage(src);setImagePreview({ src, alt: image.alt || "文章图片" });}
   }
   function handleContentClick(event: SyntheticEvent<HTMLElement>) {
     const target = event.target;

@@ -1,6 +1,14 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { observeRenderResources } from "../src/main/render-resource-readiness";
 afterEach(() => vi.useRealTimers());
+it('blocks audio/video downloads but preserves hydration and image requests',()=>{
+  const {tracker,listeners}=fixture();
+  for(const resourceType of ['media','script','stylesheet','xhr','image','font']){
+    const callback=vi.fn();listeners.onBeforeRequest({id:1,resourceType},callback);
+    expect(callback).toHaveBeenCalledWith(resourceType==='media'?{cancel:true}:{});
+  }
+  tracker.dispose();
+});
 function fixture() {
   vi.useFakeTimers();
   const listeners: Record<string, any> = {};

@@ -30,7 +30,7 @@ app.whenReady().then(async()=>{
  }else{
   const entry=db.listEntries()[0];const article=await library.read(entry,db.getSource(entry.sourceId));assert.ok(article.savedAt);
   let imageReads=0;
-  ipcMain.handle('entry:load-image',(_event,id,url)=>{imageReads++;assert.equal(id,entry.id);return library.loadImage(entry,url);});
+  ipcMain.handle('entry:load-image',(_event,id,url)=>{imageReads++;assert.equal(id,entry.id);return library.loadImageBytes(entry,url);});
   ipcMain.handle('entry:cancel-image',()=>undefined);
   let browserNetwork=0;session.defaultSession.webRequest.onBeforeRequest({urls:['http://*/*','https://*/*']},(_details,callback)=>{browserNetwork++;callback({cancel:true});});
   const fixturePath=path.join(directory,'fixture.tsx');
@@ -42,10 +42,10 @@ const article=${JSON.stringify(article)};
 function Fixture(){const ref=useRef(null);useReaderImages(article.entryId,article,ref);return <ArticleBody document={article.document} bodyRef={ref}/>;}
 createRoot(document.getElementById('root')).render(<Fixture/>);`);
   await require('esbuild').build({entryPoints:[fixturePath],outfile:path.join(directory,'fixture.js'),bundle:true,platform:'browser',jsx:'automatic',nodePaths:[path.join(root,'node_modules')],define:{'process.env.NODE_ENV':'"production"'},logLevel:'silent'});
-  await fs.writeFile(path.join(directory,'fixture.html'),'<html><head><meta http-equiv="Content-Security-Policy" content="default-src \'self\' data: file:; script-src \'self\'; connect-src \'none\'"></head><body><div id="root"></div><script src="fixture.js"></script></body></html>');
+  await fs.writeFile(path.join(directory,'fixture.html'),'<html><head><meta http-equiv="Content-Security-Policy" content="default-src \'self\' data: file:; img-src \'self\' data: blob:; script-src \'self\'; connect-src \'none\'"></head><body><div id="root"></div><script src="fixture.js"></script></body></html>');
   window=new BrowserWindow({show:false,width:1000,height:900,webPreferences:{preload:path.join(base,'preload.js'),contextIsolation:true,sandbox:true,nodeIntegration:false}});
   await window.loadFile(path.join(directory,'fixture.html'));
-  await until(()=>window.webContents.executeJavaScript(`(async()=>{for(const img of document.querySelectorAll('img'))img.scrollIntoView();return document.querySelectorAll('img').length===2&&[...document.querySelectorAll('img')].every(i=>i.complete&&i.naturalWidth>0&&i.src.startsWith('data:image/'));})()`));
+  await until(()=>window.webContents.executeJavaScript(`(async()=>{for(const img of document.querySelectorAll('img'))img.scrollIntoView();return document.querySelectorAll('img').length===2&&[...document.querySelectorAll('img')].every(i=>i.complete&&i.naturalWidth>0&&i.src.startsWith('blob:'));})()`));
   await until(()=>imageReads===2);
   const dom=await window.webContents.executeJavaScript(`({text:document.body.textContent,table:document.querySelectorAll('table').length,code:document.querySelector('pre code')?.textContent,math:document.querySelectorAll('.katex').length,images:[...document.querySelectorAll('img')].map(i=>({width:i.naturalWidth,url:i.src}))})`);
   assert.ok(dom.text.includes('离线文档'));assert.equal(dom.table,1);assert.equal(dom.code,'const offline = true;');assert.equal(dom.math,1);assert.equal(dom.images.length,2);assert.equal(network,0);assert.equal(browserNetwork,0);

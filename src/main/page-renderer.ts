@@ -7,6 +7,7 @@ import { configureChromiumSession } from "./network";
 import { RobotsPolicy } from "./robots";
 import { createBackgroundWindow } from "./background-window";
 import { observeRenderedPage, type RenderedPageCapture, type PageRenderOptions, type RenderedPage } from "./rendered-document";
+import { publicRenderSessions, type RenderSessionPool } from './render-session-pool';
 
 export { RenderedPageTooLargeError } from "./rendered-document";
 export type { PageRenderOptions, RenderedPage } from "./rendered-document";
@@ -24,7 +25,7 @@ export interface PageRenderer {
 
 /** Uses Electron's Chromium only for public pages that did not yield usable static HTML. */
 export class IsolatedPageRenderer implements PageRenderer {
-  constructor(private readonly robots = new RobotsPolicy()) {}
+  constructor(private readonly robots = new RobotsPolicy(),private readonly sessions:RenderSessionPool=publicRenderSessions) {}
 
   async render(rawUrl: string, options?: PageRenderOptions): Promise<RenderedPage> {
     throwIfAborted(options?.signal);
@@ -32,6 +33,7 @@ export class IsolatedPageRenderer implements PageRenderer {
     const deadline = Date.now() + RENDER_TASK_TIMEOUT_MS;
     const request = withRequestTimeout(options?.signal, RENDER_TASK_TIMEOUT_MS, RENDER_TIMEOUT_MESSAGE);
     let isolatedSession: ReturnType<typeof session.fromPartition> | undefined;
+    let lease:Awaited<ReturnType<RenderSessionPool['acquire']>>|undefined;
     let window: BrowserWindow | undefined;
     let capture: RenderedPageCapture | undefined;
     let resources: ReturnType<typeof observeRenderResources> | undefined;
@@ -51,9 +53,9 @@ export class IsolatedPageRenderer implements PageRenderer {
       // Rendering must obey the same access policy as the static fetch path.
       await awaitWithAbort(this.robots.assertAllowed(url, { signal: request.signal }), request.signal);
       throwIfAborted(request.signal);
-      const partition = `reader-preview-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      isolatedSession = session.fromPartition(partition);
-      // A fresh cookie-free partition still needs the approved proxy route.
+      lease=await this.sessions.acquire(request.signal);
+      isolatedSession = lease.session;
+      // A clean cookie-free partition still needs the approved proxy route.
       await awaitWithAbort(configureChromiumSession(isolatedSession), request.signal);
       throwIfAborted(request.signal);
       isolatedSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
@@ -62,7 +64,7 @@ export class IsolatedPageRenderer implements PageRenderer {
       disposeAccess = observeAccessChallenges(isolatedSession.webRequest, error => { challenge = error; });
       window = createBackgroundWindow({
         webPreferences: {
-          partition,
+          session: isolatedSession,
           sandbox: true,
           nodeIntegration: false,
           contextIsolation: true,
@@ -95,11 +97,11 @@ export class IsolatedPageRenderer implements PageRenderer {
         disposeAccess?.();
         request.signal.removeEventListener("abort", stopAndDestroy);
         stopAndDestroy();
-        if (isolatedSession) {
+        if (lease) {
           // Always initiate cleanup, including when setup failed before a
           // window existed. A failed task must retain its original error and
           // release its caller even if Chromium cleanup stalls or rejects.
-          const cleanup = isolatedSession.clearStorageData();
+          const cleanup = lease.release();
           if (failed) void cleanup.catch(() => undefined);
           else await awaitWithAbort(cleanup, request.signal);
         }

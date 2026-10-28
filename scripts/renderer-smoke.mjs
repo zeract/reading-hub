@@ -15,7 +15,8 @@ for (const [id, title, ingestionKind] of [["success", "Readable fixture", "curre
     ingestionKind, contentHash: id, createdAt: ingestionKind === "history" ? new Date(new Date().setDate(new Date().getDate() - 1)).getTime() : Date.now(), read: false, favorite: false }]);
 }
 database.markFavorite("success", true);
-const fixtureImage = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+const binaryImage = url => ({mime: url.slice(5,url.indexOf(";")), bytes: Buffer.from(url.slice(url.indexOf(",")+1), "base64")});
+const fixtureImage = binaryImage("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
 let pauseImages = false;
 let imageLoads = 0;
 let videoLoads = 0;
@@ -104,7 +105,7 @@ const fixtureProviders = [
 const aiAnswer = "## Fixture answer\n\nInline $x^2$.\n\n$$\ny=x+1\n$$";
 database.rewrites.configure({ provider: "deepseek", model: "fixture-rewrite", effort: "default" });
 const channels = [
-  ["rewrite:get", (_event,id) => database.rewrites.get(id)],
+  ["rewrite:get", (_event,id,metadataOnly) => database.rewrites.get(id,metadataOnly)],
   ["rewrite:settings", () => database.rewrites.settings()],
   ["rewrite:configure", (_event,settings) => { database.rewrites.configure(settings); return settings; }],
   ["rewrite:cancel", (_event,id) => { database.rewrites.cancel(id);return database.rewrites.get(id); }],
@@ -184,7 +185,7 @@ const channels = [
   ["entry:load-image", (event, _id, _url, requestId) => {
     assert(typeof requestId === "string" && requestId.startsWith("image-"), "Image IPC must carry an opaque request id.");
     imageLoads++;
-    if (!pauseImages && _url==='https://example.com/image_(1).png') return event.sender.executeJavaScript("{const canvas=document.createElement('canvas');canvas.width=480;canvas.height=240;const ctx=canvas.getContext('2d');ctx.fillStyle='#dce8f5';ctx.fillRect(0,0,480,240);ctx.fillStyle='#4f7ea8';ctx.fillRect(40,100,100,100);ctx.fillRect(190,60,100,140);ctx.fillRect(340,20,100,180);canvas.toDataURL('image/png');}");
+    if (!pauseImages && _url==='https://example.com/image_(1).png') return event.sender.executeJavaScript("{const canvas=document.createElement('canvas');canvas.width=480;canvas.height=240;const ctx=canvas.getContext('2d');ctx.fillStyle='#dce8f5';ctx.fillRect(0,0,480,240);ctx.fillStyle='#4f7ea8';ctx.fillRect(40,100,100,100);ctx.fillRect(190,60,100,140);ctx.fillRect(340,20,100,180);canvas.toDataURL('image/png');}").then(binaryImage);
     if (!pauseImages) return fixtureImage;
     return new Promise((resolve) => { pendingImage = { requestId, resolve }; imageRequested?.(); });
   }],
@@ -652,14 +653,14 @@ async function runChecks() {
     await selectRewrite("rewrite");
     // The image is lazy-loaded; layout changes can move it below the viewport.
     await evaluate("document.querySelector('.reader-rewritten img')?.scrollIntoView({block:'center'})");
-    await waitFor(window,"Boolean(document.querySelector('.reader-rewritten .katex')) && document.querySelector('.reader-rewritten img')?.naturalWidth > 0");
+    await waitFor(window,"Boolean(document.querySelector('.reader-rewritten .katex')) && document.querySelector('.reader-rewritten img')?.naturalWidth > 0 && document.querySelector('.reader-rewritten img')?.src.startsWith('blob:')");
     const rewriteLayout = await evaluate("({ articleCount: document.querySelectorAll('.reader-article').length, rewrittenCount: document.querySelectorAll('.reader-article.reader-rewritten').length, scrollWidth: document.documentElement.scrollWidth, viewportWidth: innerWidth })");
     assert(rewriteLayout.articleCount === 1 && rewriteLayout.rewrittenCount === 1 && rewriteLayout.scrollWidth <= rewriteLayout.viewportWidth + 1, `Rewritten body must replace the original and fit the viewport: ${JSON.stringify(rewriteLayout)}`);
     assert(await evaluate("document.querySelector('.reader-version-tabs [aria-selected=\"true\"]').textContent==='中文改写' && getComputedStyle(document.querySelector('.reader-version-tabs [aria-selected=\"true\"]')).borderTopWidth==='0px'"), "Version selection must use borderless inline tabs.");
     assert(await evaluate("document.querySelector('.reader-version-tabs [aria-selected=\"true\"]').closest('.reader-toolbar') === document.querySelector('.favorite-button').closest('.reader-toolbar') && document.querySelector('.reader-version-tabs [aria-selected=\"true\"]').getBoundingClientRect().left < document.querySelector('.favorite-button').getBoundingClientRect().left"), "Version tabs belong at the left of the favorite toolbar.");
     assert(await evaluate("document.querySelector('.reader-rewritten button')===null && !/本地保存|理解偏差|未进行额外|fixture-rewrite|重新生成|检查改写/.test(document.querySelector('.reader-rewritten').textContent)"), "Completed rewrite must show only title and body.");
     assert(await evaluate("getComputedStyle(document.querySelector('.reader-rewritten .article-body')).fontFamily.startsWith('\"Zhuque Fangsong\"')"), "Rewritten prose must use the bundled Fangsong face.");
-    assert(await evaluate("document.querySelector('.reader-rewritten a[href=\"https://example.com/post\"]') && document.querySelector('.reader-rewritten a[href=\"https://example.com/a_(b)\"]') && document.querySelector('.reader-rewritten img').src.startsWith('data:image/')"), "Links and proxied images must render correctly.");
+    assert(await evaluate("document.querySelector('.reader-rewritten a[href=\"https://example.com/post\"]') && document.querySelector('.reader-rewritten a[href=\"https://example.com/a_(b)\"]') && document.querySelector('.reader-rewritten img').src.startsWith('blob:')"), "Links and proxied images must render correctly.");
     assert(await evaluate("document.querySelector('.reader-rewritten a[href=\"https://example.com/post\"]').textContent === '原文证据' && !document.querySelector('.ai-toggle').disabled"), "Rewrite must hide raw URL labels and enable AI.");
     const toolbarButtons = await evaluate("[...document.querySelectorAll('.reader-toolbar-actions button')].map(button => ({ icon: Boolean(button.querySelector('svg')), width: button.getBoundingClientRect().width, height: button.getBoundingClientRect().height, radius: getComputedStyle(button).borderRadius, border: getComputedStyle(button).borderTopWidth, background: getComputedStyle(button).backgroundColor }))");
     assert(toolbarButtons.every((button) => button.icon && button.width === 34 && button.height === 34 && button.radius === "50%" && Number.parseFloat(button.border) > 0 && button.background !== "rgba(0, 0, 0, 0)"), `Toolbar icons must share bounded circular paper surfaces: ${JSON.stringify(toolbarButtons)}`);

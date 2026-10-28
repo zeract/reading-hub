@@ -11,6 +11,9 @@ export function observeRenderResources(request?: Pick<WebRequest, "onBeforeReque
   const pending = new Set<number>();
   let changedAt = Date.now();
   request?.onBeforeRequest((details, callback) => {
+    // Audio/video bytes do not contribute to an HTML snapshot. Their source
+    // attributes remain in the DOM for the reader's explicit-load media path.
+    if(details.resourceType==='media'){callback({cancel:true});return;}
     if (CONTENT_RESOURCES.has(details.resourceType)) {
       pending.add(details.id);
       changedAt = Date.now();

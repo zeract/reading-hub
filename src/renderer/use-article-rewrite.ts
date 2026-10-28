@@ -10,15 +10,16 @@ export function useArticleRewrite(entryId: string) {
     const epoch = useRef(0);
     const actionLock = useRef(false);
     const readLock = useRef(false);
-    const read = useCallback(async () => {
+    const read = useCallback(async (metadataOnly=false) => {
         if (actionLock.current || readLock.current)
             return;
         readLock.current = true;
         const current = ++epoch.current;
         try {
-            const result = await window.reader.getArticleRewrite(entryId);
+            let result = metadataOnly?await window.reader.getArticleRewrite(entryId,true):await window.reader.getArticleRewrite(entryId);
+            if(metadataOnly&&current===epoch.current&&result&&!rewritePending(result))result=await window.reader.getArticleRewrite(entryId);
             if (current === epoch.current) {
-                setRecord(result);
+                setRecord(previous=>metadataOnly&&result&&rewritePending(result)&&previous?.entryId===result.entryId?{...result,result:previous.result}:result);
                 setError(undefined);
                 setLoaded(true);
             }
@@ -35,7 +36,7 @@ export function useArticleRewrite(entryId: string) {
     useEffect(() => { setRecord(undefined); setError(undefined); setVisible(false); setLoaded(false); setBusy(false); actionLock.current = false; readLock.current = false; void read(); return () => { epoch.current++; }; }, [read]);
     const pending = rewritePending(record);
     useEffect(() => { if (!pending)
-        return; const timer = setInterval(() => void read(), 2000); return () => clearInterval(timer); }, [pending, read]);
+        return; const timer = setInterval(() => void read(true), 2000); return () => clearInterval(timer); }, [pending, read]);
     const act = async (action: "generate" | "cancel") => {
         if (actionLock.current)
             return;

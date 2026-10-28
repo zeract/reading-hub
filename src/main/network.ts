@@ -39,7 +39,7 @@ export function proxyConfigFromEnvironment(environment: Environment = process.en
 /**
  * Apply terminal proxy settings to a Chromium session.
  *
- * Offscreen renderers use a fresh partition for each page, so they do not
+ * Public renderers use a bounded pool of isolated sessions, which do not
  * inherit the default session's proxy configuration automatically.
  */
 export async function configureChromiumSession(target: ChromiumProxySession, environment: Environment = process.env): Promise<void> {

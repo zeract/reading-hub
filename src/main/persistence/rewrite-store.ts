@@ -28,8 +28,11 @@ export class RewriteStore {
     configure(settings: RewriteSettings): void {
         this.db.prepare("INSERT INTO rewrite_settings VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET settings_json=excluded.settings_json").run(JSON.stringify(settings));
     }
-    get(entryId: string): ArticleRewrite | undefined {
-        const row = this.db.prepare("SELECT * FROM article_rewrites WHERE entry_id=?").get(entryId) as Row | undefined;
+    get(entryId: string, metadataOnly=false): ArticleRewrite | undefined {
+        // Progress polling must not deserialize the saved full draft or the
+        // much larger checkpoint, nor repeatedly trigger format migration.
+        const row = this.db.prepare(`SELECT entry_id,job_id,status,settings_json,completed_chunks,total_chunks,updated_at,error,stage,kind,
+          ${metadataOnly?'NULL':'result_json'} AS result_json FROM article_rewrites WHERE entry_id=?`).get(entryId) as Row | undefined;
         if (!row) return;
         let result: RewriteResult | undefined;
         let error=row.error || undefined;

@@ -19,7 +19,7 @@ function setup() {
   return registerIpcHandlers({
     database: { getEntry: () => ({ id: "entry", sourceId: "source", url: "https://example.com/article" }) },
     http,
-    articles: { loadImage: (entry: { url: string }, url: string, options: { signal?: AbortSignal }) => http.getImageDataUrl(url, entry.url, options) }
+    articles: { loadImageBytes: (entry: { url: string }, url: string, options: { signal?: AbortSignal }) => http.getImageDataUrl(url, entry.url, options) }
   } as unknown as ApplicationServices);
 }
 beforeEach(() => { mocks.handlers.clear(); mocks.fetch.mockReset(); });

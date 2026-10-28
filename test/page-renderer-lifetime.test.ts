@@ -37,6 +37,7 @@ vi.mock("electron", () => ({
       webRequest: Object.fromEntries(["onBeforeRequest", "onCompleted", "onErrorOccurred", "onHeadersReceived"].map(key => [key, vi.fn()])),
       setPermissionRequestHandler: vi.fn(),
       setPermissionCheckHandler: vi.fn(),
+      clearCache:vi.fn().mockResolvedValue(undefined),clearAuthCache:vi.fn().mockResolvedValue(undefined),closeAllConnections:vi.fn().mockResolvedValue(undefined),
       clearStorageData: vi.fn(() => fixture.cleanup())
     };
     fixture.sessions.push(value);
@@ -45,7 +46,9 @@ vi.mock("electron", () => ({
 }));
 vi.mock("../src/main/network", () => ({ configureChromiumSession: fixture.configure }));
 
-import { IsolatedPageRenderer } from "../src/main/page-renderer";
+import { IsolatedPageRenderer as PublicPageRenderer } from "../src/main/page-renderer";
+import {RenderSessionPool} from "../src/main/render-session-pool";
+class IsolatedPageRenderer extends PublicPageRenderer { constructor(robots?:ConstructorParameters<typeof PublicPageRenderer>[0]){super(robots,new RenderSessionPool());} }
 import { GenericConnector } from "../src/main/connectors";
 import { ConnectorRegistry } from "../src/main/connector-registry";
 import { ReadingDatabase } from "../src/main/database";
@@ -143,6 +146,8 @@ describe("public rendering task lifetime", () => {
     caller.abort(reason);
     expect(await outcome).toBe(reason);
     expect(fixture.windows[0].isDestroyed()).toBe(true);
+    expect(vi.getTimerCount()).toBe(1); // Independent cleanup still owns the context.
+    await vi.advanceTimersByTimeAsync(5_000);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -155,11 +160,10 @@ describe("public rendering task lifetime", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it.each(["robots", "configuration", "cleanup"])("bounds a stalled %s and permits a fresh retry", async (stage) => {
+  it.each(["robots", "configuration"])("bounds a stalled %s and permits a fresh retry", async (stage) => {
     const policy = robots();
     if (stage === "robots") policy.assertAllowed.mockImplementationOnce(never);
     if (stage === "configuration") fixture.configure.mockImplementationOnce(never);
-    if (stage === "cleanup") fixture.cleanup.mockImplementationOnce(never);
     const renderer = new IsolatedPageRenderer(policy as never);
     const outcome = renderer.render("https://example.com/article").then(
       () => "success", (error: Error) => error.message
@@ -173,6 +177,17 @@ describe("public rendering task lifetime", () => {
     const retry = renderer.render("https://example.com/article");
     await vi.advanceTimersByTimeAsync(800);
     expect(await retry).toMatchObject({ html: "<p>Public document</p>" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("bounds stalled cleanup and refuses reuse until restart", async () => {
+    fixture.cleanup.mockImplementationOnce(never);
+    const renderer = new IsolatedPageRenderer(robots() as never);
+    const result = renderer.render("https://example.com/article").catch(error => error);
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(await result).toMatchObject({message:"隔离阅读环境未能安全清理，请重启应用后重试。"});
+    await expect(renderer.render("https://example.com/other")).rejects.toThrow("未能安全清理");
+    expect(fixture.sessions).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -210,6 +225,8 @@ describe("public rendering task lifetime", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(await Promise.race([outcome, Promise.resolve("still pending")])).toBe(failure);
     expect(fixture.sessions[0].clearStorageData).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(5_000);
     expect(vi.getTimerCount()).toBe(0);
   });
 

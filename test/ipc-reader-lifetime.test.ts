@@ -24,7 +24,7 @@ function fixture(read: (...args: any[]) => Promise<unknown>) {
   const entry = { id: "entry", sourceId: "source", url: "https://example.com/post", title: "Fixture" };
   const source = { id: "source", kind: "rss", url: "https://example.com/feed" };
   const database = { getEntry: () => entry, getSource: () => source };
-  const articles = { read: vi.fn(read), readLanguageVariant: vi.fn(read), loadImage: vi.fn(read) };
+  const articles = { read: vi.fn(read), readLanguageVariant: vi.fn(read), loadImageBytes: vi.fn(read) };
   const http = { getImageDataUrl: vi.fn(read), getVideo: vi.fn(read) };
   const viewer = { open: vi.fn(async () => undefined) };
   const drain = registerIpcHandlers({ database, articles, http, inAppArticleViewer: viewer } as unknown as ApplicationServices);

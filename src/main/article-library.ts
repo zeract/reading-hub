@@ -12,6 +12,7 @@ import { SharedTaskMap } from "./shared-task-map";
 import { acquisitionFailure, fallbackAcquisitionFailure } from "./article-acquisition";
 import type { StorageWorkerClient } from "./storage-worker-client";
 import type { ReaderDiagnostic } from "./reader-diagnostics";
+import type {ReaderImageResource} from '../shared/reader-image';
 
 type ArticleStorage = Pick<StorageWorkerClient, "call" | "close">;
 function inlineStorage(store: ArticleStore): ArticleStorage {
@@ -126,10 +127,14 @@ export class ArticleLibrary {
     if (article) this.db.articles.save(storedId, article);
     this.db.articles.enqueue(storedId);
   }
-  loadImage(entry: Entry, url: string, options?: Pick<ReaderReadOptions, "signal">): Promise<string> {
+  async loadImage(entry: Entry, url: string, options?: Pick<ReaderReadOptions, "signal">): Promise<string> {
+    const resource=await this.loadImageBytes(entry,url,options);
+    return `data:${resource.mime};base64,${Buffer.from(resource.bytes).toString('base64')}`;
+  }
+  loadImageBytes(entry: Entry, url: string, options?: Pick<ReaderReadOptions, "signal">): Promise<ReaderImageResource> {
     return this.work(options?.signal, async signal => {
       const target = assertPublicUrl(url).toString();
-      const cached = await this.storage.call("image", entry.id, target);
+      const cached = await this.storage.call("imageBytes", entry.id, target);
       throwIfAborted(signal);
       if (cached) return cached;
       // Only document-owned assets can become durable media; legacy rewrite assets share the same store.
@@ -141,11 +146,12 @@ export class ArticleLibrary {
         if (!belongs) throw new Error("图片不属于当前文章。");
         await this.storage.call("registerImage", entry.id, target, entry.url);
       }
-      if (await this.storage.call("reuseImage", entry.id, target)) return (await this.storage.call("image", entry.id, target))!;
+      if (await this.storage.call("reuseImage", entry.id, target)) return (await this.storage.call("imageBytes", entry.id, target))!;
       const data = await this.http.getImageDataUrl(target, (await this.storage.call("imageReferrer", entry.id, target)) ?? entry.url, { signal });
       throwIfAborted(signal);
       await this.storage.call("saveImage", entry.id, target, data);
-      return data;
+      const match=/^data:([^;]+);base64,(.*)$/.exec(data)!;
+      return {mime:match[1],bytes:Buffer.from(match[2],'base64')};
     });
   }
 
