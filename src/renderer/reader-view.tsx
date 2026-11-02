@@ -1,5 +1,6 @@
 import {ArticleBody} from "./article-body";
-import {articleDocumentText,articleDocumentHtml} from "../shared/article-document";
+import type {ArticleDocument} from "../shared/article-document";
+import {readerPresentation} from "../shared/reader-presentation";
 import { replaceReaderImageFailure } from "./reader-image-loader";
 import { useArticleRewrite } from "./use-article-rewrite";
 import { RewriteVersion, RewrittenArticle } from "./article-rewrite";
@@ -14,6 +15,7 @@ import { DeferredAiMarkdownContent as AiMarkdownContent } from "./deferred-ai-ma
 import { shouldSubmitAssistantQuestion } from "./assistant-input";
 import { isUnclaimedEscape } from "./keyboard-events";
 import { buildAiArticleContext, collectAiArticleText } from "./ai-request";
+import {articleTextChunks} from "../shared/article-document";
 import { newAiRequestId, useAiStreamSubscription, useAiTextStream } from "./ai-stream";
 import { errorMessage } from "./errors";
 import { useAiProviders } from "./use-ai-providers";
@@ -36,10 +38,10 @@ function toSelectionRect(rect: DOMRect): SelectionRect {
   return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
 }
 
-type AiReaderDocument = Pick<ReaderArticle, "title" | "url"> & { contentHtml?: string; plainText?: string };
+type AiReaderDocument = Pick<ReaderArticle, "title" | "url"> & { document?:ArticleDocument; contentHtml?: string; plainText?: string };
 
 function toAiArticleContext(article: AiReaderDocument, sourceTitle?: string): AiArticleContext {
-  const document = new DOMParser().parseFromString(article.contentHtml || "", "text/html");
+  const root = article.document ? undefined : new DOMParser().parseFromString(article.contentHtml || "", "text/html").body;
   // Both the side panel and selection helper call this shared path. Capping
   // here keeps their IPC payload within the same bounded contract that the
   // main process enforces before a provider or Codex CLI sees the article.
@@ -47,7 +49,7 @@ function toAiArticleContext(article: AiReaderDocument, sourceTitle?: string): Ai
     title: article.title,
     url: article.url,
     sourceTitle,
-    plainText: article.plainText ?? collectAiArticleText(textNodeValues(document.body))
+    plainText: article.plainText ?? collectAiArticleText(article.document ? articleTextChunks(article.document) : textNodeValues(root!))
   });
 }
 
@@ -88,15 +90,14 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   const rewrite = useArticleRewrite(entry.id);
   const rewriteVisible = rewrite.visible;
   const [article, setArticle] = useState<ReaderArticle>();
+  const originalVariant=useRef<ReaderLanguageVariant|undefined>(undefined);
+  const suspendedOriginal=useRef<{entryId:string;variant?:ReaderLanguageVariant}|undefined>(undefined);
   const rewriteResult=rewrite.record?.result;
-  const rewriteHtml=useMemo(()=>rewriteVisible&&rewriteResult?.content?articleDocumentHtml(rewriteResult.content):undefined,[rewriteVisible,rewriteResult?.content]);
   const rewriteProfile=rewriteResult?.content?.renderProfile||article?.renderProfile||"standard";
-  // Polling may deserialize the same saved tree again. Keep the media owner stable
-  // while its actual presentation is unchanged, so pending image requests survive.
-  const rewritten=useMemo<ReaderArticle|undefined>(()=>rewriteResult?.content&&rewriteHtml!==undefined?{entryId:entry.id,title:rewriteResult.sourceTitle,url:rewriteResult.sourceUrl,renderProfile:rewriteProfile,document:rewriteResult.content,contentHtml:rewriteHtml}:undefined,[entry.id,rewriteHtml,rewriteResult?.sourceTitle,rewriteResult?.sourceUrl,rewriteProfile]);
+  const rewritten=useMemo<ReaderArticle|undefined>(()=>rewriteResult?.content?{entryId:entry.id,title:rewriteResult.sourceTitle,url:rewriteResult.sourceUrl,renderProfile:rewriteProfile,document:rewriteResult.content,contentHtml:""}:undefined,[entry.id,rewriteResult,rewriteProfile]);
   const visibleArticle=rewriteVisible?rewritten:article;
   const aiArticle: AiReaderDocument | undefined = rewriteVisible
-    ? rewrite.record?.result && { title: rewrite.record.result.sourceTitle, url: rewrite.record.result.sourceUrl, plainText: rewrite.record.result.content?articleDocumentText(rewrite.record.result.content):rewrite.record.result.markdown || "" }
+    ? rewriteResult && { title: rewriteResult.sourceTitle, url: rewriteResult.sourceUrl, document:rewriteResult.content, plainText:rewriteResult.content?undefined:rewriteResult.markdown || "" }
     : article;
   const [embedded, setEmbedded] = useState(false);
   const [error, setError] = useState<string>();
@@ -128,6 +129,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
     renderedEntryId.current = entry.id;
     loadedEntryId.current = undefined;
     autoReadEntryId.current = undefined;
+    originalVariant.current=undefined; suspendedOriginal.current=undefined;
   }
 
   const resetDocumentInteractions = useCallback(() => {
@@ -139,14 +141,14 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
     setSelectionQuestion("");
   }, []);
 
-  const loadArticle = useCallback(async (refresh = false) => {
+  const loadArticle = useCallback(async (refresh = false, variant?:ReaderLanguageVariant) => {
     const request = beginArticleRequest();
     resetDocumentInteractions();
     setLoading(true); setError(undefined); setLanguageSwitchError(undefined); setArticle(undefined); setEmbedded(false);
     try {
-      const result = await window.reader.readEntry(entry.id, request.id, refresh);
+      const result = variant ? await window.reader.readEntryLanguageVariant(entry.id,variant.url,request.id,variant.inlineLanguage) : await window.reader.readEntry(entry.id, request.id, refresh);
       if (!request.isCurrent()) return;
-      if (result.kind === "article") { loadedEntryId.current = entry.id; setArticle(result.article); }
+      if (result.kind === "article") { loadedEntryId.current = entry.id; originalVariant.current=variant; setArticle(readerPresentation(result.article)); }
       else if (result.kind === "embedded") setEmbedded(true);
     } catch (reason) {
       if (request.isCurrent()) setError(errorMessage(reason));
@@ -157,6 +159,15 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
   }, [entry.id, beginArticleRequest, resetDocumentInteractions]);
 
   useEffect(() => { void loadArticle(); }, [loadArticle]);
+  useEffect(()=>{
+    if(rewriteVisible && article?.entryId===entry.id && (article.document || article.contentHtml)){
+      suspendedOriginal.current={entryId:entry.id,variant:originalVariant.current};
+      setArticle({...article,document:undefined,contentHtml:""});
+    } else if(!rewriteVisible && suspendedOriginal.current){
+      const saved=suspendedOriginal.current;suspendedOriginal.current=undefined;
+      if(saved.entryId===entry.id)void loadArticle(false,saved.variant);
+    }
+  },[rewriteVisible,article,entry.id,loadArticle]);
   // Only a successfully committed article counts as reading. Failed extraction
   // or merely launching a restricted original window leaves the card unread.
   useEffect(() => {
@@ -325,7 +336,8 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
       if (!request.isCurrent()) return;
       if (next.kind === "cancelled") return;
       window.getSelection()?.removeAllRanges();
-      setArticle(next.article);
+      originalVariant.current=variant;
+      setArticle(readerPresentation(next.article));
       setEmbedded(false);
       resetDocumentInteractions();
     } catch (reason) {

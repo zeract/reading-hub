@@ -90,7 +90,17 @@ export class ArticleLibrary {
 
   readLanguageVariant(entry: Entry, source: Source | undefined, url: string, options?: ReaderReadOptions): Promise<ReaderArticle> {
     return this.work(options?.signal, async signal => {
-      this.reader.assertLanguageVariant(entry.id, url, options?.inlineLanguage);
+      try { this.reader.assertLanguageVariant(entry.id, url, options?.inlineLanguage); }
+      catch (error) {
+        // The UI may release a body for longer than the metadata cache TTL.
+        // Restore author-declared authority from this entry's local original,
+        // then validate again; a renderer-supplied URL never grants authority.
+        const original = await this.storage.call("read", entry.id);
+        throwIfAborted(signal);
+        if (!original) throw error;
+        this.reader.restoreSavedArticle(entry, original, signal);
+        this.reader.assertLanguageVariant(entry.id, url, options?.inlineLanguage);
+      }
       const variant = JSON.stringify([canonicalizeUrl(url), options?.inlineLanguage ?? ""]);
       const saved = await this.storage.call("read", entry.id, variant);
       throwIfAborted(signal);

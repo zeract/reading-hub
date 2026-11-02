@@ -106,7 +106,7 @@ describe("reader request lifetime", () => {
 
   it.each([IPC_CHANNELS.entry.readContent, IPC_CHANNELS.entry.readLanguageVariant, IPC_CHANNELS.entry.loadImage, IPC_CHANNELS.source.loadIcon])("passes a window cancellation signal to %s", async (channel) => {
     let signal: unknown;
-    const run = fixture(async (...args) => { signal = args.at(-1)?.signal; return undefined; });
+    const run = fixture(async (...args) => { signal = args.at(-1)?.signal; return {entryId:"entry",title:"Fixture",url:"https://example.com/post",renderProfile:"standard",contentHtml:"<p>fixture</p>"}; });
     try { await run.invoke(channel); expect(signal).toBeInstanceOf(AbortSignal); }
     finally { await run.drain(); }
   });

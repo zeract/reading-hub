@@ -473,3 +473,20 @@ it('repairs a legacy done-with-Feed-only job once without resetting attempts or 
   (f.db as any).db.prepare("UPDATE article_acquisitions SET state='done',attempts=3,failure=NULL WHERE entry_id=?").run(entry.id);f.library.reconcileSource(f.source.id);expect(f.db.articles.nextAcquisition()).toBeUndefined();
  }finally{await f.close()}
 });
+
+it('restores expired language authority from the local original while offline and still rejects undeclared URLs',async()=>{
+ const f=fixture();
+ try{
+  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0];
+  const variants=[{language:'en' as const,label:'English',url:entry.url,inlineLanguage:'en'},{language:'zh' as const,label:'中文',url:entry.url,inlineLanguage:'zh'}];
+  const original=withArticleDocument({entryId:entry.id,title:entry.title,url:entry.url,renderProfile:'standard',languageVariants:variants,activeLanguage:'en',contentHtml:'<p>Saved English</p>'});
+  const translated=withArticleDocument({...original,document:undefined,activeLanguage:'zh',contentHtml:'<p>已保存的中文</p>'});
+  f.db.articles.save(entry.id,original);f.db.articles.save(entry.id,translated,JSON.stringify([entry.url,'zh']));
+  vi.useFakeTimers();f.reader.restoreSavedArticle(entry,original);vi.setSystemTime(Date.now()+16*60_000);
+  f.state.online=false;f.http.getText.mockClear();f.http.getImageDataUrl.mockClear();
+  const result=await f.library.readLanguageVariant(entry,f.source,entry.url,{inlineLanguage:'zh'});
+  expect(result.contentHtml).toContain('已保存的中文');
+  await expect(f.library.readLanguageVariant(entry,f.source,'https://example.com/not-declared')).rejects.toThrow('语言版本已过期或不可用');
+  expect(f.http.getText).not.toHaveBeenCalled();expect(f.http.getImageDataUrl).not.toHaveBeenCalled();
+ }finally{vi.useRealTimers();await f.close();}
+});

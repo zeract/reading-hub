@@ -39,7 +39,8 @@ describe("AI article IPC input", () => {
     expect(reader).toContain('selection?.intent === "translate"');
     expect(reader).toContain('if (selection?.intent === "translate") return {};');
     expect([...reader.matchAll(/\.\.\.articlePayloadForAiRequest\(article, sourceTitle,/g)]).toHaveLength(2);
-    expect(reader).toContain("collectAiArticleText(textNodeValues(document.body))");
+    // The bounded structured iterator and legacy text collector are exercised
+    // by reader-presentation.test.ts and the runtime input tests above.
     expect(reader).not.toContain("document.body.textContent");
   });
 });

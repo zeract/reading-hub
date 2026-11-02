@@ -55,6 +55,8 @@ export interface ArticleRewrite {
     updatedAt: number;
     stage?: RewriteStage;
     error?: string;
+    /** Metadata queries expose availability without loading the saved document. */
+    hasResult?: boolean;
     result?: RewriteResult;
 }
 export function parseRewriteSettings(value: unknown): RewriteSettings {

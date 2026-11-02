@@ -205,3 +205,30 @@ it.each([false, true])("uses the saved rewrite for AI even when original loading
   expect(container.querySelector('.reader-ai-panel')).toBeNull();
   expect(window.reader.cancelAiStream).toHaveBeenCalledTimes(1);
 });
+
+it("restores the selected local inline language after releasing a hidden original",async()=>{
+ const variants=[{language:"en" as const,label:"English",url:card.url,inlineLanguage:"en"},{language:"zh" as const,label:"中文",url:card.url,inlineLanguage:"zh"}];
+ read.mockResolvedValue({kind:"article",article:{...article,activeLanguage:"en",languageVariants:variants,contentHtml:"<p>Original English</p>"}});
+ const language=vi.fn().mockResolvedValue({kind:"article",article:{...article,activeLanguage:"zh",languageVariants:variants,contentHtml:"<p>恢复的中文版本</p>"}});
+ Object.assign(window.reader,{readEntryLanguageVariant:language,getArticleRewrite:vi.fn().mockResolvedValue({entryId:card.id,status:"complete",result:{sourceTitle:"Rewrite",sourceUrl:card.url,markdown:"已保存改写"}})});
+ await render();
+ await act(async()=>Array.from(container.querySelectorAll<HTMLButtonElement>(".reader-language-switcher button")).find(button=>button.textContent==="中文")!.click());
+ await act(async()=>container.querySelectorAll<HTMLButtonElement>('[role="tab"]')[1].click());
+ expect(container.textContent).toContain('已保存改写');
+ await act(async()=>container.querySelectorAll<HTMLButtonElement>('[role="tab"]')[0].click());
+ expect(language).toHaveBeenCalledTimes(2);expect(language).toHaveBeenCalledWith(card.id,card.url,expect.any(String),'zh');expect(container.textContent).toContain('恢复的中文版本');
+ expect(read).toHaveBeenCalledTimes(1);
+});
+it("returns to the base local snapshot rather than requesting its declared current-language page",async()=>{
+ read.mockResolvedValue({kind:'article',article:{...article,activeLanguage:'en',languageVariants:[{language:'en',label:'English',url:card.url,inlineLanguage:'en'}]}});
+ const language=vi.fn();Object.assign(window.reader,{readEntryLanguageVariant:language,getArticleRewrite:vi.fn().mockResolvedValue({entryId:card.id,status:'complete',result:{sourceTitle:'Rewrite',sourceUrl:card.url,markdown:'Chinese'}})});
+ await render();await act(async()=>container.querySelectorAll<HTMLButtonElement>('[role="tab"]')[1].click());
+ await act(async()=>container.querySelectorAll<HTMLButtonElement>('[role="tab"]')[0].click());
+ expect(read).toHaveBeenCalledTimes(2);expect(language).not.toHaveBeenCalled();expect(container.textContent).toContain('Loaded article content');
+});
+it("does not restore another entry's suspended body or selected language after entry change",async()=>{
+ Object.assign(window.reader,{getArticleRewrite:vi.fn().mockResolvedValue({entryId:card.id,status:'complete',result:{sourceTitle:'Rewrite',sourceUrl:card.url,markdown:'Chinese'}})});
+ await render();await act(async()=>container.querySelectorAll<HTMLButtonElement>('[role="tab"]')[1].click());
+ read.mockResolvedValue({kind:'article',article:{...article,entryId:'two',title:'Two',contentHtml:'<p>Second article</p>'}});
+ await render({...card,id:'two'});expect(read).toHaveBeenCalledTimes(2);expect(container.textContent).toContain('Second article');
+});

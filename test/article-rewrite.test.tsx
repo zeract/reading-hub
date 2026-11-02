@@ -8,7 +8,8 @@ import { RewriteSettingsCard } from "../src/renderer/rewrite-settings";
 const settings={provider:"deepseek" as const,model:"future",effort:"default"};
 const record={entryId:"one",jobId:"job",status:"complete" as const,settings,completedChunks:1,totalChunks:1,updatedAt:1,result:{markdown:"## 中文正文\n\n本地结果",provider:"deepseek" as const,model:"future",createdAt:1,sourceUrl:"https://example.com/one",sourceTitle:"Article",sourceHash:"hash",promptVersion:1}};
 let root:Root,container:HTMLDivElement;let get:ReturnType<typeof vi.fn>,generate:ReturnType<typeof vi.fn>;
-function View({id}:{id:string}){const state=useArticleRewrite(id);return <><RewriteVersion state={state} onSelect={state.setVisible}/><RewrittenArticle state={state}/></>;}
+let latest:ReturnType<typeof useArticleRewrite>;
+function View({id}:{id:string}){const state=useArticleRewrite(id);latest=state;return <><RewriteVersion state={state} onSelect={state.setVisible}/><RewrittenArticle state={state}/></>;}
 beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);get=vi.fn().mockResolvedValue(record);generate=vi.fn().mockResolvedValue({...record,status:"queued"});Object.defineProperty(window,"reader",{configurable:true,value:{getArticleRewrite:get,generateArticleRewrite:generate,cancelArticleRewrite:vi.fn().mockResolvedValue({...record,status:"cancelled"}),removeArticleRewrite:vi.fn().mockResolvedValue(undefined),getRewriteSettings:vi.fn().mockResolvedValue(settings),configureRewrite:vi.fn(async s=>s),listAiModels:vi.fn().mockResolvedValue({models:[],stale:false})}});container=document.createElement("div");document.body.append(container);root=createRoot(container);});
 afterEach(async()=>{await act(async()=>root.unmount());container.remove();vi.useRealTimers();vi.unstubAllGlobals();});
 async function click(text:string){await act(async()=>[...container.querySelectorAll("button")].find(b=>b.textContent===text)!.click());}
@@ -26,7 +27,7 @@ it("ignores a late article response after switching entries",async()=>{
 });
 it("polls background completion without regenerating and releases polling on unmount",async()=>{
  vi.useFakeTimers();get.mockResolvedValueOnce({...record,status:"running"}).mockResolvedValue(record);
- await act(async()=>root.render(<View id="one"/>));await act(async()=>vi.advanceTimersByTimeAsync(2000));expect(get.mock.calls).toEqual([["one"],["one",true],["one"]]);expect(generate).not.toHaveBeenCalled();const calls=get.mock.calls.length;await act(async()=>vi.advanceTimersByTimeAsync(6000));expect(get).toHaveBeenCalledTimes(calls);
+ await act(async()=>root.render(<View id="one"/>));await act(async()=>vi.advanceTimersByTimeAsync(2000));expect(get.mock.calls).toEqual([["one",true],["one",true]]);expect(generate).not.toHaveBeenCalled();const calls=get.mock.calls.length;await act(async()=>vi.advanceTimersByTimeAsync(6000));expect(get).toHaveBeenCalledTimes(calls);
 });
 it("saves rewrite settings independently of question settings",async()=>{
  const api=window.reader;const providers=[{id:"deepseek" as const,label:"DeepSeek",model:"learning-model",configured:true,requiresApiKey:true}];
@@ -58,4 +59,26 @@ it("shows two inline tabs and supports keyboard switching without a popup",async
  expect(container.querySelector('[role="listbox"]')).toBeNull();
  await act(async()=>tabs[1].dispatchEvent(new KeyboardEvent("keydown",{key:"Home",bubbles:true,cancelable:true})));
  expect(tabs[0].getAttribute("aria-selected")).toBe("true");
+});
+
+it("loads only metadata while hidden, releases the saved tree on hide and reads it locally on return",async()=>{
+ await act(async()=>root.render(<View id="one"/>));
+ expect(get.mock.calls).toEqual([["one",true]]);expect(latest.record?.result).toBeUndefined();expect(latest.record?.hasResult).toBe(true);
+ await select("rewrite");expect(latest.record?.result).toBe(record.result);
+ await select("original");expect(latest.record?.result).toBeUndefined();
+ await select("rewrite");expect(latest.record?.result).toBe(record.result);expect(generate).not.toHaveBeenCalled();
+});
+it("does not restore a hidden tree from a late full response",async()=>{
+ await act(async()=>root.render(<View id="one"/>));
+ let finish!:(v:unknown)=>void;get.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+ await select("rewrite");await select("original");
+ await act(async()=>finish(record));expect(latest.record?.result).toBeUndefined();expect(latest.visible).toBe(false);
+ await select("rewrite");expect(latest.record?.result).toBe(record.result);
+});
+it("lets an accepted generation finish in the background without retaining a hidden result or locking later reads",async()=>{
+ get.mockResolvedValue(undefined);await act(async()=>root.render(<View id="one"/>));await select("rewrite");
+ let finish!:(v:unknown)=>void;generate.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+ await act(async()=>{void latest.act("generate");});await select("original");
+ await act(async()=>finish(record));expect(latest.busy).toBe(false);expect(latest.record?.result).toBeUndefined();
+ get.mockResolvedValue(record);await select("rewrite");expect(latest.record?.result).toBe(record.result);
 });

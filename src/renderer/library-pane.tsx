@@ -1,6 +1,7 @@
 import type { EntryMutationPending } from "./use-entry-mutations";
 import { TimelineEmptyState } from "./timeline-empty-state";
-import { useRef, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useMemo, type ReactNode } from "react";
+import {EntryWindow} from "./entry-window";
 import type { Entry, LibraryCounts, Source } from "../shared/types";
 import type { LibraryView } from "./library-view";
 import type { SourceGroup } from "./source-groups";
@@ -102,17 +103,21 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
   onLoadMore: () => void;
 }) {
   const searchInput = useRef<HTMLInputElement>(null);
+  const timeline=useRef<HTMLElement>(null);
+  const queryKey=JSON.stringify([activeSource?.id,libraryView,entrySearch]);
+  useLayoutEffect(()=>{timeline.current?.scrollTo?.({top:0});},[queryKey]);
   function clearSearch() { onEntrySearchChange(""); searchInput.current?.focus(); }
-  const visibleEntries = entries.filter((entry) => {
+  const visibleEntries = useMemo(()=>entries.filter((entry) => {
     if (libraryView === "unread") return !entry.read;
     if (libraryView === "favorite") return entry.favorite;
     return true;
-  });
+  }),[entries,libraryView]);
+  const ids=useMemo(()=>visibleEntries.map(entry=>entry.id),[visibleEntries]);
   const title = activeSource?.title || ({ all: "全部内容", today: "今日", unread: "未读文章", favorite: "收藏文章" } satisfies Record<LibraryView, string>)[libraryView];
   const visibleCount = visibleEntries.length;
   const count = { value: hasMoreEntries ? `${visibleCount}+` : visibleCount, label: entrySearch.trim() ? "篇匹配" : "篇内容" };
 
-  return <section className="timeline" aria-label="文章列表">
+  return <section ref={timeline} className="timeline" aria-label="文章列表">
     <header><div><p className="eyebrow">{activeSource ? "来源内容" : "阅读收件箱"}</p><h1 title={title}>{title}</h1></div><span className="count">{count.value} {count.label}</span></header>
     {<form className="entry-search" role="search" onSubmit={(event) => event.preventDefault()}>
       <AppIcon name="search" />
@@ -141,7 +146,7 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
       {onUndo && <div className="notice-actions"><button type="button" className="action-button" disabled={busy} onClick={onUndo}>撤销删除</button></div>}
     </div>}
     <div className="entry-list">
-      {visibleEntries.map((entry) => <EntryCard key={entry.id} entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntryId === entry.id} onRead={onUpdateEntry} isEntryUpdating={isEntryUpdating} onOpen={onOpenEntry} onDismiss={onDismissEntry} busy={busy} />)}
+      {<EntryWindow key={queryKey} ids={ids} scrollRef={timeline} render={index=>{const entry=visibleEntries[index];return <EntryCard entry={entry} source={sourceById.get(entry.sourceId)} selected={readingEntryId === entry.id} onRead={onUpdateEntry} isEntryUpdating={isEntryUpdating} onOpen={onOpenEntry} onDismiss={onDismissEntry} busy={busy}/>;}}/>}
       {!visibleCount && <TimelineEmptyState loading={loadingEntries} failed={loadFailed} hasMore={hasMoreEntries} source={activeSource} hasSources={sourceById.size > 0} view={libraryView} search={entrySearch} onClearSearch={clearSearch} onRetry={onReload} onAddSource={onAddSource} onEditSource={onEditSource} />}
       {hasMoreEntries && <div className="entry-load-more">
         <p>已显示 {visibleCount} 篇内容</p>
@@ -152,7 +157,7 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
   </section>;
 }
 
-function EntryCard({ entry, source, selected, onRead, isEntryUpdating, onOpen, onDismiss, busy }: { isEntryUpdating: EntryMutationPending; entry: Entry; source?: Source; selected: boolean; onRead: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>; onOpen: (entry: Entry) => void; onDismiss: (entry: Entry) => Promise<void>; busy: boolean }) {
+export function EntryCard({ entry, source, selected, onRead, isEntryUpdating, onOpen, onDismiss, busy }: { isEntryUpdating: EntryMutationPending; entry: Entry; source?: Source; selected: boolean; onRead: (entry: Entry, field: "read" | "favorite", value: boolean) => Promise<boolean>; onOpen: (entry: Entry) => void; onDismiss: (entry: Entry) => Promise<void>; busy: boolean }) {
   const date = entry.publishedAt
     ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(entry.publishedAt)
     : `收集于 ${new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(entry.createdAt)}`;

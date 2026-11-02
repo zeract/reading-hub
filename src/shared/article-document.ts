@@ -52,6 +52,28 @@ export function articleDocumentText(doc:ArticleDocument):string {
  const text=(n:ArticleNode):string=>n.type==='text'?n.text:n.type==='asset'?n.tex || (n.kind==='code'?text(n.element):''):n.type==='card'?[...n.title,...n.metadata].map(text).join(' '):n.children.map(text).join('')+(/^(p|h[1-6]|li|div|tr|blockquote)$/.test(n.tag)?'\n':'');
  return doc.children.map(text).join('\n').trim();
 }
+/** Lazy semantic text for bounded AI excerpts. Reading a short prefix must not
+ * build a full HTML document or concatenate every paragraph of a long paper. */
+export function* articleTextChunks(doc:ArticleDocument):Generator<string> {
+ function* visit(node:ArticleNode):Generator<string> {
+  if(node.type==='text'){yield node.text;return;}
+  if(node.type==='asset'){
+   if(node.tex)yield node.tex;
+   else if(node.kind==='code')yield* visit(node.element);
+   return;
+  }
+  const children=node.type==='card'?[...node.title,...node.metadata]:node.children;
+  for(let i=0;i<children.length;i++){
+   if(i&&node.type==='card')yield ' ';
+   yield* visit(children[i]);
+  }
+  if(node.type==='element'&&/^(p|h[1-6]|li|div|tr|blockquote)$/.test(node.tag))yield '\n';
+ }
+ for(let i=0;i<doc.children.length;i++){
+  if(i)yield '\n';
+  yield* visit(doc.children[i]);
+ }
+}
 export function documentTextNodes(doc:ArticleDocument, includeEmpty=false):TextNode[] {
  const result:TextNode[]=[];
  const visit=(n:ArticleNode)=>{if(n.type==='text'){if(includeEmpty||n.text.trim())result.push(n);}else if(n.type==='element')n.children.forEach(visit);else if(n.type==='card')n.title.forEach(visit);};

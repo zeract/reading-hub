@@ -13,6 +13,7 @@ type Row = {
     updated_at: number;
     error: string | null;
     result_json: string | null;
+    has_result?: number;
     stage: RewriteStage | null;
     kind: "generate" | "review";
 };
@@ -32,7 +33,7 @@ export class RewriteStore {
         // Progress polling must not deserialize the saved full draft or the
         // much larger checkpoint, nor repeatedly trigger format migration.
         const row = this.db.prepare(`SELECT entry_id,job_id,status,settings_json,completed_chunks,total_chunks,updated_at,error,stage,kind,
-          ${metadataOnly?'NULL':'result_json'} AS result_json FROM article_rewrites WHERE entry_id=?`).get(entryId) as Row | undefined;
+          result_json IS NOT NULL AS has_result, ${metadataOnly?'NULL':'result_json'} AS result_json FROM article_rewrites WHERE entry_id=?`).get(entryId) as Row | undefined;
         if (!row) return;
         let result: RewriteResult | undefined;
         let error=row.error || undefined;
@@ -48,7 +49,7 @@ export class RewriteStore {
         }
         const settings=parseRewriteSettings(JSON.parse(row.settings_json));
         return { entryId:row.entry_id,jobId:row.job_id,kind:row.kind,status:row.status,settings,
-            completedChunks:row.completed_chunks,totalChunks:row.total_chunks,updatedAt:row.updated_at,
+            completedChunks:row.completed_chunks,totalChunks:row.total_chunks,updatedAt:row.updated_at,hasResult:Boolean(row.has_result),
             ...(row.stage ? {stage:row.stage}:{}), ...(error ? {error}:{}), ...(result ? {result}:{}) };
 
     }

@@ -65,3 +65,5 @@ MathJax 4 的响应式 SVG 在主进程冻结为有明确像素坐标 `viewBox` 
 `READING_HUB_OFFLINE_RECONCILE=1 node scripts/offline-reader-smoke.mjs` 复用当前构建，模拟已收集条目无正文任务且 Feed 返回 304；必须由正常同步补齐队列、后台取得原页与全部图片，再在第二个断网进程验证真实正文 DOM。它是受控传输夹具，不是真实站点在线结果。
 
 `node node_modules/electron/cli.js scripts/memory-smoke-app` 复用当前构建，在临时隔离环境连续创建/关闭 80 个原生窗口，验证最多两个会话及每次 Cookie、存储、HTTP 缓存清理，记录主进程内存与线程数；随后用真实图片调度及 preload 滚动 40 图文档，验证离屏释放、尺寸不跳动、返回重载、预览独立持有和关闭后零 Blob，阻断并断言零 HTTP 请求。它是有界生命周期回归，不能证明真实文章的长时内存或所有远端资源可用。
+
+`node node_modules/electron/cli.js scripts/reader-residency-smoke-app` 检查 4000 条动态高度列表的有界挂载、删除/插入锚点、键盘焦点与查询重置，以及正文版本十次往返后的 DOM/堆。`READING_HUB_BENCHMARK_BASE=<本地提交>` 可用同一夹具从 Git 读取该版列表组件，对比 DOM、GC 后 JS 堆及 footprint；`READING_HUB_RESIDENCY_DB=<用户库绝对路径>` 使用 SQLite readonly 读取一篇已存正文，改写版本用同一结构树的测试副本，不调用模型、不写用户库。所有远端请求均阻断，正文及模型输出不写入报告；该测试不代表改写质量、全部图片或数天运行无泄漏。AI 面板用正式构建的 renderer smoke 单独验收。

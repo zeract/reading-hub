@@ -188,6 +188,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .notice-close { width: 28px; height: 28px; font-size: 17px; }
 .notice-actions { grid-column: 1 / -1; display: flex; }
 .entry-list { display: grid; padding: 0 8px; }
+.entry-window { position: relative; min-width: 0; overflow-anchor: none; }
+.entry-window-row { min-width: 0; display: flow-root; }
+.entry-window-row.is-virtual { position: absolute; top: 0; left: 0; width: 100%; }
 .entry-load-more { display: grid; min-width: 0; justify-items: start; gap: 7px; padding: 17px 10px 24px 22px; color: var(--muted); font-size: 11px; }
 .entry-load-more p { margin: 0; }
 .entry-pagination-error { max-width: 100%; color: var(--danger); line-height: 1.45; }

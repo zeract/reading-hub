@@ -1,3 +1,4 @@
+import { readerPresentation } from "../shared/reader-presentation";
 import { readerImageDiagnostic } from "./reader-image-retry";
 import { parseRewriteSettings } from "../shared/rewrite";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
@@ -151,7 +152,7 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     const refresh = rawRefresh === undefined ? false : requireBoolean(rawRefresh, "重新读取参数无效。");
     return readerRequestResult(foregroundRequests.run(event.sender, async (signal) => {
       try {
-        return { kind: "article" as const, article: await articles.read(entry, database.getSource(entry.sourceId), { signal, refresh }) };
+        return { kind: "article" as const, article: readerPresentation(await articles.read(entry, database.getSource(entry.sourceId), { signal, refresh })) };
       } catch (error) {
         throwIfAborted(signal);
         if (!(error instanceof RobotsDisallowedError)) throw error;
@@ -166,9 +167,9 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     const requestId = requireText(rawRequestId, "正文请求标识无效。", 160);
     return readerRequestResult(foregroundRequests.run(event.sender, async (signal) => ({
       kind: "article" as const,
-      article: await articles.readLanguageVariant(
+      article: readerPresentation(await articles.readLanguageVariant(
         entry, database.getSource(entry.sourceId), url, { signal, ...(rawInlineLanguage === undefined ? {} : { inlineLanguage: requireText(rawInlineLanguage, "语言版本标识无效。", 32) }) }
-      )
+      ))
     }), `read:${requestId}`));
   });
   handle(IPC_CHANNELS.entry.cancelRead, (event, rawRequestId: unknown) => {
