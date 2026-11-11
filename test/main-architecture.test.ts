@@ -12,7 +12,7 @@ function scriptFile(...parts: string[]): string {
 
 describe("main-process boundaries", () => {
   it("keeps Electron lifecycle, service composition, and IPC routing separate", () => {
-    const index = mainFile("index.ts");
+    const index = mainFile("application.ts");
     const services = mainFile("app-services.ts");
     const handlers = mainFile("ipc-handlers.ts");
 
@@ -27,7 +27,7 @@ describe("main-process boundaries", () => {
   });
 
   it("resolves a historical local library before any window or application service can touch it", () => {
-    const index = mainFile("index.ts");
+    const index = mainFile("application.ts");
     const bootstrap = index.match(/async function bootstrap\(\): Promise<void> \{([\s\S]*?)\n\}/)?.[1] ?? "";
 
     expect(index).toContain('prepareStartupLibrary');
@@ -38,7 +38,7 @@ describe("main-process boundaries", () => {
   });
 
   it("keeps services alive through the renderer shutdown drain before closing SQLite", () => {
-    const index = mainFile("index.ts");
+    const index = mainFile("application.ts");
 
     const admission = index.match(/app\.on\("before-quit", \(event\) => \{([\s\S]*?)\n\}\);/)?.[1];
     expect(admission).toContain("quitting = true;");

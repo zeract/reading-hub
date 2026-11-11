@@ -102,8 +102,7 @@ export class IsolatedPageRenderer implements PageRenderer {
           // window existed. A failed task must retain its original error and
           // release its caller even if Chromium cleanup stalls or rejects.
           const cleanup = lease.release();
-          if (failed) void cleanup.catch(() => undefined);
-          else await awaitWithAbort(cleanup, request.signal);
+          void cleanup.catch(() => undefined);
         }
       } catch (error) {
         if (!failed) throw error;

@@ -70,3 +70,66 @@ it("keeps initial imports distinct across preview, failed retry, restart, repeat
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+it("persists recovery provenance through empty responses, 304 and restart without changing normal late collection", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "reading-hub-recovery-"));
+  const file = join(directory, "library.sqlite");
+  const now = new Date(2026, 10, 11, 12).getTime();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now - 86_400_000);
+  let db = new ReadingDatabase(file);
+  const connector = new GenericConnector({} as never);
+  const registry = new ConnectorRegistry(); registry.register(connector);
+  let sync = new SyncManager(db, registry);
+  const raw = (title: string, publishedAt?: number): RawEntry => ({ title, url: `https://example.com/${title}`, publishedAt });
+  const fetch = vi.spyOn(connector, "sync");
+  try {
+    const source = db.createSource({ title: "Recovering", url: "https://example.com/feed", kind: "generic", pollingEnabled: true });
+    fetch.mockResolvedValue({ entries: [raw("baseline", now - 86_400_000)] });
+    await sync.syncSource(source.id);
+    expect(db.getCollectionKind(source.id)).toBe("live");
+    fetch.mockRejectedValueOnce(new Error("offline"));
+    await expect(sync.syncSource(source.id)).rejects.toThrow("offline");
+    clock.mockReturnValue(now);
+    fetch.mockResolvedValueOnce({ entries: [], notModified: true }).mockResolvedValueOnce({ entries: [] });
+    await sync.syncSource(source.id); await sync.syncSource(source.id);
+    expect(db.getCollectionKind(source.id)).toBe("recovery");
+    await sync.close(); db.close(); db = new ReadingDatabase(file); sync = new SyncManager(db, registry);
+    expect(db.getCollectionKind(source.id)).toBe("recovery");
+    fetch.mockResolvedValue({ entries: [raw("backlog", now - 86_400_000), raw("unknown"), raw("fresh", now)] });
+    await sync.syncSource(source.id);
+    const query = entryQueryForLibrary("today", undefined, new Date(now));
+    expect(db.listEntries(query).map(e => e.title)).toEqual(["fresh"]);
+    expect(db.getLibraryCounts(now).today).toBe(1);
+    expect(db.listEntryPage({ ...query, pageSize: 1 }).entries.map(e => e.title)).toEqual(["fresh"]);
+    expect(db.listEntries()).toHaveLength(4);
+    expect(db.getCollectionKind(source.id)).toBe("live");
+    const shared = db.createSource({ title: "Shared", url: "https://example.com/another", kind: "generic", pollingEnabled: true });
+    await sync.syncSource(shared.id);
+    await sync.syncSource(source.id);
+    expect(db.getLibraryCounts(now).today).toBe(1);
+    fetch.mockResolvedValue({ entries: [raw("normal-late", now - 86_400_000), raw("normal-unknown")] });
+    await sync.syncSource(source.id);
+    expect(db.listEntries(query).map(e => e.title).sort()).toEqual(["fresh", "normal-late", "normal-unknown"]);
+  } finally { await sync.close(); db.close(); clock.mockRestore(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+it("does not let an empty first success end initial import", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "reading-hub-empty-first-"));
+  const db = new ReadingDatabase(join(directory, "library.sqlite"));
+  const connector = new GenericConnector({} as never);
+  const registry = new ConnectorRegistry(); registry.register(connector);
+  const sync = new SyncManager(db, registry);
+  const fetch = vi.spyOn(connector, "sync");
+  try {
+    const source = db.createSource({ title: "New", url: "https://example.com/feed", kind: "generic", pollingEnabled: true });
+    fetch.mockResolvedValue({ entries: [], notModified: true });
+    await sync.syncSource(source.id);
+    expect(db.getCollectionKind(source.id)).toBe("initial");
+    fetch.mockResolvedValue({ entries: [{ title: "old", url: "https://example.com/old", publishedAt: Date.now() - 86_400_000 }] });
+    await sync.syncSource(source.id);
+    expect(db.getLibraryCounts().today).toBe(0);
+    expect(db.getCollectionKind(source.id)).toBe("live");
+    expect(() => db.writeTransaction(() => { db.markFailure(db.getSource(source.id)!, "offline"); throw new Error("rollback"); })).toThrow("rollback");
+    expect(db.getCollectionKind(source.id)).toBe("live");
+  } finally { await sync.close(); db.close(); rmSync(directory, { recursive: true, force: true }); }
+});

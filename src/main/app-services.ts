@@ -10,7 +10,7 @@ import { ReadingDatabase } from "./database";
 import { InAppArticleViewer } from "./in-app-article-viewer";
 import { NETWORK_REQUEST_MESSAGES, PublicHttpClient } from "./http";
 import { configureChromiumNetwork } from "./network";
-import { IsolatedPageRenderer } from "./page-renderer";
+import { ManagedPageRenderer } from "./render-worker-pool";
 import { RobotsNetworkUnavailableError, RobotsPolicy, RobotsUnreachableError } from "./robots";
 import { net } from "electron";
 import { SecretStore } from "./secrets";
@@ -71,7 +71,7 @@ function assembleApplicationServices(database: ReadingDatabase, databasePath: st
   const resumedAutomaticSources = database.resumeLegacyAutoPausedSources();
   const robots = new RobotsPolicy();
   const http = new PublicHttpClient(robots);
-  const renderer = new IsolatedPageRenderer(robots);
+  const renderer = new ManagedPageRenderer(robots);
   const probe = new SourceProbe(http, renderer);
   const secrets = new SecretStore();
   const learningAssistant = new AiService(secrets);

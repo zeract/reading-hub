@@ -199,3 +199,27 @@ it('adds persisted deadlines only to known retryable legacy jobs without resetti
   expect(jobs).toEqual([{entry_id:'0',attempts:1,next_attempt_at:0},{entry_id:'1',attempts:1,next_attempt_at:null},{entry_id:'2',attempts:1,next_attempt_at:null},{entry_id:'3',attempts:3,next_attempt_at:null}]);
  }finally{db?.close();rmSync(directory,{recursive:true,force:true})}
 });
+
+it("migrates recovery state without rewriting historical collection identity", () => {
+  const directory = mkdtempSync(join(tmpdir(), "reading-hub-recovery-migration-"));
+  const file = join(directory, "library.sqlite");
+  let db = new ReadingDatabase(file);
+  try {
+    const failed = db.createSource({ title: "Failed", url: "https://example.com/feed", kind: "rss", pollingEnabled: true });
+    const empty = db.createSource({ title: "Empty", url: "https://example.com/empty", kind: "rss", pollingEnabled: true });
+    db.saveEntries([{ id: "existing", sourceId: failed.id, canonicalUrl: "https://example.com/post", url: "https://example.com/post", title: "Retained", contentHash: "hash", createdAt: 1_700_000_000_000, isRead: false, isFavorite: false }], { initialCollection: true });
+    db.markRead("existing", true); db.markFavorite("existing", true);
+    db.markSuccess(failed, { collectionComplete: true });
+    db.markFailure(db.getSource(failed.id)!, "offline"); db.markSuccess(empty, {});
+    const before = db.getEntry("existing"); db.close();
+    const native = new Sqlite(file);
+    native.exec("DROP TABLE source_collection_state; ALTER TABLE entries DROP COLUMN recovery_collection; DELETE FROM schema_migrations WHERE version=23");
+    native.close();
+    db = new ReadingDatabase(file);
+    expect(db.getCollectionKind(failed.id)).toBe("recovery");
+    expect(db.getCollectionKind(empty.id)).toBe("initial");
+    expect(db.getEntry("existing")).toEqual(before);
+    db.close(); db = new ReadingDatabase(file);
+    expect(db.getCollectionKind(failed.id)).toBe("recovery");
+  } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
+});

@@ -9,7 +9,7 @@ import { ENTRY_ORDER_BY } from "./entry-order";
  * implementation.  A database can therefore be opened, inspected and
  * upgraded without mixing DDL with source/content business operations.
  */
-export const CURRENT_SCHEMA_VERSION = 22;
+export const CURRENT_SCHEMA_VERSION = 23;
 
 type SqliteDatabase = Database.Database;
 
@@ -493,6 +493,21 @@ const MIGRATIONS: readonly SchemaMigration[] = [
     `)
   },
   { version: 22, name: "restore-article-task-and-metadata-indexes", up: ensureArticleIndexes },
+  { version: 23, name: "persist-collection-recovery", up(database) {
+    database.exec(`
+      ALTER TABLE entries ADD COLUMN recovery_collection INTEGER NOT NULL DEFAULT 0 CHECK(recovery_collection IN (0, 1));
+      CREATE TABLE source_collection_state (
+        source_id TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+        baseline_ready INTEGER NOT NULL DEFAULT 0 CHECK(baseline_ready IN (0, 1)),
+        recovery_pending INTEGER NOT NULL DEFAULT 0 CHECK(recovery_pending IN (0, 1))
+      );
+      INSERT INTO source_collection_state(source_id, baseline_ready, recovery_pending)
+      SELECT id,
+        last_successful_at IS NOT NULL AND EXISTS(SELECT 1 FROM entry_origins WHERE source_id = sources.id),
+        last_successful_at IS NOT NULL AND failure_count > 0 AND EXISTS(SELECT 1 FROM entry_origins WHERE source_id = sources.id)
+      FROM sources;
+    `);
+  } },
 ];
 
 function ensureColumn(database: SqliteDatabase, table: "sources" | "entries" | "entry_origins" | "article_rewrites", column: string, type: string): void {

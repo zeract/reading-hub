@@ -5,7 +5,8 @@ import { ArticleReader } from "./article-reader";
 import type { ReaderReadOptions } from "./article-reader";
 import { ReadingDatabase } from "./database";
 import { PublicHttpClient } from "./http";
-import { IsolatedPageRenderer, type RenderedPage } from "./page-renderer";
+import { ManagedPageRenderer } from "./render-worker-pool";
+import type { RenderedPage } from "./page-renderer";
 import { resolveReaderProfile } from "./reader-extraction";
 import { RobotsDisallowedError, RobotsPolicy } from "./robots";
 import type { Entry, ReaderArticle, Source } from "../shared/types";
@@ -400,7 +401,7 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
   catch (error) { await snapshot.dispose(); throw error; }
   const robots = new RobotsPolicy();
   const http = new PublicHttpClient(robots);
-  const renderer = new IsolatedPageRenderer(robots);
+  const renderer = new ManagedPageRenderer(robots);
   const reader = new ArticleReader(http, renderer, options.renderWithZhihuSession);
   const results: ReaderAuditResult[] = [];
   try {

@@ -178,6 +178,7 @@ export class SyncManager {
           if (outcome.followees) this.db.upsertFollowees(outcome.followees);
           if (outcome.checkpoint) this.db.saveCheckpoint(subscription.id, outcome.checkpoint);
           const updated = this.db.markSuccess(effectiveSource, {
+            collectionComplete: !outcome.notModified && outcome.entries.length > 0,
             etag: outcome.etag,
             lastModified: outcome.lastModified,
             validatorUrl: outcome.validatorUrl,
@@ -229,7 +230,7 @@ export class SyncManager {
       ? normalized.filter(createSubscriptionScopeMatcher(subscription.scope))
       : normalized;
     const saved = this.db.saveEntriesWithReport(accepted, {
-      initialCollection: source.lastSuccessfulAt === undefined,
+      collectionKind: this.db.getCollectionKind(source.id),
       identityNamespaces: connector.manifest.identityNamespaces ?? [],
       onSaved: (entry, storedId) => this.articles?.commitCollected(entry, storedId, bodies)
     });

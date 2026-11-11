@@ -2,7 +2,7 @@ import { session } from "electron";
 import { TaskPool } from "./task-pool";
 import { awaitWithAbort, withRequestTimeout } from "./cancellation";
 
-const CLEANUP_ERROR = "隔离阅读环境未能安全清理，请重启应用后重试。";
+const CLEANUP_ERROR = "隔离阅读进程未能安全清理，已停止复用该进程。";
 let nextPool = 0;
 
 /** Native BrowserContexts live beyond their windows. Bound their identities,

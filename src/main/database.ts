@@ -1082,19 +1082,19 @@ export class ReadingDatabase {
     return removeEntriesForSourceOrigins(this.db, source.id, doomed);
   }
 
-  saveEntries(entries: Entry[], options?: { initialCollection?: boolean; identityNamespaces?: readonly ContentIdentityNamespace[]; onSaved?: (entry: Entry, storedId: string) => void }): number {
+  saveEntries(entries: Entry[], options?: { initialCollection?: boolean; collectionKind?: "initial" | "recovery" | "live"; identityNamespaces?: readonly ContentIdentityNamespace[]; onSaved?: (entry: Entry, storedId: string) => void }): number {
     return this.saveEntriesWithReport(entries, options).inserted;
   }
 
   saveEntriesWithReport(
     entries: Entry[],
-    options?: { initialCollection?: boolean; identityNamespaces?: readonly ContentIdentityNamespace[]; onSaved?: (entry: Entry, storedId: string) => void }
+    options?: { initialCollection?: boolean; collectionKind?: "initial" | "recovery" | "live"; identityNamespaces?: readonly ContentIdentityNamespace[]; onSaved?: (entry: Entry, storedId: string) => void }
   ): { inserted: number; identityConflicts: number } {
     const insert = this.db.prepare(`INSERT INTO entries (
       id, source_id, canonical_url, original_url, title, author, published_at, summary, image_url,
-      content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity, ingestion_kind, initial_collection
+      content_hash, is_read, is_favorite, created_at, observed_at, provider_id, provider_label, external_id, canonical_identity, ingestion_kind, initial_collection, recovery_collection
     ) VALUES (@id, @sourceId, @canonicalUrl, @url, @title, @author, @publishedAt, @summary, @imageUrl,
-      @contentHash, 0, 0, @createdAt, @observedAt, @providerId, @providerLabel, @externalId, @canonicalIdentity, @ingestionKind, @initialCollection)
+      @contentHash, 0, 0, @createdAt, @observedAt, @providerId, @providerLabel, @externalId, @canonicalIdentity, @ingestionKind, @initialCollection, @recoveryCollection)
     ON CONFLICT(canonical_url) DO UPDATE SET
       title = CASE WHEN @updatePrimary = 1 THEN excluded.title ELSE entries.title END,
       author = CASE WHEN @updatePrimary = 1 THEN COALESCE(excluded.author, entries.author) ELSE entries.author END,
@@ -1174,7 +1174,8 @@ export class ReadingDatabase {
           providerLabel: entry.providerLabel ?? null,
           externalId: entry.externalId ?? null,
           ingestionKind: entry.ingestionKind ?? "current",
-          initialCollection: Number(options?.initialCollection === true),
+          initialCollection: Number(options?.collectionKind === "initial" || options?.initialCollection === true),
+          recoveryCollection: Number(options?.collectionKind === "recovery"),
           canonicalIdentity: !existing || promoteUrlIdentity ? identity : previousIdentity
         });
         // The upsert retains an existing ID or inserts the supplied ID. Both
@@ -1214,22 +1215,32 @@ export class ReadingDatabase {
     this.db.prepare("UPDATE entries SET is_favorite = ? WHERE id = ?").run(Number(favorite), entryId);
   }
 
-  markSuccess(source: Source, update: Pick<SyncResult, "etag" | "lastModified" | "validatorUrl"> & { empty?: boolean; requiresReview?: boolean }): Source {
-    const now = Date.now();
-    const emptyCount = update.empty ? source.consecutiveEmpty + 1 : 0;
-    const requiresReview = update.requiresReview || (source.kind === "generic" && emptyCount >= 3);
-    const status: SourceStatus = requiresReview ? "needs_review" : "active";
-    const nextCheckAt = status === "active" && source.pollingEnabled ? now + refreshDelay(source.refreshIntervalMinutes) : null;
-    this.db
-      .prepare(`UPDATE sources SET status = ?, etag = CASE WHEN ? THEN ? ELSE etag END,
-        last_modified = CASE WHEN ? THEN ? ELSE last_modified END,
-        validator_url = CASE WHEN ? THEN ? ELSE validator_url END,
-        last_checked_at = ?, last_successful_at = ?, next_check_at = ?, consecutive_empty = ?, failure_count = 0, last_error = NULL,
-        updated_at = ? WHERE id = ?`)
-      .run(status, Number(update.etag !== undefined), update.etag ?? null,
-        Number(update.lastModified !== undefined), update.lastModified ?? null,
-        Number(update.validatorUrl !== undefined), update.validatorUrl ?? null, now, now, nextCheckAt, emptyCount, now, source.id);
-    return this.getSource(source.id)!;
+  getCollectionKind(sourceId: string): "initial" | "recovery" | "live" {
+    const state = this.db.prepare("SELECT baseline_ready, recovery_pending FROM source_collection_state WHERE source_id = ?")
+      .get(sourceId) as { baseline_ready: number; recovery_pending: number } | undefined;
+    return !state?.baseline_ready ? "initial" : state.recovery_pending ? "recovery" : "live";
+  }
+
+  markSuccess(source: Source, update: Pick<SyncResult, "etag" | "lastModified" | "validatorUrl"> & { empty?: boolean; requiresReview?: boolean; collectionComplete?: boolean }): Source {
+    return this.writeTransaction(() => {
+      const now = Date.now();
+      const emptyCount = update.empty ? source.consecutiveEmpty + 1 : 0;
+      const requiresReview = update.requiresReview || (source.kind === "generic" && emptyCount >= 3);
+      const status: SourceStatus = requiresReview ? "needs_review" : "active";
+      const nextCheckAt = status === "active" && source.pollingEnabled ? now + refreshDelay(source.refreshIntervalMinutes) : null;
+      this.db
+        .prepare(`UPDATE sources SET status = ?, etag = CASE WHEN ? THEN ? ELSE etag END,
+          last_modified = CASE WHEN ? THEN ? ELSE last_modified END,
+          validator_url = CASE WHEN ? THEN ? ELSE validator_url END,
+          last_checked_at = ?, last_successful_at = ?, next_check_at = ?, consecutive_empty = ?, failure_count = 0, last_error = NULL,
+          updated_at = ? WHERE id = ?`)
+        .run(status, Number(update.etag !== undefined), update.etag ?? null,
+          Number(update.lastModified !== undefined), update.lastModified ?? null,
+          Number(update.validatorUrl !== undefined), update.validatorUrl ?? null, now, now, nextCheckAt, emptyCount, now, source.id);
+      if (update.collectionComplete) this.db.prepare(`INSERT INTO source_collection_state(source_id, baseline_ready, recovery_pending)
+        VALUES (?, 1, 0) ON CONFLICT(source_id) DO UPDATE SET baseline_ready = 1, recovery_pending = 0`).run(source.id);
+      return this.getSource(source.id)!;
+    });
   }
 
   updateMetadataRevision(sourceId: string, metadataRevision: number): Source {
@@ -1264,6 +1275,8 @@ export class ReadingDatabase {
         // Network/parser failures remain retryable indefinitely. `paused` is
         // reserved for an explicit user or compliance stop through pauseSource.
         .run("error", failures, message.slice(0, 300), now, now + (retryAfterMs ?? retryDelay(failures)), now, source.id);
+      this.db.prepare(`INSERT INTO source_collection_state(source_id, baseline_ready, recovery_pending)
+        VALUES (?, 0, 0) ON CONFLICT(source_id) DO UPDATE SET recovery_pending = baseline_ready`).run(source.id);
       this.recordSyncEvent(source.id, "failure", 0, 0, message);
       return this.getSource(source.id)!;
     });
@@ -1388,7 +1401,7 @@ function entryDateFilter(start: number | undefined, end: number | undefined, mod
     const collected = range("entries.created_at");
     if (!collected) return { sql: "", parameters };
     const published = range("entries.published_at");
-    return { sql: `(${collected} AND (entries.initial_collection = 0 OR ${published}))`, parameters };
+    return { sql: `(${collected} AND ((entries.initial_collection = 0 AND entries.recovery_collection = 0) OR ${published}))`, parameters };
   }
   return { sql: range(mode === "published" ? "entries.published_at" : "COALESCE(entries.published_at, entries.observed_at, entries.created_at)"), parameters };
 }

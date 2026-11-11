@@ -24,12 +24,12 @@ async function run() {
   const { GenericConnector } = require("../../dist/main/main/connectors.js");
   const { ConnectorRegistry } = require("../../dist/main/main/connector-registry.js");
   const { PublicHttpClient } = require("../../dist/main/main/http.js");
-  const { IsolatedPageRenderer } = require("../../dist/main/main/page-renderer.js");
+  const { ManagedPageRenderer, publicRenderWorkers } = require("../../dist/main/main/render-worker-pool.js");
   const { SyncManager } = require("../../dist/main/main/sync-manager.js");
 
   await configureChromiumNetwork();
   const database = new ReadingDatabase(sourceDatabasePath());
-  const renderer = new IsolatedPageRenderer();
+  const renderer = new ManagedPageRenderer();
   const http = new PublicHttpClient();
   const generic = new GenericConnector(http, renderer);
   const registry = new ConnectorRegistry();
@@ -58,6 +58,8 @@ async function run() {
     }
     return { refreshedAt: new Date().toISOString(), sources: results };
   } finally {
+    await sync.close();
+    await publicRenderWorkers.close();
     database.close();
   }
 }

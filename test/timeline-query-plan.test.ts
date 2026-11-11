@@ -201,12 +201,13 @@ describe("publication timeline indexing", () => {
       const before = queries.map((query) => database.listEntryPage(query));
       const revision = database.getLibraryRevision();
       // Recreate the actual old schema, including absence of generated keys.
-      native.exec(`DROP TABLE article_documents; DROP TABLE article_media; DROP TABLE article_acquisitions; DROP TABLE data_location_migrations; DROP TABLE rewrite_migration_backups; DROP TABLE article_rewrites; DROP TABLE rewrite_settings;
+      native.exec(`DROP TABLE source_collection_state; DROP TABLE article_documents; DROP TABLE article_media; DROP TABLE article_acquisitions; DROP TABLE data_location_migrations; DROP TABLE rewrite_migration_backups; DROP TABLE article_rewrites; DROP TABLE rewrite_settings;
         DROP INDEX entries_publication_order; DROP INDEX entries_timeline;
         ALTER TABLE entries DROP COLUMN timeline_group;
         ALTER TABLE entries DROP COLUMN timeline_published;
         ALTER TABLE entries DROP COLUMN timeline_observed;
         ALTER TABLE entries DROP COLUMN initial_collection;
+        ALTER TABLE entries DROP COLUMN recovery_collection;
         DELETE FROM schema_migrations WHERE version > ${version};`);
       const oldOrder = "CASE WHEN published_at IS NULL THEN 1 ELSE 0 END ASC, COALESCE(published_at, -9007199254740991) DESC, COALESCE(observed_at, created_at) DESC, created_at DESC, id DESC";
       if (version === 8) native.exec("CREATE INDEX entries_timeline ON entries(is_read, published_at DESC, created_at DESC)");
@@ -228,7 +229,7 @@ describe("publication timeline indexing", () => {
       for (const query of publicationQueries) expect(pagePlan(database, query).filter((row) => /TEMP B-TREE/i.test(row.detail))).toEqual([]);
       // The physical row values survive unchanged; virtual keys are derived.
       const current = raw(database);
-      const columns = (current.pragma("table_info(entries)") as Array<{ name: string }>).map((column) => column.name).filter((name) => name !== "initial_collection");
+      const columns = (current.pragma("table_info(entries)") as Array<{ name: string }>).map((column) => column.name).filter((name) => name !== "initial_collection" && name !== "recovery_collection");
       expect(current.prepare(`SELECT ${columns.join(",")} FROM entries ORDER BY id`).all()).toEqual(beforeRows);
       expect(current.prepare("SELECT COUNT(*) AS count FROM entries WHERE initial_collection != 0").get()).toEqual({ count: 0 });
       database.close(); database = new ReadingDatabase(path);

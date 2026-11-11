@@ -67,3 +67,6 @@ MathJax 4 的响应式 SVG 在主进程冻结为有明确像素坐标 `viewBox` 
 `node node_modules/electron/cli.js scripts/memory-smoke-app` 复用当前构建，在临时隔离环境连续创建/关闭 80 个原生窗口，验证最多两个会话及每次 Cookie、存储、HTTP 缓存清理，记录主进程内存与线程数；随后用真实图片调度及 preload 滚动 40 图文档，验证离屏释放、尺寸不跳动、返回重载、预览独立持有和关闭后零 Blob，阻断并断言零 HTTP 请求。它是有界生命周期回归，不能证明真实文章的长时内存或所有远端资源可用。
 
 `node node_modules/electron/cli.js scripts/reader-residency-smoke-app` 检查 4000 条动态高度列表的有界挂载、删除/插入锚点、键盘焦点与查询重置，以及正文版本十次往返后的 DOM/堆。`READING_HUB_BENCHMARK_BASE=<本地提交>` 可用同一夹具从 Git 读取该版列表组件，对比 DOM、GC 后 JS 堆及 footprint；`READING_HUB_RESIDENCY_DB=<用户库绝对路径>` 使用 SQLite readonly 读取一篇已存正文，改写版本用同一结构树的测试副本，不调用模型、不写用户库。所有远端请求均阻断，正文及模型输出不写入报告；该测试不代表改写质量、全部图片或数天运行无泄漏。AI 面板用正式构建的 renderer smoke 单独验收。
+
+
+公开页渲染进程边界变更时，复用构建执行 `node node_modules/electron/cli.js scripts/render-worker-smoke-app`，验证原生清理卡死后的进程回收、槽位上限、临时 profile 删除、宿主策略拒绝及断连退出。`audit:network` 的页面夹具同样经过生产辅助进程入口，保留原生重定向、慢资源、异步正文、快照和 HTTP 状态断言；不再在长寿命测试进程中复用公开页会话。网络测试的整组看门狗为 60 秒，不改变产品的单任务 30 秒预算。

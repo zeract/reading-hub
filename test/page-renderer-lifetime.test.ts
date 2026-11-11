@@ -136,7 +136,7 @@ describe("public rendering task lifetime", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("cancels promptly while successful rendering is awaiting cleanup", async () => {
+  it("does not revoke an already captured document when cancellation arrives during cleanup", async () => {
     fixture.cleanup.mockImplementationOnce(never);
     const caller = new AbortController();
     const reason = new Error("User cancelled cleanup wait");
@@ -144,7 +144,7 @@ describe("public rendering task lifetime", () => {
     await vi.advanceTimersByTimeAsync(800);
     expect(fixture.sessions[0].clearStorageData).toHaveBeenCalledOnce();
     caller.abort(reason);
-    expect(await outcome).toBe(reason);
+    expect(await outcome).toMatchObject({ html: "<p>Public document</p>" });
     expect(fixture.windows[0].isDestroyed()).toBe(true);
     expect(vi.getTimerCount()).toBe(1); // Independent cleanup still owns the context.
     await vi.advanceTimersByTimeAsync(5_000);
@@ -180,12 +180,12 @@ describe("public rendering task lifetime", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("bounds stalled cleanup and refuses reuse until restart", async () => {
+  it("preserves a successful capture even when local-session cleanup stalls", async () => {
     fixture.cleanup.mockImplementationOnce(never);
     const renderer = new IsolatedPageRenderer(robots() as never);
     const result = renderer.render("https://example.com/article").catch(error => error);
     await vi.advanceTimersByTimeAsync(6_000);
-    expect(await result).toMatchObject({message:"隔离阅读环境未能安全清理，请重启应用后重试。"});
+    expect(await result).toMatchObject({ html: "<p>Public document</p>" });
     await expect(renderer.render("https://example.com/other")).rejects.toThrow("未能安全清理");
     expect(fixture.sessions).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(0);
