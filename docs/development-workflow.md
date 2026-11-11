@@ -70,3 +70,6 @@ MathJax 4 的响应式 SVG 在主进程冻结为有明确像素坐标 `viewBox` 
 
 
 公开页渲染进程边界变更时，复用构建执行 `node node_modules/electron/cli.js scripts/render-worker-smoke-app`，验证原生清理卡死后的进程回收、槽位上限、临时 profile 删除、宿主策略拒绝及断连退出。`audit:network` 的页面夹具同样经过生产辅助进程入口，保留原生重定向、慢资源、异步正文、快照和 HTTP 状态断言；不再在长寿命测试进程中复用公开页会话。网络测试的整组看门狗为 60 秒，不改变产品的单任务 30 秒预算。
+
+
+阅读在线审计结果的 `status/issues` 描述远端获取与提取，`local` 独立描述快照内的正文与全部所属媒体保存状态；受限来源也先检查本地记录，不能从远端 skipped/failed 推断离线不可用。`local.images.stored` 仅证明有可读取的非空图片字节，真实解码需要新进程断网 DOM 验收。图片获取使用实际正文 URL 作 referrer，与 ArticleLibrary 保存规则一致；审计不写用户原库、保存正文或触发后台任务。

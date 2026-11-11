@@ -1,4 +1,5 @@
 import type { ReaderDiagnostic } from "./reader-diagnostics";
+import { articleImageUrls, type ArticleStore } from "./persistence/article-store";
 import { createReadSnapshot } from "./persistence/read-snapshot";
 import { load } from "cheerio";
 import { ArticleReader } from "./article-reader";
@@ -22,6 +23,9 @@ export type ReaderAuditResult = {
   entry?: string;
   entryId?: string;
   readDiagnostics?: ReaderDiagnostic[];
+  /** Local availability is independent of the remote acquisition verdict.
+   * Stored bytes do not by themselves prove browser decoding. */
+  local?: SavedReaderAudit;
   profile?: ReaderArticle["renderProfile"];
   textLength?: number;
   images?: number;
@@ -43,6 +47,31 @@ export type ReaderAuditResult = {
   durationMs?: number;
   issues: string[];
 };
+
+export type SavedReaderAudit = {
+  document: "saved" | "missing" | "invalid";
+  quality?: "original" | "feed";
+  images?: { total: number; stored: number; missing: number; invalid: number };
+};
+
+/** Read-only, article-owned storage inspection. No network, auth or task enqueue. */
+export function inspectSavedReader(store: Pick<ArticleStore, "read" | "imageBytes">, entryId: string): SavedReaderAudit {
+  try {
+    const article = store.read(entryId);
+    if (!article) return { document: "missing" };
+    const urls = articleImageUrls(article);
+    const images = { total: urls.length, stored: 0, missing: 0, invalid: 0 };
+    for (const url of urls) {
+      try {
+        const resource = store.imageBytes(entryId, url);
+        if (!resource) images.missing++;
+        else if (!resource.mime?.startsWith("image/") || !resource.bytes?.byteLength) images.invalid++;
+        else images.stored++;
+      } catch { images.invalid++; }
+    }
+    return { document: "saved", quality: article.contentMode === "feed_body" ? "feed" : "original", images };
+  } catch { return { document: "invalid" }; }
+}
 
 export type ReaderAuditProgress = {
   phase: "started" | "waiting" | "finished" | "source_skipped";
@@ -278,13 +307,13 @@ export function expectedImageProxyDiagnostic(error: unknown): string | undefined
   return undefined;
 }
 
-async function inspectFirstImage(http: PublicHttpClient, entry: Entry, article: ReaderArticle, result: ReaderAuditResult, signal?: AbortSignal): Promise<void> {
+export async function inspectFirstImage(http: PublicHttpClient, article: ReaderArticle, result: ReaderAuditResult, signal?: AbortSignal): Promise<void> {
   const imageUrl = load(article.contentHtml)("img").first().attr("src");
   if (!imageUrl) return;
   try {
     // This read-only audit checks the same restricted download path as local
     // persistence, without modifying the user library.
-    await http.getImageDataUrl(imageUrl, entry.url, { signal });
+    await http.getImageDataUrl(imageUrl, article.url, { signal });
   } catch (error) {
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : error;
     // Access restrictions remain explicit audit metadata.
@@ -437,10 +466,11 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
       for (const { entry, sample } of samples) {
         const startedAt = Date.now();
         const readDiagnostics: ReaderDiagnostic[] = [];
+        const local = inspectSavedReader(database.articles, entry.id);
         await reportProgress(options, { phase: "started", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "read" });
         if (readerAuditSessionUnavailable(source, options)) {
           const result: ReaderAuditResult = {
-            source: source.title, kind: source.kind, entry: entry.title, entryId: entry.id, sample, status: "skipped",
+            source: source.title, kind: source.kind, entry: entry.title, entryId: entry.id, sample, local, status: "skipped",
             durationMs: Date.now() - startedAt,
             issues: ["独立审计使用临时浏览器配置，未提供主应用的知乎授权会话；未验证该文章，不能据此判断登录失效。"]
           };
@@ -462,10 +492,11 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
           );
           const result = inspectReaderAuditArticle(source, entry, article);
           result.sample = sample;
+          result.local = local;
           result.readDiagnostics = readDiagnostics.length ? readDiagnostics : undefined;
           await reportProgress(options, { phase: "started", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "image" });
           await runReaderAuditOperation(
-            (signal) => inspectFirstImage(http, entry, article, result, signal),
+            (signal) => inspectFirstImage(http, article, result, signal),
             imageTimeoutMs,
             "首图检查",
             (elapsedMs) => void reportProgress(options, { phase: "waiting", completed, total, source: source.title, kind: source.kind, entry: entry.title, sample, stage: "image", elapsedMs }),
@@ -492,7 +523,7 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
         } catch (error) {
           const timedOut = error instanceof ReaderAuditTimeoutError;
           if (error instanceof RobotsDisallowedError) {
-            const result: ReaderAuditResult = { source: source.title, kind: source.kind, entry: entry.title, entryId: entry.id, readDiagnostics, sample, mode: "embedded", status: "skipped", durationMs: Date.now() - startedAt, issues: [error.message] };
+            const result: ReaderAuditResult = { source: source.title, kind: source.kind, entry: entry.title, entryId: entry.id, readDiagnostics, sample, local, mode: "embedded", status: "skipped", durationMs: Date.now() - startedAt, issues: [error.message] };
             results.push(result);
             await reportResult(options, result);
           } else {
@@ -502,6 +533,7 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
               entry: entry.title,
               entryId: entry.id,
               readDiagnostics,
+              local,
               sample,
               status: timedOut ? "timed_out" : "failed",
               durationMs: Date.now() - startedAt,
