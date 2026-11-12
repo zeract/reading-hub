@@ -11,6 +11,10 @@ let host,window,sql;const metrics=[];
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 const until=async condition=>{for(let i=0;i<100;i++){if(await condition())return;await wait(40);}throw new Error('DOM condition timed out');};
 const evaluate=code=>window.webContents.executeJavaScript(code);
+// Wait for the actual row/scroll geometry to settle across animation frames.
+// Trace only IDs and measurements; no source/model text enters diagnostics.
+const stableGeometry=()=>evaluate(`new Promise((resolve,reject)=>{let previous,stable=0,frames=0;const trace=[];function frame(){const sc=document.querySelector('.timeline');const rows=[...document.querySelectorAll('[data-index]')].map(row=>({id:row.dataset.entryId,index:+row.dataset.index,top:row.getBoundingClientRect().top,height:row.getBoundingClientRect().height}));const state={scroll:sc.scrollTop,height:sc.scrollHeight,rows};const signature=JSON.stringify(state);stable=signature===previous?stable+1:0;previous=signature;trace.push(state);if(trace.length>12)trace.shift();if(stable>=4)resolve(trace);else if(++frames>=120)reject(new Error('Row geometry did not settle: '+JSON.stringify(trace)));else requestAnimationFrame(frame);}requestAnimationFrame(frame);})`);
+
 async function measure(label){
  await window.webContents.debugger.sendCommand('HeapProfiler.collectGarbage');await wait(50);
  const heap=await window.webContents.debugger.sendCommand('Runtime.getHeapUsage');
@@ -34,7 +38,7 @@ const source={id:'source',title:'Fixture',kind:'rss'};
 const initial=Array.from({length:4000},(_,i)=>({id:String(i),sourceId:'source',url:'https://example.com/'+i,canonicalUrl:'https://example.com/'+i,title:'Technical article '+i+' · '+('中文技术标题 English '.repeat(i%3+1)),summary:'Variable summary '.repeat(i%4+1),author:'Author',contentHash:String(i),read:false,favorite:false,createdAt:1}));
 function Fixture(){const [entries,setEntries]=useState(initial);const [search,setSearch]=useState('');const [selected,setSelected]=useState();
 const Component=${baseline?"mode==='baseline'?Baseline:Timeline":"Timeline"};
-window.dropFirst=()=>setEntries(current=>current.slice(1));window.prepend=()=>setEntries(current=>[{...initial[0],id:'new'},...current]);window.resetQuery=()=>setSearch('new query');
+window.dropFirst=()=>setEntries(current=>current.slice(1));window.prepend=()=>setEntries(current=>[{...initial[0],id:'new',title:'Tall newly collected title '.repeat(7),summary:'Tall summary '.repeat(18)},...current]);window.reorderAround=id=>setEntries(current=>{const index=current.findIndex(entry=>entry.id===id),next=[...current];const [moved]=next.splice(index-2,1);next.splice(index+4,0,moved);return next;});window.resetQuery=()=>setSearch('new query');
 if(mode==='reader')return <ReaderPreferencesProvider><ReaderView entry={window.card} onUpdateEntry={async()=>true} favoriteUpdating={false} readerOnly={false} onToggleReaderOnly={()=>{}} onOpenSettings={()=>{}}/></ReaderPreferencesProvider>;
 return <Component entries={entries} sourceById={new Map([['source',source]])} libraryView="all" entrySearch={search} readingEntryId={selected} hasMoreEntries loadingEntries={false} loadFailed={false} busy={false} loadingMoreEntries={false} onLoadMore={()=>{}} onReload={()=>{}} onAddSource={()=>{}} onClearNotice={()=>{}} onEntrySearchChange={setSearch} isEntryUpdating={()=>false} onDismissEntry={async entry=>setEntries(current=>current.filter(e=>e.id!==entry.id))} onOpenEntry={entry=>setSelected(entry.id)} onUpdateEntry={async(entry,field,value)=>{setEntries(current=>current.map(e=>e.id===entry.id?{...e,[field]:value}:e));return true;}}/>;}
 createRoot(document.getElementById('root')).render(<Fixture/>);`);
@@ -59,15 +63,24 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`);
   if(mode==='virtual'){
    await evaluate('document.querySelector(".timeline").scrollTop=document.querySelector(".timeline").scrollHeight/2');
    await until(()=>evaluate('[...document.querySelectorAll("[data-index]")].some(e=>+e.dataset.index>1000&&+e.dataset.index<3000)'));
-   await wait(100);
+   await stableGeometry();
    const anchor=await evaluate(`(()=>{const sc=document.querySelector('.timeline').getBoundingClientRect();const row=[...document.querySelectorAll('[data-index]')].find(e=>e.getBoundingClientRect().top>=sc.top&&e.getBoundingClientRect().top<sc.bottom-200);return {id:row.dataset.entryId,top:row.getBoundingClientRect().top};})()`);
-   await evaluate('dropFirst()');await wait(150);
+   await evaluate('dropFirst()');await stableGeometry();
    const top=await evaluate(`document.querySelector('[data-entry-id="${anchor.id}"]').getBoundingClientRect().top`);
    assert.ok(Math.abs(top-anchor.top)<3,`Deletion moved scroll anchor: ${top-anchor.top}`);
    window.webContents.focus();
-   await evaluate('prepend()');await wait(150);
+   await evaluate('prepend()');await stableGeometry();
    const prependedTop=await evaluate(`document.querySelector('[data-entry-id="${anchor.id}"]').getBoundingClientRect().top`);
    assert.ok(Math.abs(prependedTop-top)<3,'Prepend moved scroll anchor');
+   await evaluate(`reorderAround(${JSON.stringify(anchor.id)})`);const reorderTrace=await stableGeometry();
+   const reorderedTop=await evaluate(`document.querySelector('[data-entry-id="${anchor.id}"]').getBoundingClientRect().top`);
+   assert.ok(Math.abs(reorderedTop-prependedTop)<3,'Internal equal-length reorder moved anchor: '+JSON.stringify(reorderTrace));
+   for(let repeat=0;repeat<10;repeat++){
+    await evaluate('dropFirst()');await stableGeometry();await evaluate('prepend()');const trace=await stableGeometry();
+    const currentTop=await evaluate(`document.querySelector('[data-entry-id="${anchor.id}"]').getBoundingClientRect().top`);
+    assert.ok(Math.abs(currentTop-reorderedTop)<3,'Repeated insert/delete moved anchor: '+JSON.stringify(trace));
+   }
+
    await evaluate(`document.querySelector('[data-entry-id="${anchor.id}"] .entry-main').focus()`);await wait(50);
    await evaluate(`document.querySelector('[data-entry-id="${anchor.id}"] .entry-actions button:last-child').focus()`);
    window.webContents.sendInputEvent({type:'keyDown',keyCode:'Tab'});window.webContents.sendInputEvent({type:'keyUp',keyCode:'Tab'});await wait(100);

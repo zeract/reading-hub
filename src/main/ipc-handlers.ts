@@ -100,14 +100,14 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     if (!selection) return { cancelled: true, imported: 0, existing: 0, skipped: 0 };
     const text = await readOpmlFile(selection, signal);
     throwIfAborted(signal);
-    return { cancelled: false, ...sources.importOpml(text) };
+    return { cancelled: false, ...await sources.importOpml(text) };
   }));
   handle(IPC_CHANNELS.source.list, (event) => {
     observeLibrary(event.sender);
     return database.listSources();
   });
   handle(IPC_CHANNELS.source.subscribe, (_event, id: unknown, subscribed: unknown) => sources.setSubscribed(requireEntityId(id), requireBoolean(subscribed)));
-  handle(IPC_CHANNELS.entry.restore, (_event, id: unknown) => database.restoreEntry(requireEntityId(id)));
+  handle(IPC_CHANNELS.entry.restore, (_event, id: unknown) => database.write("restoreEntry",requireEntityId(id)));
   handle(IPC_CHANNELS.entry.revision, () => database.getLibraryRevision());
   handle(IPC_CHANNELS.source.remove, (_event, id: unknown) => sources.delete(requireEntityId(id)));
   handle(IPC_CHANNELS.source.refresh, (_event, id: unknown) => sync.syncSource(requireEntityId(id)));
@@ -203,16 +203,16 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     foregroundRequests.cancel(event.sender, `image:${requestId}`);
   });
   handle(IPC_CHANNELS.entry.markRead, (_event, id: unknown, read: unknown) =>
-    database.markRead(requireEntityId(id), requireBoolean(read)));
+    database.write("markRead",requireEntityId(id), requireBoolean(read)));
   handle(IPC_CHANNELS.entry.markFavorite, (_event, id: unknown, favorite: unknown) =>
-    database.markFavorite(requireEntityId(id), requireBoolean(favorite)));
-  handle(IPC_CHANNELS.entry.dismiss, (_event, id: unknown) => database.dismissEntry(requireEntityId(id)));
+    database.write("markFavorite",requireEntityId(id), requireBoolean(favorite)));
+  handle(IPC_CHANNELS.entry.dismiss, (_event, id: unknown) => database.write("dismissEntry",requireEntityId(id)));
 
-  handle(IPC_CHANNELS.rewrite.get, (_event, id: unknown, metadataOnly:unknown) => database.rewrites.get(requireEntityId(id),metadataOnly===undefined?false:requireBoolean(metadataOnly)));
+  handle(IPC_CHANNELS.rewrite.get, (_event, id: unknown, metadataOnly:unknown) => database.writeRewrite("get",requireEntityId(id),metadataOnly===undefined?false:requireBoolean(metadataOnly)));
   handle(IPC_CHANNELS.rewrite.generate, (_event, id: unknown) => services.rewrites.enqueue(requireEntityId(id)));
   handle(IPC_CHANNELS.rewrite.cancel, (_event, id: unknown) => services.rewrites.cancel(requireEntityId(id)));
   handle(IPC_CHANNELS.rewrite.remove, (_event, id: unknown) => services.rewrites.remove(requireEntityId(id)));
-  handle(IPC_CHANNELS.rewrite.settings, () => database.rewrites.settings());
+  handle(IPC_CHANNELS.rewrite.settings, () => database.writeRewrite("settings"));
   handle(IPC_CHANNELS.rewrite.configure, (_event, input: unknown) => services.rewrites.configure(parseRewriteSettings(input)));
 
   handle(IPC_CHANNELS.ai.listModels, (event, provider: unknown, refresh: unknown) => {
@@ -259,7 +259,7 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     shell.openExternal(assertPublicUrl(requireText(rawUrl, "外部链接无效。", 2_000)).toString()));
   handle(IPC_CHANNELS.zhihu.connect, async (_event, rawSecret: unknown) => {
     await secrets.setZhihuAccessSecret(requireText(rawSecret, "知乎 Access Secret 无效。", 2_000));
-    return sync.syncSource(sources.connectZhihu().id);
+    return sync.syncSource((await sources.connectZhihu()).id);
   });
   handle(IPC_CHANNELS.zhihu.followLogin, (event) =>
     foregroundRequests.run(event.sender, (signal) => sources.beginZhihuFollowLogin(signal)));
@@ -268,7 +268,7 @@ export function registerIpcHandlers(services: ApplicationServices): () => Promis
     return foregroundRequests.run(event.sender, (signal) => academic.discover(text, { signal }));
   });
   handle(IPC_CHANNELS.academic.subscribe, async (_event, draft: unknown) =>
-    sync.syncSource(sources.createAcademicSource(parseAcademicDraft(draft)).id));
+    sync.syncSource((await sources.createAcademicSource(parseAcademicDraft(draft))).id));
 
   return async () => {
     closing = true;

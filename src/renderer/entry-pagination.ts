@@ -18,14 +18,18 @@ export async function readLoadedEntryPages(
   readPage: (query: EntryPageQuery) => Promise<EntryPage>,
   isCurrent: () => boolean
 ): Promise<(EntryPage & { pageCount: number }) | undefined> {
-  let entries: Entry[] = [];
+  const entries: Entry[] = [];
+  const seen = new Set<string>();
   let cursor: EntryPageCursor | undefined;
   let loaded = 0;
   do {
     if (!isCurrent()) return undefined;
     const page = await readPage(cursor ? nextEntryPageQuery(query, cursor) : firstEntryPageQuery(query));
     if (!isCurrent()) return undefined;
-    entries = mergeEntryPages(entries, page.entries);
+    for (const entry of page.entries) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id); entries.push(entry);
+    }
     cursor = page.nextCursor;
     loaded += 1;
   } while (cursor && loaded < pageCount);

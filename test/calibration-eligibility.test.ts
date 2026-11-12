@@ -22,10 +22,10 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 describe("calibration source eligibility", () => {
-  it.each(["rss", "manual", "zhihu", "zhihu_follow", "academic"] as const)("rejects rule writes to %s before touching cards or cancelling synchronization", (kind) => {
+  it.each(["rss", "manual", "zhihu", "zhihu_follow", "academic"] as const)("rejects rule writes to %s before touching cards or cancelling synchronization", async (kind) => {
     const source = create(kind);
     const before = db.getSource(source.id); const entries = db.listEntries();
-    expect(() => service.updateRule(source.id, rule)).toThrow("只有普通网页来源需要校准");
+    await expect(service.updateRule(source.id, rule)).rejects.toThrow("只有普通网页来源需要校准");
     expect(db.getSource(source.id)).toEqual(before); expect(db.listEntries()).toEqual(entries);
     expect(cancelSource).not.toHaveBeenCalled();
   });
@@ -34,7 +34,7 @@ describe("calibration source eligibility", () => {
     const source = create(); db.setSubscribed(source.id, false);
     const before = db.getSource(source.id); const entries = db.listEntries();
     await expect(service.calibrate(source.id)).rejects.toThrow("重新订阅");
-    expect(() => service.updateRule(source.id, rule)).toThrow("重新订阅");
+    await expect(service.updateRule(source.id, rule)).rejects.toThrow("重新订阅");
     expect(calibrate).not.toHaveBeenCalled(); expect(cancelSource).not.toHaveBeenCalled();
     expect(db.getSource(source.id)).toEqual(before); expect(db.listEntries()).toEqual(entries);
   });

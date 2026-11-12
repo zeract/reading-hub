@@ -7,7 +7,7 @@ import { SourceService } from "../src/main/source-service";
 import type { ProbeResult, SourceKind } from "../src/shared/types";
 
 function fixture(db: ReadingDatabase, kind: SourceKind = "rss") {
-  const sync = { requestDueRun: vi.fn(), cancelSource: vi.fn(), savePreview: vi.fn(), syncSource: vi.fn().mockResolvedValue(undefined) };
+  const sync = { requestDueRun: vi.fn(), cancelSource: vi.fn(), prepareEntries: vi.fn(()=>[]),identityNamespaces:()=>[],wakeArticles:()=>undefined, syncSource: vi.fn().mockResolvedValue(undefined) };
   const probe = { probe: vi.fn(async (url: string): Promise<ProbeResult> => ({
     url, kind, title: "Detected title", confidence: 1, requiresReview: false, preview: []
   })) };
@@ -30,7 +30,7 @@ describe("subscription URL identity across addition paths", () => {
     const { service, confirm } = fixture(db);
     try {
       const existing = await confirm(first);
-      expect(service.importOpml(opml(first, second))).toEqual({ imported: 1, existing: 1, skipped: 0 });
+      expect(await service.importOpml(opml(first, second))).toEqual({ imported: 1, existing: 1, skipped: 0 });
       expect(db.listSources().map((source) => source.url).sort()).toEqual([first, second].sort());
       expect((await confirm(second)).id).not.toBe(existing.id);
       expect(db.listSources()).toHaveLength(2);
@@ -45,10 +45,10 @@ describe("subscription URL identity across addition paths", () => {
         confirm("https://example.com/feed#one"), confirm("https://example.com/feed#two")
       ]);
       expect(second.id).toBe(first.id);
-      expect(service.importOpml(opml("https://EXAMPLE.com:443/feed#three"))).toEqual({ imported: 0, existing: 1, skipped: 0 });
+      expect(await service.importOpml(opml("https://EXAMPLE.com:443/feed#three"))).toEqual({ imported: 0, existing: 1, skipped: 0 });
       expect(db.listSources()).toHaveLength(1);
       expect(sync.syncSource).toHaveBeenCalledTimes(1);
-      expect(sync.savePreview).toHaveBeenCalledTimes(1);
+      expect(sync.prepareEntries).toHaveBeenCalledTimes(1);
     } finally { db.close(); }
   });
 
@@ -57,7 +57,7 @@ describe("subscription URL identity across addition paths", () => {
     const file = join(directory, "library.sqlite");
     let db = new ReadingDatabase(file);
     try {
-      fixture(db).service.importOpml(opml("https://example.com/feed#old"));
+      await fixture(db).service.importOpml(opml("https://example.com/feed#old"));
       const source = db.listSources()[0];
       db.updateSourceSettings(source.id, { title: "My title", category: "My folder", kind: "rss", pollingEnabled: true, refreshIntervalMinutes: 240 });
       db.saveEntries([{ id: "saved", sourceId: source.id, url: "https://example.com/article", canonicalUrl: "https://example.com/article",
@@ -71,7 +71,7 @@ describe("subscription URL identity across addition paths", () => {
       });
       expect(db.listSources()).toHaveLength(1);
       expect(db.getEntry("saved")).toMatchObject({ sourceId: source.id, read: true, favorite: true, publishedAt: 10, createdAt: 20 });
-      expect(sync.savePreview).not.toHaveBeenCalled();
+      expect(sync.prepareEntries).not.toHaveBeenCalled();
       expect(sync.syncSource).not.toHaveBeenCalled();
       expect(sync.cancelSource).toHaveBeenCalledExactlyOnceWith(source.id);
     } finally { db.close(); rmSync(directory, { recursive: true }); }

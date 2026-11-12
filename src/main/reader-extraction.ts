@@ -1,3 +1,4 @@
+import {throwIfAborted} from "./cancellation";
 import {FormulaDocument,chooseFormulaRenderPolicy,effectiveReaderProfile,preserveSemanticFormulaCarriers,preserveMathScripts,preserveRenderedMath,preserveTextMath,normaliseTeXCitationLinks,materializeFormulaAnchors,renderMath,renderMathAsync,isMathScript,type SanitizedContent,type PreparedSanitizedContent} from "./reader-formulas";
 export {effectiveReaderProfile,needsMathJaxFallback} from "./reader-formulas";
 import {normalText,isNodeWithinRoot} from "./reader-html";
@@ -266,8 +267,13 @@ function prepareReaderArticle(html: string, pageUrl: string, entry: Entry, inlin
   if (inlineLanguage && !inline) throw new Error("这个同页语言版本已不可用，请重新打开文章后再试。");
   const languageVariants = inline ? [...inline.variants, ...discoverReaderLanguageVariants($, pageUrl, resourceBaseUrl).filter(item => !sameCanonicalUrl(item.url, pageUrl))] : discoverReaderLanguageVariants($, pageUrl, resourceBaseUrl);
   const activeLanguage = inline?.activeLanguage || languageVariants.find((variant) => sameCanonicalUrl(variant.url, pageUrl))?.language;
+  const semantic = !inline && !answerHtml ? pickContentRoot($, renderProfile, pageUrl) : undefined;
+  const preferInner = isHuggingFaceBlogUrl(pageUrl);
+  // A verified boundary is selected unconditionally by the selection contract.
+  // Do not parse a second complete DOM whose result cannot be used.
+  const authoritative = semantic && (semantic.verifiedBoundary || preferInner && semantic.priority >= 11);
   const content = inline ? { html: inline.html, title: undefined, author: undefined, publishedAt: undefined } : answerHtml ? pickVerifiedZhihuAnswerContent($, renderProfile, pageUrl)
-    : chooseContentCandidate(pickContentRoot($, renderProfile, pageUrl), extractReadabilityContent(html, pageUrl), isHuggingFaceBlogUrl(pageUrl));
+    : authoritative ? semantic : chooseContentCandidate(semantic, extractReadabilityContent(html, pageUrl), preferInner);
   if (!content) return undefined;
   const contentDocument = load(`<article id="reader-selected-content">${content.html}</article>`);
   const selectedContent = contentDocument("#reader-selected-content");
@@ -368,14 +374,15 @@ function renderPreparedReaderArticle(
 
 export async function renderPreparedReaderArticleAsync(
   prepared: PreparedReaderExtraction,
-  scientificMath?: ScientificMathRenderer
+  scientificMath?: ScientificMathRenderer,
+  signal?: AbortSignal
 ): Promise<ExtractedArticle | undefined> {
   if (prepared.content.formulaRenderPolicy === "scientific-document" && scientificMath && !scientificMath.isReady()) {
     await scientificMath.ready().catch(() => undefined);
   }
   return finishReaderArticle(
     prepared.article,
-    await renderPreparedContentAsync(prepared.content, scientificMath, prepared.article.globalMathMacros)
+    await renderPreparedContentAsync(prepared.content, scientificMath, prepared.article.globalMathMacros, signal)
   );
 }
 
@@ -906,10 +913,12 @@ function renderPreparedContent(
 export async function renderPreparedContentAsync(
   prepared: PreparedSanitizedContent,
   scientificMath: ScientificMathRenderer | undefined,
-  globalMathMacros: MathMacroScope
+  globalMathMacros: MathMacroScope,
+  signal?: AbortSignal
 ): Promise<SanitizedContent> {
+  throwIfAborted(signal);
   const { $, root } = instantiateSanitizedContent(prepared);
-  return renderMathAsync($, root, prepared.formulas, scientificMath, globalMathMacros, prepared.formulaRenderPolicy);
+  return renderMathAsync($, root, prepared.formulas, scientificMath, globalMathMacros, prepared.formulaRenderPolicy, signal);
 }
 
 function removeAllAttributes(element: any): void {

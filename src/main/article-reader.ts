@@ -1,9 +1,9 @@
+import {ReaderConversionUnavailableError} from "./reader-conversion-errors";
 import { readerFailureDiagnostic, reportReaderDiagnostic, type ReaderDiagnostic } from "./reader-diagnostics";
 import { AccessChallengeError } from "./access-challenge";
-import {withArticleDocument, articleDocumentFromHtml} from "./article-document";
+import {withArticleDocument} from "./article-document";
 import { readerLanguageChoices } from "../shared/reader-languages";
 import { assertAnswerNavigation } from "./zhihu-answer-identity";
-import { load } from "cheerio";
 import { WeightedLruCache } from "./weighted-lru-cache";
 import { compactText } from "../shared/text";
 import { assertPublicUrl, canonicalizeUrl, isTrustedLoopbackFeedUrl } from "../shared/url";
@@ -16,10 +16,8 @@ import type { PageRenderer, RenderedPage } from "./page-renderer";
 import { RenderedPageHttpError } from "./rendered-document";
 import { mergeReaderLanguageVariants, sameCanonicalUrl } from "./reader-language-variants";
 import { RobotsDisallowedError } from "./robots";
-import { publicDocumentUrl as safeUrl } from "./html-document-url";
-import { resolveReaderProfile, prepareSanitizedContent, renderPreparedContentAsync, needsMathJaxFallback,
-  selectReaderCover, effectiveReaderProfile, prepareReaderExtraction, renderPreparedReaderArticleAsync, normalText, escapeHtml } from "./reader-extraction";
-export { extractReaderArticle, extractReaderArticleAsync } from "./reader-extraction";
+import { escapeHtml } from "./reader-html";
+import type { ReaderConverter } from "./reader-conversion";
 
 export class ArticleContentUnavailableError extends Error {
   constructor() {
@@ -31,6 +29,8 @@ export class ArticleContentUnavailableError extends Error {
 export interface ReaderReadOptions {
   /** Shared cancellation for foreground reads and audits. */
   signal?: AbortSignal;
+  priority?: "foreground" | "background";
+  legacyImport?: boolean;
   inlineLanguage?: string;
   refresh?: boolean;
   /** Optional main-process audit observer; never supplied over IPC. */
@@ -70,11 +70,13 @@ export class ArticleReader {
     private readonly http: PublicHttpClient,
     private readonly renderer: PageRenderer,
     private readonly renderWithZhihuSession?: RenderWithSession,
-    private readonly scientificMath = new ScientificMathRenderer()
+    private readonly scientificMath = new ScientificMathRenderer(),
+    private readonly converter?: ReaderConverter
   ) {}
 
   async read(entry: Entry, source?: Source, options?: ReaderReadOptions): Promise<ReaderArticle> {
-    return withArticleDocument(await this.readAtUrl(entry, source, entry.url, options, true));
+    const article=await this.readAtUrl(entry, source, entry.url, options, true);
+    return article.document?article:withArticleDocument(article);
   }
 
   restoreSavedArticle(entry: Entry, article: ReaderArticle, signal?: AbortSignal): ReaderArticle {
@@ -83,7 +85,8 @@ export class ArticleReader {
 
   async readLanguageVariant(entry: Entry, source: Source | undefined, rawUrl: string, options?: ReaderReadOptions): Promise<ReaderArticle> {
     const { variant, cached } = this.assertLanguageVariant(entry.id, rawUrl, options?.inlineLanguage);
-    return withArticleDocument(await this.readAtUrl(entry, source, variant.url, options, false, cached.variants));
+    const article=await this.readAtUrl(entry, source, variant.url, options, false, cached.variants);
+    return article.document?article:withArticleDocument(article);
   }
 
   assertLanguageVariant(entryId: string, rawUrl: string, inlineLanguage?: string) {
@@ -109,7 +112,6 @@ export class ArticleReader {
     let staticArticle: ExtractedArticle | undefined;
     let staticFailure: unknown;
     const usesZhihuSession = source?.kind === "zhihu_follow" && Boolean(this.renderWithZhihuSession);
-    if (resolveReaderProfile(targetUrl) === "scientific") await awaitWithAbort(this.scientificMath.ready().catch(() => undefined), options?.signal);
     throwIfAborted(options?.signal);
     if (!usesZhihuSession) {
       try {
@@ -123,13 +125,14 @@ export class ArticleReader {
           throw new ArticleContentUnavailableError();
         }
         assertAnswerNavigation(targetUrl, response.url);
-        staticArticle = await awaitWithAbort(this.extractWithMathFallback(response.text, response.url, entry, options?.inlineLanguage), options?.signal);
+        staticArticle = await awaitWithAbort(this.extractWithMathFallback(response.text, response.url, entry, options), options?.signal);
         throwIfAborted(options?.signal);
         if (!staticArticle) reportReaderDiagnostic(options?.onDiagnostic, { stage: "static", reason: "no_content" });
         if (staticArticle && staticArticle.textLength >= 220) return this.rememberLanguageVariants(entry.id, staticArticle.article, knownLanguageVariants, options?.signal);
       } catch (error) {
         if (options?.signal?.aborted) throw abortError(options.signal);
         if (!(error instanceof ArticleContentUnavailableError)) reportReaderDiagnostic(options?.onDiagnostic, readerFailureDiagnostic("static", error));
+        if(error instanceof ReaderConversionUnavailableError)throw error;
         // robots.txt must remain a hard boundary. A feed can nevertheless
         // already contain an explicitly supplied summary, which is local
         // subscription data rather than an extraction of the blocked page.
@@ -160,7 +163,7 @@ export class ArticleReader {
     }
     throwIfAborted(options?.signal);
     if (renderedPage) assertAnswerNavigation(targetUrl, renderedPage.url);
-    const renderedArticle = renderedPage?.html ? await awaitWithAbort(this.extractWithMathFallback(renderedPage.html, renderedPage.url, entry, options?.inlineLanguage), options?.signal) : undefined;
+    const renderedArticle = renderedPage?.html ? await awaitWithAbort(this.extractWithMathFallback(renderedPage.html, renderedPage.url, entry, options), options?.signal) : undefined;
     throwIfAborted(options?.signal);
     if (renderedPage && !renderedArticle) reportReaderDiagnostic(options?.onDiagnostic, { stage: "render", reason: "no_content" });
     if (renderedArticle && renderedArticle.textLength > (staticArticle?.textLength ?? 0)) {
@@ -299,65 +302,19 @@ export class ArticleReader {
   /** Shared import for sync-time bodies and read-time Feed fallback. */
   async readFeedBody(entry: Entry, html: string, baseUrl: string, options?: ReaderReadOptions): Promise<ReaderArticle | undefined> {
     throwIfAborted(options?.signal);
-    const renderProfile = resolveReaderProfile(entry.url);
-    const preparedContent = prepareSanitizedContent(html, baseUrl);
-    if (preparedContent.formulaRenderPolicy === "scientific-document" && !this.scientificMath.isReady()) {
-      await awaitWithAbort(this.scientificMath.ready().catch(() => undefined), options?.signal);
-    }
-    throwIfAborted(options?.signal);
-    let sanitised = await awaitWithAbort(renderPreparedContentAsync(preparedContent, this.scientificMath, new Map()), options?.signal);
-    throwIfAborted(options?.signal);
-    if (needsMathJaxFallback(sanitised) && !this.scientificMath.isReady()) {
-      await awaitWithAbort(this.scientificMath.ready().catch(() => undefined), options?.signal);
-      throwIfAborted(options?.signal);
-      if (this.scientificMath.isReady()) sanitised = await awaitWithAbort(renderPreparedContentAsync(preparedContent, this.scientificMath, new Map()), options?.signal);
-    }
-    throwIfAborted(options?.signal);
-    const contentHtml = sanitised.html;
-    const content = load(contentHtml);
-    if (normalText(content.text()).length < 24 && !content("img").length) {
-      reportReaderDiagnostic(options?.onDiagnostic, { stage: "feed", reason: "no_content" });
-      return undefined;
-    }
-    const coverCandidate = safeUrl(entry.imageUrl, baseUrl);
-    return {
-      entryId: entry.id,
-      url: entry.url,
-      title: entry.title,
-      author: entry.author,
-      publishedAt: entry.publishedAt,
-      coverImageUrl: selectReaderCover(contentHtml, coverCandidate),
-      renderProfile: effectiveReaderProfile(renderProfile, sanitised.formulaRenderPolicy),
-      contentMode: "feed_body",
-      formulaDiagnostics: sanitised.formulaDiagnostics,
-      document: articleDocumentFromHtml(contentHtml),
-      contentHtml
-    };
+    const result = await this.convert({kind:"feed",html,url:baseUrl,entry,legacyImport:options?.legacyImport},options);
+    if(!result)reportReaderDiagnostic(options?.onDiagnostic,{stage:"feed",reason:"no_content"});
+    return result?.article;
   }
 
-  /**
-   * The standard path uses KaTeX first and retries only an observed failed
-   * expression. A document-scoped formula policy starts local MathJax before
-   * rendering so macro scope, labels and multi-row environments never mix
-   * renderers. Both paths reuse the same inert extraction template.
-   */
-  private async extractWithMathFallback(html: string, pageUrl: string, entry: Entry, inlineLanguage?: string): Promise<ExtractedArticle | undefined> {
-    const prepared = prepareReaderExtraction(html, pageUrl, entry, inlineLanguage);
-    if (!prepared) return undefined;
-    // Complex formula documents must not first be rendered one record at a
-    // time with KaTeX and then selectively retried with MathJax.  Start the
-    // local SVG renderer before the first render so macros, labels and display
-    // layout use one document semantic plan from the outset. Failed formulas
-    // are isolated without discarding successful members of that plan.
-    if (prepared.content.formulaRenderPolicy === "scientific-document" && !this.scientificMath.isReady()) {
-      await this.scientificMath.ready().catch(() => undefined);
-    }
-    let extracted = await renderPreparedReaderArticleAsync(prepared, this.scientificMath);
-    if (!extracted || !needsMathJaxFallback(extracted.article) || this.scientificMath.isReady()) return extracted;
-    await this.scientificMath.ready().catch(() => undefined);
-    if (this.scientificMath.isReady()) extracted = await renderPreparedReaderArticleAsync(prepared, this.scientificMath);
-    return extracted;
+  private extractWithMathFallback(html:string,pageUrl:string,entry:Entry,options?:ReaderReadOptions):Promise<ExtractedArticle|undefined> {
+    return this.convert({kind:"page",html,url:pageUrl,entry,inlineLanguage:options?.inlineLanguage,legacyImport:options?.legacyImport},options);
   }
+  private convert(input:import("./reader-conversion").ReaderConversionRequest,options?:ReaderReadOptions) {
+    return this.converter ? this.converter.convert(input,options) : import("./reader-conversion").then(({convertReaderContent})=>convertReaderContent(input,this.scientificMath,options?.signal));
+  }
+  async close():Promise<void>{await this.converter?.close();}
+
 }
 
 function readerHttpOptions(base: Omit<PublicRequestOptions, "signal"> | undefined, signal?: AbortSignal): PublicRequestOptions | undefined {

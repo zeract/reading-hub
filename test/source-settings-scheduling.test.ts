@@ -15,7 +15,7 @@ const rename = (service: SourceService, source: Source) => service.updateSetting
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
-it.each(["due", "scheduled", "error", "review", "paused"])("preserves the %s schedule when only display metadata changes", (state) => {
+it.each(["due", "scheduled", "error", "review", "paused"])("preserves the %s schedule when only display metadata changes", async (state) => {
   vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000);
   const db = new ReadingDatabase(":memory:");
   try {
@@ -31,13 +31,13 @@ it.each(["due", "scheduled", "error", "review", "paused"])("preserves the %s sch
     const random = vi.spyOn(Math, "random");
     vi.setSystemTime(Date.now() + 1_000);
     const service = serviceFor(db, sync);
-    const updated = rename(service, source);
+    const updated = await rename(service, source);
     expect(updated).toMatchObject({ title: "Renamed fixture", category: "Research", status: source.status, failureCount: source.failureCount });
     expect(updated.nextCheckAt).toBe(source.nextCheckAt);
     expect(updated.lastError).toBe(source.lastError);
     expect(db.getCheckpoint(source.id)).toEqual(checkpoint);
     expect(db.listDueSources().map((item) => item.id)).toEqual(expectedDue);
-    expect(rename(service, updated).nextCheckAt).toBe(source.nextCheckAt);
+    expect((await rename(service, updated)).nextCheckAt).toBe(source.nextCheckAt);
     expect(random).not.toHaveBeenCalled();
     expect(sync.cancelSource).not.toHaveBeenCalled();
   } finally { db.close(); }
@@ -51,7 +51,7 @@ it("still admits an already-due source after its title changes", async () => {
   const manager = new SyncManager(db, registry);
   try {
     const source = db.createSource({ url: "https://example.com/feed", title: "Fixture", kind: "rss", pollingEnabled: true });
-    rename(serviceFor(db, manager), source);
+    await rename(serviceFor(db, manager), source);
     await manager.runDue();
     expect(connectorSync).toHaveBeenCalledTimes(1);
     expect(connectorSync.mock.calls[0]?.[0]).toMatchObject({ source: { title: "Renamed fixture", category: "Research" } });
@@ -59,7 +59,7 @@ it("still admits an already-due source after its title changes", async () => {
   } finally { await manager.close(); db.close(); }
 });
 
-it("reschedules actual cadence changes and cancels work when polling is toggled", () => {
+it("reschedules actual cadence changes and cancels work when polling is toggled", async () => {
   vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000);
   vi.spyOn(Math, "random").mockReturnValue(0.5);
   const db = new ReadingDatabase(":memory:");
@@ -68,30 +68,30 @@ it("reschedules actual cadence changes and cancels work when polling is toggled"
   try {
     const source = db.createSource({ url: "https://example.com/feed", title: "Fixture", kind: "rss", pollingEnabled: true, refreshIntervalMinutes: 60 });
     const settings = { title: source.title, kind: source.kind, pollingEnabled: true, refreshIntervalMinutes: 120 };
-    const changed = service.updateSettings(source.id, settings);
+    const changed = await service.updateSettings(source.id, settings);
     expect(changed.nextCheckAt).toBe(Date.now() + 120 * 60_000);
     expect(sync.cancelSource).not.toHaveBeenCalled();
 
-    const disabled = service.updateSettings(source.id, { ...settings, pollingEnabled: false });
+    const disabled = await service.updateSettings(source.id, { ...settings, pollingEnabled: false });
     expect(disabled.nextCheckAt).toBeUndefined();
     expect(db.listDueSources(Number.MAX_SAFE_INTEGER)).toEqual([]);
     expect(sync.cancelSource).toHaveBeenCalledExactlyOnceWith(source.id);
 
-    const enabled = service.updateSettings(source.id, settings);
+    const enabled = await service.updateSettings(source.id, settings);
     expect(enabled.nextCheckAt).toBe(Date.now() + 120 * 60_000);
     expect(db.listDueSources(enabled.nextCheckAt!).map((item) => item.id)).toEqual([source.id]);
     expect(sync.cancelSource).toHaveBeenCalledTimes(2);
   } finally { db.close(); }
 });
 
-it("retains metadata edits and the original retry deadline after reopening", () => {
+it("retains metadata edits and the original retry deadline after reopening", async () => {
   const directory = mkdtempSync(join(tmpdir(), "reading-hub-settings-schedule-"));
   const path = join(directory, "fixture.sqlite");
   let db = new ReadingDatabase(path);
   try {
     const source = db.createSource({ url: "https://example.com/feed", title: "Fixture", kind: "rss", pollingEnabled: true, refreshIntervalMinutes: 1440 });
     const failed = db.markFailure(source, "Fixture offline");
-    rename(serviceFor(db), failed);
+    await rename(serviceFor(db), failed);
     db.close(); db = new ReadingDatabase(path);
     expect(db.getSource(source.id)).toMatchObject({ title: "Renamed fixture", category: "Research", nextCheckAt: failed.nextCheckAt, status: "error", failureCount: 1, lastError: "Fixture offline" });
     expect(db.listDueSources(failed.nextCheckAt! - 1)).toEqual([]);

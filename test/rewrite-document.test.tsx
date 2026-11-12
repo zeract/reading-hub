@@ -5,7 +5,7 @@ import {rewriteText} from "../src/main/rewrite-content";
 import {rewriteCards} from "../src/main/rewrite-cards";
 import {runRewritePipeline,makeRewriteSections} from "../src/main/rewrite-pipeline";
 import {AiMarkdownContent} from "../src/renderer/ai-markdown";
-import {extractReaderArticle} from "../src/main/article-reader";
+import { extractReaderArticle } from "../src/main/reader-extraction";
 import type {Entry} from "../src/shared/types";
 const url="https://example.com/report";
 const card=`<div><a href="${url}">${url}</a><div><a href="${url}"><img src="https://example.com/cover.png" alt="Report"></a><div><a href="${url}"><h4>Report</h4></a><a href="https://example.com/author">Author</a><div>September 29, 2025</div><a href="${url}">Read full story</a></div></div></div>`;

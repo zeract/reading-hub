@@ -38,7 +38,7 @@ describe("OPML imports share the background scheduler", () => {
       return healthy;
     });
     try {
-      service.importOpml(opml(["one", "two"]));
+      await service.importOpml(opml(["one", "two"]));
       await vi.waitFor(() => expect(calls).toContain("one"));
       sync.start();
       await vi.waitFor(() => expect(db.listSyncEvents()).toHaveLength(1));
@@ -64,17 +64,17 @@ describe("OPML imports share the background scheduler", () => {
     });
     try {
       // Separate imports previously created separate, untracked worker loops.
-      service.importOpml(opml(["one"]));
-      service.importOpml(opml(["two"]));
+      await service.importOpml(opml(["one"]));
+      await service.importOpml(opml(["two"]));
       await vi.waitFor(() => expect(calls).toHaveLength(2));
-      service.importOpml(opml(["three"]));
+      await service.importOpml(opml(["three"]));
       await tick();
       expect(calls).toEqual(["one", "two"]);
       held.release();
       await vi.waitFor(() => expect(calls).toContain("three"));
       expect(peak).toBe(2);
       expect(calls).toHaveLength(3);
-      expect(service.importOpml(opml(["three"]))).toEqual({ imported: 0, existing: 1, skipped: 0 });
+      expect(await service.importOpml(opml(["three"]))).toEqual({ imported: 0, existing: 1, skipped: 0 });
       await tick();
       expect(calls).toHaveLength(3);
     } finally { held.release(); await sync.close(); db.close(); }
@@ -120,9 +120,9 @@ describe("OPML imports share the background scheduler", () => {
     const calls: SyncContext[] = [];
     let current = fixture(async (context) => { calls.push(context); await held.wait; return healthy; }, path);
     try {
-      current.service.importOpml(opml(["one", "two"]));
+      await current.service.importOpml(opml(["one", "two"]));
       await vi.waitFor(() => expect(calls).toHaveLength(2));
-      current.service.importOpml(opml(["three"]));
+      await current.service.importOpml(opml(["three"]));
       const closing = current.sync.close();
       current.sync.requestDueRun();
       expect(calls.every((context) => context.signal?.aborted)).toBe(true);

@@ -12,7 +12,7 @@ const SAMPLE_OPML = `<?xml version="1.0" encoding="UTF-8"?>
 </body></opml>`;
 
 describe("OPML subscriptions", () => {
-  it("rolls back imported subscriptions when persistence fails instead of counting the failure as a skipped outline", () => {
+  it("rolls back imported subscriptions when persistence fails instead of counting the failure as a skipped outline", async () => {
     const database = new ReadingDatabase(":memory:");
     const sync = { requestDueRun: vi.fn().mockResolvedValue(undefined) };
     const service = new SourceService(database, undefined as never, sync as never, undefined as never);
@@ -23,15 +23,15 @@ describe("OPML subscriptions", () => {
       return source;
     });
     try {
-      expect(() => service.importOpml(SAMPLE_OPML)).toThrow("fixture disk failure");
+      await expect(service.importOpml(SAMPLE_OPML)).rejects.toThrow("fixture disk failure");
       expect(database.listSources()).toEqual([]);
       expect(sync.requestDueRun).not.toHaveBeenCalled();
       vi.mocked(database.createSource).mockImplementation(original);
-      expect(service.importOpml(SAMPLE_OPML)).toEqual({ imported: 2, existing: 0, skipped: 0 });
+      expect(await service.importOpml(SAMPLE_OPML)).toEqual({ imported: 2, existing: 0, skipped: 0 });
     } finally { database.close(); }
   });
 
-  it("skips an invalid outline without suppressing a later valid outline for the same URL", () => {
+  it("skips an invalid outline without suppressing a later valid outline for the same URL", async () => {
     const database = new ReadingDatabase(":memory:");
     const service = new SourceService(database, undefined as never, { requestDueRun: vi.fn().mockResolvedValue(undefined) } as never, undefined as never);
     const input = `<opml version="2.0"><body>
@@ -40,12 +40,12 @@ describe("OPML subscriptions", () => {
       <outline text="Private" xmlUrl="https://192.168.1.2/feed.xml" />
     </body></opml>`;
     try {
-      expect(service.importOpml(input)).toEqual({ imported: 1, existing: 0, skipped: 2 });
+      expect(await service.importOpml(input)).toEqual({ imported: 1, existing: 0, skipped: 2 });
       expect(database.listSources()).toMatchObject([{ title: "Valid title" }]);
     } finally { database.close(); }
   });
 
-  it("publishes one complete batch before waking the shared scheduler", () => {
+  it("publishes one complete batch before waking the shared scheduler", async () => {
     const database = new ReadingDatabase(":memory:");
     const notifications: number[] = [];
     const unsubscribe = database.onLibraryChanged(() => notifications.push(database.listSources().length));
@@ -55,7 +55,7 @@ describe("OPML subscriptions", () => {
     }) };
     const service = new SourceService(database, undefined as never, sync as never, undefined as never);
     try {
-      expect(service.importOpml(SAMPLE_OPML)).toEqual({ imported: 2, existing: 0, skipped: 0 });
+      expect(await service.importOpml(SAMPLE_OPML)).toEqual({ imported: 2, existing: 0, skipped: 0 });
       expect(notifications).toEqual([2]);
       expect(sync.requestDueRun).toHaveBeenCalledTimes(1);
       expect(syncObservations).toEqual([2]);
@@ -70,17 +70,17 @@ describe("OPML subscriptions", () => {
     expect(() => parseOpml("<html><body>not opml</body></html>")).toThrow("有效的 OPML");
   });
 
-  it("imports valid feeds once and marks only an explicit loopback feed as trusted", () => {
+  it("imports valid feeds once and marks only an explicit loopback feed as trusted", async () => {
     const database = new ReadingDatabase(":memory:");
     const sync = { requestDueRun: vi.fn().mockResolvedValue(undefined) };
     const service = new SourceService(database, undefined as never, sync as never, undefined as never);
 
-    expect(service.importOpml(SAMPLE_OPML)).toEqual({ imported: 2, existing: 0, skipped: 0 });
+    expect(await service.importOpml(SAMPLE_OPML)).toEqual({ imported: 2, existing: 0, skipped: 0 });
     expect(database.listSources()).toEqual(expect.arrayContaining([
       expect.objectContaining({ url: "https://example.com/feed.xml", category: "Research / ML", config: {} }),
       expect.objectContaining({ url: "http://127.0.0.1:1200/example/feed", category: "Local", config: { allowTrustedLoopbackFeed: true } })
     ]));
-    expect(service.importOpml(SAMPLE_OPML)).toEqual({ imported: 0, existing: 2, skipped: 0 });
+    expect(await service.importOpml(SAMPLE_OPML)).toEqual({ imported: 0, existing: 2, skipped: 0 });
     database.close();
   });
 
@@ -90,7 +90,7 @@ describe("OPML subscriptions", () => {
     expect(() => assertPublicUrl("http://[::1]:1200/feed")).toThrow("本机或私有网络");
   });
 
-  it("deduplicates an OPML URL against an existing Feed with a different fragment", () => {
+  it("deduplicates an OPML URL against an existing Feed with a different fragment", async () => {
     const database = new ReadingDatabase(":memory:");
     database.createSource({
       url: "https://example.com/feed.xml#old-import",
@@ -100,7 +100,7 @@ describe("OPML subscriptions", () => {
     });
     const service = new SourceService(database, undefined as never, { requestDueRun: vi.fn().mockResolvedValue(undefined) } as never, undefined as never);
 
-    expect(service.importOpml(SAMPLE_OPML)).toEqual({ imported: 1, existing: 1, skipped: 0 });
+    expect(await service.importOpml(SAMPLE_OPML)).toEqual({ imported: 1, existing: 1, skipped: 0 });
     database.close();
   });
 });

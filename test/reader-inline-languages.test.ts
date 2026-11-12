@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { load } from "cheerio";
-import { ArticleReader, extractReaderArticle } from "../src/main/article-reader";
+import { ArticleReader } from "../src/main/article-reader";
+import { extractReaderArticle } from "../src/main/reader-extraction";
 import type { Entry } from "../src/shared/types";
 import type { PublicHttpClient } from "../src/main/http";
 const url = "https://publisher.example/post";

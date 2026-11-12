@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { extractReaderArticle } from '../src/main/article-reader';
+import { extractReaderArticle } from '../src/main/reader-extraction';
 import { extractGenericPage } from '../src/main/extractor';
 import { extractZhihuFollowPage } from '../src/main/zhihu-follow-parser';
 import { answerIdFromElement, assertAnswerNavigation, zhihuAnswerContentReadiness } from '../src/main/zhihu-answer-identity';

@@ -33,7 +33,7 @@ export class ArticleLibrary {
   private retryTimer?: ReturnType<typeof setTimeout>;
   private initialization?: Promise<void>;
   private readonly storage: ArticleStorage;
-  constructor(private readonly db: ReadingDatabase, private readonly reader: ArticleReader, private readonly http: PublicHttpClient, storage?: ArticleStorage) {
+  constructor(private readonly db: ReadingDatabase, private readonly reader: ArticleReader, private readonly http: PublicHttpClient, storage?: ArticleStorage, private readonly ownsStorage = true) {
     // In-memory fixtures keep their single connection; production always injects a worker.
     this.storage = storage ?? inlineStorage(db.articles);
   }
@@ -60,7 +60,8 @@ export class ArticleLibrary {
     // A cancelled waiter can settle before its shared transport finishes
     // cleanup. Drain those readers before the owner closes SQLite/app services.
     await Promise.allSettled([...this.activeReads]);
-    await this.storage.close();
+    await this.reader.close?.();
+    if(this.ownsStorage)await this.storage.close();
   }
   onNetworkRestored(): Promise<void> { return this.maintain("retryTransient"); }
   onSourceAuthenticated(sourceId: string): Promise<void> { return this.maintain("retryAuthentication", sourceId); }
@@ -68,7 +69,6 @@ export class ArticleLibrary {
     return this.work(undefined, async signal => { await this.storage.call(method, ...args); throwIfAborted(signal); this.wake(); })
       .catch(error => { if (!this.controller.signal.aborted) throw error; });
   }
-  reconcileSource(sourceId: string): void { this.db.articles.reconcileSource(sourceId); }
 
   read(entry: Entry, source?: Source, options?: ReaderReadOptions): Promise<ReaderArticle> {
     return this.work(options?.signal, async signal => {
@@ -125,18 +125,12 @@ export class ArticleLibrary {
       // A Feed body cannot replace an acquired original. Avoid repeating its
       // conversion/math work only in that case; Feed-only documents still update.
       if (this.db.articles.hasOriginalForUrl(entry.canonicalUrl)) continue;
-      const article = await this.reader.readFeedBody(entry, body.html, body.baseUrl, { signal });
-      if (article) result.set(entry.url, withArticleDocument(article));
+      const article = await this.reader.readFeedBody(entry, body.html, body.baseUrl, { signal, priority:"background" });
+      if (article) result.set(entry.url,article.document?article:withArticleDocument(article));
     }
     return result;
   }
 
-  /** Called inside the card/checkpoint transaction, after actual entry identity resolution. */
-  commitCollected(entry: Entry, storedId: string, bodies?: Map<string, ReaderArticle>): void {
-    const article = bodies?.get(entry.url);
-    if (article) this.db.articles.save(storedId, article);
-    this.db.articles.enqueue(storedId);
-  }
   async loadImage(entry: Entry, url: string, options?: Pick<ReaderReadOptions, "signal">): Promise<string> {
     const resource=await this.loadImageBytes(entry,url,options);
     return `data:${resource.mime};base64,${Buffer.from(resource.bytes).toString('base64')}`;
@@ -149,7 +143,7 @@ export class ArticleLibrary {
       if (cached) return cached;
       // Only document-owned assets can become durable media; legacy rewrite assets share the same store.
       if (!await this.storage.call("ownsImage", entry.id, target)) {
-        const rewrite = this.db.rewrites.get(entry.id)?.result;
+        const rewrite = (await this.db.writeRewrite("get",entry.id))?.result;
         const belongs = target === entry.imageUrl || (rewrite?.content && articleImageUrls({
           entryId: entry.id, title: entry.title, url: entry.url, renderProfile: "standard", contentHtml: "", document: rewrite.content
         }).includes(target));
@@ -179,7 +173,7 @@ export class ArticleLibrary {
     // Diagnostic observers belong to their own request. Explicit rereads do
     // not join an older automatic acquisition; ordinary reads share its work.
     if (options.onDiagnostic) return load(options.signal!);
-    return this.reads.run(JSON.stringify([entry.id,entry.url,source?.id,source?.kind,Boolean(options.refresh),options.inlineLanguage]), load, options.signal);
+    return this.reads.run(JSON.stringify([entry.id,entry.url,source?.id,source?.kind,Boolean(options.refresh),Boolean(options.legacyImport),options.inlineLanguage]), load, options.signal);
   }
 
   private trackRead(load: () => Promise<ReaderArticle>): Promise<ReaderArticle> {
@@ -254,7 +248,7 @@ export class ArticleLibrary {
         const entry = this.db.getEntry(acquisition.entry_id);
         if (!entry) continue;
         let acquired: AcquiredArticle;
-        try { acquired = await this.acquire(entry, this.db.getSource(entry.sourceId), { signal }); }
+        try { acquired = await this.acquire(entry, this.db.getSource(entry.sourceId), { signal, priority:"background" }); }
         catch (error) {
           if (signal.aborted) return;
           await this.storage.call("finishAcquisition", entry.id, acquisitionFailure(error));

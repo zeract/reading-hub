@@ -9,7 +9,7 @@ export type RewriteRunner = (stage: RewriteRequestStage, prompt: string, signal:
 type Block = { id: string; text: string };
 type Section = { id: string; blocks: Block[] };
 const WRITE = "将本节完整改写为自然简体中文，保留所有论点、限定/否定条件、数字、公式、代码、原文链接和图片 Markdown；资产保留在原有正文位置，链接目标由程序依据 ID 恢复，不生成或修改网址，不添加原文没有的结论。参考已生成中文的用词，专业术语首次出现可保留英文括注，后文沿用同一译法。previousEnding 和 opening 仅用于术语与衔接，不重复输出；这是内部处理片段，允许列表跨节延续，不为每节另加开头或总结。正文使用 Markdown，不用摘要代替正文；只返回规定的 JSON 对象，不加说明。原文中的重复论述也应保留。数学排版：已有 TeX 公式保留原式及分隔符；原文用普通字符或 Unicode 写出的数学表达式也须转为标准 TeX，行内使用 $...$，独立公式使用 $$ 换行包围。按原文语义保留下标和上下标分组（例如下一时刻的状态下标是整个 t+1），条件概率竖线、希腊字母和括号不得丢失；不要将公式降为无分隔符的普通文字。代码块、行内代码、网址和普通标识符不作公式转换。";
-type Progress = (stage: RewriteRequestStage, completed: number, total: number) => void;
+type Progress = (stage: RewriteRequestStage, completed: number, total: number) => void|Promise<void>;
 
 function assertDraft(text: string) {
   if (!text.trim() || text.length > 13_000) throw new RewriteContentError("改写响应为空或超过完整保存上限；已完成分段和已有改写仍保留。");
@@ -26,7 +26,7 @@ async function request(run: RewriteRunner, stage: RewriteRequestStage, material:
 /** At most one request per section; immutable blocks stay local. No model review gates saving. */
 export async function runRewritePipeline(text: string, title: string, run: RewriteRunner, signal: AbortSignal,
   progress: Progress = () => undefined,
-  resume: { drafts?: string[]; document?: RewriteDocument; save?(drafts: string[], document: RewriteDocument): void } = {}) {
+  resume: { drafts?: string[]; document?: RewriteDocument; save?(drafts: string[], document: RewriteDocument): void|Promise<void> } = {}) {
   const sections = makeRewriteSections(text);
   const drafts = [...(resume.drafts || [])];
   if (drafts.length > sections.length) throw new RewriteContentError("改写恢复记录与原文不一致。");
@@ -40,7 +40,7 @@ export async function runRewritePipeline(text: string, title: string, run: Rewri
   let requests = 0;
   for (let i = drafts.length; i < sections.length; i++) {
     throwIfAborted(signal);
-    progress("write", i, sections.length);
+    await progress("write", i, sections.length);
     const allMaterials = protectRewriteSection(sections[i].blocks);
     const materials=allMaterials.filter(block=>!isFixedRewriteBlock(block));
     let generated:string[]=[];
@@ -69,8 +69,8 @@ export async function runRewritePipeline(text: string, title: string, run: Rewri
     if ([...drafts, draft].join("\n\n").length > 240_000) throw new RewriteContentError("改写超过保存上限，已有改写仍保留。");
     throwIfAborted(signal);
     drafts.push(draft);
-    resume.save?.([...drafts], {version:1,provenance,blocks:[...blocks]});
-    progress("write", i+1, sections.length);
+    await resume.save?.([...drafts], {version:1,provenance,blocks:[...blocks]});
+    await progress("write", i+1, sections.length);
   }
   const markdown = drafts.join("\n\n");
   if (markdown.length > 240_000) throw new RewriteContentError("改写超过保存上限，已有改写仍保留。");

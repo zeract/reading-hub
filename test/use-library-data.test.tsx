@@ -287,3 +287,40 @@ describe("library read-model", () => {
     expect(library.entryLoadFailed).toBe(false);
   });
 });
+
+it("does not reload the loaded range twice when an explicit reload already satisfies a notification",async()=>{
+ vi.useFakeTimers();let notify!:(revision:number)=>void;
+ vi.mocked(window.reader.onLibraryChanged).mockImplementation(listener=>{notify=listener;return ()=>undefined;});
+ await act(async()=>library.selectSource("one-refresh"));
+ await act(async()=>library.loadMoreEntries());await act(async()=>library.loadMoreEntries());
+ vi.mocked(window.reader.getLibraryRevision).mockResolvedValue(1);listPage.mockClear();
+ await act(async()=>{notify(1);await library.reload();await vi.advanceTimersByTimeAsync(300);});
+ expect(listPage).toHaveBeenCalledTimes(3);expect(library.entries).toHaveLength(205);
+});
+it("retains a newer notification when an older poll response completes later",async()=>{
+ vi.useFakeTimers();let notify!:(revision:number)=>void;
+ vi.mocked(window.reader.onLibraryChanged).mockImplementation(listener=>{notify=listener;return ()=>undefined;});
+ vi.mocked(window.reader.getLibraryRevision).mockResolvedValue(5);
+ await act(async()=>library.selectSource("revision-order"));
+ let finish!:(revision:number)=>void;
+ vi.mocked(window.reader.getLibraryRevision).mockImplementationOnce(()=>new Promise(resolve=>finish=resolve));
+ await act(async()=>{await vi.advanceTimersByTimeAsync(60_000);});
+ listPage.mockClear();vi.mocked(window.reader.getLibraryRevision).mockResolvedValue(6);
+ await act(async()=>{notify(6);finish(5);await vi.advanceTimersByTimeAsync(200);});
+ expect(listPage).toHaveBeenCalledTimes(1);
+});
+it("refreshes again for a newer revision received during the current reload and can recover after failure",async()=>{
+ vi.useFakeTimers();let notify!:(revision:number)=>void;
+ vi.mocked(window.reader.onLibraryChanged).mockImplementation(listener=>{notify=listener;return ()=>undefined;});
+ await act(async()=>library.selectSource("during-reload"));
+ vi.mocked(window.reader.getLibraryRevision).mockResolvedValue(1);
+ let finish!:(page:EntryPage)=>void;listPage.mockImplementationOnce(()=>new Promise(resolve=>finish=resolve));
+ let pending!:Promise<void>;await act(async()=>{pending=library.reload();});
+ await act(async()=>{notify(2);await vi.advanceTimersByTimeAsync(100);});
+ vi.mocked(window.reader.getLibraryRevision).mockResolvedValue(2);listPage.mockClear();
+ await act(async()=>{finish({entries:records.slice(0,100)});await pending;await vi.advanceTimersByTimeAsync(200);});
+ expect(listPage).toHaveBeenCalledTimes(1);
+ listPage.mockRejectedValueOnce(new Error("temporary"));vi.mocked(window.reader.getLibraryRevision).mockResolvedValue(3);
+ await act(async()=>{notify(3);await vi.advanceTimersByTimeAsync(100);});expect(library.entryLoadFailed).toBe(true);
+ await act(async()=>{notify(3);await vi.advanceTimersByTimeAsync(100);});expect(library.entryLoadFailed).toBe(false);
+});

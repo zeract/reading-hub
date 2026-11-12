@@ -1,7 +1,7 @@
 import { load } from "cheerio";
 import { Readability } from "@mozilla/readability";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { extractReaderArticle } from "../src/main/article-reader";
+import { extractReaderArticle } from "../src/main/reader-extraction";
 import type { Entry } from "../src/shared/types";
 const pageUrl = "https://example.com/posts/current.html";
 const entry = { id: "fixture", url: pageUrl, title: "Fixture", sourceId: "fixture", createdAt: 1 } as Entry;

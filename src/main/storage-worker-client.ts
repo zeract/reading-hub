@@ -1,3 +1,7 @@
+import type {ReadingDatabase} from "./database";
+import type {RewriteStore} from "./persistence/rewrite-store";
+import type {DatabaseWriteMethod,RewriteMethod} from "./library-write-contract";
+import {SyncCancelledError} from "./sync-state";
 import { Worker } from "node:worker_threads";
 import path from "node:path";
 import type { ArticleStore } from "./persistence/article-store";
@@ -22,11 +26,11 @@ export class StorageWorkerClient {
   private connect(): void {
     if (this.worker) return;
     const worker = this.worker = new Worker(this.workerFile, { workerData: { databasePath: this.databasePath } });
-    worker.on("message", (reply: { id: number; value?: unknown; error?: "content" | "storage"; message?: string }) => {
+    worker.on("message", (reply: { id: number; value?: unknown; error?: "content" | "storage" | "cancelled" | "domain"; message?: string }) => {
       const task = this.pending.get(reply.id);
       if (!task) return;
       this.pending.delete(reply.id);
-      if (reply.error) task.reject(reply.error === "content"
+      if (reply.error) task.reject(reply.error === "domain" ? new Error(reply.message) : reply.error === "cancelled" ? new SyncCancelledError("来源配置已更新，已取消旧的同步结果。") : reply.error === "content"
         ? new ArticlePersistenceContentError(reply.message) : new Error(STORAGE_ERROR));
       else task.resolve(reply.value);
     });
@@ -38,6 +42,12 @@ export class StorageWorkerClient {
   }
   call<K extends StoreMethod>(method: K, ...args: Parameters<ArticleStore[K]>): Promise<ReturnType<ArticleStore[K]>> {
     return this.send(method, args) as Promise<ReturnType<ArticleStore[K]>>;
+  }
+  database<K extends DatabaseWriteMethod>(method:K,...args:Parameters<ReadingDatabase[K]>):Promise<ReturnType<ReadingDatabase[K]>>{
+    return this.send("database:"+method,args) as Promise<ReturnType<ReadingDatabase[K]>>;
+  }
+  rewrite<K extends RewriteMethod>(method:K,...args:Parameters<RewriteStore[K]>):Promise<ReturnType<RewriteStore[K]>>{
+    return this.send("rewrite:"+method,args) as Promise<ReturnType<RewriteStore[K]>>;
   }
   prepare(options: Omit<DataLocationResolverOptions, "now">): Promise<DataLocationResolution> {
     return this.send("prepare", [options]) as Promise<DataLocationResolution>;

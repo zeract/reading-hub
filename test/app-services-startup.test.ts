@@ -18,7 +18,6 @@ vi.mock("../src/main/secrets", () => ({ SecretStore: class {
 } }));
 import { createApplicationServices } from "../src/main/app-services";
 import { ReadingDatabase } from "../src/main/database";
-import { ContentMaintenance } from "../src/main/content-maintenance";
 import { ZhihuFollowConnector } from "../src/main/zhihu-follow";
 
 afterEach(() => { vi.restoreAllMocks(); credentials.clear.mockReset(); vi.unstubAllEnvs(); });
@@ -105,13 +104,16 @@ describe("application service acquisition", () => {
     initial.close();
     const clock = vi.spyOn(Date, "now").mockReturnValue(200);
     let opened: ReadingDatabase | undefined;
-    const original = ReadingDatabase.prototype.resumeLegacyAutoPausedSources;
-    vi.spyOn(ReadingDatabase.prototype, "resumeLegacyAutoPausedSources").mockImplementation(function (this: ReadingDatabase, now) {
-      opened = this;
-      return original.call(this, now);
-    });
+    const original = ReadingDatabase.prototype.setWriter;
+    vi.spyOn(ReadingDatabase.prototype, "setWriter").mockImplementation(function(this:ReadingDatabase,writer){opened=this;return original.call(this,writer);});
     const failure = new Error("Synthetic late startup failure");
-    if (phase === "maintenance") vi.spyOn(ContentMaintenance.prototype, "runStartupMaintenance").mockImplementationOnce(() => { throw failure; });
+    if (phase === "maintenance") {
+      const write=ReadingDatabase.prototype.write;
+      vi.spyOn(ReadingDatabase.prototype,"write").mockImplementationOnce(function(this:ReadingDatabase,...args:any[]){return (write as any).apply(this,args);});
+      // Startup maintenance now lives in the worker. Reject its semantic RPC
+      // at the host boundary, without weakening the real worker in other tests.
+      vi.mocked(ReadingDatabase.prototype.write).mockImplementation(function(this:ReadingDatabase,...args:any[]){if(args[0]==="runStartupMaintenance"){vi.mocked(ReadingDatabase.prototype.write).mockImplementation(write);return Promise.reject(failure);}return (write as any).apply(this,args);});
+    }
     else vi.spyOn(ZhihuFollowConnector.prototype, "setOnAuthenticated").mockImplementationOnce(() => { throw failure; });
     let retry: Awaited<ReturnType<typeof createApplicationServices>> | undefined;
     let failedDatabase: ReadingDatabase | undefined;
@@ -134,4 +136,27 @@ describe("application service acquisition", () => {
       rmSync(directory, { recursive: true });
     }
   });
+});
+
+it.each(["service","storage"])("closes the shared worker and main connection even when %s cleanup fails",async phase=>{
+ const {StorageWorkerClient}=await import("../src/main/storage-worker-client");
+ const directory=mkdtempSync(join(tmpdir(),"reading-hub-close-failure-")),file=join(directory,"library.sqlite");
+ const services=await createApplicationServices(file),worker=(services.database as any).writer;
+ const original=StorageWorkerClient.prototype.close,closed=vi.spyOn(StorageWorkerClient.prototype,"close");
+ if(phase==="service")vi.spyOn(services.sync,"close").mockRejectedValueOnce(new Error("private cleanup details"));
+ else closed.mockImplementationOnce(async function(this:InstanceType<typeof StorageWorkerClient>){await original.call(this);throw new Error("private storage details");});
+ try{
+  await expect(services.close()).rejects.toThrow("本地服务未能完整关闭");
+  expect(closed).toHaveBeenCalled();expect(worker.worker.threadId).toBe(-1);
+  expect(()=>services.database.listSources()).toThrow(/not open/);
+  const reopened=new ReadingDatabase(file);reopened.createSource({url:"https://example.com/reopen",title:"Reopened",kind:"rss",pollingEnabled:true});reopened.close();
+ }finally{await services.close().catch(()=>undefined);rmSync(directory,{recursive:true,force:true});}
+});
+it("retains the startup failure while still closing SQLite after a cleanup failure",async()=>{
+ const {ArticleLibrary}=await import("../src/main/article-library");
+ const initial=new Error("initial startup failure");let db:ReadingDatabase|undefined;
+ vi.spyOn(ReadingDatabase.prototype,"resumeLegacyAutoPausedSources").mockImplementationOnce(function(this:ReadingDatabase){db=this;throw initial;});
+ vi.spyOn(ArticleLibrary.prototype,"close").mockRejectedValueOnce(new Error("cleanup failure"));
+ vi.spyOn(console,"warn").mockImplementation(()=>undefined);
+ await expect(createApplicationServices(":memory:")).rejects.toBe(initial);expect(()=>db!.listSources()).toThrow(/not open/);
 });

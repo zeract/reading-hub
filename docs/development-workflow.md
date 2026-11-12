@@ -52,7 +52,7 @@ MathJax 组件共享进程运行时，只初始化一次；异步转换串行，
 
 宿主统一持有公式编号与引用。多行 AMS 标签按作者顶层行建立索引，`cases` / `substack` 等内部换行不另计；同行多标签是同一编号的别名。渲染前把无显式编号的标签行落实为宿主 `tag`，移除 MathJax 的 `label`，不启用与宿主不一致的自动计数器；保留作者显式编号。
 
-MathJax 4 的响应式 SVG 在主进程冻结为有明确像素坐标 `viewBox` 和字号相对固有宽度的静态图，不依赖 MathJax 浏览器运行时代码或宽度百分比。原生编号与主体分别保留受控几何标记；真实 DOM 验收检查内部绘制包围盒碰撞和裁切，并用恢复旧百分比/缺失 `viewBox` 的负对照证明能捕获故障。
+MathJax 4 的响应式 SVG 在正文转换线程冻结为有明确像素坐标 `viewBox` 和字号相对固有宽度的静态图，不依赖 MathJax 浏览器运行时代码或宽度百分比。原生编号与主体分别保留受控几何标记；真实 DOM 验收检查内部绘制包围盒碰撞和裁切，并用恢复旧百分比/缺失 `viewBox` 的负对照证明能捕获故障。
 
 ## 自动化边界
 
@@ -73,3 +73,6 @@ MathJax 4 的响应式 SVG 在主进程冻结为有明确像素坐标 `viewBox` 
 
 
 阅读在线审计结果的 `status/issues` 描述远端获取与提取，`local` 独立描述快照内的正文与全部所属媒体保存状态；受限来源也先检查本地记录，不能从远端 skipped/failed 推断离线不可用。`local.images.stored` 仅证明有可读取的非空图片字节，真实解码需要新进程断网 DOM 验收。图片获取使用实际正文 URL 作 referrer，与 ArticleLibrary 保存规则一致；审计不写用户原库、保存正文或触发后台任务。
+
+
+`node node_modules/electron/cli.js scripts/article-viewer-smoke-app` 使用生产原文辅助进程与临时 profile，阻断远端请求，核对隔离设置、macOS accessory/Dock 身份、Cmd+Q 交回宿主、四类原生清理、清理卡死回收与主应用退出。它不读取用户库或登录态。

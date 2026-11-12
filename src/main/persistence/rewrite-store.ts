@@ -1,3 +1,4 @@
+import { ArticleStore } from "./article-store";
 import { decodeRewriteResult, encodeRewriteResult } from "../rewrite-document";
 import { parseRewriteSettings, type RewriteDocument } from "../../shared/rewrite";
 import type Database from "better-sqlite3";
@@ -87,8 +88,11 @@ export class RewriteStore {
             .run(completed, total, stage ?? null, Date.now(), job.entryId, job.jobId);
     }
     finish(job: ArticleRewrite, result: RewriteResult): void {
-        this.db.prepare("UPDATE article_rewrites SET status='complete',result_json=?,error=NULL,checkpoint_json=CASE WHEN kind='generate' THEN NULL ELSE checkpoint_json END,updated_at=? WHERE entry_id=? AND job_id=? AND status='running'")
+        this.db.transaction(() => {
+        const saved = this.db.prepare("UPDATE article_rewrites SET status='complete',result_json=?,error=NULL,checkpoint_json=CASE WHEN kind='generate' THEN NULL ELSE checkpoint_json END,updated_at=? WHERE entry_id=? AND job_id=? AND status='running'")
             .run(encodeRewriteResult(decodeRewriteResult(JSON.stringify(result))), Date.now(), job.entryId, job.jobId);
+        if(saved.changes)new ArticleStore(this.db).reconcileMedia(job.entryId);
+        })();
     }
     checkpoint(job: ArticleRewrite, key: string): string[] {
         const row = this.db.prepare("SELECT checkpoint_json FROM article_rewrites WHERE entry_id=? AND job_id=?").get(job.entryId, job.jobId) as {checkpoint_json:string|null} | undefined;
@@ -120,5 +124,5 @@ export class RewriteStore {
     cancel(entryId: string): void {
         this.db.prepare("UPDATE article_rewrites SET status='cancelled',error=NULL,updated_at=? WHERE entry_id=? AND status IN ('queued','running')").run(Date.now(), entryId);
     }
-    remove(entryId: string): void { this.db.prepare("DELETE FROM article_rewrites WHERE entry_id=?").run(entryId); }
+    remove(entryId: string): void { this.db.transaction(()=>{this.db.prepare("DELETE FROM article_rewrites WHERE entry_id=?").run(entryId);new ArticleStore(this.db).reconcileMedia(entryId);})(); }
 }

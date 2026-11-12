@@ -104,3 +104,65 @@ it("blocks foreign-key violations before preparing a library for writes",async()
  try{const result=await worker.prepare({canonicalDirectory:canonical,legacyDirectories:[]});expect(result.kind).toBe("blocked");const check=new Sqlite(file,{readonly:true});try{expect(check.prepare("SELECT source_id FROM entries WHERE id='fk-entry'").get()).toEqual({source_id:"missing"})}finally{check.close()}}
  finally{await worker.close()}
 });
+
+it("serializes foreground mutations and atomic sync commits without blocking the host under a write lock",async()=>{
+ const file=path.join(directory,"semantic-writes.sqlite"),db=new ReadingDatabase(file),worker=new StorageWorkerClient(file,workerFile);
+ const source=db.createSource({url:"https://example.com/semantic",title:"Feed",kind:"rss",pollingEnabled:true});
+ const entry={id:"semantic",sourceId:source.id,url:"https://example.com/semantic/post",canonicalUrl:"https://example.com/semantic/post",title:"Fixture",contentHash:"h",read:false,favorite:false,createdAt:1};db.saveEntries([entry]);
+ db.setWriter(worker);await worker.call("pendingMedia");
+ const raw=(db as unknown as {db:Sqlite.Database}).db;raw.exec("BEGIN IMMEDIATE");let released=false;
+ const timer=setTimeout(()=>{raw.exec("COMMIT");released=true;},60);
+ try{
+  await db.write("markRead",entry.id,true);expect(released).toBe(true);expect(db.getEntry(entry.id)?.read).toBe(true);
+  const subscription=db.getSubscriptionForSource(source.id)!;
+  await db.write("commitSync",{source,subscription,outcome:{entries:[],notModified:true,etag:"fixture"},accepted:[],identityNamespaces:[],maintain:false});
+  expect(db.getSource(source.id)?.etag).toBe("fixture");
+  await db.write("deleteSource",source.id);
+  await expect(db.write("commitSync",{source,subscription,outcome:{entries:[]},accepted:[entry],identityNamespaces:[],maintain:false})).rejects.toThrow("取消");
+  expect(db.getEntry(entry.id)).toBeUndefined();
+ }finally{clearTimeout(timer);if(raw.inTransaction)raw.exec("ROLLBACK");await worker.close();db.close();}
+});
+
+it("preserves fixed queue-full business errors while keeping storage errors private",async()=>{
+ const file=path.join(directory,"domain-errors.sqlite"),db=new ReadingDatabase(file),worker=new StorageWorkerClient(file,workerFile);
+ try{
+  const source=db.createSource({url:"https://example.com/queue",title:"Queue",kind:"rss",pollingEnabled:true});
+  db.saveEntries(Array.from({length:21},(_,i)=>({id:`q${i}`,sourceId:source.id,url:`https://example.com/queue/${i}`,canonicalUrl:`https://example.com/queue/${i}`,title:"Fixture",contentHash:"hash",createdAt:i,read:false,favorite:false})));
+  for(let i=0;i<20;i++)await worker.rewrite("enqueue",`q${i}`,{provider:"deepseek",model:"fixture",effort:"default"});
+  await expect(worker.rewrite("enqueue","q20",{provider:"deepseek",model:"fixture",effort:"default"})).rejects.toThrow("改写队列已满，请等待部分文章完成后再试。");
+ }finally{await worker.close();db.close();}
+});
+it("coalesces a repeated confirmation while the semantic storage operation is pending",async()=>{
+ const {SourceService}=await import("../src/main/source-service"),{SyncManager}=await import("../src/main/sync-manager"),{ConnectorRegistry}=await import("../src/main/connector-registry"),{contentNormalizer}=await import("../src/main/content-normalizer");
+ const file=path.join(directory,"confirm.sqlite"),db=new ReadingDatabase(file),worker=new StorageWorkerClient(file,workerFile);db.setWriter(worker);
+ const registry=new ConnectorRegistry();registry.register({manifest:{id:"manual",version:1,builtIn:true,displayName:"Manual"},sync:async()=>({entries:[]}),normalize:(entry,source)=>contentNormalizer.normalize(entry,source)});
+ const sync=new SyncManager(db,registry),service=new SourceService(db,{probe:async()=>({url:"https://example.com/confirm",title:"Fixture",kind:"manual",confidence:1,requiresReview:false,preview:[{url:"https://example.com/article",title:"Article"}]})} as any,sync,{} as any);
+ try{
+  const {token}=await service.preview("https://example.com/confirm"),first=service.confirm(token),second=service.confirm(token);
+  expect(first).toBe(second);expect((await first).id).toBe((await second).id);expect(db.listSources()).toHaveLength(1);expect(db.listEntries()).toHaveLength(1);
+ }finally{await sync.close();await worker.close();db.close();}
+});
+
+it("keeps cards, supplied body, collection state and checkpoint in one worker transaction on failure",async()=>{
+ const file=path.join(directory,"atomic-sync.sqlite"),db=new ReadingDatabase(file),worker=new StorageWorkerClient(file,workerFile);
+ const source=db.createSource({url:"https://example.com/atomic",title:"Feed",kind:"rss",pollingEnabled:true}),subscription=db.getSubscriptionForSource(source.id)!;
+ const entry={id:"atomic",sourceId:source.id,url:"https://example.com/atomic/post",canonicalUrl:"https://example.com/atomic/post",title:"Fixture",contentHash:"h",read:false,favorite:false,createdAt:1};
+ const invalid={entryId:entry.id,url:entry.url,title:entry.title,renderProfile:"standard" as const,contentMode:"feed_body" as const,contentHtml:"",document:{version:999}} as any;
+ try{
+  await expect(worker.database("commitSync",{source,subscription,outcome:{entries:[{url:entry.url,title:entry.title}],etag:"must-not-commit",checkpoint:{cursor:"must-not-commit"}},accepted:[entry],identityNamespaces:[],bodies:[[entry.url,invalid]],maintain:false})).rejects.toThrow("正文结构无效");
+  expect(db.getEntry(entry.id)).toBeUndefined();expect(db.getSource(source.id)?.etag).toBeUndefined();expect(db.getCheckpoint(subscription.id)).toBeUndefined();expect(db.getCollectionKind(source.id)).toBe("initial");
+ }finally{await worker.close();db.close();}
+});
+it("drains accepted rewrite progress/checkpoints on close and restores them without recreating cancelled jobs",async()=>{
+ const file=path.join(directory,"checkpoints.sqlite"),db=new ReadingDatabase(file),worker=new StorageWorkerClient(file,workerFile),settings={provider:"deepseek" as const,model:"fixture",effort:"default"};
+ const source=db.createSource({url:"https://example.com/checkpoint",title:"Feed",kind:"rss",pollingEnabled:true});
+ const entry={id:"checkpoint",sourceId:source.id,url:"https://example.com/checkpoint/post",canonicalUrl:"https://example.com/checkpoint/post",title:"Fixture",contentHash:"h",read:false,favorite:false,createdAt:1};db.saveEntries([entry]);
+ try{
+  const job=await worker.rewrite("enqueue",entry.id,settings);
+  const progress=worker.rewrite("progress",job,1,2,"write"),save=worker.rewrite("saveStructuredCheckpoint",job,"key",{version:1,patches:[{paragraph:"已完成中文"}]}),closed=worker.close();
+  await Promise.all([progress,save,closed]);
+  const restarted=new StorageWorkerClient(file,workerFile);
+  try{expect(await restarted.rewrite("structuredCheckpoint",job,"key")).toEqual({version:1,patches:[{paragraph:"已完成中文"}]});await restarted.rewrite("cancel",entry.id);await restarted.rewrite("saveStructuredCheckpoint",job,"key",{version:1,patches:[{paragraph:"迟到结果"}]});expect(await restarted.rewrite("structuredCheckpoint",job,"key")).toEqual({version:1,patches:[{paragraph:"已完成中文"}]});}
+  finally{await restarted.close();}
+ }finally{await worker.close();db.close();}
+});

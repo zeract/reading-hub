@@ -1,3 +1,4 @@
+import {readerContentHtml} from "../shared/reader-presentation";
 import path from "node:path";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -45,14 +46,15 @@ export class ScientificArticleVisualAuditor {
   constructor(private readonly root = app.getAppPath()) {}
 
   async inspect(article: ReaderArticle): Promise<string[]> {
-    const articleDom = load(`<div id="reader-audit-math">${article.contentHtml}</div>`);
+    const contentHtml=readerContentHtml(article);
+    const articleDom = load(`<div id="reader-audit-math">${contentHtml}</div>`);
     const renderedBlocks = articleDom("#reader-audit-math [data-reader-equation], #reader-audit-math .katex-display, #reader-audit-math mjx-container[display='true']").length;
     const expectedBlocks = article.formulaDiagnostics?.displayRendered ?? 0;
     if (!renderedBlocks && !expectedBlocks) return [];
     if (!renderedBlocks && expectedBlocks) return [`块公式语义丢失：期望 ${expectedBlocks} 个块公式，实际为 0`];
     const visualWindow = this.getWindow();
     const diagnostics: string[] = [];
-    const page = await this.page(article.contentHtml, article.renderProfile);
+    const page = await this.page(contentHtml, article.renderProfile);
     const auditPagePath = await this.getAuditPagePath();
     // Full KaTeX CSS plus an extracted article can exceed Chromium's accepted
     // data: URL size. A local, per-audit temporary file also gives KaTeX font

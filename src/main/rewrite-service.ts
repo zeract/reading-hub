@@ -19,43 +19,45 @@ export class RewriteService {
     };
     private unsubscribe?: () => void;
     constructor(private readonly database: ReadingDatabase, private readonly articles: Pick<ArticleReader, "read">, private readonly ai: Pick<AiService, "rewriteChunk">) { }
-    start(): void {
+    async start(): Promise<void> {
         if (this.started || this.closing)
             return;
         this.started = true;
-        this.database.rewrites.recover();
+        await this.database.writeRewrite("recover");
+        if(this.closing)return;
         this.unsubscribe = this.database.onLibraryChanged(() => {
             if (this.active && !this.database.getEntry(this.active.job.entryId))
                 this.active.controller.abort();
         });
         this.kick();
     }
-    configure(input: RewriteSettings): RewriteSettings {
+    async configure(input: RewriteSettings): Promise<RewriteSettings> {
         if (this.closing)
             throw new Error("应用正在退出。");
         const settings = parseRewriteSettings(input);
-        this.database.rewrites.configure(settings);
+        await this.database.writeRewrite("configure",settings);
         return settings;
     }
-    enqueue(entryId: string): ArticleRewrite {
+    async enqueue(entryId: string): Promise<ArticleRewrite> {
         if (this.closing)
             throw new Error("应用正在退出。");
         if (!this.database.getEntry(entryId))
             throw new Error("文章已不存在，请刷新列表。");
-        const settings = this.database.rewrites.settings();
+        const settings = await this.database.writeRewrite("settings");
+        if(this.closing)throw new Error("应用正在退出。");
         if (!settings)
             throw new Error("请先在设置 → AI 功能中选择中文改写使用的模型。");
-        const job = this.database.rewrites.enqueue(entryId, settings);
+        const job = await this.database.writeRewrite("enqueue",entryId, settings);
         this.kick();
         return job;
     }
-    cancel(entryId: string): ArticleRewrite | undefined {
-        this.database.rewrites.cancel(entryId);
+    async cancel(entryId: string): Promise<ArticleRewrite | undefined> {
+        await this.database.writeRewrite("cancel",entryId);
         if (this.active?.job.entryId === entryId)
             this.active.controller.abort();
-        return this.database.rewrites.get(entryId);
+        return this.database.writeRewrite("get",entryId);
     }
-    remove(entryId: string): void { this.cancel(entryId); this.database.rewrites.remove(entryId); }
+    async remove(entryId: string): Promise<void> { await this.cancel(entryId); await this.database.writeRewrite("remove",entryId); }
     close(): Promise<void> {
         this.closing = true;
         this.unsubscribe?.();
@@ -67,15 +69,15 @@ export class RewriteService {
         if (!this.started || this.closing || this.worker)
             return;
         // Defer work until the caller receives its queued record. No reader-window scope.
-        this.worker = Promise.resolve().then(() => this.drain()).then(() => { this.worker = undefined; if (!this.closing && this.database.rewrites.next())
+        this.worker = Promise.resolve().then(() => this.drain()).then(async () => { this.worker = undefined; if (!this.closing && await this.database.writeRewrite("next"))
             this.kick(); }, error => { this.worker = undefined; throw error; });
         // Persisted jobs remain recoverable if a local storage error prevents draining.
         void this.worker.catch(() => undefined);
     }
     private async drain(): Promise<void> {
         while (!this.closing) {
-            const job = this.database.rewrites.next();
-            if (!job)
+            const job = await this.database.writeRewrite("next");
+            if (this.closing || !job)
                 return;
             const controller = new AbortController();
             this.active = { job, controller };
@@ -85,7 +87,7 @@ export class RewriteService {
             catch (error) {
                 const message = controller.signal.aborted ? "任务已中断，可手动重试；已有改写仍保留。"
                     : error instanceof AiServiceError || error instanceof RewriteContentError ? error.message : "无法完成中文改写，请确认原文可读取及网络正常后重试。";
-                this.database.rewrites.fail(job, message);
+                await this.database.writeRewrite("fail",job, message);
             }
             finally {
                 this.active = undefined;
@@ -96,10 +98,12 @@ export class RewriteService {
         const entry = this.database.getEntry(job.entryId);
         if (!entry)
             return;
-        this.database.rewrites.progress(job, 0, 0);
+        await this.database.writeRewrite("progress",job, 0, 0);
         // Legacy fingerprints depend on the transient sanitized import, which is not
         // reconstructed from a rendered local tree. Preserve their original read path.
-        const article = withArticleDocument(await this.articles.read(entry, this.database.getSource(entry.sourceId), { signal, refresh: this.database.rewrites.hasLegacyCheckpoint(job) }));
+        const legacy=await this.database.writeRewrite("hasLegacyCheckpoint",job);
+        throwIfAborted(signal);
+        const article = withArticleDocument(await this.articles.read(entry, this.database.getSource(entry.sourceId), { signal, refresh:legacy, legacyImport:legacy }));
         throwIfAborted(signal);
         const plain=articleDocumentText(article.document!);
         if(isReaderSummaryContent(article.contentMode))throw new RewriteContentError(readerSummaryUnavailableMessage(article.contentMode));
@@ -111,9 +115,17 @@ export class RewriteService {
             usedModel = answer.model;
             return answer.text;
         };
-        const progress = (stage: import("../shared/rewrite").RewriteStage, completed: number, total: number) => this.database.rewrites.progress(job, completed, total, stage);
-        const result = await generateRewrite(article, job, this.database.rewrites, run, signal, progress);
+        const progress = (stage: import("../shared/rewrite").RewriteStage, completed: number, total: number) => this.database.writeRewrite("progress",job, completed, total, stage);
+        const store:import("./rewrite-generation").RewriteGenerationStore={
+          hasLegacyCheckpoint:(...args)=>this.database.writeRewrite("hasLegacyCheckpoint",...args),
+          checkpoint:(...args)=>this.database.writeRewrite("checkpoint",...args),
+          checkpointDocument:(...args)=>this.database.writeRewrite("checkpointDocument",...args),
+          saveCheckpoint:(...args)=>this.database.writeRewrite("saveCheckpoint",...args),
+          structuredCheckpoint:(...args)=>this.database.writeRewrite("structuredCheckpoint",...args),
+          saveStructuredCheckpoint:(...args)=>this.database.writeRewrite("saveStructuredCheckpoint",...args)
+        };
+        const result = await generateRewrite(article, job, store, run, signal, progress);
         throwIfAborted(signal);
-        this.database.rewrites.finish(job, {...result, provider:job.settings.provider, model:usedModel, createdAt:Date.now(), sourceUrl:article.url, sourceTitle:article.title});
+        await this.database.writeRewrite("finish",job, {...result, provider:job.settings.provider, model:usedModel, createdAt:Date.now(), sourceUrl:article.url, sourceTitle:article.title});
     }
 }

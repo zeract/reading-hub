@@ -1,3 +1,4 @@
+import {saveCollectedEntries} from "../src/main/sync-commit";
 import { GenericConnector, ManualConnector, RssConnector } from "../src/main/connectors";
 import { ConnectorRegistry } from "../src/main/connector-registry";
 import { SyncManager } from "../src/main/sync-manager";
@@ -57,7 +58,7 @@ it('keeps preview ingestion qualified and repeated sync deduplicated with real p
   const sync=new SyncManager(db,registry);
   const source=db.createSource({url:page,title:'Research',kind:'generic',pollingEnabled:true});
   try {
-    expect(sync.savePreview(source,[{url:job,title:'Job'}])).toBe(0);
+    expect(saveCollectedEntries(db,source,sync.prepareEntries(source,[{url:job,title:'Job'}]),sync.identityNamespaces(source)).inserted).toBe(0);
     expect((await sync.syncSource(source.id)).inserted).toBe(2);
     expect((await sync.syncSource(source.id)).inserted).toBe(0);
     const entries=db.listEntries(source.id);
@@ -86,7 +87,7 @@ it('applies the same article-link policy to a direct RSS subscription but not an
   try {
     expect((await manager.syncSource(rss.id)).inserted).toBe(1);
     expect(db.listEntries(rss.id).map((entry) => entry.url)).toEqual([articleUrl]);
-    expect(manager.savePreview(manual, [{ url: job, title: 'Research role' }])).toBe(1);
+    expect(saveCollectedEntries(db,manual,manager.prepareEntries(manual,[{url:job,title:'Research role'}]),manager.identityNamespaces(manual)).inserted).toBe(1);
     expect(db.listEntries(manual.id).map((entry) => entry.url)).toEqual([job]);
     expect((await manager.syncSource(rss.id)).inserted).toBe(0);
   } finally { await manager.close(); db.close(); }

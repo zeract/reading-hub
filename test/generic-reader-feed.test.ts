@@ -1,3 +1,4 @@
+import {articleDocumentHtml} from "../src/shared/article-document";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,7 +70,7 @@ it('saves a read-time generic Feed body and its images, then reopens offline aft
  try{const article=await library.read(stored,s);expect(article.savedAt).toBeUndefined();await library.loadImage(stored,'https://feeds.example/image.png');expect(db.articles.read(stored.id)).toBeDefined();await library.close();db.close();
  db=new ReadingDatabase(path);const offline={getText:vi.fn(async()=>{throw new Error('Offline and removed Feed');}),getImageDataUrl:vi.fn(async()=>{throw new Error('Offline image');})};
  library=new ArticleLibrary(db,new ArticleReader(offline as never,{render:vi.fn()}),offline as never);
- expect((await library.read(stored,s)).contentHtml).toContain(prose);
+ expect(articleDocumentHtml((await library.read(stored,s)).document!)).toContain(prose);
  expect(await library.loadImage(stored,'https://feeds.example/image.png')).toBe(image);
  expect(offline.getText).not.toHaveBeenCalled();expect(offline.getImageDataUrl).not.toHaveBeenCalled();
  }finally{await library.close();db.close();rmSync(directory,{recursive:true,force:true});}

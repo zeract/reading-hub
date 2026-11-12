@@ -59,8 +59,8 @@ describe("source configuration and active synchronization", () => {
     const pending = sync.syncSource(source.id);
     try {
       await vi.waitFor(() => expect(calls).toHaveLength(1));
-      service.updateSettings(source.id, { title: "Renamed", category: "Folder", kind: "rss", pollingEnabled: true, refreshIntervalMinutes: 60 });
-      service.updateCollectionScope(source.id, { facetSelections: [...facets].reverse().map((facet) => ({ ...facet, label: `Renamed ${facet.label}` })), history: { mode: "none" } });
+      await service.updateSettings(source.id, { title: "Renamed", category: "Folder", kind: "rss", pollingEnabled: true, refreshIntervalMinutes: 60 });
+      await service.updateCollectionScope(source.id, { facetSelections: [...facets].reverse().map((facet) => ({ ...facet, label: `Renamed ${facet.label}` })), history: { mode: "none" } });
       expect(calls[0].context.signal?.aborted).toBe(false);
       calls[0].resolve({ ...outcome, entries: outcome.entries.map((entry) => ({ ...entry, facets })) });
       expect((await pending).inserted).toBe(1);
@@ -75,7 +75,7 @@ describe("source configuration and active synchronization", () => {
     const pending = sync.syncSource(source.id).catch((error) => error);
     try {
       await vi.waitFor(() => expect(calls).toHaveLength(1));
-      service.updateRule(source.id, rule);
+      await service.updateRule(source.id, rule);
       expect(calls[0].context.signal?.aborted).toBe(true);
       calls[0].resolve(outcome);
       expect((await pending).message).toContain("已取消");
@@ -98,7 +98,7 @@ describe("source configuration and active synchronization", () => {
         return service.setSubscribed(source.id, false);
       };
       if (change === "subscription") await expect(update()).rejects.toThrow("synthetic write failure");
-      else expect(update).toThrow("synthetic write failure");
+      else await expect(update()).rejects.toThrow("synthetic write failure");
       expect(calls[0].context.signal?.aborted).toBe(false);
       calls[0].resolve(outcome);
       expect((await pending).inserted).toBe(1);
@@ -112,11 +112,11 @@ describe("source configuration and active synchronization", () => {
       await vi.waitFor(() => expect(calls).toHaveLength(1));
       const settings = { title: source.title, kind: source.kind, pollingEnabled: true };
       if (change === "scope") {
-        service.updateCollectionScope(source.id, { facetSelections: [{ scheme: "tag", key: "updated", label: "Updated" }], history: { mode: "none" } });
-        service.updateCollectionScope(source.id, { facetSelections: [], history: { mode: "none" } });
+        await service.updateCollectionScope(source.id, { facetSelections: [{ scheme: "tag", key: "updated", label: "Updated" }], history: { mode: "none" } });
+        await service.updateCollectionScope(source.id, { facetSelections: [], history: { mode: "none" } });
       } else {
-        service.updateSettings(source.id, { ...settings, kind: change === "kind" ? "generic" : source.kind, pollingEnabled: change !== "pause" });
-        service.updateSettings(source.id, settings);
+        await service.updateSettings(source.id, { ...settings, kind: change === "kind" ? "generic" : source.kind, pollingEnabled: change !== "pause" });
+        await service.updateSettings(source.id, settings);
       }
       expect(calls[0].context.signal?.aborted).toBe(true);
       if (failed) calls[0].reject(new Error("synthetic late network failure"));
@@ -135,7 +135,7 @@ describe("source configuration and active synchronization", () => {
     const secondRun = sync.syncSource(second.id).catch((error) => error);
     try {
       await vi.waitFor(() => expect(calls).toHaveLength(1));
-      service.updateCollectionScope(second.id, { facetSelections: [{ scheme: "tag", key: "updated", label: "Updated" }], history: { mode: "none" } });
+      await service.updateCollectionScope(second.id, { facetSelections: [{ scheme: "tag", key: "updated", label: "Updated" }], history: { mode: "none" } });
       expect((await secondRun).message).toContain("已取消");
       expect(calls).toHaveLength(1);
       expect(db.getSource(second.id)?.failureCount).toBe(0);

@@ -2,7 +2,8 @@ import { rewriteText } from "../src/main/rewrite-content";
 import katex from "katex";
 import { describe, expect, it, vi } from "vitest";
 import { load } from "cheerio";
-import { ArticleReader, extractReaderArticle, extractReaderArticleAsync } from "../src/main/article-reader";
+import { ArticleReader } from "../src/main/article-reader";
+import { extractReaderArticle, extractReaderArticleAsync } from "../src/main/reader-extraction";
 import type { PublicHttpClient } from "../src/main/http";
 import { ScientificMathRenderer, sanitizeMathJaxSvg } from "../src/main/mathjax-renderer";
 import type { PageRenderer } from "../src/main/page-renderer";
@@ -935,7 +936,7 @@ describe("article reader extraction", () => {
     expect(svg.attr("viewBox")).toMatch(/^0 0 [\d.]+ [\d.]+$/);
     expect(svg.attr("width")).toMatch(/^[\d.]+ex$/);
     expect(svg.find(".reader-math-table, .reader-math-labels")).toHaveLength(2);
-    expect(render).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ tex: "(2),(2),(3),(13)" })]));
+    expect(render).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ tex: "(2),(2),(3),(13)" })]),undefined);
     expect(html).not.toMatch(/reader-math-source|data-mjx-error/);
     for (const request of render.mock.calls[0][0]) expect(request.tex).not.toContain("\\label{");
   });

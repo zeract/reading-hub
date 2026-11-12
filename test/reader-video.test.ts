@@ -3,7 +3,7 @@ import { load } from "cheerio";
 const network = vi.hoisted(() => ({ fetch: vi.fn() }));
 vi.mock("../src/main/network", () => ({ chromiumFetch: network.fetch }));
 import { downloadReaderVideo, MAX_READER_VIDEO_BYTES } from "../src/main/reader-video";
-import { extractReaderArticle } from "../src/main/article-reader";
+import { extractReaderArticle } from "../src/main/reader-extraction";
 import type { RobotsPolicy } from "../src/main/robots";
 import type { Entry } from "../src/shared/types";
 const robots = { assertAllowed: vi.fn(async () => undefined) };

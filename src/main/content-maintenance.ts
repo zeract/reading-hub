@@ -1,6 +1,6 @@
 import { redactDiagnosticMessage } from "./diagnostic-redaction";
 import type { Source } from "../shared/types";
-import { ReadingDatabase } from "./database";
+import type { ReadingDatabase } from "./database";
 
 /**
  * Increment this only when a newly introduced, idempotent repair must be

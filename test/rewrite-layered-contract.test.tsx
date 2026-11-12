@@ -3,7 +3,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 import { load } from 'cheerio';
-import { extractReaderArticle } from '../src/main/article-reader';
+import { extractReaderArticle } from '../src/main/reader-extraction';
 import { rewriteArticleDocument } from '../src/main/document-rewrite';
 import { decodeRewriteResult, encodeRewriteResult } from '../src/main/rewrite-document';
 import { articleDocumentHtml } from '../src/shared/article-document';

@@ -1,3 +1,4 @@
+import {ReaderConversionUnavailableError} from "./reader-conversion-errors";
 import { HttpStatusError, NetworkRequestError, ResponseTooLargeError } from "./http";
 import { RenderedPageHttpError, RenderedPageTooLargeError } from "./rendered-document";
 import { RobotsDisallowedError, RobotsUnreachableError, RobotsChallengeError } from "./robots";
@@ -8,11 +9,12 @@ import { RequestAbortedError } from "./cancellation";
 export interface ReaderDiagnostic {
   stage: "static" | "render" | "feed";
   reason: "http" | "network" | "robots_disallowed" | "robots_unavailable" | "size_limit"
-    | "access_challenge" | "timeout" | "unsupported_content" | "no_content" | "feed_entry_missing" | "feed_body_missing" | "unknown";
+    | "conversion_unavailable" | "access_challenge" | "timeout" | "unsupported_content" | "no_content" | "feed_entry_missing" | "feed_body_missing" | "unknown";
   status?: number;
 }
 
 export function readerFailureDiagnostic(stage: ReaderDiagnostic["stage"], error: unknown): ReaderDiagnostic {
+  if(error instanceof ReaderConversionUnavailableError)return {stage,reason:error.kind==="input_limit"?"size_limit":"conversion_unavailable"};
   if (error instanceof RequestAbortedError || error instanceof Error && error.name === "TimeoutError") return { stage, reason: "timeout" };
   if (error instanceof AccessChallengeError || error instanceof RobotsChallengeError) return { stage, reason: "access_challenge" };
   if (error instanceof HttpStatusError || error instanceof RenderedPageHttpError) return { stage, reason: "http", status: error.status };

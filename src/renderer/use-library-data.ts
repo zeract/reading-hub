@@ -96,17 +96,21 @@ export function useLibraryData() {
     // reload owns the visible error state; unattended ticks must not reject globally.
     void reload().catch(() => undefined);
     let active = true;
-    let dirty = false;
+    let targetRevision: number | undefined;
+    let refreshBoundary = false;
     let changeTimer: number | undefined;
     const refreshChanged = () => {
       if (!active) return;
       changeTimer = undefined;
       if (reloading.current || loadingMore.current) { changeTimer = window.setTimeout(refreshChanged, 150); return; }
-      if (dirty) { dirty = false; void reload().catch(() => undefined); }
+      // A successful explicit reload may already have satisfied this notification.
+      if (refreshBoundary || targetRevision !== undefined && (lastRevision.current === undefined || targetRevision > lastRevision.current)) {
+        refreshBoundary = false; targetRevision = undefined; void reload().catch(() => undefined);
+      } else targetRevision = undefined;
     };
     const unsubscribe = window.reader.onLibraryChanged?.((revision) => {
-      if (revision === lastRevision.current) return;
-      dirty = true;
+      if (lastRevision.current !== undefined && revision <= lastRevision.current) return;
+      targetRevision = Math.max(targetRevision ?? revision, revision);
       if (changeTimer === undefined) changeTimer = window.setTimeout(refreshChanged, 100);
     });
     const timer = window.setInterval(() => {
@@ -114,7 +118,10 @@ export function useLibraryData() {
       void Promise.resolve(window.reader.getLibraryRevision?.()).then((revision) => {
         if (!active) return;
         const midnightChanged = libraryView === "today" && loadedQuery.current?.endAt !== undefined && Date.now() >= loadedQuery.current.endAt;
-        if (revision !== lastRevision.current || midnightChanged || lastRevision.current === undefined) { dirty = true; refreshChanged(); }
+        if (revision !== lastRevision.current || midnightChanged || lastRevision.current === undefined) {
+          if (revision !== undefined) targetRevision = Math.max(targetRevision ?? revision, revision);
+          refreshBoundary ||= midnightChanged || revision === undefined; refreshChanged();
+        }
       }).catch(() => undefined);
     }, 60_000);
     return () => {

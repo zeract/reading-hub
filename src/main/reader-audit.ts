@@ -1,3 +1,5 @@
+import {readerContentHtml} from "../shared/reader-presentation";
+import { ReaderConversionClient } from "./reader-conversion-client";
 import type { ReaderDiagnostic } from "./reader-diagnostics";
 import { articleImageUrls, type ArticleStore } from "./persistence/article-store";
 import { createReadSnapshot } from "./persistence/read-snapshot";
@@ -131,7 +133,7 @@ function hasDisplayFormula(article: ReaderArticle): boolean {
   // block wrapper despite a semantic block formula, still run the layout audit
   // so this becomes an actionable failure rather than a false pass.
   if ((article.formulaDiagnostics?.display ?? 0) > 0) return true;
-  const document = load(article.contentHtml);
+  const document = load(readerContentHtml(article));
   return document("[data-reader-equation], .katex-display, mjx-container[display='true']").length > 0;
 }
 
@@ -185,7 +187,7 @@ export function findLeakedInlineMath(value: string): string[] {
 }
 
 export function inspectReaderAuditArticle(source: Source, entry: Entry, article: ReaderArticle): ReaderAuditResult {
-  const html = article.contentHtml;
+  const html = readerContentHtml(article);
   const text = plainText(html);
   const firstText = text.slice(0, 700);
   const formulaFallbacks = countMatches(html, /class="reader-math-source(?:\s|"|--)/gi);
@@ -308,7 +310,7 @@ export function expectedImageProxyDiagnostic(error: unknown): string | undefined
 }
 
 export async function inspectFirstImage(http: PublicHttpClient, article: ReaderArticle, result: ReaderAuditResult, signal?: AbortSignal): Promise<void> {
-  const imageUrl = load(article.contentHtml)("img").first().attr("src");
+  const imageUrl = load(readerContentHtml(article))("img").first().attr("src");
   if (!imageUrl) return;
   try {
     // This read-only audit checks the same restricted download path as local
@@ -431,7 +433,7 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
   const robots = new RobotsPolicy();
   const http = new PublicHttpClient(robots);
   const renderer = new ManagedPageRenderer(robots);
-  const reader = new ArticleReader(http, renderer, options.renderWithZhihuSession);
+  const reader = new ArticleReader(http, renderer, options.renderWithZhihuSession, undefined, new ReaderConversionClient());
   const results: ReaderAuditResult[] = [];
   try {
     const configuredSourceFilter = options.sourceFilter ?? process.env.READING_HUB_AUDIT_SOURCE;
@@ -562,6 +564,7 @@ export async function auditLocalReader(databasePath: string, options: ReaderAudi
       }
     }
   } finally {
+    await reader.close();
     database.close();
     await snapshot.dispose();
   }

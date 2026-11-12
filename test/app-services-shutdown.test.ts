@@ -29,13 +29,13 @@ describe("application assistant shutdown", () => {
     } finally { finish?.(); await services.close(); }
   });
 
-  it("retains an early assistant cleanup error for the shutdown handler", async () => {
+  it("reports an early assistant cleanup error after still closing SQLite", async () => {
     vi.spyOn(LocalCodexCli.prototype, "close").mockRejectedValue(new Error("synthetic cleanup failure"));
     const services = await createApplicationServices(":memory:");
     try {
       services.beginShutdown(); await Promise.resolve();
-      await expect(services.close()).rejects.toThrow("synthetic cleanup failure");
-      expect(services.database.listSources()).toEqual([]);
+      await expect(services.close()).rejects.toThrow("本地服务未能完整关闭");
+      expect(() => services.database.listSources()).toThrow(/not open/);
     } finally { services.database.close(); }
   });
 });

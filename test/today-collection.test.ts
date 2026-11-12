@@ -1,3 +1,4 @@
+import {saveCollectedEntries} from "../src/main/sync-commit";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,7 +41,7 @@ it("keeps initial imports distinct across preview, failed retry, restart, repeat
   };
   try {
     const source = db.createSource({ title: "New source", url: "https://example.com/feed", kind: "generic", pollingEnabled: true });
-    sync.savePreview(source, [old, fresh]);
+    saveCollectedEntries(db,source,sync.prepareEntries(source,[old,fresh]),sync.identityNamespaces(source));
     assertToday(["fresh"]);
     fetch.mockRejectedValueOnce(new Error("offline"));
     await expect(sync.syncSource(source.id)).rejects.toThrow("offline");

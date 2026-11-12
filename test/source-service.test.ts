@@ -45,7 +45,7 @@ function probeResult(overrides: Partial<ProbeResult> = {}): ProbeResult {
 describe("SourceService initial acquisition", () => {
   it("keeps confirmation independent of mutations to the returned preview", async () => {
     const db = new ReadingDatabase(":memory:");
-    const service = new SourceService(db, { probe: vi.fn().mockResolvedValue(probeResult({ kind: "manual" })) } as any, { savePreview: vi.fn() } as any, {} as any);
+    const service = new SourceService(db, { probe: vi.fn().mockResolvedValue(probeResult({ kind: "manual" })) } as any, { identityNamespaces:()=>[], wakeArticles:()=>undefined, prepareEntries: vi.fn((source:Source,items:RawEntry[])=>items.map(item=>entry(source,item))) } as any, {} as any);
     try {
       const result = await service.preview("https://example.com/feed.xml");
       result.probe.title = "Changed outside the service";
@@ -59,7 +59,7 @@ describe("SourceService initial acquisition", () => {
   it("evicts old snapshots by retained size and rejects an unretainable preview", async () => {
     const db = new ReadingDatabase(":memory:");
     const probe = { probe: vi.fn().mockResolvedValue(probeResult({ kind: "manual", message: "x".repeat(1_500_000) })) };
-    const service = new SourceService(db, probe as any, { savePreview: vi.fn() } as any, {} as any);
+    const service = new SourceService(db, probe as any, { identityNamespaces:()=>[], wakeArticles:()=>undefined, prepareEntries: vi.fn((source:Source,items:RawEntry[])=>items.map(item=>entry(source,item))) } as any, {} as any);
     try {
       const first = await service.preview("https://example.com/feed.xml");
       await service.preview("https://example.com/feed.xml");
@@ -74,7 +74,7 @@ describe("SourceService initial acquisition", () => {
   it("expires confirmation at the exact deadline and bounds pending previews", async () => {
     vi.useFakeTimers();
     const db = new ReadingDatabase(":memory:");
-    const sync = { savePreview: vi.fn(), syncSource: vi.fn() };
+    const sync = { identityNamespaces:()=>[], wakeArticles:()=>undefined, prepareEntries: vi.fn((source:Source,items:RawEntry[])=>items.map(item=>entry(source,item))), syncSource: vi.fn() };
     const service = new SourceService(db, { probe: vi.fn().mockResolvedValue(probeResult()) } as any, sync as any, {} as any);
     try {
       const first = await service.preview("https://example.com/feed.xml");
@@ -92,7 +92,7 @@ describe("SourceService initial acquisition", () => {
     const path = join(directory, "library.sqlite");
     let db = new ReadingDatabase(path);
     const sync = {
-      savePreview: (source: Source, items: RawEntry[]) => db.saveEntries(items.map((item) => entry(source, item))),
+      identityNamespaces:()=>[], wakeArticles:()=>undefined, prepareEntries: (source: Source, items: RawEntry[]) => items.map((item) => entry(source, item)),
       syncSource: vi.fn().mockRejectedValue(new Error("fixture offline"))
     };
     const service = new SourceService(db, { probe: vi.fn().mockResolvedValue(probeResult()) } as any, sync as any, {} as any);
@@ -110,11 +110,10 @@ describe("SourceService initial acquisition", () => {
   it("rolls back a failed preview save and allows the same confirmation to retry", async () => {
     const db = new ReadingDatabase(":memory:");
     const sync = {
-      savePreview: vi.fn((source: Source, items: RawEntry[]) => db.saveEntries(items.map((item) => entry(source, item)))),
+      identityNamespaces:()=>[], wakeArticles:()=>undefined, prepareEntries: vi.fn((source: Source, items: RawEntry[]) => items.map((item) => entry(source, item))),
       syncSource: vi.fn().mockResolvedValue({ inserted: 0 })
     };
-    const save = sync.savePreview.getMockImplementation()!;
-    sync.savePreview.mockImplementationOnce((source, items) => { save(source, items); throw new Error("fixture disk failure"); });
+    vi.spyOn(db.articles,"enqueue").mockImplementationOnce(()=>{throw new Error("fixture disk failure");});
     const service = new SourceService(db, { probe: vi.fn().mockResolvedValue(probeResult()) } as any, sync as any, {} as any);
     try {
       const pending = await service.preview("https://example.com/feed.xml");
@@ -134,7 +133,7 @@ describe("SourceService initial acquisition", () => {
     const observations: number[] = [];
     const unsubscribe = db.onLibraryChanged(() => { observations.push(db.listEntries().length); });
     const sync = {
-      savePreview: (source: Source, items: RawEntry[]) => db.saveEntries(items.map((item) => entry(source, item))),
+      identityNamespaces:()=>[], wakeArticles:()=>undefined, prepareEntries: (source: Source, items: RawEntry[]) => items.map((item) => entry(source, item)),
       syncSource: vi.fn().mockResolvedValue({ inserted: 0 })
     };
     const service = new SourceService(db, { probe: vi.fn().mockResolvedValue(probeResult()) } as any, sync as any, {} as any);
@@ -149,7 +148,7 @@ describe("SourceService initial acquisition", () => {
     const db = new ReadingDatabase(":memory:");
     const full = rawEntries(24);
     const sync = {
-      savePreview: vi.fn((source: Source, items: RawEntry[]) => db.saveEntries(items.map((item) => entry(source, item)))),
+      identityNamespaces:()=>[], wakeArticles:()=>undefined, prepareEntries: vi.fn((source: Source, items: RawEntry[]) => items.map((item) => entry(source, item))),
       syncSource: vi.fn(async (sourceId: string) => {
         const source = db.getSource(sourceId)!;
         db.saveEntries(full.map((item) => entry(source, item)));
@@ -166,7 +165,7 @@ describe("SourceService initial acquisition", () => {
     const pending = await service.preview("https://example.com/feed.xml");
     const source = await service.confirm(pending.token);
 
-    expect(sync.savePreview).toHaveBeenCalledWith(expect.objectContaining({ id: source.id }), expect.any(Array));
+    expect(sync.prepareEntries).toHaveBeenCalledWith(expect.objectContaining({ id: source.id }), expect.any(Array));
     expect(sync.syncSource).toHaveBeenCalledWith(source.id);
     expect(db.listEntries(source.id, 100)).toHaveLength(24);
     db.close();
@@ -174,7 +173,7 @@ describe("SourceService initial acquisition", () => {
 
   it("stores an archive catalogue descriptor without scheduling history import", async () => {
     const db = new ReadingDatabase(":memory:");
-    const sync = { savePreview: vi.fn(), syncSource: vi.fn().mockResolvedValue({ inserted: 0 }) };
+    const sync = { identityNamespaces:()=>[], wakeArticles:()=>undefined, prepareEntries: vi.fn((source:Source,items:RawEntry[])=>items.map(item=>entry(source,item))), syncSource: vi.fn().mockResolvedValue({ inserted: 0 }) };
     const service = new SourceService(
       db,
       { probe: vi.fn().mockResolvedValue(probeResult({ historicalArchiveUrl: "https://example.com/archive.html" })) } as any,
@@ -199,7 +198,7 @@ describe("SourceService initial acquisition", () => {
       config: { archiveCatalog: { url: "https://example.com/archive.html" } },
       pollingEnabled: true
     });
-    const sync = { savePreview: vi.fn(), syncSource: vi.fn() };
+    const sync = { identityNamespaces:()=>[], wakeArticles:()=>undefined, prepareEntries: vi.fn((source:Source,items:RawEntry[])=>items.map(item=>entry(source,item))), syncSource: vi.fn() };
     const rss = {
       supportsHistoricalCollection: vi.fn(() => true),
       inspectFacets: vi.fn().mockResolvedValue({
@@ -212,7 +211,7 @@ describe("SourceService initial acquisition", () => {
     const service = new SourceService(db, { probe: vi.fn() } as any, sync as any, {} as any, connectors as any);
 
     expect(service.getCollectionSettings(source.id)).toMatchObject({ facetDiscoveryAvailable: true, historyAvailable: false });
-    expect(() => service.updateCollectionScope(source.id, { facetSelections: [], history: { mode: "all" } })).toThrow("历史回填已移除");
+    await expect(service.updateCollectionScope(source.id, { facetSelections: [], history: { mode: "all" } })).rejects.toThrow("历史回填已移除");
     await expect(service.inspectCollectionFacets(source.id)).resolves.toEqual([
       { sourceId: source.id, entryCount: 0, scheme: "feed:https://example.com:category", key: "kubernetes", label: "Kubernetes" }
     ]);
@@ -226,7 +225,7 @@ describe("SourceService initial acquisition", () => {
   it("keeps a saved preview when the initial network sync fails", async () => {
     const db = new ReadingDatabase(":memory:");
     const sync = {
-      savePreview: vi.fn((source: Source, items: RawEntry[]) => db.saveEntries(items.map((item) => entry(source, item)))),
+      identityNamespaces:()=>[], wakeArticles:()=>undefined, prepareEntries: vi.fn((source: Source, items: RawEntry[]) => items.map((item) => entry(source, item))),
       syncSource: vi.fn().mockRejectedValue(new Error("temporary network failure"))
     };
     const service = new SourceService(
@@ -247,7 +246,7 @@ describe("SourceService initial acquisition", () => {
 
   it("does not auto-sync a low-confidence page before its extraction rule is reviewed", async () => {
     const db = new ReadingDatabase(":memory:");
-    const sync = { savePreview: vi.fn(), syncSource: vi.fn() };
+    const sync = { identityNamespaces:()=>[], wakeArticles:()=>undefined, prepareEntries: vi.fn((source:Source,items:RawEntry[])=>items.map(item=>entry(source,item))), syncSource: vi.fn() };
     const service = new SourceService(
       db,
       { probe: vi.fn().mockResolvedValue(probeResult({ kind: "generic", confidence: 0.4, requiresReview: true })) } as any,

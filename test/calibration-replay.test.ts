@@ -45,7 +45,7 @@ describe("calibration invalidates collected-response validators", () => {
       f.db.markFavorite(saved.id, true); f.db.dismissEntry(dismissed.id);
       expect((await f.sync.syncSource(f.source.id)).inserted).toBe(0);
       expect(f.getText.mock.lastCall?.[1]?.[validator]).toBe(f.header);
-      f.service.updateRule(f.source.id, f.db.getSource(f.source.id)!.extractionRule);
+      await f.service.updateRule(f.source.id, f.db.getSource(f.source.id)!.extractionRule);
       expect(f.db.listEntries().map((entry) => entry.title)).toEqual(["saved"]);
       expect((await f.sync.syncSource(f.source.id)).inserted).toBe(1);
       expect(f.db.listEntries().map((entry) => entry.title).sort()).toEqual(["ordinary", "saved"]);
@@ -62,7 +62,7 @@ describe("calibration invalidates collected-response validators", () => {
     const f = fixture("feed", "etag", join(directory, "fixture.sqlite"));
     try {
       await f.sync.syncSource(f.source.id);
-      f.service.updateRule(f.source.id, f.db.getSource(f.source.id)!.extractionRule);
+      await f.service.updateRule(f.source.id, f.db.getSource(f.source.id)!.extractionRule);
       f.getText.mockRejectedValueOnce(new Error("Synthetic offline"));
       await expect(f.sync.syncSource(f.source.id)).rejects.toThrow("Synthetic offline");
       expect(f.db.getSource(f.source.id)).toMatchObject({ status: "error", failureCount: 1 });
@@ -85,7 +85,7 @@ describe("calibration invalidates collected-response validators", () => {
       const connection = new Sqlite(path);
       try { connection.exec("CREATE TRIGGER fixture_fail_delete BEFORE DELETE ON entries BEGIN SELECT RAISE(ABORT, 'Synthetic delete failure'); END;"); }
       finally { connection.close(); }
-      expect(() => f.service.updateRule(f.source.id, { version: 1, feedUrl: "https://example.com/revised.xml" })).toThrow("Synthetic delete failure");
+      await expect(f.service.updateRule(f.source.id, { version: 1, feedUrl: "https://example.com/revised.xml" })).rejects.toThrow("Synthetic delete failure");
       expect(f.db.getSource(f.source.id)).toEqual(before);
       expect(f.db.listEntries()).toEqual(entries);
       expect((await f.sync.syncSource(f.source.id)).inserted).toBe(0);

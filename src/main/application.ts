@@ -6,7 +6,7 @@ import { IPC_CHANNELS } from "../shared/ipc";
 import { createApplicationServices, type ApplicationServices } from "./app-services";
 import { registerIpcHandlers } from "./ipc-handlers";
 import { configureChromiumNetwork } from "./network";
-import { auditLocalReader, type ReaderAuditProgress, type ReaderAuditResult } from "./reader-audit";
+import type { ReaderAuditProgress, ReaderAuditResult } from "./reader-audit";
 import { ScientificArticleVisualAuditor } from "./scientific-visual-audit";
 import { installDevelopmentSupervisorGuard } from "./dev-supervisor";
 import { MainWindowLifecycle } from "./main-window-lifecycle";
@@ -90,10 +90,13 @@ async function closeApplicationServices(): Promise<void> {
   await libraryStartup?.catch(() => undefined);
   const activeServices = services ?? await servicesStartup;
   activeServices?.beginShutdown();
-  await drainIpc?.();
-  await activeServices?.close();
-  await publicRenderWorkers.close();
-  services = undefined;
+  try {
+    try { await drainIpc?.(); }
+    finally { await activeServices?.close(); }
+  } finally {
+    try { await publicRenderWorkers.close(); }
+    finally { services = undefined; }
+  }
 }
 
 // `scripts/dev.mjs` terminates Electron when the compiled main process changes.
@@ -265,6 +268,7 @@ async function resolveStartupDatabasePath(): Promise<string> {
 }
 
 async function runReaderAudit(): Promise<void> {
+  const {auditLocalReader}=await import("./reader-audit");
   await configureChromiumNetwork();
   const databasePath = process.env.READING_HUB_DB_PATH || path.join(persistentUserDataPath, "reading-hub.sqlite");
   const reportPath = process.env.READING_HUB_AUDIT_REPORT;

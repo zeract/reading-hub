@@ -1,3 +1,4 @@
+import {articleDocumentHtml} from "../src/shared/article-document";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,7 +55,7 @@ it.each([false, true])("saves supplied Feed documents atomically for RSS and dec
     const article = await f.library.read(entry, f.source);
     expect(article.contentMode).toBe("feed_body");
     expect(article.savedAt).toBeTypeOf("number");
-    expect(article.contentHtml).toContain("<table>"); expect(article.contentHtml).toContain("const x = 1"); expect(article.contentHtml).toContain("katex");
+    expect(articleDocumentHtml(article.document!)).toContain("<table>"); expect(articleDocumentHtml(article.document!)).toContain("const x = 1"); expect(articleDocumentHtml(article.document!)).toContain("katex");
     expect(await f.library.loadImage(entry, "https://example.com/one.png")).toBe(IMAGE);
     expect(await f.library.loadImage(entry, "https://example.com/two.png")).toBe(IMAGE);
     expect(f.http.getText).not.toHaveBeenCalled(); expect(f.http.getImageDataUrl).not.toHaveBeenCalled();
@@ -74,7 +75,7 @@ it("survives database/process service restart with every body image available of
   const lib = new ArticleLibrary(db, new ArticleReader(http as never, { render: vi.fn() }), http as never);
   try {
     lib.start(); const entry = db.getEntry(id!)!;
-    expect((await lib.read(entry, db.getSource(entry.sourceId))).contentHtml).toContain("技术说明");
+    expect(articleDocumentHtml((await lib.read(entry, db.getSource(entry.sourceId))).document!)).toContain("技术说明");
     for (const url of ["https://example.com/one.png", "https://example.com/two.png"]) expect(await lib.loadImage(entry, url)).toBe(IMAGE);
     expect(http.getText).not.toHaveBeenCalled(); expect(http.getImageDataUrl).not.toHaveBeenCalled();
   } finally { await lib.close(); db.close(); }
@@ -99,12 +100,12 @@ it("does not downgrade an acquired original to a Feed body or summary", async ()
     const original = withArticleDocument({ entryId: entry.id, url: entry.url, title: entry.title, renderProfile: "standard", contentHtml: `<p>${"Full original ".repeat(60)}</p>` });
     f.db.articles.save(entry.id, original);
     await f.sync.syncSource(f.source.id);
-    expect(f.db.articles.read(entry.id)?.contentHtml).toContain("Full original");
+    expect(f.db.articles.read(entry.id,"",true)?.contentHtml).toContain("Full original");
     expect(f.db.articles.save(entry.id, { ...original, contentMode: "feed_summary" })).toBe(false);
     expect(() => f.db.articles.save(entry.id, withArticleDocument({ ...original, document: undefined, contentHtml: "<p></p>" }))).toThrow("正文为空");
     f.state.online = false;
     await expect(f.library.read(entry, f.source, { refresh: true })).rejects.toBeInstanceOf(Error);
-    expect((await f.library.read(entry, f.source)).contentHtml).toContain("Full original");
+    expect(articleDocumentHtml((await f.library.read(entry, f.source)).document!)).toContain("Full original");
   } finally { await f.close(); }
 });
 
@@ -113,13 +114,13 @@ it("retains shared documents and images until the last source is removed, then r
   try {
     f.library.start(); await f.sync.syncSource(f.source.id); const entry = f.db.listEntries(f.source.id)[0];
     await vi.waitFor(() => expect(f.db.articles.image(entry.id, "https://example.com/two.png")).toBe(IMAGE));
-    const article = f.db.articles.read(entry.id)!;
+    const article = f.db.articles.read(entry.id,"",true)!;
     const second = f.db.createSource({ url: "https://other.example/feed", title: "Other", kind: "rss", pollingEnabled: true });
     f.db.saveEntries([contentNormalizer.normalize({ url: entry.url, title: entry.title }, second)]);
     f.db.deleteSource(f.source.id);
-    expect(f.db.articles.read(entry.id)).toBeDefined(); expect(f.db.articles.image(entry.id, "https://example.com/one.png")).toBe(IMAGE);
+    expect(f.db.articles.read(entry.id,"",true)).toBeDefined(); expect(f.db.articles.image(entry.id, "https://example.com/one.png")).toBe(IMAGE);
     f.db.deleteSource(second.id);
-    expect(f.db.articles.read(entry.id)).toBeUndefined(); expect(f.db.articles.image(entry.id, "https://example.com/one.png")).toBeUndefined();
+    expect(f.db.articles.read(entry.id,"",true)).toBeUndefined(); expect(f.db.articles.image(entry.id, "https://example.com/one.png")).toBeUndefined();
     expect(f.db.articles.save(entry.id, article)).toBe(false);
     f.db.articles.registerImage(entry.id, "https://example.com/one.png", entry.url);
     f.db.articles.saveImage(entry.id, "https://example.com/one.png", IMAGE);
@@ -146,7 +147,7 @@ it("does not save failed original extraction or summaries as complete documents"
   try {
     const entry = contentNormalizer.normalize({ url: "https://example.com/missing", title: "Missing", summary: "A collected description that is only a summary and not a complete article." }, f.source); f.db.saveEntries([entry]);
     expect((await f.library.read(entry, f.source)).contentMode).toBe("feed_summary");
-    expect(f.db.articles.read(entry.id)).toBeUndefined();
+    expect(f.db.articles.read(entry.id,"",true)).toBeUndefined();
   } finally { await f.close(); }
 });
 
@@ -167,8 +168,8 @@ it("acquires only newly enqueued missing bodies and shuts down without resurrect
   try {
     const entry = contentNormalizer.normalize({ url: "https://example.com/post", title: "Original" }, f.source); f.db.saveEntries([entry]);
     // Background acquisition uses the same Reader and its Feed fallback, not a site-specific fetcher.
-    f.library.commitCollected(entry, entry.id); f.library.start();
-    await vi.waitFor(() => expect(f.db.articles.read(entry.id)).toBeDefined());
+    f.db.articles.enqueue(entry.id); f.library.start();
+    await vi.waitFor(() => expect(f.db.articles.read(entry.id,"",true)).toBeDefined());
     await vi.waitFor(() => expect(f.db.articles.image(entry.id, "https://example.com/two.png")).toBe(IMAGE));
     f.db.deleteSource(f.source.id);
     expect(f.db.articles.pendingMedia()).toEqual([]); expect(f.db.articles.nextAcquisition()).toBeUndefined();
@@ -218,12 +219,12 @@ it("keeps the acquired Feed immediately and upgrades to a full original in the s
   } : getText(url));
   try {
     await f.sync.syncSource(f.source.id); const entry=f.db.listEntries(f.source.id)[0];
-    expect(f.db.articles.read(entry.id)?.contentMode).toBe("feed_body");
+    expect(f.db.articles.read(entry.id,"",true)?.contentMode).toBe("feed_body");
     f.library.start(); await f.library["worker"];
-    expect(f.db.articles.read(entry.id)?.contentHtml).toContain("Additional original details");
-    expect(f.db.articles.read(entry.id)?.contentMode).not.toBe("feed_body");
+    expect(f.db.articles.read(entry.id,"",true)?.contentHtml).toContain("Additional original details");
+    expect(f.db.articles.read(entry.id,"",true)?.contentMode).not.toBe("feed_body");
     f.state.online=false;
-    expect((await f.library.read(entry,f.source)).contentHtml).toContain("Additional original details");
+    expect(articleDocumentHtml((await f.library.read(entry,f.source)).document!)).toContain("Additional original details");
   } finally { await f.close(); }
 });
 
@@ -231,7 +232,9 @@ it("isolates invalid image bytes without blocking later batches or falsely marki
   const f = fixture();
   try {
     await f.sync.syncSource(f.source.id); const entry=f.db.listEntries(f.source.id)[0];
-    for(let i=0;i<5;i++) f.db.articles.registerImage(entry.id,`https://example.com/extra-${i}.png`,entry.url);
+    const saved=f.db.articles.read(entry.id,"",true)!;
+    f.db.articles.save(entry.id,withArticleDocument({...saved,document:undefined,contentHtml:saved.contentHtml+Array.from({length:5},(_,i)=>`<img src="https://example.com/extra-${i}.png">`).join("")}));
+    f.db.articles.finishAcquisition(entry.id);
     f.http.getImageDataUrl.mockImplementationOnce(async()=>"data:image/png;base64,");
     f.library.start(); await f.library["worker"];
     expect(f.db.articles.image(entry.id,"https://example.com/one.png")).toBeUndefined();
@@ -334,7 +337,7 @@ it('waits for shared reader cleanup on shutdown after all waiters are cancelled'
   let closed=false;const closing=f.library.close().then(()=>{closed=true});await rejected;
   expect(transportSignal?.aborted).toBe(true);expect(closed).toBe(false);
   finish(withArticleDocument({entryId:entry.id,title:entry.title,url:entry.url,renderProfile:'standard',contentHtml:body}));
-  await closing;expect(closed).toBe(true);expect(f.db.articles.read(entry.id)).toBeUndefined();
+  await closing;expect(closed).toBe(true);expect(f.db.articles.read(entry.id,"",true)).toBeUndefined();
  }finally{await f.close()}
 });
 
@@ -358,12 +361,12 @@ it('bounds local task repair per source, includes shared origins, and does not e
   f.db.articles.save(entries[0].id,withArticleDocument({entryId:entries[0].id,title:'Original',url:entries[0].url,renderProfile:'standard',contentHtml:body}));
   const raw=(f.db as any).db;
   raw.prepare('INSERT INTO dismissed_contents(canonical_identity,dismissed_at) VALUES(?,?)').run(entries[1].canonicalUrl,Date.now());
-  f.library.reconcileSource(f.source.id);expect(raw.prepare('SELECT COUNT(*) AS n FROM article_acquisitions').get().n).toBe(20);
+  f.db.articles.reconcileSource(f.source.id);expect(raw.prepare('SELECT COUNT(*) AS n FROM article_acquisitions').get().n).toBe(20);
   expect(raw.prepare('SELECT 1 FROM article_acquisitions WHERE entry_id IN (?,?)').get(entries[0].id,entries[1].id)).toBeUndefined();
-  f.library.reconcileSource(f.source.id);expect(raw.prepare('SELECT COUNT(*) AS n FROM article_acquisitions').get().n).toBe(23);
+  f.db.articles.reconcileSource(f.source.id);expect(raw.prepare('SELECT COUNT(*) AS n FROM article_acquisitions').get().n).toBe(23);
   const other=f.db.createSource({url:'https://other.example/feed',kind:'rss',title:'Shared',pollingEnabled:true});
   const shared=contentNormalizer.normalize({url:'https://example.com/shared',title:'Shared legacy'},f.source);f.db.saveEntries([shared]);f.db.saveEntries([contentNormalizer.normalize({url:shared.url,title:shared.title},other)]);
-  f.library.reconcileSource(other.id);expect(raw.prepare('SELECT 1 FROM article_acquisitions WHERE entry_id=?').get(shared.id)).toBeDefined();
+  f.db.articles.reconcileSource(other.id);expect(raw.prepare('SELECT 1 FROM article_acquisitions WHERE entry_id=?').get(shared.id)).toBeDefined();
  }finally{await f.close()}
 });
 
@@ -379,10 +382,10 @@ it('returns a legacy Feed snapshot immediately while automatically acquiring its
 
 it('automatically retries temporary original failures with persistent finite backoff and retains readable Feed content',async()=>{
  vi.useFakeTimers();const f=fixture();try{
-  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0],saved=f.db.articles.read(entry.id)!;
+  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0],saved=f.db.articles.read(entry.id,"",true)!;
   const read=vi.spyOn(f.reader,'read').mockImplementation(async(_e,_s,options)=>{options?.onDiagnostic?.({stage:'static',reason:'http',status:503});return saved;});
   f.library.start();await f.library['worker'];expect(read).toHaveBeenCalledTimes(1);
-  expect(f.db.articles.nextAcquisitionRetry()).toBe(Date.now()+60_000);expect(f.db.articles.read(entry.id)).toBeDefined();
+  expect(f.db.articles.nextAcquisitionRetry()).toBe(Date.now()+60_000);expect(f.db.articles.read(entry.id,"",true)).toBeDefined();
   await vi.advanceTimersByTimeAsync(59_999);expect(read).toHaveBeenCalledTimes(1);
   await vi.advanceTimersByTimeAsync(1);await f.library['worker'];expect(read).toHaveBeenCalledTimes(2);
   await vi.advanceTimersByTimeAsync(300_000);await f.library['worker'];expect(read).toHaveBeenCalledTimes(3);
@@ -406,7 +409,7 @@ it('preserves a retry deadline across restart rather than resetting attempts or 
 
 it('does not retry explicit denial on sync/network events, but allows one retry after that source is reauthorized',async()=>{
  const f=fixture();try{
-  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0],saved=f.db.articles.read(entry.id)!;
+  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0],saved=f.db.articles.read(entry.id,"",true)!;
   const read=vi.spyOn(f.reader,'read').mockImplementation(async(_e,_s,options)=>{options?.onDiagnostic?.({stage:'static',reason:'http',status:403});return saved;});
   f.library.start();await f.library['worker'];f.library.onNetworkRestored();await f.sync.syncSource(f.source.id);await f.library['worker'];expect(read).toHaveBeenCalledTimes(1);
   await f.library.onSourceAuthenticated('unrelated-source');await f.library['worker'];expect(read).toHaveBeenCalledTimes(1);
@@ -429,7 +432,7 @@ it('does not lose a wake arriving between the final drain and worker cleanup',as
  const f=fixture();try{
   const entry=contentNormalizer.normalize({url:'https://example.com/new',title:'New queued read'},f.source);f.db.saveEntries([entry]);
   vi.spyOn(f.reader,'read').mockResolvedValue(withArticleDocument({entryId:entry.id,title:entry.title,url:entry.url,renderProfile:'standard',contentHtml:body}));
-  vi.spyOn(f.library as any,'drain').mockImplementationOnce(async()=>{queueMicrotask(()=>queueMicrotask(()=>{f.library.commitCollected(entry,entry.id);f.library.wake()}));});
+  vi.spyOn(f.library as any,'drain').mockImplementationOnce(async()=>{queueMicrotask(()=>queueMicrotask(()=>{f.db.articles.enqueue(entry.id);f.library.wake()}));});
   f.library.start();await vi.waitFor(()=>expect(f.db.articles.hasOriginal(entry.id)).toBe(true));
  }finally{await f.close()}
 });
@@ -464,13 +467,13 @@ it('does not introduce new background acquisition when reading a paused source s
 
 it('repairs a legacy done-with-Feed-only job once without resetting attempts or rearming later permanent failures',async()=>{
  const f=fixture();try{
-  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0],saved=f.db.articles.read(entry.id)!,row=f.db.articles.nextAcquisition()!;
+  await f.sync.syncSource(f.source.id);const entry=f.db.listEntries(f.source.id)[0],saved=f.db.articles.read(entry.id,"",true)!,row=f.db.articles.nextAcquisition()!;
   f.db.articles.beginAcquisition(row);f.db.articles.finishAcquisition(entry.id);
   const read=vi.spyOn(f.reader,'read').mockImplementation(async(_e,_s,options)=>{options?.onDiagnostic?.({stage:'static',reason:'robots_disallowed'});return saved;});
-  f.library.reconcileSource(f.source.id);expect(f.db.articles.nextAcquisition()?.attempts).toBe(1);f.library.start();await f.library['worker'];
-  f.library.reconcileSource(f.source.id);f.library.wake();await f.library['worker'];expect(read).toHaveBeenCalledTimes(1);
+  f.db.articles.reconcileSource(f.source.id);expect(f.db.articles.nextAcquisition()?.attempts).toBe(1);f.library.start();await f.library['worker'];
+  f.db.articles.reconcileSource(f.source.id);f.library.wake();await f.library['worker'];expect(read).toHaveBeenCalledTimes(1);
   expect((f.db as any).db.prepare('SELECT state,attempts,failure FROM article_acquisitions WHERE entry_id=?').get(entry.id)).toEqual({state:'failed',attempts:2,failure:'robots_disallowed'});
-  (f.db as any).db.prepare("UPDATE article_acquisitions SET state='done',attempts=3,failure=NULL WHERE entry_id=?").run(entry.id);f.library.reconcileSource(f.source.id);expect(f.db.articles.nextAcquisition()).toBeUndefined();
+  (f.db as any).db.prepare("UPDATE article_acquisitions SET state='done',attempts=3,failure=NULL WHERE entry_id=?").run(entry.id);f.db.articles.reconcileSource(f.source.id);expect(f.db.articles.nextAcquisition()).toBeUndefined();
  }finally{await f.close()}
 });
 
@@ -485,7 +488,7 @@ it('restores expired language authority from the local original while offline an
   vi.useFakeTimers();f.reader.restoreSavedArticle(entry,original);vi.setSystemTime(Date.now()+16*60_000);
   f.state.online=false;f.http.getText.mockClear();f.http.getImageDataUrl.mockClear();
   const result=await f.library.readLanguageVariant(entry,f.source,entry.url,{inlineLanguage:'zh'});
-  expect(result.contentHtml).toContain('已保存的中文');
+  expect(articleDocumentHtml(result.document!)).toContain('已保存的中文');
   await expect(f.library.readLanguageVariant(entry,f.source,'https://example.com/not-declared')).rejects.toThrow('语言版本已过期或不可用');
   expect(f.http.getText).not.toHaveBeenCalled();expect(f.http.getImageDataUrl).not.toHaveBeenCalled();
  }finally{vi.useRealTimers();await f.close();}

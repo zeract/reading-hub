@@ -1,6 +1,6 @@
 import { expect,it } from "vitest";
 import { rewriteText,splitRewriteText } from "../src/main/rewrite-content";
-import { extractReaderArticle } from "../src/main/article-reader";
+import { extractReaderArticle } from "../src/main/reader-extraction";
 import type { Entry } from "../src/shared/types";
 const prose="The conclusion follows from the evidence; preserve its scope and limitations. ".repeat(10);
 const article=(body:string)=>extractReaderArticle(`<article><p>${prose}</p>${body}</article>`,"https://example.com/post",{id:"fixture",url:"https://example.com/post",title:"Fixture"} as Entry)!.article;

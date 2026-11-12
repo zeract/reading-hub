@@ -48,18 +48,18 @@ describe("replaying a changed collection selection", () => {
         : new Response(feed, { headers: { "content-type": "application/rss+xml", ...(mode === "last-modified" ? { "last-modified": headers["last-modified"] } : { etag: headers.etag }) } });
     });
     try {
-      service.updateCollectionScope(source.id, scope([a]));
+      await service.updateCollectionScope(source.id, scope([a]));
       await sync.syncSource(source.id);
       const saved = db.listEntries()[0];
       expect(saved.title).toBe("A");
       db.markFavorite(saved.id, true); db.markRead(saved.id, true);
       await sync.syncSource(source.id);
       expect(requests[1].has(mode === "last-modified" ? "if-modified-since" : "if-none-match")).toBe(true);
-      service.updateCollectionScope(source.id, scope([b]));
+      await service.updateCollectionScope(source.id, scope([b]));
       await sync.syncSource(source.id);
       expect(db.listEntries(source.id).map((entry) => entry.title)).toEqual(["B"]);
       expect(db.getEntry(saved.id)).toMatchObject({ favorite: true, read: true });
-      service.updateCollectionScope(source.id, scope([]));
+      await service.updateCollectionScope(source.id, scope([]));
       await sync.syncSource(source.id);
       expect(db.listEntries(source.id).map((entry) => entry.title).sort()).toEqual(["A", "B"]);
       expect(db.listEntries()).toHaveLength(2);
@@ -80,9 +80,9 @@ describe("replaying a changed collection selection", () => {
     const service = new SourceService(db, {} as never, sync, {} as never);
     const source = db.createSource({ url: feedUrl, title: "Fixture", kind: "rss", pollingEnabled: true });
     try {
-      service.updateCollectionScope(source.id, scope([a]));
+      await service.updateCollectionScope(source.id, scope([a]));
       await sync.syncSource(source.id);
-      service.updateCollectionScope(source.id, scope([a, b]));
+      await service.updateCollectionScope(source.id, scope([a, b]));
       await sync.syncSource(source.id);
       expect(db.listEntries(source.id)).toHaveLength(2);
       expect(fetch.mock.calls[1][0].checkpoint).toBeUndefined();
@@ -128,10 +128,10 @@ describe("replaying a changed collection selection", () => {
     let current = runtime(db);
     const source = db.createSource({ url: feedUrl, title: "Fixture", kind: "rss", pollingEnabled: true });
     try {
-      current.service.updateCollectionScope(source.id, scope([a]));
+      await current.service.updateCollectionScope(source.id, scope([a]));
       network.fetch.mockResolvedValueOnce(new Response(feed, { headers: { ...headers, "content-type": "application/rss+xml" } }));
       await current.sync.syncSource(source.id);
-      current.service.updateCollectionScope(source.id, scope([a, b]));
+      await current.service.updateCollectionScope(source.id, scope([a, b]));
       network.fetch.mockRejectedValueOnce(new Error("Synthetic offline"));
       await expect(current.sync.syncSource(source.id)).rejects.toThrow();
       expect(db.getSource(source.id)).toMatchObject({ failureCount: 1, etag: undefined, validatorUrl: undefined, lastModified: undefined });

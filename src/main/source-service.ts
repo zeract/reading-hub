@@ -1,3 +1,4 @@
+import {subscriptionUrlIdentity} from "../shared/subscription-identity";
 import { WeightedLruCache } from "./weighted-lru-cache";
 import { throwIfAborted } from "./cancellation";
 import { sourceCapabilities } from "../shared/source-capabilities";
@@ -56,7 +57,13 @@ export class SourceService {
     return { token, probe };
   }
 
-  async confirm(token: string): Promise<Source> {
+  private readonly confirmations=new Map<string,Promise<Source>>();
+  confirm(token:string):Promise<Source>{
+    const existing=this.confirmations.get(token);if(existing)return existing;
+    const pending=this.confirmOnce(token);this.confirmations.set(token,pending);
+    void pending.finally(()=>this.confirmations.delete(token)).catch(()=>undefined);return pending;
+  }
+  private async confirmOnce(token: string): Promise<Source> {
     const pending = this.pending.get(token);
     if (!pending) throw new Error("预览已过期，请重新添加来源。");
     const probe = JSON.parse(pending.json) as ProbeResult;
@@ -65,7 +72,7 @@ export class SourceService {
     const existing = this.db.getSourceByUrl(probe.url)
       ?? this.db.listSources().find((source) => subscriptionUrlIdentity(source) === identity);
     if (existing) {
-      const source = existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
+      const source = existing.subscribed === false ? await this.changeSubscription(existing.id, true) : existing;
       this.pending.delete(token);
       return source;
     }
@@ -92,15 +99,15 @@ export class SourceService {
     // intentionally capped for the dialog, so it must never be treated as the
     // initial import itself: a normal source can legitimately have far more
     // than ten Feed items.
-    const source = this.db.writeTransaction(() => {
-      const created = this.db.createSource(input);
-      this.sync.savePreview(created, probe.preview);
-      return created;
-    });
+    const id=randomUUID(),now=Date.now();
+    const planned:Source={...input,id,status:input.status??"active",connectorId:input.connectorId??input.kind,createdAt:now,updatedAt:now,consecutiveEmpty:0,failureCount:0};
+    const committed=await this.db.write("createSourceWithEntries",input,id,this.sync.prepareEntries(planned,probe.preview),this.sync.identityNamespaces(planned));
+    const source=committed.source;
+    this.sync.wakeArticles();
     // Failed local writes leave the preview confirmation available for retry.
     // Network acquisition happens only after the complete local fallback exists.
     this.pending.delete(token);
-    if (source.pollingEnabled && source.status === "active") {
+    if (committed.created && source.pollingEnabled && source.status === "active") {
       // A source must not rely on the next one-minute scheduler tick to get
       // its full initial result. A transient failure is already persisted by
       // SyncManager; retain the preview and let normal retry/backoff recover
@@ -110,7 +117,7 @@ export class SourceService {
     return this.db.getSource(source.id) ?? source;
   }
 
-  importOpml(text: string): { imported: number; existing: number; skipped: number } {
+  async importOpml(text: string): Promise<{ imported: number; existing: number; skipped: number }> {
     const seen = new Set<string>();
     const existingIdentities = new Set(this.db.listSources().map(subscriptionUrlIdentity));
     const inputs: SourceInput[] = [];
@@ -150,15 +157,15 @@ export class SourceService {
     if (!inputs.length && !existing) throw new Error("OPML 中没有可导入的公开或本机 Feed。");
     // Validation skips individual invalid outlines; storage failures must roll
     // back the whole accepted batch and surface as failures, not skip counts.
-    const created = this.db.writeTransaction(() => inputs.map((input) => this.db.createSource(input)));
+    const created = await this.db.write("createSources",inputs);
     if (created.length) this.sync.requestDueRun();
-    return { imported: created.length, existing, skipped };
+    return { imported: created.length, existing:existing+inputs.length-created.length, skipped };
   }
 
-  connectZhihu(): Source {
+  async connectZhihu(): Promise<Source> {
     const existing = this.db.listSources().find((source) => source.kind === "zhihu");
     if (existing) return existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
-    return this.db.createSource({
+    return this.db.write("createSource",{
       url: "https://developer.zhihu.com/api/v1/user/contents",
       title: "知乎（本人官方数据）",
       kind: "zhihu",
@@ -166,13 +173,13 @@ export class SourceService {
     });
   }
 
-  createAcademicSource(draft: SubscriptionDraft): Source {
+  async createAcademicSource(draft: SubscriptionDraft): Promise<Source> {
     const config = draft.config ?? {};
     const target = draft.targetId || JSON.stringify(config);
     const url = `https://academic.local/author/${encodeURIComponent(target)}`;
     const existing = this.db.getSourceByUrl(url);
     if (existing) return existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
-    return this.db.createSource({
+    return this.db.write("createSource",{
       url,
       title: draft.title,
       kind: "academic",
@@ -182,10 +189,10 @@ export class SourceService {
     });
   }
 
-  ensureZhihuFollowSource(): Source {
+  async ensureZhihuFollowSource(): Promise<Source> {
     const existing = this.db.listSources().find((source) => source.kind === "zhihu_follow");
     if (existing) return existing.subscribed === false ? this.changeSubscription(existing.id, true) : existing;
-    return this.db.createSource({
+    return this.db.write("createSource",{
       url: "https://www.zhihu.com/follow",
       title: "知乎关注动态（授权会话）",
       kind: "zhihu_follow",
@@ -215,7 +222,7 @@ export class SourceService {
     return source;
   }
 
-  updateSettings(sourceId: string, settings: SourceSettings): Source {
+  async updateSettings(sourceId: string, settings: SourceSettings): Promise<Source> {
     const source = this.db.getSource(sourceId);
     if (!source) throw new Error("来源不存在。");
     const title = settings.title.trim();
@@ -233,16 +240,16 @@ export class SourceService {
       throw new Error("刷新间隔必须是预设的安全时间。");
     }
     const pollingEnabled = source.subscribed === false || settings.kind === "manual" ? false : settings.pollingEnabled;
-    const updated = this.db.updateSourceSettings(sourceId, { ...settings, title, category, pollingEnabled, refreshIntervalMinutes: pollingEnabled ? interval : undefined });
+    const updated = await this.db.write("updateSourceSettings",sourceId, { ...settings, title, category, pollingEnabled, refreshIntervalMinutes: pollingEnabled ? interval : undefined });
     if (updated.kind !== source.kind || updated.pollingEnabled !== source.pollingEnabled) this.sync.cancelSource(sourceId);
     return updated;
   }
 
   /** A confirmed calibration replaces collected origins even for an identical
    * rule. Cancel after commit so a late extraction cannot undo that reset. */
-  updateRule(sourceId: string, rule: Source["extractionRule"]): void {
+  async updateRule(sourceId: string, rule: Source["extractionRule"]): Promise<void> {
     this.requireCalibratableSource(sourceId);
-    this.db.updateRule(sourceId, rule ? { ...rule, selection: "manual" } : rule);
+    await this.db.write("updateCalibratedRule",sourceId, rule ? { ...rule, selection: "manual" } : rule);
     this.sync.cancelSource(sourceId);
   }
 
@@ -258,10 +265,10 @@ export class SourceService {
   }
 
   /** Persist only user-owned collection scope; connector config stays opaque. */
-  updateCollectionScope(sourceId: string, scope: SubscriptionScope): SourceCollectionSettings {
+  async updateCollectionScope(sourceId: string, scope: SubscriptionScope): Promise<SourceCollectionSettings> {
     if (scope.history.mode !== "none") throw new Error("历史回填已移除，请重新打开来源设置。");
     const previous = this.db.getSubscriptionForSource(sourceId);
-    const updated = this.db.updateSubscriptionScope(sourceId, scope);
+    const updated = await this.db.write("updateSubscriptionScope",sourceId, scope);
     if (!sameSubscriptionScope(previous?.scope, updated.scope)) this.sync.cancelSource(sourceId);
     return this.getCollectionSettings(sourceId);
   }
@@ -330,10 +337,10 @@ export class SourceService {
     return { ...source, subscribed: false, pollingEnabled: false, nextCheckAt: undefined };
   }
 
-  private changeSubscription(sourceId: string, subscribed: boolean): Source {
+  private async changeSubscription(sourceId: string, subscribed: boolean): Promise<Source> {
     const source = this.db.getSource(sourceId);
     if (!source) throw new Error("来源不存在。");
-    const updated = this.db.setSubscribed(sourceId, subscribed);
+    const updated = await this.db.write("setSubscribed",sourceId, subscribed);
     if ((source.subscribed !== false) !== (updated.subscribed !== false)) this.sync.cancelSource(sourceId);
     return updated;
   }
@@ -345,11 +352,11 @@ export class SourceService {
     if (source.kind === "zhihu_follow") {
       // Stop polling first. Failed credential cleanup leaves a retryable,
       // inactive source; never lose the handle needed to retry session cleanup.
-      this.changeSubscription(sourceId, false);
+      await this.changeSubscription(sourceId, false);
       await this.zhihuFollow.clearSession();
     }
     if (!this.db.getSource(sourceId)) return;
-    this.db.deleteSource(sourceId);
+    await this.db.write("deleteSource",sourceId);
     this.sync.cancelSource(sourceId);
   }
 
@@ -379,13 +386,4 @@ function facetDiscoveryConfiguration(source: Source) {
     config: source.config ?? {},
     extractionRule: source.extractionRule ?? null
   };
-}
-
-/** Subscription identity describes the requested resource, not a collected
- * article's canonical link. Preserve paths and all query parameters. Feed
- * fragments never reach HTTP; rendered pages may use them for navigation. */
-function subscriptionUrlIdentity(source: Pick<Source, "url" | "kind">): string {
-  const url = new URL(source.url);
-  if (source.kind === "rss") url.hash = "";
-  return url.toString();
 }

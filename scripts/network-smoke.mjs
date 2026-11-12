@@ -12,7 +12,7 @@ import { AiService } from "../dist/main/main/ai-service.js";
 import { configureChromiumNetwork, chromiumFetch } from "../dist/main/main/network.js";
 import { requestJsonWithTimeout } from "../dist/main/main/json-response.js";
 import { RenderedPageTooLargeError } from "../dist/main/main/page-renderer.js";
-import { extractReaderArticle } from "../dist/main/main/article-reader.js";
+import { extractReaderArticle } from "../dist/main/main/reader-extraction.js";
 import { extractGenericPage } from "../dist/main/main/extractor.js";
 import { discoverFeedUrls } from "../dist/main/main/feed.js";
 import { findPublicArchiveUrls, parsePublishedArchive } from "../dist/main/main/archive-backfill.js";

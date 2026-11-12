@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { load } from "cheerio";
-import { extractReaderArticle } from "../src/main/article-reader";
+import { extractReaderArticle } from "../src/main/reader-extraction";
 import { readerLanguageChoices } from "../src/shared/reader-languages";
 import type { Entry } from "../src/shared/types";
 const url = "https://example.com/post";

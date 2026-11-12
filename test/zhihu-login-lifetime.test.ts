@@ -245,7 +245,7 @@ describe("Zhihu login attempt lifetime", () => {
     const databasePath = join(directory, "test.sqlite");
     const services = await createApplicationServices(databasePath);
     const sync = vi.spyOn(services.sync, "syncSource").mockResolvedValue({} as any);
-    const source = services.sources.ensureZhihuFollowSource();
+    const source = await services.sources.ensureZhihuFollowSource();
     mocks.cookies.mockResolvedValue([{ name: "z_c0" }]);
     try {
       await services.sources.beginZhihuFollowLogin();
@@ -266,7 +266,7 @@ describe("Zhihu login attempt lifetime", () => {
         await resumed.sources.beginZhihuFollowLogin();
         await vi.advanceTimersByTimeAsync(800);
         expect(resumed.database.getSource(source.id)).toBeUndefined();
-        expect(resumed.database.listSources()[0]?.subscribed).toBe(true);
+        await vi.waitFor(()=>expect(resumed.database.listSources()[0]?.subscribed).toBe(true));
         expect(resumed.database.listSources()).toHaveLength(1);
         await vi.waitFor(() => expect(resumedSync).toHaveBeenCalledTimes(1));
       } finally { await resumed.close(); }

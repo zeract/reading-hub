@@ -1,10 +1,9 @@
+import {currentSourceForSync,assertSourceEnabled,SyncCancelledError} from "./sync-state";
 import type { ArticleLibrary } from "./article-library";
 import { isRecruitmentUrl } from "./content-eligibility";
-import { isManualExtractionRule } from "./extraction-rule";
-import { canonicalizeContentUrl } from "../shared/url";
 import { throwIfAborted } from "./cancellation";
 import type { RawEntry, Source, Subscription } from "../shared/types";
-import { createSubscriptionScopeMatcher, sameSubscriptionScope } from "../shared/subscription-scope";
+import { createSubscriptionScopeMatcher } from "../shared/subscription-scope";
 import { redactDiagnosticMessage } from "./diagnostic-redaction";
 import { ContentMaintenance } from "./content-maintenance";
 import { ReadingDatabase } from "./database";
@@ -21,6 +20,7 @@ export class SyncManager {
   private timer?: NodeJS.Timeout;
   private dueRun?: Promise<void>;
   private dueRequested = false;
+  private dueWake?:()=>void;
   private readonly inFlight = new Map<string, Promise<SourceSyncResult>>();
   private readonly controllers = new Map<string, AbortController>();
   private closing = false;
@@ -67,6 +67,7 @@ export class SyncManager {
   beginShutdown(): void {
     this.closing = true;
     this.dueRequested = false;
+    this.dueWake?.();
     this.stop();
     for (const id of this.controllers.keys()) this.cancelSource(id);
   }
@@ -89,7 +90,8 @@ export class SyncManager {
       if (!current?.pollingEnabled || !["active", "error"].includes(current.status)
         || current.nextCheckAt === undefined || current.nextCheckAt > Date.now()) return;
       await this.syncSource(source.id).catch(() => undefined);
-    });
+    },()=>this.closing?[]:this.db.listDueSources(),source=>source.id,()=>new Promise<void>(resolve=>{this.dueWake=resolve;}));
+    this.dueWake=undefined;
   }
 
   async syncSource(sourceId: string): Promise<SourceSyncResult> {
@@ -127,8 +129,7 @@ export class SyncManager {
       try {
         // Historical content fixes are versioned and marker-gated. They run at
         // most once per source instead of scanning all old cards on every poll.
-        this.maintenance?.prepareForSync(source);
-        const connectorId = source.connectorId ?? source.kind;
+        if(this.maintenance)await this.db.write("prepareSourceMaintenance",source);
         if (!subscription) throw new Error("来源订阅状态缺失，请删除后重新添加该来源。");
         const account = subscription.accountId ? this.db.getAccount(subscription.accountId) : undefined;
         const connector = this.registry.get(subscription.connectorId);
@@ -148,50 +149,11 @@ export class SyncManager {
         const bodies = await this.articles?.prepareFeedBodies(incoming, outcome.bodies, signal);
         throwIfAborted(signal);
         this.assertOpen();
-        const committed = this.db.writeTransaction(() => {
-          const currentSource = currentSourceForSync(this.db, source, subscription);
-          let effectiveSource = connectorId === "generic" && outcome.extractionRule
-            ? this.db.replaceAutomaticRule(currentSource.id, outcome.extractionRule)
-            : currentSource;
-          if (outcome.metadataRevision !== undefined) {
-            effectiveSource = this.db.updateMetadataRevision(effectiveSource.id, outcome.metadataRevision);
-          }
-          if (outcome.iconUrl) effectiveSource = this.db.updateSourceIcon(effectiveSource.id, outcome.iconUrl);
-          // Filter a narrow class of legacy RSS navigation cards only after a
-          // successful response. We never delete ordinary entries merely
-          // because a paginated Feed no longer returns them.
-          if (!outcome.notModified) this.db.deleteNonContentFeedNavigationEntries(effectiveSource, Boolean(effectiveSource.extractionRule?.feedUrl));
-          // A connector only maps provider records into the shared shape.  The
-          // host owns collection policy so category filters cannot slowly drift
-          // across RSS, web, platform, or future adapters.
-          const saved = outcome.notModified
-            ? { inserted: 0, accepted: 0, identityConflicts: 0 }
-            : this.saveRawEntries(effectiveSource, outcome.entries, subscription, bodies);
-          this.articles?.reconcileSource(effectiveSource.id);
-          const inserted = saved.inserted;
-          if (connectorId === "generic" && !isManualExtractionRule(effectiveSource.extractionRule) && saved.accepted >= 2) {
-            const pageIdentity = canonicalizeContentUrl(effectiveSource.url);
-            const identities = new Set(outcome.entries.map(entry => canonicalizeContentUrl(entry.url)));
-            if (identities.size >= 2 && !identities.has(pageIdentity)) this.db.deleteSupersededSourcePage(effectiveSource);
-          }
-          this.maintenance?.afterSuccessfulSync(effectiveSource);
-          if (outcome.followees) this.db.upsertFollowees(outcome.followees);
-          if (outcome.checkpoint) this.db.saveCheckpoint(subscription.id, outcome.checkpoint);
-          const updated = this.db.markSuccess(effectiveSource, {
-            collectionComplete: !outcome.notModified && outcome.entries.length > 0,
-            etag: outcome.etag,
-            lastModified: outcome.lastModified,
-            validatorUrl: outcome.validatorUrl,
-            empty: !outcome.emptyIsHealthy && !outcome.notModified && outcome.entries.length === 0
-          });
-          const eventMessage = [
-            updated.status === "needs_review" ? "来源需要复核提取规则" : undefined,
-            saved.identityConflicts > 0 ? `已跳过 ${saved.identityConflicts} 条身份冲突内容，请检查来源` : undefined,
-            outcome.entries.length > 0 && saved.accepted === 0 && subscription.scope.facetSelections.length > 0
-              ? "本次内容不在已选分类内；已正常推进同步状态" : undefined
-          ].filter(Boolean).join("；") || undefined;
-          this.db.recordSyncEvent(source.id, updated.status === "needs_review" || saved.identityConflicts > 0 ? "warning" : "success", outcome.entries.length, inserted, eventMessage);
-          return { inserted, source: updated };
+        const {bodies: _rawBodies,...commitOutcome}=outcome;
+        const committed = await this.db.write("commitSync", {
+          source,subscription,outcome:commitOutcome,
+          accepted:this.prepareEntries(source,outcome.entries,subscription),
+          identityNamespaces:connector.manifest.identityNamespaces??[],bodies:bodies?[...bodies]:undefined,maintain:Boolean(this.maintenance)
         });
         this.articles?.wake();
         return committed;
@@ -200,42 +162,24 @@ export class SyncManager {
         if (error instanceof SyncCancelledError) throw error;
         this.assertOpen();
         // Success and failure must obey the same stale-result boundary.
-        const currentSource = currentSourceForSync(this.db, source, subscription);
+        currentSourceForSync(this.db, source, subscription);
         const retryAfterMs = error instanceof RobotsRateLimitedError ? 60 * 60_000
           : error instanceof RobotsUnreachableError || error instanceof NetworkRequestError ? 5 * 60_000
             : undefined;
-        const updated = this.db.markFailure(currentSource, userSafeError(error), retryAfterMs);
+        const updated = await this.db.write("commitSyncFailure",source,subscription,userSafeError(error),retryAfterMs);
         throw new SyncFailure(updated.lastError || "同步失败");
       }
     }, signal);
   }
 
-  savePreview(source: Source, entries: RawEntry[]): number {
-    this.assertOpen();
-    const saved = this.saveRawEntries(source, entries);
-    if (saved.identityConflicts > 0) {
-      this.db.recordSyncEvent(source.id, "warning", entries.length, saved.inserted, `预览已跳过 ${saved.identityConflicts} 条身份冲突内容`);
-    }
-    this.articles?.wake();
-    return saved.inserted;
+  wakeArticles():void{this.articles?.wake();}
+  prepareEntries(source:Source,entries:RawEntry[],subscription?:Subscription) {
+    const connector=this.registry.get(source.connectorId??source.kind);
+    const eligible=connector.manifest.entryPolicy==="article-links"?entries.filter(entry=>!isRecruitmentUrl(entry.url)):entries;
+    const normalized=eligible.map(entry=>connector.normalize(entry,source));
+    return subscription?normalized.filter(createSubscriptionScopeMatcher(subscription.scope)):normalized;
   }
-
-  private saveRawEntries(source: Source, entries: RawEntry[], subscription?: Subscription, bodies?: Map<string, import("../shared/types").ReaderArticle>): { inserted: number; accepted: number; identityConflicts: number } {
-    const connector = this.registry.get(source.connectorId ?? source.kind);
-    const eligible = connector.manifest.entryPolicy === "article-links"
-      ? entries.filter((entry) => !isRecruitmentUrl(entry.url))
-      : entries;
-    const normalized = eligible.map((entry) => connector.normalize(entry, source));
-    const accepted = subscription
-      ? normalized.filter(createSubscriptionScopeMatcher(subscription.scope))
-      : normalized;
-    const saved = this.db.saveEntriesWithReport(accepted, {
-      collectionKind: this.db.getCollectionKind(source.id),
-      identityNamespaces: connector.manifest.identityNamespaces ?? [],
-      onSaved: (entry, storedId) => this.articles?.commitCollected(entry, storedId, bodies)
-    });
-    return { ...saved, accepted: accepted.length };
-  }
+  identityNamespaces(source:Source){return this.registry.get(source.connectorId??source.kind).manifest.identityNamespaces??[];}
 
   private assertOpen(): void {
     if (this.closing) throw new SyncCancelledError("应用正在退出，已取消此次同步。");
@@ -247,7 +191,7 @@ export class SyncManager {
   requestDueRun(): void {
     if (this.closing) return;
     this.dueRequested = true;
-    if (this.dueRun) return;
+    if (this.dueRun) {this.dueWake?.();return;}
     this.dueRun = Promise.resolve().then(async () => {
       while (this.dueRequested && !this.closing) {
         this.dueRequested = false;
@@ -268,52 +212,19 @@ export class SyncManager {
 }
 
 export class SyncFailure extends Error {}
-export class SyncCancelledError extends Error {}
-
-function currentSourceForSync(database: ReadingDatabase, initial: Source, initialSubscription?: Subscription): Source {
-  const current = database.getSource(initial.id);
-  if (!current) throw new SyncCancelledError("来源已被删除，已取消此次同步。");
-  // An explicit pause is a user/compliance decision, not an error state to be
-  // overwritten by an older in-flight response.
-  assertSourceEnabled(current);
-  if (current.kind !== initial.kind || (current.connectorId ?? current.kind) !== (initial.connectorId ?? initial.kind)) {
-    throw new SyncCancelledError("来源类型已更新，已取消旧的同步结果。");
-  }
-  const currentSubscription = database.getSubscriptionForSource(current.id);
-  if (initialSubscription && (!currentSubscription || currentSubscription.id !== initialSubscription.id
-    || currentSubscription.accountId !== initialSubscription.accountId
-    || currentSubscription.targetId !== initialSubscription.targetId
-    || JSON.stringify(currentSubscription.config) !== JSON.stringify(initialSubscription.config)
-    || !sameSubscriptionScope(currentSubscription.scope, initialSubscription.scope))) {
-    throw new SyncCancelledError("收集范围已更新，已取消旧的同步结果。");
-  }
-  // A calibration replaces the old cards and is an explicit user decision.
-  // Never reinsert an in-flight extraction based on the previous rule.
-  if (initial.kind === "generic" && !sameRule(current.extractionRule, initial.extractionRule)) {
-    throw new SyncCancelledError("提取规则已更新，已取消旧的同步结果。");
-  }
-  return current;
-}
-
-function assertSourceEnabled(source: Source): void {
-  if (source.subscribed === false || !source.pollingEnabled || source.status === "paused") {
-    throw new SyncCancelledError("来源已暂停，已取消此次同步。");
-  }
-}
-
-function sameRule(left: Source["extractionRule"], right: Source["extractionRule"]): boolean {
-  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
-}
+export {SyncCancelledError} from "./sync-state";
 
 /** Admit the earliest runnable item, so a host waiting on its own predecessor
  * cannot consume another background slot. The shared gate still serializes
  * these requests with manual refreshes. On infrastructure failure, stop
  * admission and drain started work before releasing the scheduling pass. */
-async function forEachWithKeyedConcurrency<T>(items: T[], limit: number, keyOf: (item: T) => string, task: (item: T) => Promise<void>): Promise<void> {
+async function forEachWithKeyedConcurrency<T>(items: T[], limit: number, keyOf: (item: T) => string, task: (item: T) => Promise<void>,refresh:()=>T[],idOf:(item:T)=>string,waitForChange:()=>Promise<void>): Promise<void> {
   const pending = items.map((item) => ({ item, key: keyOf(item) }));
   const active = new Map<string, Promise<void>>();
+  const seen=new Set(items.map(idOf));
   let failure: { error: unknown } | undefined;
   while ((!failure && pending.length) || active.size) {
+    if(!failure)for(const item of refresh()){const id=idOf(item);if(!seen.has(id)){seen.add(id);pending.push({item,key:keyOf(item)});}}
     while (!failure && active.size < Math.max(limit, 1)) {
       const index = pending.findIndex(({ key }) => !active.has(key));
       if (index < 0) break;
@@ -323,7 +234,7 @@ async function forEachWithKeyedConcurrency<T>(items: T[], limit: number, keyOf: 
         .finally(() => { active.delete(key); });
       active.set(key, operation);
     }
-    if (active.size) await Promise.race(active.values());
+    if (active.size) await Promise.race([...active.values(),waitForChange()]);
   }
   if (failure) throw failure.error;
 }

@@ -45,13 +45,13 @@ it("does not recover from an empty automatic selector using a weak singleton", (
   expect(result.rule?.itemRootSelector).not.toBe('a');
 });
 
-it("persists host-owned manual provenance when confirming a generated rule", () => {
+it("persists host-owned manual provenance when confirming a generated rule", async () => {
   const db=new ReadingDatabase(':memory:');
   const source=db.createSource({url:pageUrl,title:'Fixture',kind:'generic',pollingEnabled:true});
   const cancelSource=vi.fn();
   const service=new SourceService(db,{} as never,{cancelSource} as never,{} as never);
   try {
-    service.updateRule(source.id,rule('automatic',{itemRootSelector:'article'}));
+    await service.updateRule(source.id,rule('automatic',{itemRootSelector:'article'}));
     expect(db.getSource(source.id)?.extractionRule).toMatchObject({selection:'manual',itemRootSelector:'article'});
     expect(cancelSource).toHaveBeenCalledExactlyOnceWith(source.id);
   } finally {db.close();}
@@ -79,7 +79,7 @@ it("retains confirmed selection after restart and marks repeated empty results f
   const source = db.createSource({ url: pageUrl, title: "Fixture", kind: "generic", pollingEnabled: true });
   const service = new SourceService(db, {} as never, sync, {} as never);
   try {
-    service.updateRule(source.id, rule("automatic", { itemRootSelector: "article" }));
+    await service.updateRule(source.id, rule("automatic", { itemRootSelector: "article" }));
     expect((await sync.syncSource(source.id)).inserted).toBe(2);
     const saved = db.listEntries(source.id)[0]; db.markFavorite(saved.id, true);
     await sync.close(); db.close();

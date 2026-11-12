@@ -1,7 +1,7 @@
 import {it,expect} from 'vitest';
 import {load} from 'cheerio';
 import {normalizeKeyValueGrids} from '../src/main/reader-key-values';
-import {extractReaderArticle} from '../src/main/article-reader';
+import { extractReaderArticle } from '../src/main/reader-extraction';
 import {rewriteArticleDocument} from '../src/main/document-rewrite';
 import {articleDocumentHtml} from '../src/shared/article-document';
 import type {Entry} from '../src/shared/types';

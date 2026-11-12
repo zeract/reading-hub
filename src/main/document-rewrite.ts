@@ -56,7 +56,7 @@ function unitContext(source:ArticleDocument,ids:Set<string>) {
 }
 /** Structure and asset ownership never cross the model boundary as editable output. */
 export async function rewriteArticleDocument(source:ArticleDocument,title:string,run:RewriteRunner,signal:AbortSignal,
- progress:(completed:number,total:number)=>void=()=>{},resume:DocumentCheckpoint={version:1,patches:[]},save:(checkpoint:DocumentCheckpoint)=>void=()=>{},protocol:DocumentRewriteProtocol={kind:"text-nodes",version:11}) {
+ progress:(completed:number,total:number)=>void|Promise<void>=()=>{},resume:DocumentCheckpoint={version:1,patches:[]},save:(checkpoint:DocumentCheckpoint)=>void|Promise<void>=()=>{},protocol:DocumentRewriteProtocol={kind:"text-nodes",version:11}) {
  throwIfAborted(signal);
  const paragraphMode=protocol.kind==="paragraphs",promptVersion=protocol.version;
  const paragraphs=paragraphMode?prepareRewriteParagraphs(source):undefined;
@@ -73,7 +73,7 @@ export async function rewriteArticleDocument(source:ArticleDocument,title:string
  validate(applyPatches(source,patches));
  let requests=0,repairs=0;
  for(let i=patches.length;i<units.length;i++){
-  throwIfAborted(signal);progress(i,units.length);
+  throwIfAborted(signal);await progress(i,units.length);
   try {
   const generate=async(nodes:typeof units[number],issues?:RepairIssue[])=>{
    requests++;const ids=new Set(nodes.map(n=>n.id));
@@ -120,7 +120,7 @@ export async function rewriteArticleDocument(source:ArticleDocument,title:string
     throw error;
    }
   }
-  throwIfAborted(signal);patches.push(patch);save({version:1,patches:[...patches]});progress(i+1,units.length);
+  throwIfAborted(signal);patches.push(patch);await save({version:1,patches:[...patches]});await progress(i+1,units.length);
   } catch(error){if(error instanceof RewriteContentError)throw new RewriteContentError(`第 ${i+1}/${units.length} 节：${error.message}`);throw error;}
  }
  const content=validate(applyPatches(source,patches));

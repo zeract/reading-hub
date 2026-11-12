@@ -60,8 +60,8 @@ describe("main-process boundaries", () => {
     expect(registry).not.toContain("LegacyConnectorAdapter");
     expect(registry).not.toContain("CallbackConnectorAdapter");
     expect(services).not.toContain("LegacyConnectorAdapter");
-    expect(sync).toContain("maintenance?.prepareForSync");
-    expect(sync).toContain("maintenance?.afterSuccessfulSync");
+    expect(sync).toContain('db.write("prepareSourceMaintenance"');
+    expect(mainFile("sync-commit.ts")).toContain("new ContentMaintenance(db).afterSuccessfulSync");
     expect(sync).not.toContain("repairScourRedirectEntries");
     expect(sync).not.toContain("deleteTaxonomyEntries");
   });

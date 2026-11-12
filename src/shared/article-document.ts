@@ -80,3 +80,15 @@ export function documentTextNodes(doc:ArticleDocument, includeEmpty=false):TextN
  doc.children.forEach(visit);return result;
 }
 export const articleDocumentTags=tags;
+
+/** Exact authored image references; no HTML serialization or URL rewriting. */
+export function articleDocumentImageUrls(doc:ArticleDocument):string[] {
+ const urls=new Set<string>();
+ const add=(url:string|undefined)=>{if(url){try{urls.add(assertPublicUrl(url).toString());}catch{/* No external authority. */}}};
+ const visit=(node:ArticleNode):void=>{
+  if(node.type==='asset')visit(node.element);
+  else if(node.type==='card'){add(node.image);node.title.forEach(visit);node.metadata.forEach(visit);}
+  else if(node.type==='element'){if(node.tag==='img')add(node.attrs.src);node.children.forEach(visit);}
+ };
+ add(doc.cover);doc.children.forEach(visit);return [...urls];
+}

@@ -1,3 +1,4 @@
+import { throwIfAborted } from "./cancellation";
 import { load } from "cheerio";
 
 /** A safe, parsed macro declaration passed from the reader Formula IR. */
@@ -30,7 +31,7 @@ let runtimeStartup: Promise<MathJaxRuntime> | undefined;
 
 /**
  * Local MathJax 4 adapter for pages that author their formulas for MathJax.
- * It intentionally runs only in the main process and returns inert SVG. SVG
+ * It runs in the isolated conversion worker in production and returns inert SVG. SVG
  * keeps every delimiter as a path, so the reader never depends on MathJax
  * CHTML's stylesheet to hide its internal stretch spacer text.
  */
@@ -76,9 +77,11 @@ export class ScientificMathRenderer {
   async renderAsync(
     tex: string,
     displayMode: boolean,
-    macros: Record<string, MathMacroDefinition>
+    macros: Record<string, MathMacroDefinition>,
+    signal?: AbortSignal
   ): Promise<string | undefined> {
     const convert = async () => {
+      throwIfAborted(signal);
       if (!this.runtime || !tex.trim()) return undefined;
       try {
         this.runtime.tex2mml("\\begingroupSandbox");
@@ -86,8 +89,10 @@ export class ScientificMathRenderer {
         const node = await this.runtime.tex2svgPromise(this.withMacroPrelude(tex, macros), {
           display: displayMode
         });
+        throwIfAborted(signal);
         return this.serializeRenderedNode(node);
       } catch {
+        throwIfAborted(signal);
         return undefined;
       }
     };
@@ -103,15 +108,16 @@ export class ScientificMathRenderer {
    * the reader, not derived from successful rendering of earlier expressions.
    * Reject only the failed member; never substitute another math renderer.
    */
-  async renderDocumentAsync(expressions: readonly MathJaxDocumentExpression[]): Promise<Array<string | undefined> | undefined> {
+  async renderDocumentAsync(expressions: readonly MathJaxDocumentExpression[], signal?: AbortSignal): Promise<Array<string | undefined> | undefined> {
     if (!this.runtime) return undefined;
     const rendered: Array<string | undefined> = [];
     for (const expression of expressions) {
+      throwIfAborted(signal);
       if (!expression.tex.trim()) {
         rendered.push("");
         continue;
       }
-      const html = await this.renderAsync(expression.tex, expression.displayMode, expression.macros);
+      const html = await this.renderAsync(expression.tex, expression.displayMode, expression.macros, signal);
       rendered.push(html);
     }
     return rendered;

@@ -1,6 +1,7 @@
+import { decodeRewriteResult } from "../rewrite-document";
 import type Database from "better-sqlite3";
 import { load } from "cheerio";
-import { articleDocumentHtml, validArticleDocument } from "../../shared/article-document";
+import { articleDocumentHtml, articleDocumentImageUrls, validArticleDocument } from "../../shared/article-document";
 import { assertPublicUrl } from "../../shared/url";
 import { isReaderSummaryContent, type ReaderArticle } from "../../shared/types";
 import { acquisitionRetryAt, TRANSIENT_ACQUISITION_FAILURES } from "../article-acquisition-policy";
@@ -17,13 +18,13 @@ export class ArticlePersistenceContentError extends Error {}
 export class ArticleStore {
   constructor(private readonly db: Database.Database) {}
 
-  read(entryId: string, variant = ""): ReaderArticle | undefined {
+  read(entryId: string, variant = "", includeHtml = false): ReaderArticle | undefined {
     const row = this.db.prepare("SELECT snapshot_json, saved_at FROM article_documents WHERE entry_id=? AND variant=?").get(entryId, variant) as { snapshot_json: string; saved_at: number } | undefined;
     if (!row) return;
     try {
       const article = JSON.parse(row.snapshot_json) as ReaderArticle;
       if (!validArticleDocument(article.document)) throw new Error();
-      return { ...article, entryId, savedAt: row.saved_at, contentHtml: articleDocumentHtml(article.document) };
+      return { ...article, entryId, savedAt: row.saved_at, contentHtml: includeHtml ? articleDocumentHtml(article.document) : "" };
     } catch { throw new Error("本地正文格式无法读取，已保留数据；请检查应用版本。"); }
   }
 
@@ -47,7 +48,7 @@ export class ArticleStore {
         ON CONFLICT(entry_id,variant) DO UPDATE SET snapshot_json=excluded.snapshot_json,quality=excluded.quality,saved_at=excluded.saved_at
         WHERE excluded.quality >= article_documents.quality`).run(entryId, variant, snapshot, quality, Date.now(), entryId);
       if (!result.changes) return false;
-      for (const url of articleImageUrls(article)) this.registerImage(entryId, url, article.url);
+      this.reconcileMedia(entryId);
       if (!variant && quality >= 2) this.finishAcquisition(entryId);
       return true;
     })();
@@ -57,6 +58,54 @@ export class ArticleStore {
     const url = assertPublicUrl(rawUrl).toString(), referrer = assertPublicUrl(rawReferrer).toString();
     this.db.prepare(`INSERT OR IGNORE INTO article_media(entry_id,url,referrer)
       SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM entries WHERE id=?)`).run(entryId, url, referrer, entryId);
+  }
+
+  /** Reconcile only this entry after a successful document/card/rewrite change.
+   * All valid variants and the saved rewrite remain owners. An unreadable
+   * owner fails closed: retain existing bytes instead of guessing references. */
+  reconcileMedia(entryId: string): void {
+    this.db.transaction(() => this.reconcileMediaInTransaction(entryId)).immediate();
+  }
+  private reconcileMediaInTransaction(entryId: string): void {
+    const entry = this.db.prepare("SELECT original_url,image_url FROM entries WHERE id=?").get(entryId) as {
+      original_url: string; image_url: string | null;
+    } | undefined;
+    if (!entry) return;
+    const refs = new Map<string, string>();
+    let canRemove = true;
+    const add = (rawUrl: string, rawReferrer: string) => {
+      try {
+        refs.set(assertPublicUrl(rawUrl).toString(), assertPublicUrl(rawReferrer).toString());
+        return true;
+      } catch { return false; }
+    };
+    if (entry.image_url) add(entry.image_url, entry.original_url);
+    const rows = this.db.prepare("SELECT snapshot_json FROM article_documents WHERE entry_id=?").all(entryId) as { snapshot_json: string }[];
+    for (const row of rows) {
+      try {
+        const article = JSON.parse(row.snapshot_json) as ReaderArticle;
+        if (!validArticleDocument(article.document)) { canRemove = false; continue; }
+        for (const url of articleImageUrls(article)) if (!add(url, article.url)) canRemove = false;
+      } catch { canRemove = false; }
+    }
+    const rewrite = this.db.prepare("SELECT result_json FROM article_rewrites WHERE entry_id=?").get(entryId) as { result_json: string | null } | undefined;
+    if (rewrite?.result_json) {
+      try {
+        const result = decodeRewriteResult(rewrite.result_json);
+        if (result.content) {
+          for (const url of articleDocumentImageUrls(result.content)) {
+            if (!refs.has(url) && !add(url, result.sourceUrl || entry.original_url)) canRemove = false;
+          }
+        }
+      } catch { canRemove = false; }
+    }
+    for (const [url, referrer] of refs) this.registerImage(entryId, url, referrer);
+    // An unknown owner prevents deletion, but must not prevent a newly saved
+    // valid document from registering the assets it can prove it owns.
+    if (!canRemove) return;
+    const old = this.db.prepare("SELECT url FROM article_media WHERE entry_id=?").all(entryId) as { url: string }[];
+    const remove = this.db.prepare("DELETE FROM article_media WHERE entry_id=? AND url=?");
+    for (const row of old) if (!refs.has(row.url)) remove.run(entryId, row.url);
   }
 
   ownsImage(entryId: string, url: string): boolean {
@@ -112,8 +161,9 @@ export class ArticleStore {
   /** Repair local task coverage, never discover or import remote history. */
   reconcileSource(sourceId: string): void {
     this.db.prepare(`INSERT INTO article_acquisitions(entry_id)
-      SELECT e.id FROM entries e LEFT JOIN article_acquisitions a ON a.entry_id=e.id
-      WHERE (e.source_id=? OR EXISTS(SELECT 1 FROM entry_origins o WHERE o.entry_id=e.id AND o.source_id=?))
+      SELECT e.id FROM (SELECT id FROM entries WHERE source_id=? UNION SELECT entry_id FROM entry_origins WHERE source_id=?) candidates
+      JOIN entries e ON e.id=candidates.id LEFT JOIN article_acquisitions a ON a.entry_id=e.id
+      WHERE 1=1
         AND NOT EXISTS(SELECT 1 FROM dismissed_contents WHERE canonical_identity=COALESCE(e.canonical_identity,e.canonical_url))
         AND NOT EXISTS(SELECT 1 FROM article_documents INDEXED BY article_documents_quality WHERE entry_id=e.id AND variant='' AND quality>=2)
         AND (a.entry_id IS NULL OR a.state='done' AND a.attempts<3)
@@ -169,7 +219,8 @@ export class ArticleStore {
 }
 
 export function articleImageUrls(article: ReaderArticle): string[] {
-  const $ = load(article.document ? articleDocumentHtml(article.document) : article.contentHtml);
+  if (article.document) return [...new Set([...articleDocumentImageUrls(article.document), ...(article.coverImageUrl ? [assertPublicUrl(article.coverImageUrl).toString()] : [])])];
+  const $ = load(article.contentHtml);
   const urls = new Set<string>();
   for (const node of $("img[src]").toArray()) {
     try { urls.add(assertPublicUrl($(node).attr("src")!).toString()); } catch { /* Not a public image asset. */ }

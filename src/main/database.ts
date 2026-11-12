@@ -1,3 +1,10 @@
+import {sourceCapabilities} from "../shared/source-capabilities";
+import {subscriptionUrlIdentity} from "../shared/subscription-identity";
+import {ContentMaintenance} from "./content-maintenance";
+import {commitSyncBatch,saveCollectedEntries,type SyncCommitBatch} from "./sync-commit";
+import {currentSourceForSync} from "./sync-state";
+import type {DatabaseWriteMethod,RewriteMethod} from "./library-write-contract";
+import type {StorageWorkerClient} from "./storage-worker-client";
 import { ArticleStore } from "./persistence/article-store";
 import { RewriteStore } from "./persistence/rewrite-store";
 import Database from "better-sqlite3";
@@ -321,10 +328,43 @@ export class ReadingDatabase {
   private previousVisitAt = Date.now();
   private countsSnapshot?: { revision: number; start: number; end: number; previousVisitAt: number; counts: LibraryCounts };
 
-  beginLibrarySession(now = Date.now()): void {
+  private writer?: StorageWorkerClient;
+  setWriter(writer:StorageWorkerClient):void{this.writer=writer;}
+  async write<K extends DatabaseWriteMethod>(method:K,...args:Parameters<ReadingDatabase[K]>):Promise<ReturnType<ReadingDatabase[K]>>{
+    const result=this.writer?await this.writer.database(method,...args):Reflect.apply(this[method],this,args);
+    if(method==="beginLibrarySession")this.previousVisitAt=result as number;
+    this.publishChanges();return result;
+  }
+  async writeRewrite<K extends RewriteMethod>(method:K,...args:Parameters<RewriteStore[K]>):Promise<ReturnType<RewriteStore[K]>>{
+    return this.writer?this.writer.rewrite(method,...args):Reflect.apply(this.rewrites[method],this.rewrites,args);
+  }
+  createSources(inputs:SourceInput[]):Source[]{return this.writeTransaction(()=>{
+    const identities=new Set(this.listSources().map(subscriptionUrlIdentity)),created:Source[]=[];
+    for(const input of inputs){const identity=subscriptionUrlIdentity(input);if(identities.has(identity))continue;created.push(this.createSource(input));identities.add(identity);}
+    return created;
+  });}
+  createSourceWithEntries(input:SourceInput,id:string,entries:Entry[],namespaces:readonly ContentIdentityNamespace[]):{source:Source;created:boolean}{
+    return this.writeTransaction(()=>{
+      const identity=subscriptionUrlIdentity(input),existing=this.getSourceByUrl(input.url)??this.listSources().find(source=>subscriptionUrlIdentity(source)===identity);
+      if(existing)return {source:existing,created:false};
+      const source=this.insertSource(input,id);
+      const saved=saveCollectedEntries(this,source,entries,namespaces);
+      if(saved.identityConflicts)this.recordSyncEvent(source.id,"warning",entries.length,saved.inserted,`预览已跳过 ${saved.identityConflicts} 条身份冲突内容`);
+      return {source,created:true};
+    });
+  }
+  commitSync(batch:SyncCommitBatch){return commitSyncBatch(this,batch);}
+  commitSyncFailure(source:Source,subscription:Subscription|undefined,message:string,retryAfterMs?:number):Source{
+    return this.writeTransaction(()=>this.markFailure(currentSourceForSync(this,source,subscription),message,retryAfterMs));
+  }
+  prepareSourceMaintenance(source:Source){return new ContentMaintenance(this).prepareForSync(source);}
+  runStartupMaintenance(){return new ContentMaintenance(this).runStartupMaintenance();}
+
+  beginLibrarySession(now = Date.now()): number {
     const row = this.db.prepare("SELECT last_visit_at FROM library_state WHERE id = 1").get() as { last_visit_at: number | null };
     this.previousVisitAt = row.last_visit_at ?? now;
     this.db.prepare("UPDATE library_state SET last_visit_at = ? WHERE id = 1").run(now);
+    return this.previousVisitAt;
   }
 
   getLibraryRevision(): number {
@@ -379,19 +419,19 @@ export class ReadingDatabase {
 
   /** A host-owned synchronous unit of work; network work must finish before entry. */
   writeTransaction<T>(write: () => T & (T extends PromiseLike<unknown> ? never : unknown)): T {
-    const result = this.db.transaction(write)();
+    const result = this.db.transaction(write).immediate();
     this.publishChanges();
     return result;
   }
 
   createSource(input: SourceInput): Source {
-    return this.writeTransaction(() => this.insertSource(input));
+    return this.writeTransaction(() => this.getSourceByUrl(input.url) ?? this.insertSource(input));
   }
 
-  private insertSource(input: SourceInput): Source {
+  private insertSource(input: SourceInput, sourceId: string = randomUUID()): Source {
     const now = Date.now();
     const source: Source = {
-      id: randomUUID(),
+      id: sourceId,
       url: input.url,
       title: input.title,
       category: normaliseSourceCategory(input.category),
@@ -468,6 +508,7 @@ export class ReadingDatabase {
   updateSourceSettings(sourceId: string, settings: SourceSettings): Source {
     const source = this.getSource(sourceId);
     if (!source) throw new Error("来源不存在。");
+    settings={...settings,pollingEnabled:source.subscribed===false||settings.kind==="manual"?false:settings.pollingEnabled};
     const now = Date.now();
     const kindChanged = source.kind !== settings.kind;
     const scheduleChanged = kindChanged || source.pollingEnabled !== settings.pollingEnabled
@@ -1082,13 +1123,13 @@ export class ReadingDatabase {
     return removeEntriesForSourceOrigins(this.db, source.id, doomed);
   }
 
-  saveEntries(entries: Entry[], options?: { initialCollection?: boolean; collectionKind?: "initial" | "recovery" | "live"; identityNamespaces?: readonly ContentIdentityNamespace[]; onSaved?: (entry: Entry, storedId: string) => void }): number {
+  saveEntries(entries: Entry[], options?: { initialCollection?: boolean; collectionKind?: "initial" | "recovery" | "live"; identityNamespaces?: readonly ContentIdentityNamespace[]; onSaved?: (entry: Entry, storedId: string) => boolean | void }): number {
     return this.saveEntriesWithReport(entries, options).inserted;
   }
 
   saveEntriesWithReport(
     entries: Entry[],
-    options?: { initialCollection?: boolean; collectionKind?: "initial" | "recovery" | "live"; identityNamespaces?: readonly ContentIdentityNamespace[]; onSaved?: (entry: Entry, storedId: string) => void }
+    options?: { initialCollection?: boolean; collectionKind?: "initial" | "recovery" | "live"; identityNamespaces?: readonly ContentIdentityNamespace[]; onSaved?: (entry: Entry, storedId: string) => boolean | void }
   ): { inserted: number; identityConflicts: number } {
     const insert = this.db.prepare(`INSERT INTO entries (
       id, source_id, canonical_url, original_url, title, author, published_at, summary, image_url,
@@ -1106,9 +1147,9 @@ export class ReadingDatabase {
       provider_label = CASE WHEN @updatePrimary = 1 THEN COALESCE(excluded.provider_label, entries.provider_label) ELSE entries.provider_label END,
       external_id = CASE WHEN @updatePrimary = 1 THEN COALESCE(excluded.external_id, entries.external_id) ELSE entries.external_id END,
       canonical_identity = CASE WHEN @promoteIdentity = 1 THEN excluded.canonical_identity ELSE entries.canonical_identity END`);
-    type ExistingEntry = { id: string; source_id: string; canonical_url: string; canonical_identity: string | null };
-    const exists = this.db.prepare("SELECT id, source_id, canonical_url, canonical_identity FROM entries WHERE canonical_url = ?");
-    const matchingStableIdentity = this.db.prepare("SELECT id, source_id, canonical_url, canonical_identity FROM entries WHERE canonical_identity = ? LIMIT 2");
+    type ExistingEntry = { id: string; source_id: string; canonical_url: string; canonical_identity: string | null; image_url:string|null };
+    const exists = this.db.prepare("SELECT id, source_id, canonical_url, canonical_identity, image_url FROM entries WHERE canonical_url = ?");
+    const matchingStableIdentity = this.db.prepare("SELECT id, source_id, canonical_url, canonical_identity, image_url FROM entries WHERE canonical_identity = ? LIMIT 2");
     const isDismissed = this.db.prepare("SELECT 1 FROM dismissed_contents WHERE canonical_identity = ?");
     const upsertOrigin = this.db.prepare(`INSERT INTO entry_origins (entry_id, source_id, provider_id, provider_label, external_id, original_url, observed_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1181,7 +1222,7 @@ export class ReadingDatabase {
         // The upsert retains an existing ID or inserts the supplied ID. Both
         // are known in this transaction; no second canonical lookup is needed.
         const storedId = existing?.id ?? entry.id;
-        options?.onSaved?.(entry, storedId);
+        const documentSaved=options?.onSaved?.(entry, storedId);
         upsertOrigin.run(
           storedId,
           entry.sourceId,
@@ -1200,6 +1241,7 @@ export class ReadingDatabase {
             upsertOriginFacet.run(storedId, entry.sourceId, providerId, externalId, writeFacet(facet, Date.now()));
           }
         }
+        if (!documentSaved && (!existing || existing.source_id === entry.sourceId && entry.imageUrl !== undefined && entry.imageUrl !== existing.image_url)) this.articles.reconcileMedia(storedId);
         if (isNew) inserted += 1;
       }
     });
@@ -1308,6 +1350,14 @@ export class ReadingDatabase {
           AND EXISTS (SELECT 1 FROM subscriptions WHERE source_id = sources.id AND subscribed = 1)`)
         .run(deadline, now, message, deadline);
       return result.changes;
+    });
+  }
+
+  updateCalibratedRule(sourceId:string,rule:Source["extractionRule"]):void{
+    this.writeTransaction(()=>{
+      const source=this.getSource(sourceId);if(!source)throw new Error("来源不存在。");
+      if(!sourceCapabilities(source).canCalibrate)throw new Error(source.kind!=="generic"?"只有普通网页来源需要校准。":"来源已取消订阅，请重新订阅后再校准。");
+      this.updateRule(sourceId,rule);
     });
   }
 

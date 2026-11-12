@@ -1,3 +1,4 @@
+import {throwIfAborted} from "./cancellation";
 import {load} from "cheerio";
 import {randomUUID} from "node:crypto";
 import katex from "katex";
@@ -607,12 +608,14 @@ export async function renderMathAsync(
   formulas: FormulaDocument,
   scientificMath: ScientificMathRenderer | undefined,
   globalMathMacros: MathMacroScope,
-  formulaRenderPolicy: FormulaRenderPolicy
+  formulaRenderPolicy: FormulaRenderPolicy,
+  signal?: AbortSignal
 ): Promise<SanitizedContent> {
   const plan = createFormulaRenderPlan($, root, formulas, globalMathMacros);
   const output = await (formulaRenderPolicy === "scientific-document"
-    ? renderScientificFormulaDocumentAsynchronously(plan, scientificMath)
-    : renderStandardFormulaDocumentAsynchronously(plan, scientificMath));
+    ? renderScientificFormulaDocumentAsynchronously(plan, scientificMath, signal)
+    : renderStandardFormulaDocumentAsynchronously(plan, scientificMath, signal));
+  throwIfAborted(signal);
   return installFormulaOutput($, root, formulas, plan, output, formulaRenderPolicy);
 }
 
@@ -629,11 +632,15 @@ function renderStandardFormulaDocumentSynchronously(
 
 async function renderStandardFormulaDocumentAsynchronously(
   plan: FormulaRenderPlan,
-  scientificMath: ScientificMathRenderer | undefined
+  scientificMath: ScientificMathRenderer | undefined,
+  signal?: AbortSignal
 ): Promise<Map<number, string | undefined>> {
   const output = new Map<number, string | undefined>();
   for (const item of plan.formulas) {
-    output.set(item.record.id, await renderFormula(item, plan.equations, scientificMath, "async"));
+    throwIfAborted(signal);
+    const html=await renderFormula(item, plan.equations, scientificMath, "async");
+    throwIfAborted(signal);
+    output.set(item.record.id,html);
   }
   return output;
 }
@@ -668,20 +675,22 @@ function renderScientificFormulaDocumentSynchronously(
 
 async function renderScientificFormulaDocumentAsynchronously(
   plan: FormulaRenderPlan,
-  scientificMath: ScientificMathRenderer | undefined
+  scientificMath: ScientificMathRenderer | undefined,
+  signal?: AbortSignal
 ): Promise<Map<number, string | undefined>> {
   const failed = (): Map<number, string | undefined> => new Map(plan.formulas.map((item) => [item.record.id, undefined]));
   if (!scientificMath?.isReady()) return failed();
   if (typeof scientificMath.renderDocumentAsync !== "function") {
     const output = new Map<number, string | undefined>();
     for (const item of plan.formulas) {
+      throwIfAborted(signal);
       const html = await renderScientificFormulaAsync(item, plan.equations, scientificMath);
       output.set(item.record.id, html);
     }
     return output;
   }
   const requests: MathJaxDocumentExpression[] = plan.formulas.map((item) => scientificFormulaRequest(item, plan.equations));
-  const rendered = await scientificMath.renderDocumentAsync(requests);
+  const rendered = await scientificMath.renderDocumentAsync(requests, signal);
   if (!rendered || rendered.length !== plan.formulas.length) return failed();
   const output = new Map<number, string | undefined>();
   plan.formulas.forEach((item, index) => {

@@ -28,3 +28,32 @@ it('pins focus neighbours and both native keyboard entry points without retainin
  const range={startIndex:500,endIndex:510,count:2000,overscan:6};
  const rows=entryWindowRange(range,20);expect(rows).toContain(0);expect(rows).toContain(1999);expect(rows).toEqual(expect.arrayContaining([19,20,21]));expect(rows).not.toContain(300);expect(rows.length).toBeLessThan(30);
 });
+
+it.each([true,false])('preserves identity geometry when a prepended row is measured before read-back=%s',async(resizeFirst)=>{
+ const {Virtualizer}=await import('@tanstack/virtual-core');
+ let ids=Array.from({length:1000},(_,i)=>String(i)),report!:(offset:number,scrolling:boolean)=>void;
+ const fakeWindow={performance,requestAnimationFrame:()=>1,cancelAnimationFrame:()=>{}};
+ const element={scrollTop:0,scrollHeight:200000,clientHeight:800,ownerDocument:{defaultView:fakeWindow},addEventListener(){},removeEventListener(){}};
+ const options=()=>({count:ids.length,getScrollElement:()=>element as any,estimateSize:()=>190,getItemKey:(i:number)=>ids[i],initialRect:{width:340,height:800},anchorTo:'end' as const,followOnAppend:false as const,scrollEndThreshold:0,
+  observeElementRect:(_v:any,cb:any)=>{cb({width:340,height:800});return()=>{}},observeElementOffset:(_v:any,cb:any)=>{report=cb;return()=>{}},scrollToFn:(offset:number,{adjustments=0}:any)=>{element.scrollTop=offset+adjustments;},onChange:()=>{}});
+ const virtualizer=new Virtualizer(options()),dispose=virtualizer._didMount();virtualizer._willUpdate();report(0,false);virtualizer.getVirtualItems();element.scrollTop=5000;report(5000,true);
+ const saved=virtualizer.getVirtualItems().find(item=>item.end>5000)!,id=ids[saved.index],before=saved.start-element.scrollTop;
+ ids=['new',...ids];virtualizer.setOptions(options());virtualizer.getVirtualItems();virtualizer._willUpdate();
+ if(!resizeFirst)report(element.scrollTop,true);virtualizer.resizeItem(0,260);virtualizer.getVirtualItems();report(element.scrollTop,true);
+ expect(virtualizer.getVirtualItems().find(item=>item.key===id)!.start-element.scrollTop).toBe(before);dispose();
+});
+it.each([true,false])('keeps the same row/within-row offset after an internal equal-length reorder with resize-before-readback=%s',async(resizeFirst)=>{
+ const {Virtualizer}=await import('@tanstack/virtual-core');
+ let ids=Array.from({length:1000},(_,i)=>String(i)),report!:(offset:number,scrolling:boolean)=>void,padding=0;
+ const frames:Array<(time:number)=>void>=[],fakeWindow={performance,requestAnimationFrame:(callback:(time:number)=>void)=>{frames.push(callback);return frames.length;},cancelAnimationFrame:()=>{}};
+ const element={scrollTop:0,scrollHeight:200000,clientHeight:800,ownerDocument:{defaultView:fakeWindow},addEventListener(){},removeEventListener(){}};
+ const options=()=>({count:ids.length,getScrollElement:()=>element as any,estimateSize:()=>190,getItemKey:(i:number)=>ids[i],initialRect:{width:340,height:800},anchorTo:'end' as const,followOnAppend:false as const,scrollEndThreshold:0,scrollPaddingStart:padding,
+  observeElementRect:(_v:any,cb:any)=>{cb({width:340,height:800});return()=>{}},observeElementOffset:(_v:any,cb:any)=>{report=cb;return()=>{}},scrollToFn:(offset:number,{adjustments=0}:any)=>{element.scrollTop=offset+adjustments;},onChange:()=>{}});
+ const virtualizer=new Virtualizer(options()),dispose=virtualizer._didMount();virtualizer._willUpdate();report(0,false);virtualizer.getVirtualItems();element.scrollTop=5000;report(5000,true);
+ const saved=virtualizer.getVirtualItems().find(item=>item.end>5000)!,id=ids[saved.index],inside=5000-saved.start,before=saved.start-element.scrollTop;
+ const next=[...ids];next.splice(saved.index,1);next.splice(saved.index+4,0,id);ids=next;padding=-inside;
+ virtualizer.setOptions(options());virtualizer.getVirtualItems();virtualizer.scrollToIndex(ids.indexOf(id),{align:'start'});
+ if(!resizeFirst)report(element.scrollTop,true);virtualizer.resizeItem(0,260);virtualizer.getVirtualItems();report(element.scrollTop,true);
+ for(let i=0;i<10&&frames.length;i++){const batch=frames.splice(0);batch.forEach(callback=>callback(performance.now()));report(element.scrollTop,false);}
+ expect(virtualizer.getVirtualItems().find(item=>item.key===id)!.start-element.scrollTop).toBe(before);dispose();
+});
