@@ -410,7 +410,7 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
                 const image = event.currentTarget.querySelector("img");
                 if (image) previewImage(image);
               }} aria-label="放大封面图片"><img className="reader-cover" src={article.coverImageUrl} alt="" /></button>}
-              <ArticleBody bodyRef={articleBodyElement} document={article.document} html={article.contentHtml} onClick={handleContentClick} onKeyDown={handleContentKeyDown} onKeyUp={captureArticleSelection} onMouseUp={captureArticleSelection} />
+              <ArticleBody bodyRef={articleBodyElement} document={article.document} html={article.contentHtml} sourceUrl={article.url} onClick={handleContentClick} onKeyDown={handleContentKeyDown} onKeyUp={captureArticleSelection} onMouseUp={captureArticleSelection} />
           </div>
         </article>}
       </div>

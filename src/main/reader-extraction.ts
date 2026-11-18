@@ -871,7 +871,9 @@ export function prepareSanitizedContent(rawHtml: string, pageUrl: string, resour
       // Only synthesize a visible label for a genuinely empty anchor.
       const hasContents = element.contents().length > 0;
       removeAllAttributes(element);
-      if (!href) {
+      // Code renderers emit empty line permalinks. Synthesizing a label here
+      // would add the URL to the author's code and to copied selections.
+      if (!href || (!hasContents && element.parents("pre,code").length)) {
         element.replaceWith(element.contents());
         continue;
       }

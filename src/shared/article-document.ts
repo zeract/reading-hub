@@ -1,4 +1,5 @@
 import {assertPublicUrl} from "./url";
+import {withoutLegacyCodeLineLinks} from "./reader-code-lines";
 /** Canonical local reading document. No raw HTML, script, or model-owned attributes. */
 export type ArticleNode = TextNode | ElementNode | AssetNode | CardNode;
 export interface TextNode { type:"text"; id:string; text:string }
@@ -32,8 +33,9 @@ export function validArticleDocument(value:unknown):value is ArticleDocument {
  };
  return doc.children.every(n=>check(n,0));
 }
-export function articleDocumentHtml(doc:ArticleDocument, deferImages=false):string {
+export function articleDocumentHtml(doc:ArticleDocument, deferImages=false, sourceUrl?:string):string {
  if(!validArticleDocument(doc))throw new Error('正文结构格式无效，请检查应用版本。');
+ const page=sourceUrl?.split('#',1)[0];
  const image=(attributes:Record<string,string>):string=>{
   const values=deferImages&&attributes.src?{...attributes,'data-reader-image-url':attributes.src,src:'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'}:attributes;
   return '<img'+Object.entries(values).map(([k,v])=>` ${k}="${escape(v)}"`).join('')+'>';
@@ -43,6 +45,7 @@ export function articleDocumentHtml(doc:ArticleDocument, deferImages=false):stri
   if(n.type==='asset')return render(n.element);
   if(n.type==='card')return `<aside class="reader-link-card">${n.image?image({src:n.image,loading:'lazy','data-reader-zoomable':'true',alt:''}):''}<div><a href="${escape(n.url)}">${n.title.map(render).join('')}</a>${n.metadata.length?`<div class="reader-link-card-meta">${n.metadata.map(render).join('')}</div>`:''}</div></aside>`;
   if(n.tag==='img')return image(n.attrs);
+  if(n.tag==='pre' && page)n=withoutLegacyCodeLineLinks(n,page);
   const attributes=Object.entries(n.attrs).map(([k,v])=>` ${k}="${escape(v)}"`).join('');
   return `<${n.tag}${attributes}>`+(['br','hr','img'].includes(n.tag)?'':n.children.map(render).join('')+`</${n.tag}>`);
  };

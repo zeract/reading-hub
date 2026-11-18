@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { app, BrowserWindow, ipcMain } from "electron";
 import { writeFile } from "node:fs/promises";
 import { prepareSanitizedContent } from "../dist/main/main/reader-extraction.js";
+import { articleDocumentFromHtml } from "../dist/main/main/article-document.js";
 import { ReadingDatabase } from "../dist/main/main/database.js";
 import { verifyNavigationPolicy } from "./navigation-policy-smoke.mjs";
 
@@ -114,6 +115,11 @@ const diagramHtml = prepareSanitizedContent(`
   <pre><code>flowchart TB\nA --&gt;</code></pre>
   <pre class="mermaid">sequenceDiagram\nAlice-&gt;&gt;Bob: 离线消息</pre>
 `, "https://example.com/success").html;
+const shellLines = ["nvcc -O3 \\", "     add.cu # 中文注释"];
+const savedShellBlock = '<pre><code class="language-bash">' + shellLines.map((line, index) => {
+  const href = "https://example.com/success#cb2-" + (index + 1);
+  return '<span><a href="' + href + '">' + href + '</a><span>' + line + '</span></span>';
+}).join("\n") + "</code></pre>";
 database.rewrites.configure({ provider: "deepseek", model: "fixture-rewrite", effort: "default" });
 const channels = [
   ["rewrite:get", (_event,id,metadataOnly) => database.rewrites.get(id,metadataOnly)],
@@ -271,9 +277,10 @@ const channels = [
   ["entry:read-language-variant", (_event, id, url, requestId, inlineLanguage) => {
     assert(url === `https://example.com/${id}` && ["zh", "en"].includes(inlineLanguage), "Inline IPC must carry its approved body separately from the URL.");
     assert(typeof requestId === "string", "Language switch must remain cancellable.");
+    const contentHtml = `<p>This is a deterministic reader fixture.</p><p>Inline ${inlineLanguage} body.</p><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image" data-reader-zoomable="true" tabindex="0">`;
     return { kind: "article", article: { entryId: id, url, title: "Readable fixture", renderProfile: "standard", activeLanguage: inlineLanguage,
       languageVariants: ["zh", "en"].map(language => ({ url, language, inlineLanguage: language, label: language === "zh" ? "中文" : "English" })),
-      contentHtml: `<p>This is a deterministic reader fixture.</p><p>Inline ${inlineLanguage} body.</p><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image" data-reader-zoomable="true" tabindex="0">` } };
+      contentHtml, ...(inlineLanguage === "en" && { document: articleDocumentFromHtml(contentHtml + savedShellBlock) }) } };
   }],
   ["window:is-fullscreen", () => new Promise((resolve) => {
     completeFullscreenSnapshot = () => resolve(false);
@@ -520,6 +527,17 @@ async function runChecks() {
       await evaluate(`Array.from(document.querySelectorAll('.reader-language-switcher button')).find(button => button.textContent === ${JSON.stringify(language)}).click()`);
       await waitFor(window, `document.querySelector('.reader-language-switcher button[aria-pressed="true"]')?.textContent === ${JSON.stringify(language)}`);
       assert(await evaluate("document.querySelectorAll('.reader-language-switcher button[aria-pressed=true]').length === 1"), "A same-URL language switch must select one body.");
+      if (language === "English") {
+        await waitFor(window, "Boolean(document.querySelector('.article-body pre code.language-bash'))");
+        const selection = await evaluate(`(() => {
+          const block = document.querySelector('.article-body pre code.language-bash');
+          const range = document.createRange();
+          range.selectNodeContents(block);
+          return { text: range.toString(), links: block.querySelectorAll('a').length };
+        })()`);
+        assert(selection.text === shellLines.join("\n") && selection.links === 0,
+          "A saved code block must preserve its exact selectable text without line permalinks.");
+      }
     }
   }
   assert(await evaluate(`fetch(${JSON.stringify(diagramUrl)}).then(() => false, () => true)`), "The diagram Blob URL must be released when the body changes.");
