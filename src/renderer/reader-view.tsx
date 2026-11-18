@@ -367,7 +367,6 @@ export function ReaderView({ entry, source, onUpdateEntry, favoriteUpdating, rea
       readerWorkspaceElement.current?.querySelector(".reader-scroll")?.scrollTo({top:0});
     }}/>
       <div className="reader-toolbar-center">
-        <p>{source?.title || "已保存内容"}</p>
         {hasLanguageVariants && <div className="reader-toolbar-settings">
           <div className="reader-language-switcher" role="group" aria-label="文章语言版本">
             {languageVariants.map((variant) => {

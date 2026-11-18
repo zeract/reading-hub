@@ -92,7 +92,7 @@ describe("reader display-equation layout", () => {
   it("supports a reader-only view while keeping source rows intentionally compact", () => {
     expect(styles).toContain(".shell--reader-only { grid-template-columns: 0 0 minmax(0,1fr); }");
     expect(styles).toContain(".shell--reader-only > .sidebar, .shell--reader-only > .timeline { display: none; }");
-    expect(styles).toMatch(/\.source-filter\s*\{[^}]*display:\s*flex;[^}]*min-height:\s*38px;[^}]*border-radius:\s*var\(--control-radius\)/s);
+    expect(styles).toMatch(/\.source-filter\s*\{[^}]*display:\s*flex;[^}]*min-height:\s*30px;[^}]*border-radius:\s*var\(--control-radius\)/s);
     expect(styles).toMatch(/\.source-title\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/s);
     expect(styles).toMatch(/\.source-icon\s*\{[^}]*flex:\s*0\s+0\s+18px/s);
     expect(styles).toMatch(/\.source-icon--favicon\s*\{[^}]*border:\s*1px\s+solid/s);
@@ -102,7 +102,7 @@ describe("reader display-equation layout", () => {
   });
 
   it("keeps the source collection directly beneath the reading filters with a compact local hierarchy", () => {
-    expect(styles).toMatch(/\.sidebar\s*\{[^}]*gap:\s*12px/s);
+    expect(styles).toMatch(/\.sidebar\s*\{[^}]*gap:\s*10px/s);
     expect(styles).toMatch(/\.source-section\s*\{[^}]*flex:\s*1\s+1\s+auto;[^}]*flex-direction:\s*column;[^}]*gap:\s*1px/s);
     expect(styles).toMatch(/\.section-title\s*\{[^}]*margin:\s*1px\s+8px\s+4px;[^}]*font-size:\s*11px/s);
     expect(styles).toMatch(/\.source-group-heading\s*\{[^}]*font-size:\s*13px/s);

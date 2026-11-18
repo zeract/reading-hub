@@ -118,7 +118,7 @@ export function Timeline({ loadingEntries, loadFailed, onReload, onAddSource, ac
   const count = { value: hasMoreEntries ? `${visibleCount}+` : visibleCount, label: entrySearch.trim() ? "篇匹配" : "篇内容" };
 
   return <section ref={timeline} className="timeline" aria-label="文章列表">
-    <header><div><p className="eyebrow">{activeSource ? "来源内容" : "阅读收件箱"}</p><h1 title={title}>{title}</h1></div><span className="count">{count.value} {count.label}</span></header>
+    <header><h1 title={title}>{title}</h1><span className="count">{count.value} {count.label}</span></header>
     {<form className="entry-search" role="search" onSubmit={(event) => event.preventDefault()}>
       <AppIcon name="search" />
       <input
@@ -166,9 +166,15 @@ export function EntryCard({ entry, source, selected, onRead, isEntryUpdating, on
     ? entry.origins?.find((origin) => origin.sourceId === source.id)?.facets
     : entry.facets;
   const facets = (sourceFacets ?? entry.facets ?? []).slice(0, 3);
+  const attribution = [source?.title || "已保存内容", entry.author, providers.join(" / ")].filter(Boolean).join(" · ");
   return <article className={`entry-card ${entry.read ? "read" : ""}${selected ? " selected" : ""}`}>
     <button className="entry-main" type="button" onClick={() => onOpen(entry)} aria-label={`在应用内阅读：${entry.title}`}>
-      <div className="entry-copy"><p className="entry-source">{source?.title || "已保存内容"} <span>·</span> {date}{providers.length ? <><span>·</span>{providers.join(" / ")}</> : null}</p><h2>{entry.title}</h2>{entry.summary && <p className="summary">{entry.summary}</p>}{facets.length > 0 && <p className="entry-facets" aria-label="文章分类">{facets.map((facet) => <span key={`${facet.scheme}\u0000${facet.key}`}>{facet.label}</span>)}</p>}<p className="byline">{entry.author || "原文链接"}</p></div>
+      <div className="entry-copy">
+        <h2>{entry.title}</h2>
+        {entry.summary && <p className="summary">{entry.summary}</p>}
+        {facets.length > 0 && <p className="entry-facets" aria-label="文章分类">{facets.map((facet) => <span key={`${facet.scheme}\u0000${facet.key}`}>{facet.label}</span>)}</p>}
+        <p className="entry-source"><span className="entry-attribution" title={attribution}>{attribution}</span>{" "}<span className="entry-date">{date}</span></p>
+      </div>
       {entry.imageUrl && <img src={entry.imageUrl} alt="" loading="lazy" />}
     </button>
     <div className="entry-actions">
