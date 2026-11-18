@@ -2,6 +2,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { app, BrowserWindow, ipcMain } from "electron";
 import { writeFile } from "node:fs/promises";
+import { prepareSanitizedContent } from "../dist/main/main/reader-extraction.js";
 import { ReadingDatabase } from "../dist/main/main/database.js";
 import { verifyNavigationPolicy } from "./navigation-policy-smoke.mjs";
 
@@ -103,6 +104,16 @@ const fixtureProviders = [
   { id: "deepseek", label: "Fixture secondary AI", model: "fixture-secondary", configured: true, requiresApiKey: true }
 ];
 const aiAnswer = "## Fixture answer\n\nInline $x^2$.\n\n$$\ny=x+1\n$$";
+const flowchart = `flowchart TB
+  Grid["Grid（一次 kernel launch）"] --> Block["Block（绑定到一个 SM）"]
+  Block --> Warp["Warp（32 线程，SIMT 单位）"]
+  Warp --> Thread["Thread（最小逻辑单位，一条 ALU lane）"]`;
+const diagramHtml = prepareSanitizedContent(`
+  <pre><code>${flowchart.replaceAll(">", "&gt;")}</code></pre>
+  <pre><code class="language-text">flowchart TB\nA --&gt; B</code></pre>
+  <pre><code>flowchart TB\nA --&gt;</code></pre>
+  <pre class="mermaid">sequenceDiagram\nAlice-&gt;&gt;Bob: 离线消息</pre>
+`, "https://example.com/success").html;
 database.rewrites.configure({ provider: "deepseek", model: "fixture-rewrite", effort: "default" });
 const channels = [
   ["rewrite:get", (_event,id,metadataOnly) => database.rewrites.get(id,metadataOnly)],
@@ -112,7 +123,7 @@ const channels = [
   ["rewrite:remove", (_event,id) => database.rewrites.remove(id)],
   ["rewrite:generate", (_event,id) => {
     const job=database.rewrites.enqueue(id,database.rewrites.settings());database.rewrites.progress(job,1,1);
-    database.rewrites.finish(job,{markdown:"3. 外层\n   - 内层\n4. 第二项\n\n| 方法 | 条件 |\n| --- | --- |\n| 分布 | $P(a | s)$ |\n\n> 第一段引用\n>\n> 第二段引用\n\n"+aiAnswer+"\n\n$$\n\\begin{align}x&=1\\tag{7}\\\\y&=2\\tag{8}\\end{align}\n$$"+"\n\n中文正文，链接与图片。动作 $\\pi_\\theta(a_t \\mid s_t)$；下一状态 $P(s_{t+1} \\mid a_t, s_t)$。参考[原文证据](https://example.com/post)，而不是 [嵌套链接](https://example.com/a_(b))。\n\n![图示](<https://example.com/image_(1).png>)",provider:"deepseek",model:"fixture-rewrite",createdAt:Date.now(),sourceUrl:"https://example.com/success",sourceTitle:"Fixture rewrite",sourceHash:"fixture",promptVersion:4,sections:[aiAnswer],quality:{version:1,reviewedSections:0,reviewedBlocks:0,repairedSections:0,requests:1,terms:[]}});
+    database.rewrites.finish(job,{markdown:"3. 外层\n   - 内层\n4. 第二项\n\n| 方法 | 条件 |\n| --- | --- |\n| 分布 | $P(a | s)$ |\n\n> 第一段引用\n>\n> 第二段引用\n\n"+aiAnswer+"\n\n$$\n\\begin{align}x&=1\\tag{7}\\\\y&=2\\tag{8}\\end{align}\n$$"+"\n\n中文正文，链接与图片。动作 $\\pi_\\theta(a_t \\mid s_t)$；下一状态 $P(s_{t+1} \\mid a_t, s_t)$。参考[原文证据](https://example.com/post)，而不是 [嵌套链接](https://example.com/a_(b))。\n\n![图示](<https://example.com/image_(1).png>)" + "\n\n```mermaid\n" + flowchart + "\n```",provider:"deepseek",model:"fixture-rewrite",createdAt:Date.now(),sourceUrl:"https://example.com/success",sourceTitle:"Fixture rewrite",sourceHash:"fixture",promptVersion:4,sections:[aiAnswer],quality:{version:1,reviewedSections:0,reviewedBlocks:0,repairedSections:0,requests:1,terms:[]}});
     return job;
   }],
   ["source:import-opml", () => new Promise((resolve) => {
@@ -255,7 +266,7 @@ const channels = [
       feedFallbackOnce = false;
       return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", contentMode: "feed_body", contentHtml: "<p>Feed supplied body while the original is unavailable.</p>" } };
     }
-    return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", activeLanguage: "zh", languageVariants: ["zh", "en"].map(language => ({ url: `https://example.com/${id}`, language, inlineLanguage: language, label: language === "zh" ? "中文" : "English" })), contentHtml: '<p>This is a deterministic reader fixture.</p><div class="reader-video"><video controls preload="none" data-reader-video-sources="[&quot;https://fixture.invalid/video.webm&quot;]"></video><button class="action-button" data-reader-video-load>加载视频</button><span role="status" class="reader-video-status"></span><a href="https://example.com/success">在原文中观看视频</a></div><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image" data-reader-zoomable="true" tabindex="0">' } };
+    return { kind: "article", article: { entryId: id, url: `https://example.com/${id}`, title: "Readable fixture", renderProfile: "standard", activeLanguage: "zh", languageVariants: ["zh", "en"].map(language => ({ url: `https://example.com/${id}`, language, inlineLanguage: language, label: language === "zh" ? "中文" : "English" })), contentHtml: '<p>This is a deterministic reader fixture.</p><div class="reader-video"><video controls preload="none" data-reader-video-sources="[&quot;https://fixture.invalid/video.webm&quot;]"></video><button class="action-button" data-reader-video-load>加载视频</button><span role="status" class="reader-video-status"></span><a href="https://example.com/success">在原文中观看视频</a></div><img src="https://fixture.invalid/body.gif" alt="Deterministic failed image" data-reader-zoomable="true" tabindex="0">' + diagramHtml } };
   }],
   ["entry:read-language-variant", (_event, id, url, requestId, inlineLanguage) => {
     assert(url === `https://example.com/${id}` && ["zh", "en"].includes(inlineLanguage), "Inline IPC must carry its approved body separately from the URL.");
@@ -316,11 +327,15 @@ const window = new BrowserWindow({
   }
 });
 // Trigger a native, non-bubbling image failure without making an external request.
-window.webContents.session.webRequest.onBeforeRequest({ urls: ["https://fixture.invalid/*", "file://*/*"] }, (details, callback) => {
+const externalReaderRequests = [];
+window.webContents.session.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*", "file://*/*"] }, (details, callback) => {
   if (/\/ai-markdown-[^/]+\.js$/.test(new URL(details.url).pathname)) {
     markdownModuleRequests++;
     callback({ cancel: blockMarkdownModule });
-  } else callback({ cancel: details.url.startsWith("https://fixture.invalid/") });
+  } else {
+    if (/^https?:/.test(details.url) && !details.url.startsWith("https://fixture.invalid/")) externalReaderRequests.push(details.url);
+    callback({ cancel: /^https?:/.test(details.url) });
+  }
 });
 window.webContents.on("console-message", (event) => messages.push(event.message));
 window.webContents.on("preload-error", (_event, preloadPath, error) => {
@@ -477,6 +492,23 @@ async function runChecks() {
 
   await waitFor(window, "document.querySelector('.article-body img')?.naturalWidth === 1");
   assert(imageLoads === 1, `A native body image error must invoke the proxy exactly once (observed ${imageLoads}).`);
+  await waitFor(window, "document.querySelectorAll('.reader-diagram img').length === 2");
+  const diagramUrl = await evaluate("document.querySelector('.reader-diagram img').src");
+  const diagram = await evaluate(`(async () => {
+    const [chart, sequence] = document.querySelectorAll('.reader-diagram img');
+    const svg = await fetch(chart.src).then(response => response.text());
+    const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml');
+    return { decoded: chart.naturalWidth > 0 && sequence.naturalWidth > 0,
+      labels: [...parsed.querySelectorAll('text')].map(text => text.textContent),
+      arrows: parsed.querySelectorAll('[marker-end]').length,
+      remoteFonts: svg.includes('@import'),
+      source: [...document.querySelectorAll('.article-body pre')].map(block => block.textContent.trim()) };
+  })()`);
+  assert(diagram.decoded && diagram.arrows === 3 && diagram.labels.length === 4 && diagram.labels[3] === 'Thread（最小逻辑单位，一条 ALU lane）'
+    && diagram.source.join('|') === 'flowchart TB\nA --> B|flowchart TB\nA -->' && !diagram.remoteFonts && externalReaderRequests.length === 0,
+  `Offline diagram rendering must preserve Chinese labels, arrows and code fallback: ${JSON.stringify(diagram)}`);
+  await evaluate("document.querySelector('.reader-diagram').scrollIntoView({ block: 'center' })");
+  await writeFile(path.join(tmpdir(), "reading-hub-reader-diagram.png"), (await window.capturePage()).toPNG());
   assert(videoLoads === 0, "Reader videos must not download on article open.");
   await evaluate("document.querySelector('[data-reader-video-load]').click()");
   await waitFor(window, "document.querySelector('.reader-video-status')?.textContent.includes('原文中观看')");
@@ -490,6 +522,7 @@ async function runChecks() {
       assert(await evaluate("document.querySelectorAll('.reader-language-switcher button[aria-pressed=true]').length === 1"), "A same-URL language switch must select one body.");
     }
   }
+  assert(await evaluate(`fetch(${JSON.stringify(diagramUrl)}).then(() => false, () => true)`), "The diagram Blob URL must be released when the body changes.");
 
   assert(database.getEntry("success").read, "Successful content must become read.");
   await waitFor(window, "document.querySelector('.article-body img')?.naturalWidth === 1");
@@ -654,6 +687,8 @@ async function runChecks() {
     // The image is lazy-loaded; layout changes can move it below the viewport.
     await evaluate("document.querySelector('.reader-rewritten img')?.scrollIntoView({block:'center'})");
     await waitFor(window,"Boolean(document.querySelector('.reader-rewritten .katex')) && document.querySelector('.reader-rewritten img')?.naturalWidth > 0 && document.querySelector('.reader-rewritten img')?.src.startsWith('blob:')");
+    await waitFor(window, "document.querySelector('.reader-rewritten .reader-diagram img')?.naturalWidth > 0");
+    assert(await evaluate("document.querySelector('.reader-diagram').clientWidth <= document.querySelector('.article-body').clientWidth"), "A diagram must stay within the reader column.");
     const rewriteLayout = await evaluate("({ articleCount: document.querySelectorAll('.reader-article').length, rewrittenCount: document.querySelectorAll('.reader-article.reader-rewritten').length, scrollWidth: document.documentElement.scrollWidth, viewportWidth: innerWidth })");
     assert(rewriteLayout.articleCount === 1 && rewriteLayout.rewrittenCount === 1 && rewriteLayout.scrollWidth <= rewriteLayout.viewportWidth + 1, `Rewritten body must replace the original and fit the viewport: ${JSON.stringify(rewriteLayout)}`);
     assert(await evaluate("document.querySelector('.reader-version-tabs [aria-selected=\"true\"]').textContent==='中文改写' && getComputedStyle(document.querySelector('.reader-version-tabs [aria-selected=\"true\"]')).borderTopWidth==='0px'"), "Version selection must use borderless inline tabs.");

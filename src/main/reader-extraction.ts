@@ -6,6 +6,7 @@ export {escapeHtml,normalText} from "./reader-html";
 import {normalizeKeyValueGrids} from "./reader-key-values";
 import { removeLeadingPagePropertyPanels } from "./reader-page-properties";
 import {normalizePreformattedCode} from "./reader-code";
+import {readerCodeLanguage} from "../shared/reader-code-language";
 import {articleDocumentFromHtml} from "./article-document";
 import { hydrateLazyImages, imageSource, selectReaderCover } from "./reader-media";
 export { selectReaderCover } from "./reader-media";
@@ -882,6 +883,12 @@ export function prepareSanitizedContent(rawHtml: string, pageUrl: string, resour
       const start=element.attr("start");
       removeAllAttributes(element);
       if(start && /^-?\d{1,9}$/.test(start))element.attr("start",String(Number(start)));
+      continue;
+    }
+    if (tag === "pre" || tag === "code") {
+      const language = readerCodeLanguage(element.attr("class") || "");
+      removeAllAttributes(element);
+      if (language) element.attr("class", "language-" + language);
       continue;
     }
     removeAllAttributes(element);

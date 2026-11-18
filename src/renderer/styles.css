@@ -313,6 +313,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .article-body figcaption { margin-top: -.7em; color: var(--muted); font: .7em/1.55 var(--font-ui); text-align: center; }
 .article-body pre, .ai-code-block { box-sizing: border-box; max-width: 100%; overflow: auto; border: 1px solid var(--ink); border-radius: var(--control-radius); background: var(--code-surface); color: var(--code-ink); font-family: var(--font-mono); white-space: pre; }
 .article-body pre { padding: .9em 1em; font-size: .75em; line-height: 1.65; }
+.article-body .reader-diagram { max-width: 100%; overflow: auto; }
+.article-body .reader-diagram img { max-width: none; max-height: none; margin: 0 auto; border: 0; background: none; }
 .article-body code { font-family: var(--font-mono); }
 .article-body :not(pre) > code, .ai-inline-code { padding: .12em .32em; border: 1px solid var(--line); border-radius: 1px; background: var(--shade); color: var(--ink); font: .82em/1.4 var(--font-mono); }
 .article-body table { display: block; width: max-content; max-width: 100%; overflow: auto; border-collapse: collapse; font: .78em/1.55 var(--font-ui); }

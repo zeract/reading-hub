@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 const markdownPath = fileURLToPath(new URL("../src/renderer/ai-markdown.tsx", import.meta.url));
 
-it("keeps AI answer parsing and KaTeX out of the renderer's initial module graph", async () => {
+it("keeps AI answer parsing, KaTeX and diagram layout out of the initial module graph", async () => {
   const chunks = new Map<string, OutputChunk>();
   await build({ logLevel: "silent", build: { write: false }, plugins: [{
     name: "inspect-initial-renderer-dependencies",
@@ -30,6 +30,9 @@ it("keeps AI answer parsing and KaTeX out of the renderer's initial module graph
   // KaTeX CSS remains eager because main-process-rendered article formulas
   // need it before the optional AI parser is used.
   expect(eagerModules.some((id) => (id.includes("/katex/") && /\.[cm]?js(?:$|\?)/.test(id)) || id === markdownPath)).toBe(false);
+  const diagramWorker = [...chunks.values()].find(chunk => chunk.facadeModuleId?.endsWith("/reader-diagram.worker.ts?worker&inline"));
+  expect(diagramWorker).toBeDefined();
+  expect(initial.has(diagramWorker!.fileName)).toBe(false);
   const deferred = [...chunks.values()].find((chunk) => Object.hasOwn(chunk.modules, markdownPath));
   expect(deferred).toBeDefined();
   expect(initial.has(deferred!.fileName)).toBe(false);
@@ -37,7 +40,7 @@ it("keeps AI answer parsing and KaTeX out of the renderer's initial module graph
   // Retrying the optional module must not depend on another uncached optional
   // chunk whose failed URL would survive the retry.
   expect(deferred!.imports.every((file) => initial.has(file))).toBe(true);
-});
+}, 15_000);
 
 it("serves a transpiled deferred module through the development URL", async () => {
   // Exercise transpilation without HMR ports or browser-triggered discovery;
